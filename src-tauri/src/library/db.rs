@@ -38,6 +38,23 @@ pub struct TracksByType {
     pub jingle: i64,
 }
 
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TrackMetadataUpdate {
+    pub id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artist: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub album: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub genre: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub year: Option<Option<i64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+}
+
 #[derive(Default, Clone)]
 pub struct TrackInsert {
     pub path: String,
@@ -442,6 +459,68 @@ impl Db {
             [id],
         )?;
         Ok(())
+    }
+
+    /// Update metadata fields for a track. Only non-None fields are included
+    /// in the UPDATE. Returns the updated [`Track`] so the caller can push it to
+    /// the renderer as a fast-forward replacement; the update path never touches
+    /// `play_count`, `waveform`, or `added_at`.
+    pub fn update_track_metadata(&self, updates: &TrackMetadataUpdate) -> Result<Track> {
+        let mut setters = Vec::<String>::new();
+        let mut params: Vec<rusqlite::types::Value> = Vec::new();
+
+        if let Some(v) = &updates.title {
+            setters.push("title=?".to_string());
+            params.push(rusqlite::types::Value::Text(v.clone()));
+        }
+        if let Some(v) = &updates.artist {
+            setters.push("artist=?".to_string());
+            params.push(rusqlite::types::Value::Text(v.clone()));
+        }
+        if let Some(v) = &updates.album {
+            setters.push("album=?".to_string());
+            params.push(rusqlite::types::Value::Text(v.clone()));
+        }
+        if updates.genre.is_some() {
+            setters.push("genre=?".to_string());
+            params.push(match &updates.genre {
+                Some(Some(s)) => rusqlite::types::Value::Text(s.clone()),
+                _ => rusqlite::types::Value::Null,
+            });
+        }
+        if updates.year.is_some() {
+            setters.push("year=?".to_string());
+            params.push(match updates.year {
+                Some(Some(i)) => rusqlite::types::Value::Integer(i),
+                _ => rusqlite::types::Value::Null,
+            });
+        }
+        if let Some(v) = &updates.content_type {
+            setters.push("content_type=?".to_string());
+            params.push(rusqlite::types::Value::Text(v.clone()));
+        }
+
+        if setters.is_empty() {
+            return self
+                .get_track(updates.id)?
+                .ok_or_else(|| anyhow::anyhow!("track not found"));
+        }
+
+        let sql = format!("UPDATE tracks SET {} WHERE id = ?", setters.join(", "));
+        // Add the WHERE `id` parameter after the dynamic value params.
+        params.push(rusqlite::types::Value::Integer(updates.id));
+        let n = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare(&sql)?;
+            stmt.execute(params_from_iter(params.iter()))?
+        };
+
+        if n == 0 {
+            return Err(anyhow::anyhow!("track not found"));
+        }
+
+        self.get_track(updates.id)?
+            .ok_or_else(|| anyhow::anyhow!("track not found"))
     }
 
     pub fn get_random_tracks(
@@ -970,5 +1049,130 @@ mod tests {
         db.increment_play_count(1).unwrap();
         let t = db.get_track(1).unwrap().unwrap();
         assert_eq!(t.play_count, 2);
+    }
+
+    #[test]
+    fn update_track_metadata_updates_all_fields() {
+        let db = Db::open_in_memory().unwrap();
+        insert(
+            &db,
+            "/a.mp3",
+            "Old Title",
+            "Old Artist",
+            "Old Album",
+            "music",
+        );
+        db.update_track_metadata(&TrackMetadataUpdate {
+            id: 1,
+            title: Some("New Title".into()),
+            artist: Some("New Artist".into()),
+            album: Some("New Album".into()),
+            genre: Some(Some("Electronic".into())),
+            year: Some(Some(2025)),
+            ..Default::default()
+        })
+        .unwrap();
+        let t = db.get_track(1).unwrap().unwrap();
+        assert_eq!(t.title, "New Title");
+        assert_eq!(t.artist, "New Artist");
+        assert_eq!(t.album, "New Album");
+        assert_eq!(t.genre, Some("Electronic".into()));
+        assert_eq!(t.year, Some(2025));
+    }
+
+    #[test]
+    fn update_track_metadata_partially_updates() {
+        let db = Db::open_in_memory().unwrap();
+        insert(
+            &db,
+            "/a.mp3",
+            "Old Title",
+            "Old Artist",
+            "Old Album",
+            "music",
+        );
+        db.update_track_metadata(&TrackMetadataUpdate {
+            id: 1,
+            title: Some("Updated Title".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        let t = db.get_track(1).unwrap().unwrap();
+        assert_eq!(t.title, "Updated Title");
+        // Other fields unchanged
+        assert_eq!(t.artist, "Old Artist");
+        assert_eq!(t.album, "Old Album");
+    }
+
+    #[test]
+    fn update_track_metadata_clears_nullable_fields() {
+        let db = Db::open_in_memory().unwrap();
+        insert(&db, "/a.mp3", "Title", "Artist", "Album", "music");
+        // Set genre and year first via a partial update
+        db.update_track_metadata(&TrackMetadataUpdate {
+            id: 1,
+            genre: Some(Some("Rock".into())),
+            year: Some(Some(2020)),
+            ..Default::default()
+        })
+        .unwrap();
+        let t = db.get_track(1).unwrap().unwrap();
+        assert_eq!(t.genre.as_deref(), Some("Rock"));
+        assert_eq!(t.year, Some(2020));
+
+        // Clear them to NULL
+        db.update_track_metadata(&TrackMetadataUpdate {
+            id: 1,
+            genre: Some(None),
+            year: Some(None),
+            ..Default::default()
+        })
+        .unwrap();
+        let t = db.get_track(1).unwrap().unwrap();
+        assert_eq!(t.genre, None::<String>);
+        assert_eq!(t.year, None::<i64>);
+    }
+
+    #[test]
+    fn update_track_metadata_returns_error_for_missing_id() {
+        let db = Db::open_in_memory().unwrap();
+        let err = db.update_track_metadata(&TrackMetadataUpdate {
+            id: 999,
+            title: Some("Nope".into()),
+            ..Default::default()
+        });
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn update_track_metadata_skips_update_when_no_fields_set() {
+        let db = Db::open_in_memory().unwrap();
+        insert(&db, "/a.mp3", "Original", "Artist", "Album", "music");
+        // No fields set — should return the track unchanged without error
+        let t = db
+            .update_track_metadata(&TrackMetadataUpdate {
+                id: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(t.title, "Original");
+    }
+
+    #[test]
+    fn fts5_search_finds_genre_and_year_after_update() {
+        let db = Db::open_in_memory().unwrap();
+        insert(&db, "/a.mp3", "Hello World", "Band", "Album", "music");
+        // FTS5 triggers should pick up changes made via update_track_metadata
+        db.update_track_metadata(&TrackMetadataUpdate {
+            id: 1,
+            genre: Some(Some("Jazz".into())),
+            year: Some(Some(2023)),
+            ..Default::default()
+        })
+        .unwrap();
+
+        // Title should still be found by FTS
+        let results = db.search("hello", None, None, None).unwrap();
+        assert_eq!(results.len(), 1);
     }
 }

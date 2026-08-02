@@ -45,6 +45,19 @@ export interface LibraryStats {
   tracksByType: Record<ContentType, number>;
 }
 
+/** Serializable form for tracking which metadata fields were changed
+ * by the user. Only non-Empty values are sent to the backend so empty
+ * strings can clear a field without requiring `undefined`. */
+export interface TrackMetadataInput {
+  /** Always present — identifies the track to update. */
+  id: number;
+  title: string;
+  artist: string;
+  album: string;
+  genre: string | null;
+  year: number | null;
+}
+
 export interface ScanResult {
   total: number;
   added: number;

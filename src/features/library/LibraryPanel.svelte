@@ -42,9 +42,14 @@
     app.addToPlaylist(track);
   }
 
-  function cue(track: Track, e: MouseEvent): void {
+  function cues(track: Track, e: MouseEvent): void {
     e.stopPropagation();
     app.cueLoadAndPlay(track);
+  }
+
+  function startEdit(track: Track, e: MouseEvent): void {
+    e.stopPropagation();
+    app.editingTrack = track;
   }
 
   function onEnter(track: Track, e: MouseEvent): void {
@@ -122,7 +127,14 @@
       {#each app.tracks as track (track.id)}
         <div
           class="track-row"
-          ondblclick={() => app.addToPlaylist(track)}
+          ondblclick={(e) => {
+            e.preventDefault();
+            app.addToPlaylist(track);
+          }}
+          oncontextmenu={(e) => {
+            e.preventDefault();
+            app.editingTrack = track;
+          }}
           onmouseenter={(e) => onEnter(track, e)}
           onmouseleave={() => app.clearHover()}
           role="button"
@@ -148,11 +160,19 @@
               class="btn-cue"
               title="Preview on cue deck"
               aria-label="Cue track"
-              onclick={(e) => cue(track, e)}
+              onclick={(e) => cues(track, e)}
             >
               <span class="material-symbols-outlined">headphones</span>
             </button>
           {/if}
+          <button
+            class="btn-edit"
+            title="Edit metadata"
+            aria-label="Edit track metadata"
+            onclick={(e) => startEdit(track, e)}
+          >
+            <span class="material-symbols-outlined">edit</span>
+          </button>
           <button
             class="btn-play-track"
             title="Add and play"

@@ -119,6 +119,9 @@ export class AppState {
   hoverX = $state(0);
   hoverY = $state(0);
 
+  // Track currently being edited via the MetadataEditor overlay.
+  editingTrack = $state<Track | null>(null);
+
   backend: DeckBackend;
   cueBackend: DeckBackend;
 
@@ -823,6 +826,48 @@ export class AppState {
   async removePath(type: ContentType, p: string): Promise<void> {
     await api.removePath(type, p);
     await this.loadLibraryPaths();
+  }
+
+  /** Update a track's embedded metadata fields and reflect the change in the local tracks array. */
+  async updateTrackMetadata(
+    id: number,
+    input: Partial<Pick<Track, "title" | "artist" | "album">> & {
+      genre?: string | null;
+      year?: number | null;
+    },
+  ): Promise<Track | null> {
+    const byIndex = new Map(this.tracks.map((t, i) => [t.id, i]));
+    const index = byIndex.get(id);
+    let oldTitle = "";
+    if (index != null) {
+      oldTitle = this.tracks[index].title;
+    }
+    let updatedTrack: Track;
+    try {
+      updatedTrack = await api.updateTrackMetadata({
+        id,
+        title: input.title ?? "",
+        artist: input.artist ?? "",
+        album: input.album ?? "",
+        genre: input.genre ?? null,
+        year: input.year ?? null,
+      });
+    } catch (err) {
+      logger.error("updateTrackMetadata failed:", err);
+      return null;
+    }
+    if (index != null) {
+      this.tracks[index] = updatedTrack;
+    }
+    // If the currently playing track was edited, keep its title for document.title.
+    if (this.currentTrack?.id === id) {
+      this.currentTrack = updatedTrack;
+      if (oldTitle && oldTitle !== updatedTrack.title) {
+        document.title = `${updatedTrack.title} - ${updatedTrack.artist} | ${APP_NAME}`;
+      }
+    }
+    this.scheduleSave();
+    return updatedTrack;
   }
 
   async scan(): Promise<void> {

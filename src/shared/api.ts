@@ -11,6 +11,7 @@ import type {
   SortColumn,
   SortDir,
   Track,
+  TrackMetadataInput,
 } from "./types";
 
 export type PersistedPlaylistItem =
@@ -179,6 +180,29 @@ export const api = {
   },
   broadcastShutdown(): Promise<void> {
     return invoke<void>("broadcast_shutdown");
+  },
+  updateTrackMetadata(updates: TrackMetadataInput): Promise<Track> {
+    const filtered: Partial<TrackMetadataInput & { id: number }> = {
+      id: updates.id,
+    };
+    if (updates.title !== "") {
+      filtered.title = updates.title;
+    }
+    if (updates.artist !== "") {
+      filtered.artist = updates.artist;
+    }
+    if (updates.album !== "") {
+      filtered.album = updates.album;
+    }
+    const genreVal = updates.genre;
+    if (genreVal != null) {
+      filtered.genre = genreVal;
+    }
+    const yearVal = updates.year;
+    if (yearVal != null) {
+      filtered.year = yearVal;
+    }
+    return invoke<Track>("update_track_metadata", { updates: filtered });
   },
   async pickDirectory(): Promise<string | null> {
     const dir = await open({ directory: true, multiple: false });

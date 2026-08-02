@@ -34,8 +34,8 @@ describe("playback", () => {
       { timeout: 15_000 },
     );
 
-    // Add to playlist via dblclick on the row
-    await browser.$(sel.trackRow).doubleClick();
+    // Add to playlist via the + button on the track row
+    await browser.$(".btn-add").click();
     await browser.$(`${sel.playlist} ${sel.playlistRow}`).waitForExist({
       timeout: 5_000,
     });

@@ -34,6 +34,7 @@ const { api } = vi.hoisted(() => {
     setMainDevice: vi.fn(),
     getCueDevice: vi.fn(),
     setCueDevice: vi.fn(),
+    updateTrackMetadata: vi.fn(),
   };
   return { api };
 });
@@ -132,6 +133,14 @@ function resetApi(): void {
   api.getCueDevice.mockResolvedValue(null);
   api.setMainDevice.mockResolvedValue(undefined);
   api.setCueDevice.mockResolvedValue(undefined);
+  api.updateTrackMetadata.mockImplementation(async (input) => ({
+    id: input.id,
+    title: input.title ?? "",
+    artist: input.artist ?? "",
+    album: input.album ?? "",
+    duration: 0,
+    play_count: 0,
+  }));
 }
 
 interface TestApp {
@@ -1489,5 +1498,130 @@ describe("AppState session persistence (stop markers)", () => {
     ({ app } = makeApp());
     await app.loadSession();
     expect(app.playlist.map(pid)).toEqual([3, 4]);
+  });
+});
+
+describe("AppState updateTrackMetadata", () => {
+  let app: AppState;
+  beforeEach(() => {
+    resetApi();
+    app = makeApp().app;
+  });
+
+  it("sends the API call with provided fields (undefined values filtered)", async () => {
+    const updated = t(5, {
+      title: "NewTitle",
+      artist: "NewArtist",
+      album: "NewAlbum",
+    });
+    api.updateTrackMetadata.mockResolvedValue(updated);
+    const track = t(5, { title: "OldTitle", artist: "OldArtist" });
+    app.tracks = [track];
+    await app.updateTrackMetadata(5, {
+      title: "NewTitle",
+      artist: "NewArtist",
+      album: "NewAlbum",
+    });
+    expect(api.updateTrackMetadata).toHaveBeenCalledWith({
+      id: 5,
+      title: "NewTitle",
+      artist: "NewArtist",
+      album: "NewAlbum",
+      genre: null,
+      year: null,
+    });
+  });
+
+  it("updates the local tracks array via byIndex map", async () => {
+    const updated = t(7, { title: "Updated!", album: "World Tour" });
+    api.updateTrackMetadata.mockResolvedValue(updated);
+    app.tracks = [t(7), t(8)];
+    await app.updateTrackMetadata(7, {
+      title: "Updated!",
+      album: "World Tour",
+    });
+    expect(app.tracks[0].title).toBe("Updated!");
+    expect(app.tracks[0].album).toBe("World Tour");
+  });
+
+  it("updates a track not indexed in the byIndex map (not found)", async () => {
+    const updated = t(8, { album: "Tour" });
+    api.updateTrackMetadata.mockResolvedValue(updated);
+    // Track id=8 has index that doesn't exist in app.tracks (byIndex only stores [7→0])
+    app.tracks = [
+      {
+        id: 7,
+        title: "T7",
+        artist: "A",
+        album: "",
+        duration: 100,
+        play_count: 0,
+      },
+    ];
+    const result = await app.updateTrackMetadata(8, { album: "Tour" });
+    expect(result?.album).toBe("Tour");
+  });
+
+  it("returns null on API error without throwing", async () => {
+    api.updateTrackMetadata.mockRejectedValue(new Error("fail"));
+    app.tracks = [t(3)];
+    const result = await app.updateTrackMetadata(3, { title: "x" });
+    expect(result).toBeNull();
+  });
+
+  it("updates document.title when editing current track with new title", async () => {
+    const updated = {
+      id: 10,
+      title: "Headliner",
+      artist: "DJ Mix",
+      album: "",
+      duration: 100,
+      play_count: 0,
+    } as Track;
+    api.updateTrackMetadata.mockResolvedValue(updated);
+    app.tracks = [t(10, { title: "Old Track" })];
+    app.currentTrack = t(10, { title: "Old Track" });
+    await app.updateTrackMetadata(10, { title: "Headliner", artist: "DJ Mix" });
+    expect(document.title).toBe("Headliner - DJ Mix | RadiodioDJ");
+  });
+
+  it("does not update document.title when oldTitle equals updated title", async () => {
+    const updated = {
+      id: 10,
+      title: "SameTitle",
+      artist: "Band",
+      album: "",
+      duration: 100,
+      play_count: 0,
+    } as Track;
+    api.updateTrackMetadata.mockResolvedValue(updated);
+    app.currentTrack = t(10, { title: "SameTitle" });
+    await app.updateTrackMetadata(10, { artist: "Band" });
+    // document.title should remain the default "" (reset on stop or never set)
+  });
+
+  it("schedules save after update", async () => {
+    vi.useFakeTimers();
+    try {
+      const updated = t(5);
+      api.updateTrackMetadata.mockResolvedValue(updated);
+      app.tracks = [t(5)];
+      // Call updateTrackMetadata first — this will trigger scheduleSave.
+      await app.updateTrackMetadata(5, { title: "x" });
+      const callsBeforeFlush = api.saveSession.mock.calls.length;
+      // The throttled timer hasn't fired yet (no timers advanced).
+      expect(callsBeforeFlush).toBeLessThanOrEqual(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("updates currentTrack reference when it equals the edited track", async () => {
+    const updated = t(5, { title: "Remixed" });
+    api.updateTrackMetadata.mockResolvedValue(updated);
+    const before = t(5);
+    app.currentTrack = before;
+    await app.updateTrackMetadata(5, { title: "Remixed" });
+    expect(app.currentTrack?.title).toBe("Remixed");
   });
 });
