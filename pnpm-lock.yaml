@@ -28,8 +28,8 @@ importers:
         specifier: 2.8.0
         version: 2.8.0
       material-symbols:
-        specifier: 0.45.9
-        version: 0.45.9
+        specifier: 0.45.10
+        version: 0.45.10
     devDependencies:
       '@commitlint/cli':
         specifier: 21.2.1
@@ -2368,8 +2368,8 @@ packages:
     resolution: {integrity: sha512-hXdUTZYIVOt1Ex//jAQi+wTZZpUpwBj/0QsOzqegb3rGMMeJiSEu5xLHnYfBrRV4RH2+OCSOO95Is/7x1WJ4bw==}
     engines: {node: '>=10'}
 
-  material-symbols@0.45.9:
-    resolution: {integrity: sha512-CuNJwHm/c13L2NDGvap4k90iFBZFoMQrjBU+GHO/9bh9sUOe5tm3WHFPLa3BEWukMw6dAxwu5PvtlfWh3NppYA==}
+  material-symbols@0.45.10:
+    resolution: {integrity: sha512-2A2mgdfZO4es9DFpIOSMAx3d/7erCLQWRm7zGxA3iXt9jV8e2vNLOszbG3kxzYQ6qp5GAWXVl13de8lS2oHVng==}
 
   mdn-data@2.27.1:
     resolution: {integrity: sha512-9Yubnt3e8A0OKwxYSXyhLymGW4sCufcLG6VdiDdUGVkPhpqLxlvP5vl1983gQjJl3tqbrM731mjaZaP68AgosQ==}
@@ -5569,7 +5569,7 @@ snapshots:
     dependencies:
       semver: 7.8.5
 
-  material-symbols@0.45.9: {}
+  material-symbols@0.45.10: {}
 
   mdn-data@2.27.1: {}
 
