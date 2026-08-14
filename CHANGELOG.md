@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.1](https://github.com/Arskah/radiodiodj/compare/v0.15.0...v0.15.1) (2026-08-14)
+
+
+### Miscellaneous Chores
+
+* update app-token action ([3771fa4](https://github.com/Arskah/radiodiodj/commit/3771fa489d74512f5288c4b78c3045c3e52fb162))
+
 ## [0.15.0](https://github.com/Arskah/radiodiodj/compare/v0.14.0...v0.15.0) (2026-08-14)
 
 
