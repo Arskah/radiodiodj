@@ -1,6 +1,6 @@
 [package]
 name = "radiodiodj"
-version = "0.15.0"
+version = "0.15.1"
 description = "Radio station music player"
 authors = ["Aarni Halinen"]
 edition = "2021"
