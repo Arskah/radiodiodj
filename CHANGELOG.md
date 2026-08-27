@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.15.1](https://github.com/Arskah/radiodiodj/compare/v0.15.0...v0.15.1) (2026-08-27)
+
+
+### Bug Fixes
+
+* **deps:** update dependency material-symbols to v0.46.0 ([#320](https://github.com/Arskah/radiodiodj/issues/320)) ([7b0d8bb](https://github.com/Arskah/radiodiodj/commit/7b0d8bb82298d8966e96769c67cedbaf625c7a70))
+
+
+### Miscellaneous Chores
+
+* **deps:** update commitlint monorepo to v21.2.2 ([#318](https://github.com/Arskah/radiodiodj/issues/318)) ([7afbd89](https://github.com/Arskah/radiodiodj/commit/7afbd89f13b2ef3eb29dc0eec2808a71871f9fba))
+* **deps:** update dependency eslint to v10.9.0 ([#329](https://github.com/Arskah/radiodiodj/issues/329)) ([c1b8da7](https://github.com/Arskah/radiodiodj/commit/c1b8da73f5ed04997ef8aa9f88f1873407ad74f0))
+* **deps:** update dependency svelte to v5.56.10 ([#316](https://github.com/Arskah/radiodiodj/issues/316)) ([99fb721](https://github.com/Arskah/radiodiodj/commit/99fb7213639d511104347a8baf9554c0155ad85c))
+* **deps:** update dependency svelte-check to v4.7.6 ([#317](https://github.com/Arskah/radiodiodj/issues/317)) ([4a6a329](https://github.com/Arskah/radiodiodj/commit/4a6a329168123d97c89addc706e77ed80ac7d666))
+* **deps:** update pnpm to v11.23.0 ([#322](https://github.com/Arskah/radiodiodj/issues/322)) ([b272d4b](https://github.com/Arskah/radiodiodj/commit/b272d4b10e5b0bc865c2a73f9257a4c45b5a13c1))
+* **deps:** update vitest monorepo to v4.1.11 ([#325](https://github.com/Arskah/radiodiodj/issues/325)) ([73420bc](https://github.com/Arskah/radiodiodj/commit/73420bcd42cf80ad67d7dd009aba9b038aa2cca9))
+* **deps:** update webdriverio monorepo ([#324](https://github.com/Arskah/radiodiodj/issues/324)) ([1994878](https://github.com/Arskah/radiodiodj/commit/1994878cfdc8abd46a588fca85e46ae29cc3924d))
+* update app-token action ([3771fa4](https://github.com/Arskah/radiodiodj/commit/3771fa489d74512f5288c4b78c3045c3e52fb162))
+
 ## [0.15.0](https://github.com/Arskah/radiodiodj/compare/v0.14.0...v0.15.0) (2026-08-14)
 
 
