@@ -207,26 +207,31 @@
               ondragend={onDragEnd}
               ondragover={(e) => onRowDragOver(e, i)}
               ondrop={(e) => onRowDrop(e, i)}
-              onmouseenter={(e) => onEnter(item.track, e)}
-              onmouseleave={() => app.clearHover()}
               role="listitem"
             >
-              <span class="pl-drag"
-                ><span class="material-symbols-outlined">drag_indicator</span
-                ></span
+              <div
+                class="pl-hover-area"
+                role="presentation"
+                onmouseenter={(e) => onEnter(item.track, e)}
+                onmouseleave={() => app.clearHover()}
               >
-              <span class="pl-num">{i + 1}</span>
-              <div class="pl-body">
-                <span class="pl-title">{item.track.title}</span>
-                <span class="pl-artist">{item.track.artist}</span>
-              </div>
-              <div class="pl-right">
-                {#if i === 0}
-                  <span class="pl-status next-up">Next Up</span>
-                {/if}
-                <span class="pl-duration"
-                  >{formatTime(item.track.duration)}</span
+                <span class="pl-drag"
+                  ><span class="material-symbols-outlined">drag_indicator</span
+                  ></span
                 >
+                <span class="pl-num">{i + 1}</span>
+                <div class="pl-body">
+                  <span class="pl-title">{item.track.title}</span>
+                  <span class="pl-artist">{item.track.artist}</span>
+                </div>
+                <div class="pl-right">
+                  {#if i === 0}
+                    <span class="pl-status next-up">Next Up</span>
+                  {/if}
+                  <span class="pl-duration"
+                    >{formatTime(item.track.duration)}</span
+                  >
+                </div>
               </div>
               <button
                 class="btn-play-track"
@@ -271,17 +276,22 @@
             class="playlist-row history-row"
             data-index={i}
             ondblclick={() => app.requeueFromHistory(i)}
-            onmouseenter={(e) => onEnter(track, e)}
-            onmouseleave={() => app.clearHover()}
             role="listitem"
           >
-            <span class="pl-num">{i + 1}</span>
-            <div class="pl-body">
-              <span class="pl-title">{track.title}</span>
-              <span class="pl-artist">{track.artist}</span>
-            </div>
-            <div class="pl-right">
-              <span class="pl-duration">{formatTime(track.duration)}</span>
+            <div
+              class="pl-hover-area"
+              role="presentation"
+              onmouseenter={(e) => onEnter(track, e)}
+              onmouseleave={() => app.clearHover()}
+            >
+              <span class="pl-num">{i + 1}</span>
+              <div class="pl-body">
+                <span class="pl-title">{track.title}</span>
+                <span class="pl-artist">{track.artist}</span>
+              </div>
+              <div class="pl-right">
+                <span class="pl-duration">{formatTime(track.duration)}</span>
+              </div>
             </div>
             <button
               class="btn-remove"

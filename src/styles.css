@@ -1352,11 +1352,20 @@ body {
   display: flex;
   align-items: center;
   gap: var(--sp-md);
-  padding: var(--sp-sm) var(--sp-md);
+  padding: 0 var(--sp-md);
   border: 1px solid transparent;
   border-radius: var(--r-xl);
   cursor: default;
   font-size: 13px;
+}
+
+.pl-hover-area {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-md);
+  padding: var(--sp-sm) 0;
+  flex: 1;
+  min-width: 0;
 }
 
 .playlist-row:hover {
@@ -1475,6 +1484,7 @@ body {
 
 /* STOP marker card */
 .playlist-row.stop-row {
+  padding: var(--sp-sm) var(--sp-md);
   background: color-mix(in srgb, var(--error) 10%, transparent);
   border-color: color-mix(in srgb, var(--error) 20%, transparent);
 }
