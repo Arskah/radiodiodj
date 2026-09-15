@@ -56,13 +56,25 @@ _Avoid_: Status, update
 Independent playback channel; loads one track, plays, pauses, seeks. Modeled on a real-DJ rig.
 _Avoid_: Player, channel, engine
 
+**Program bus**:
+The mixer summing every on-air Deck into the main output device. One output stream, one sink per deck.
+_Avoid_: Master, output, PGM
+
+**Deck role**:
+What a Deck is doing right now: `main` (on air, defines Now playing) or `arm` (loaded, awaiting Handover). Roles move between decks; decks do not move between roles.
+_Avoid_: A deck, B deck, slot
+
 **Main deck**:
-The on-air deck. Its output is what listeners hear.
+The Deck currently holding the `main` role. Its output is what listeners hear. A role, not a fixed deck.
 _Avoid_: Program deck, A deck
 
 **Cue deck**:
-Off-air deck used to preview/audition a track before promoting it to the main deck.
+Off-air deck on a separate output device, used to audition a track and place its Cue points. Never on the Program bus.
 _Avoid_: Preview, monitor, B deck
+
+**Handover**:
+The moment the arm Deck begins playing and takes the `main` role, triggered by the outgoing track's Next start cue point.
+_Avoid_: Crossfade, transition, segue
 
 **Now playing**:
 The track currently loaded and playing on the Main deck.
@@ -75,6 +87,32 @@ _Avoid_: Previewing, scrubbing
 **Seek**:
 Reposition playback within the track loaded on a deck.
 _Avoid_: Scrub, skip
+
+### Track shaping
+
+**Cue point**:
+A position in a Track marking where playback starts, reaches full volume, begins fading, hands over, or stops. Stored per track; never modifies the audio file.
+_Avoid_: Edit, marker, trim
+
+**Cue in / Fade in / Fade out / Cue out / Next start**:
+The five Cue points. Start of audio; point where full volume is reached; point where the ramp down begins; point where playback stops; point where the next track begins.
+_Avoid_: In point, out point, ramp
+
+**Radio edit**:
+The set of Cue points stored on a Track. The default for every airing of it.
+_Avoid_: Preset, default edit
+
+**Item override**:
+Cue points carried by a single Playlist item, overriding that track's Radio edit for one airing only. Never written back to the Track.
+_Avoid_: Temp edit, local edit
+
+**Air time**:
+`cueOut - cueIn` — the duration that actually reaches air. Distinct from the Track's file duration.
+_Avoid_: Effective duration, real length
+
+**Air timeline**:
+Playback position measured from Cue in, so `0` is the first audible sample. All deck IPC speaks this timeline; only the player worker knows source-absolute positions.
+_Avoid_: Edited time, local time
 
 ### Playlist
 
@@ -116,6 +154,10 @@ _Avoid_: Persist, sync
 - An **Auto-playlist** draws music from the **Music library** and **Interleaves** jingles and commercials from their respective libraries
 - An **Auto-playlist** keeps a **Lookahead buffer** ahead of **Now playing**
 - Only music tracks advance the **Interleave** counters
+- Every on-air **Deck** feeds the **Program bus**; the **Cue deck** does not
+- Exactly one **Deck** holds the `main` **Deck role** at a time; **Handover** moves it
+- A **Track** may carry a **Radio edit**; a **Playlist** item may carry an **Item override** that wins for that airing
+- **Air time** derives from the **Cue points** that apply to an airing, not from the **Track**'s file duration
 
 ## Example dialogue
 
@@ -131,6 +173,22 @@ _Avoid_: Persist, sync
 >
 > **Domain expert:** "Yes. A deck is content-type-agnostic. The library distinction only matters for **Interleave** selection in the **Auto-playlist**."
 >
+> **Dev:** "This song has eight seconds of intro. Do I have to edit the file?"
+>
+> **Domain expert:** "No — set its **Cue in** on the **Cue deck**. That is a **Cue point**, stored on the **Track** as its **Radio edit**, and it applies to every airing from then on. The file is never touched."
+>
+> **Dev:** "What if I want it shortened just this once, for tonight's show?"
+>
+> **Domain expert:** "Set it on the **Cue deck** and promote — the **Playlist** item carries an **Item override**. That wins for that one airing and never writes back to the **Track**."
+>
+> **Dev:** "The library says 5:02 but the playlist says 3:34. Which is right?"
+>
+> **Domain expert:** "Both — 3:34 is the **Air time**, what actually reaches air once **Cue in** and **Cue out** apply. Every duration in the operator UI means air time; the tooltip shows the file duration too."
+>
+> **Dev:** "When does the next song actually start?"
+>
+> **Domain expert:** "At the outgoing track's **Next start** cue point. That triggers **Handover** — the arm **Deck** starts playing and takes the `main` **Deck role**, while the outgoing one plays on toward its **Cue out**. Both are summed on the **Program bus** meanwhile."
+>
 > **Dev:** "If a **Library path** is removed, what happens to **Now playing** if it points to a track from there?"
 >
 > **Domain expert:** "Playback continues — the **Main deck** holds the decoded source. The next **Auto-playlist** refill won't pick it because **Prune** removed it from the **Music library**."
@@ -142,5 +200,8 @@ _Avoid_: Persist, sync
 - "Player" retired as a domain term → use **Deck**. "Player" remains an implementation detail (Rust worker driving a rodio Sink per deck).
 - "Playlist" vs "Queue" → **Playlist** is canonical. Avoid "queue" to prevent confusion with **Lookahead buffer**.
 - "Auto-playlist" is a mode of **Playlist**, not a separate concept.
-- "Cue deck" is a Deck (not a UI label) — peer to **Main deck**, modeled on real-DJ two-deck rigs.
+- "Cue deck" is a Deck (not a UI label), modeled on real-DJ rigs. It is **not** a peer of **Main deck**: Main deck is a **Deck role** that moves between decks on the **Program bus**, while the Cue deck is a fixed off-air deck on its own output device.
+- "Cue point" is a position in a Track; "Cue deck" is the off-air deck. The overlap is inherited from playout software convention, and the Cue deck is where Cue points get placed.
+- Bare "edit" means **metadata/tag editing** and nothing else. The playback markers are **Cue points**; the stored set of them is a **Radio edit**. Tag-editing code says `metadata` explicitly for this reason.
+- "Segue" and "crossfade" are not domain terms → use **Handover**, which is triggered by a Cue point rather than a configured duration.
 - "Content type" is a closed enum: `music | jingle | commercial`. New types require deliberate domain extension.
