@@ -570,6 +570,17 @@ mod tests {
         assert_eq!(queued(&p), vec![Some(1), Some(2)]);
     }
 
+    /// The renderer's version had no bounds check: `splice(to, 0, item)` with a
+    /// `to` past the end silently appended. Dropping the move is the safer read
+    /// of a request that cannot be satisfied.
+    #[test]
+    fn move_item_out_of_range_is_a_no_op() {
+        let mut p = with(&[Some(1), Some(2), Some(3)]);
+        assert_eq!(p.move_item(0, 9), Transition::default());
+        assert_eq!(p.move_item(9, 0), Transition::default());
+        assert_eq!(queued(&p), vec![Some(1), Some(2), Some(3)]);
+    }
+
     #[test]
     fn clear_empties_the_queue_but_leaves_the_track_on_air() {
         let mut p = with(&[Some(1), Some(2)]);
@@ -612,6 +623,26 @@ mod tests {
     }
 
     #[test]
+    fn play_index_onto_a_stop_marker_stops_and_consumes_it() {
+        let mut p = with(&[Some(1), None, Some(2)]);
+        p.play_now(track(9), &NoRefill);
+        let t = p.play_index(1, &NoRefill);
+        assert_eq!(t.effects, vec![Effect::CancelRetry, Effect::Stop]);
+        assert_eq!(t.displaced.map(|d| d.id), Some(9));
+        assert_eq!(current_id(&p), None);
+        assert_eq!(queued(&p), vec![Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn next_onto_a_stop_marker_halts() {
+        let mut p = with(&[None, Some(5)]);
+        p.play_now(track(9), &NoRefill);
+        p.next(&NoRefill);
+        assert_eq!(current_id(&p), None);
+        assert_eq!(queued(&p), vec![Some(5)]);
+    }
+
+    #[test]
     fn play_now_airs_a_track_without_enqueuing_it() {
         let mut p = with(&[Some(1)]);
         let t = p.play_now(track(9), &NoRefill);
@@ -644,6 +675,33 @@ mod tests {
         assert_eq!(queued(&p), vec![Some(2)]);
         // History is the renderer's; `prev` steps back through it rather than
         // appending to it.
+        assert_eq!(t.displaced, None);
+    }
+
+    #[test]
+    fn prev_with_nothing_on_air_just_airs_the_previous_track() {
+        let mut p = with(&[Some(2)]);
+        let t = p.prev(track(1), &NoRefill);
+        assert_eq!(current_id(&p), Some(1));
+        assert_eq!(queued(&p), vec![Some(2)]);
+        assert_eq!(t.displaced, None);
+    }
+
+    #[test]
+    fn prev_cancels_a_pending_outage_retry() {
+        let mut p = with(&[Some(2)]);
+        p.on_load_failed(&NoRefill);
+        assert!(p.snapshot(None).awaiting_network);
+        let t = p.prev(track(1), &NoRefill);
+        assert!(t.effects.contains(&Effect::CancelRetry));
+        assert!(!p.snapshot(None).awaiting_network);
+    }
+
+    #[test]
+    fn stop_with_nothing_on_air_still_stops_the_deck() {
+        let mut p = Playlist::new();
+        let t = p.stop();
+        assert_eq!(t.effects, vec![Effect::CancelRetry, Effect::Stop]);
         assert_eq!(t.displaced, None);
     }
 
@@ -683,6 +741,19 @@ mod tests {
         let r = FakeRefiller::new();
         p.set_auto_playlist(true, &r);
         assert_eq!(current_id(&p), Some(1));
+    }
+
+    /// Faithful to the renderer, and worth pinning because it reads oddly: the
+    /// marker is the head, so starting the show immediately runs into it, and
+    /// stopping is what clears the auto-playlist flag again.
+    #[test]
+    fn enabling_the_auto_playlist_onto_a_stop_marker_stops_instead_of_starting() {
+        let mut p = with(&[None, Some(1)]);
+        let t = p.set_auto_playlist(true, &NoRefill);
+        assert_eq!(t.effects, vec![Effect::CancelRetry, Effect::Stop]);
+        assert_eq!(current_id(&p), None);
+        assert_eq!(queued(&p), vec![Some(1)]);
+        assert!(!p.snapshot(None).auto_playlist_active);
     }
 
     #[test]
@@ -808,6 +879,37 @@ mod tests {
         assert!(!p.snapshot(None).awaiting_network);
     }
 
+    /// The barrier holds during an outage too. Skipping to a cached track that
+    /// sits *past* a stop marker would put audio on air the operator explicitly
+    /// blocked (#278).
+    #[test]
+    fn skip_to_cached_never_crosses_a_stop_marker() {
+        let mut p = with(&[Some(1), None, Some(3)]);
+        p.play_now(track(9), &NoRefill);
+        // Track 1 is uncached, track 3 is cached — but the marker comes first.
+        p.on_cache_state(vec![3, 9], &NoRefill);
+        let t = p.on_ended(&FakeRefiller::new());
+        assert_eq!(t.effects, vec![Effect::CancelRetry, Effect::Stop]);
+        assert_eq!(current_id(&p), None);
+        assert_eq!(queued(&p), vec![Some(1), Some(3)]);
+    }
+
+    /// A stop marker is checked before cache membership, so it ends an outage
+    /// wait instead of holding air until the share returns. Carried over from
+    /// the renderer unchanged; the alternative — airing everything ahead of the
+    /// marker first, whenever the share allows — would be a behaviour change.
+    #[test]
+    fn a_stop_marker_ends_the_outage_wait_rather_than_holding_air() {
+        let mut p = with(&[Some(1), None]);
+        p.play_now(track(9), &NoRefill);
+        // Nothing upcoming is cached; without the marker this would wait.
+        p.on_cache_state(vec![9], &NoRefill);
+        let t = p.on_ended(&FakeRefiller::new());
+        assert_eq!(t.effects, vec![Effect::CancelRetry, Effect::Stop]);
+        assert!(!p.snapshot(None).awaiting_network);
+        assert_eq!(queued(&p), vec![Some(1)]);
+    }
+
     #[test]
     fn load_failed_skips_to_the_next_cached_track() {
         let mut p = with(&[Some(1), Some(2)]);
@@ -841,6 +943,22 @@ mod tests {
             vec![Effect::ArmRetry(0)]
         );
         assert_eq!(p.on_load_failed(&NoRefill), Transition::default());
+        // Still waiting — the second failure adds no timer, but it must not
+        // drop the banner either.
+        assert!(p.snapshot(None).awaiting_network);
+    }
+
+    #[test]
+    fn the_last_track_ending_with_nothing_queued_leaves_the_deck_idle() {
+        let mut p = Playlist::new();
+        p.play_now(track(1), &NoRefill);
+        let t = p.on_ended(&FakeRefiller::new());
+        assert_eq!(t.effects, vec![Effect::CancelRetry]);
+        // Not a stop: the track played itself out, so there is nothing to
+        // displace into history and nothing to tell the deck.
+        assert_eq!(t.displaced, None);
+        assert_eq!(current_id(&p), Some(1));
+        assert!(!p.snapshot(None).awaiting_network);
     }
 
     #[test]
@@ -855,6 +973,27 @@ mod tests {
             p.on_retry_tick(&NoRefill).effects,
             vec![Effect::ArmRetry(2)]
         );
+    }
+
+    /// The tick re-plans rather than just re-reading: a track queued during the
+    /// outage that happens to be resident already is playable, and nothing else
+    /// would notice — queueing does not advance, and no cache-state is coming.
+    #[test]
+    fn a_retry_tick_airs_a_track_queued_during_the_outage() {
+        let mut p = with(&[Some(1)]);
+        p.play_now(track(9), &NoRefill);
+        p.on_cache_state(vec![9], &NoRefill);
+        assert_eq!(
+            p.on_ended(&FakeRefiller::new()).effects,
+            vec![Effect::ArmRetry(0)]
+        );
+
+        // Operator requeues the track that is still in RAM.
+        p.add(track(9));
+        let t = p.on_retry_tick(&NoRefill);
+        assert!(t.effects.contains(&Effect::Play(9)));
+        assert!(!p.snapshot(None).awaiting_network);
+        assert_eq!(queued(&p), vec![Some(1)]);
     }
 
     #[test]
@@ -947,6 +1086,15 @@ mod tests {
         assert_eq!(snap.current.map(|t| t.id), Some(9));
         assert!(snap.auto_playlist_active);
         assert!(!snap.auto_advance);
+    }
+
+    #[test]
+    fn hydrate_replaces_whatever_was_already_queued() {
+        let mut p = with(&[Some(1), Some(2)]);
+        p.play_now(track(9), &NoRefill);
+        p.hydrate(vec![PlaylistItem::track(track(3))], None, 0.0, false, true);
+        assert_eq!(queued(&p), vec![Some(3)]);
+        assert_eq!(current_id(&p), None);
     }
 
     #[test]

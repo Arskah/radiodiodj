@@ -27,6 +27,11 @@ use crate::persist::session::SessionState;
 /// Topic the whole-playlist snapshot is emitted on.
 pub const PLAYLIST_STATE_EVENT: &str = "program:playlist-state";
 
+/// Fallback retry delay, used only if the configured schedule is empty. The
+/// stored one is clamped non-empty on write, so this is a belt-and-braces value
+/// rather than a tunable.
+const DEFAULT_BACKOFF_MS: u64 = 1000;
+
 /// Refill material drawn from the library, sized by the stored tuning. Both the
 /// cadence and the sizes are read per call, so a settings change takes effect on
 /// the next refill without a restart.
@@ -222,6 +227,15 @@ impl PlaylistService {
     }
 }
 
+/// Delay for retry number `attempt`, saturating on the schedule's last entry so
+/// a long outage keeps retrying at a steady pace instead of running off the end.
+fn backoff_ms(schedule: &[u64], attempt: usize) -> u64 {
+    schedule
+        .get(attempt.min(schedule.len().saturating_sub(1)))
+        .copied()
+        .unwrap_or(DEFAULT_BACKOFF_MS)
+}
+
 impl Inner {
     fn lookup(&self, id: i64) -> anyhow::Result<Option<Track>> {
         self.db.get_track(id)
@@ -340,15 +354,14 @@ impl Inner {
     /// Sleep out the backoff on a throwaway thread, then re-plan. The schedule's
     /// last entry repeats, so a long outage keeps retrying at a steady pace.
     fn arm_retry(inner: &Arc<Inner>, attempt: usize) {
-        let backoffs = inner
-            .config
-            .get_tuning()
-            .auto_playlist
-            .net_retry_backoffs_ms;
-        let delay = backoffs
-            .get(attempt.min(backoffs.len().saturating_sub(1)))
-            .copied()
-            .unwrap_or(1000);
+        let delay = backoff_ms(
+            &inner
+                .config
+                .get_tuning()
+                .auto_playlist
+                .net_retry_backoffs_ms,
+            attempt,
+        );
         let generation = inner.retry_generation.fetch_add(1, Ordering::SeqCst) + 1;
         let inner = Arc::clone(inner);
         thread::spawn(move || {
@@ -358,5 +371,31 @@ impl Inner {
             }
             Inner::apply(&inner, |p, r| p.on_retry_tick(r));
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backoff_walks_the_schedule() {
+        let schedule = [1000, 2000, 5000];
+        assert_eq!(backoff_ms(&schedule, 0), 1000);
+        assert_eq!(backoff_ms(&schedule, 1), 2000);
+        assert_eq!(backoff_ms(&schedule, 2), 5000);
+    }
+
+    #[test]
+    fn backoff_saturates_on_the_last_entry() {
+        let schedule = [1000, 2000, 5000];
+        assert_eq!(backoff_ms(&schedule, 3), 5000);
+        assert_eq!(backoff_ms(&schedule, 99), 5000);
+    }
+
+    #[test]
+    fn backoff_falls_back_when_the_schedule_is_empty() {
+        assert_eq!(backoff_ms(&[], 0), DEFAULT_BACKOFF_MS);
+        assert_eq!(backoff_ms(&[], 7), DEFAULT_BACKOFF_MS);
     }
 }

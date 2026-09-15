@@ -9,7 +9,7 @@ pnpm typecheck                                    # svelte-check + tsc on tsconf
 pnpm test                                         # vitest watch
 pnpm test -- run                                  # vitest single run (129 renderer tests)
 pnpm e2e                                          # tauri-driver + WebdriverIO (Linux only — see e2e/README.md)
-cargo test --manifest-path src-tauri/Cargo.toml   # 157 backend tests (db, scanner, session, playlist, player, config)
+cargo test --manifest-path src-tauri/Cargo.toml   # 172 backend tests (db, scanner, session, playlist, player, config)
 pnpm lint                                         # eslint
 pnpm format                                       # prettier --write .
 pnpm format:check                                 # prettier --check .
