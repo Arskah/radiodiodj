@@ -21,19 +21,9 @@ use library::db::{Db, LibraryStats, Track, TrackMetadataUpdate};
 use library::scan_state::{ScanState, ScanStatus, StartResult};
 use library::waveform_scan::{WaveformJob, WaveformStatus};
 use persist::config::{Config, DeviceRef, NowPlayingConfig, TuningConfig};
-use persist::session::{PlaylistItem, Session, SessionState};
-use playlist::Interleave;
+use persist::session::{Session, SessionPlaylistItem, SessionState};
+use playlist::{PlaylistService, Snapshot};
 use std::time::Duration;
-
-/// Build the playlist interleave params from the stored tuning section.
-fn interleave_from(t: &TuningConfig) -> Interleave {
-    Interleave {
-        jingle_every: t.interleave.jingle_every,
-        commercial_every: t.interleave.commercial_every,
-        commercial_bucket_multiplier: t.interleave.commercial_bucket_multiplier,
-        commercial_bucket_min: t.interleave.commercial_bucket_min,
-    }
-}
 
 /// Build the audio-player network-resilience tuning from the stored tuning
 /// section. Values are already clamped on write, so the lists are non-empty.
@@ -58,6 +48,8 @@ pub struct AppState {
     /// Background job that fills track waveforms after a metadata scan.
     waveform: Arc<WaveformJob>,
     main_deck: Arc<PlayerHandle>,
+    /// Owner of the playlist and of everything that advances it.
+    playlist: Arc<PlaylistService>,
     cue: Arc<Mutex<Option<PlayerHandle>>>,
     /// Shared prefetch byte cache, resident in both deck players.
     cache: Arc<Cache>,
@@ -144,8 +136,8 @@ fn load_session(app: State<'_, AppState>) -> Result<SessionLoadResult, String> {
     let mut ids: Vec<i64> = Vec::new();
     let mut seen: HashSet<i64> = HashSet::new();
     let item_ids = s.playlist_items.iter().filter_map(|item| match item {
-        PlaylistItem::Track { id } => Some(id),
-        PlaylistItem::Stop => None,
+        SessionPlaylistItem::Track { id } => Some(id),
+        SessionPlaylistItem::Stop => None,
     });
     for id in s
         .playlist_ids
@@ -167,59 +159,98 @@ fn save_session(app: State<'_, AppState>, state: SessionState) -> Result<(), Str
     app.session.save(state).map_err(err)
 }
 
+/// The playlist commands below are the renderer's only way to change what is
+/// queued or on air. Each one runs a transition in the backend and the resulting
+/// `program:playlist-state` snapshot is what the renderer draws.
 #[tauri::command(rename_all = "camelCase")]
-fn generate_playlist(
-    app: State<'_, AppState>,
-    count: i64,
-    exclude_ids: Vec<i64>,
-) -> Result<Vec<Track>, String> {
-    // Read interleave live per-call so a settings change takes effect on the
-    // next generated block without a restart (cheap — one config lock).
-    let il = interleave_from(&app.config.get_tuning());
-    playlist::generate(&app.db, count, &exclude_ids, &il).map_err(err)
+fn playlist_sync(app: State<'_, AppState>) -> Snapshot {
+    app.playlist.snapshot()
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn pick_filler(
+fn playlist_add(app: State<'_, AppState>, id: i64) -> Result<(), String> {
+    app.playlist.add(id)
+}
+
+/// Insert at the head as next-up — cue promotion.
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_add_front(app: State<'_, AppState>, id: i64) -> Result<(), String> {
+    app.playlist.add_front(id)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_add_stop_marker(app: State<'_, AppState>) {
+    app.playlist.add_stop();
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_add_filler(
     app: State<'_, AppState>,
     content_type: playlist::ContentType,
-) -> Result<Option<Track>, String> {
-    let il = interleave_from(&app.config.get_tuning());
-    playlist::pick_filler(&app.db, content_type, &il).map_err(err)
+) -> Result<(), String> {
+    app.playlist.add_filler(content_type)
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn main_deck_load(app_state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    let track = app_state
-        .db
-        .get_track_broadcast_info(id)
-        .map_err(err)?
-        .ok_or_else(|| "track not found".to_string())?;
-    let path = track.path.clone();
-    let duration = track.duration;
-    app_state.broadcast.set_pending_track(track.into());
-    app_state.main_deck.send(Cmd::Load {
-        id,
-        path: std::path::PathBuf::from(path),
-        duration: if duration > 0.0 { Some(duration) } else { None },
-    });
-    Ok(())
+fn playlist_remove(app: State<'_, AppState>, index: usize) {
+    app.playlist.remove(index);
 }
 
-/// Update the prefetch residency window from the renderer's upcoming-track list.
-/// Resolves each id's path from the DB and hands the window to the shared cache,
-/// which evicts out-of-window entries and prefetches missing ones.
 #[tauri::command(rename_all = "camelCase")]
-fn main_deck_prefetch(app_state: State<'_, AppState>, ids: Vec<i64>) -> Result<(), String> {
-    let window: Vec<(i64, std::path::PathBuf)> = app_state
-        .db
-        .get_paths_by_ids(&ids)
-        .map_err(err)?
-        .into_iter()
-        .map(|(id, path)| (id, std::path::PathBuf::from(path)))
-        .collect();
-    app_state.cache.set_window(window);
-    Ok(())
+fn playlist_move(app: State<'_, AppState>, from: usize, to: usize) {
+    app.playlist.move_item(from, to);
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_clear(app: State<'_, AppState>) {
+    app.playlist.clear();
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_play_index(app: State<'_, AppState>, index: usize) {
+    app.playlist.play_index(index);
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_play_now(app: State<'_, AppState>, id: i64) -> Result<(), String> {
+    app.playlist.play_now(id)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_next(app: State<'_, AppState>) {
+    app.playlist.next();
+}
+
+/// Step back to a track the renderer took off its own history.
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_prev(app: State<'_, AppState>, id: i64) -> Result<(), String> {
+    app.playlist.prev(id)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_stop(app: State<'_, AppState>) {
+    app.playlist.stop();
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_set_auto_playlist(app: State<'_, AppState>, active: bool) {
+    app.playlist.set_auto_playlist(active);
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_set_auto_advance(app: State<'_, AppState>, active: bool) {
+    app.playlist.set_auto_advance(active);
+}
+
+/// Whether the main deck is playing right now.
+///
+/// The renderer reads this at startup because `pause-state` is an event, and an
+/// event emitted before the window was listening is gone: a session restored
+/// during backend setup, or a reload mid-show, would otherwise leave the
+/// transport button contradicting what is audible.
+#[tauri::command(rename_all = "camelCase")]
+fn main_deck_is_playing(app_state: State<'_, AppState>) -> bool {
+    app_state.main_deck.is_playing()
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -348,6 +379,10 @@ fn cue_load(state: State<'_, AppState>, id: i64) -> Result<(), String> {
             } else {
                 None
             },
+            start_at: 0.0,
+            // Cueing a track starts auditioning it; the renderer's cue transport
+            // takes over from there.
+            autoplay: true,
         });
     })
 }
@@ -489,9 +524,9 @@ pub fn run() {
             }));
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
-            let db = Db::open(&data_dir.join("radiodiodj.db"))?;
-            let config = Config::open(&data_dir)?;
-            let session = Session::open(&data_dir);
+            let db = Arc::new(Db::open(&data_dir.join("radiodiodj.db"))?);
+            let config = Arc::new(Config::open(&data_dir)?);
+            let session = Arc::new(Session::open(&data_dir));
             // Pass the saved DeviceRef (not a pre-resolved device): the worker
             // resolves it lazily on the audio thread and falls back to the
             // system default, so a device unavailable at launch no longer kills
@@ -502,20 +537,31 @@ pub fn run() {
             // takes effect on the next launch.
             let tuning = config.get_tuning();
             let cache = Cache::new(app.handle().clone(), tuning.cache.max_cache_bytes);
-            let main_deck = PlayerHandle::spawn(
+            let main_deck = Arc::new(PlayerHandle::spawn(
                 app.handle().clone(),
                 main_device,
                 "main-deck",
                 Arc::clone(&cache),
                 player_tuning_from(&tuning),
-            );
-            let config = Arc::new(config);
+            ));
             let broadcast = Arc::new(BroadcastService::new(
                 Arc::clone(&config),
                 default_now_playing_dir(&data_dir),
             )?);
             broadcast.attach_to_app(app.handle());
-            let db = Arc::new(db);
+            // The playlist listens to the same deck topics the broadcast service
+            // does, and drives advancement off them. Attach before hydrating so
+            // the restored track's events are not missed.
+            let playlist = Arc::new(PlaylistService::new(
+                app.handle().clone(),
+                Arc::clone(&db),
+                Arc::clone(&config),
+                Arc::clone(&main_deck),
+                Arc::clone(&cache),
+                Arc::clone(&broadcast),
+            ));
+            playlist.attach_to_app(app.handle());
+            playlist.hydrate(&session.load());
             let waveform = Arc::new(WaveformJob::default());
             // Backfill waveforms for any already-indexed tracks that lack one,
             // without waiting for the next scan. No-op on an empty library.
@@ -523,10 +569,11 @@ pub fn run() {
             app.manage(AppState {
                 db,
                 config,
-                session: Arc::new(session),
+                session,
                 scan: Arc::new(ScanState::default()),
                 waveform,
-                main_deck: Arc::new(main_deck),
+                main_deck,
+                playlist,
                 cue: Arc::new(Mutex::new(None)),
                 cache,
                 broadcast,
@@ -541,8 +588,21 @@ pub fn run() {
             load_session,
             save_session,
             track_played,
-            generate_playlist,
-            pick_filler,
+            playlist_sync,
+            playlist_add,
+            playlist_add_front,
+            playlist_add_stop_marker,
+            playlist_add_filler,
+            playlist_remove,
+            playlist_move,
+            playlist_clear,
+            playlist_play_index,
+            playlist_play_now,
+            playlist_next,
+            playlist_prev,
+            playlist_stop,
+            playlist_set_auto_playlist,
+            playlist_set_auto_advance,
             get_stats,
             get_paths,
             get_all_paths,
@@ -563,8 +623,7 @@ pub fn run() {
             cue_stop,
             cue_seek,
             cue_set_volume,
-            main_deck_load,
-            main_deck_prefetch,
+            main_deck_is_playing,
             main_deck_play,
             main_deck_pause,
             main_deck_stop,

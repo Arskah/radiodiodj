@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use strum::AsRefStr;
 
 use crate::library::db::{Db, Track};
+use crate::persist::config::TuningConfig;
 
 #[derive(Serialize, Deserialize, AsRefStr, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -24,6 +25,19 @@ pub struct Interleave {
     pub commercial_every: i64,
     pub commercial_bucket_multiplier: i64,
     pub commercial_bucket_min: i64,
+}
+
+impl Interleave {
+    /// Read the cadence out of the stored tuning. Values are clamped on write
+    /// (see `persist::config::set_tuning`), so they are always in range here.
+    pub fn from_config(t: &TuningConfig) -> Self {
+        Self {
+            jingle_every: t.interleave.jingle_every,
+            commercial_every: t.interleave.commercial_every,
+            commercial_bucket_multiplier: t.interleave.commercial_bucket_multiplier,
+            commercial_bucket_min: t.interleave.commercial_bucket_min,
+        }
+    }
 }
 
 impl Default for Interleave {
