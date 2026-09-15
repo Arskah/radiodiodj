@@ -65,6 +65,13 @@ impl Resolved {
         self.cue_out.map(|out| (out - self.cue_in).max(0.0))
     }
 
+    /// Whether either ramp has non-zero width. A fade whose two positions
+    /// coincide is skipped entirely rather than multiplying every sample by 1.0.
+    pub fn has_fades(&self) -> bool {
+        self.fade_in > self.cue_in
+            || matches!((self.fade_out, self.cue_out), (Some(f), Some(out)) if out > f)
+    }
+
     /// Absolute file position to air time: `0` is the first audible sample.
     pub fn air_time(&self, pos: f64) -> f64 {
         (pos - self.cue_in).max(0.0)
@@ -210,6 +217,23 @@ mod tests {
         assert_eq!(r.air_duration(), Some(170.0));
         assert_eq!(r.take_from(r.cue_in), Some(170.0));
         assert_eq!(r.take_from(100.0), Some(80.0));
+    }
+
+    /// Zero-width ramps cost nothing at playback time: the deck skips the
+    /// envelope wrapper rather than multiplying every sample by 1.0.
+    #[test]
+    fn a_zero_width_ramp_is_not_a_fade() {
+        assert!(!CuePoints::default().resolve(Some(200.0)).has_fades());
+        assert!(!CuePoints {
+            cue_in_ms: Some(10_000),
+            cue_out_ms: Some(30_000),
+            ..Default::default()
+        }
+        .resolve(Some(200.0))
+        .has_fades());
+
+        let r = points(10_000, 12_000, 170_000, 180_000).resolve(Some(200.0));
+        assert!(r.has_fades());
     }
 
     /// The two timelines are inverses of each other, which is what lets the
