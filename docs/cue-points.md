@@ -9,6 +9,15 @@ Implements [#279](https://github.com/Arskah/radiodiodj/issues/279). The segue
 marker (`next_start_ms`) is consumed by the program bus — see
 [program-bus.md](./program-bus.md).
 
+**Status: positions on air.** Shipped as the first of four slices —
+`MIGRATION_004` and the five columns, `audio/cue_points.rs` (clamp and
+resolution), `Cmd::Load` carrying concrete `CuePoints`, the air timeline on
+`<deck>:time` / `:duration` / `Cmd::Seek`, the two-stage accurate seek,
+`take_duration` at the out-point, and air time as the broadcast `durationSec`.
+Clamping is backend-owned via `set_cue_points`. Still to come: fades
+(`audio/envelope.rs`), the cue editor and air-time durations in the UI, and
+per-item overrides. No operator surface authors cue points yet.
+
 ## The model: five positions
 
 ```

@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::cue_points::CuePoints;
+
 /// A background read that neither completes nor errors within this budget is
 /// treated as a wedged (e.g. networked) mount. The audio worker stops waiting
 /// on it and declares a timeout; the detached read thread is abandoned (a
@@ -69,9 +71,15 @@ pub enum Cmd {
         id: i64,
         path: PathBuf,
         duration: Option<f64>,
-        /// Where to start, in seconds. Applied once the bytes are decoded — a
-        /// `Seek` issued straight after a `Load` would find no bytes to seek in
-        /// and be dropped, so resuming a position has to travel with the load.
+        /// The markers to apply to this airing, already chosen: the radio edit
+        /// off the track row, or an item override. The worker applies what it
+        /// is given and never consults the library itself.
+        cue_points: CuePoints,
+        /// Where to start, in **air** seconds — measured from `cue_in`, like
+        /// everything else crossing the Tauri boundary. Applied once the bytes
+        /// are decoded: a `Seek` issued straight after a `Load` would find no
+        /// bytes to seek in and be dropped, so resuming a position has to
+        /// travel with the load.
         start_at: f64,
         /// Start playing once ready. `false` loads the track parked and silent,
         /// which is what restoring a session needs: a restart must not put
@@ -81,6 +89,7 @@ pub enum Cmd {
     Play,
     Pause,
     Stop,
+    /// Air seconds, measured from `cue_in`. The worker adds the offset.
     Seek(f64),
     SetVolume(f32),
 }
@@ -115,30 +124,62 @@ impl Topics {
     }
 }
 
-/// Seek `source` to `target` and hand it to the sink. Prefers the container's
-/// own seek (a binary search over the index) and falls back to decoding forward
-/// when the format has none.
-pub(super) fn append_at(sink: &Sink, mut source: Decoder<Cursor<Bytes>>, target: Duration) {
-    if target.is_zero() {
-        sink.append(source);
+/// How far short of the target the container seek aims before the remainder is
+/// decoded. Symphonia estimates an MP3 seek by bitrate when the file carries no
+/// Xing TOC, which is fine for scrubbing but not for a stored marker that must
+/// sound identical on every airing. Decoding the last fragment makes the landing
+/// sample-exact for the cost of this much pre-roll.
+const SEEK_PREROLL: Duration = Duration::from_millis(200);
+
+/// Hand the sink the span `[start, start + take)` of `source`, in absolute file
+/// positions. `take` of `None` plays to the end of the file.
+///
+/// Running the sink dry at the out-point is what ends a trimmed track: the
+/// existing `sink.empty()` → `:ended` path fires naturally, with no second
+/// termination rule to keep in step.
+pub(super) fn append_span(
+    sink: &Sink,
+    mut source: Decoder<Cursor<Bytes>>,
+    start: Duration,
+    take: Option<Duration>,
+) {
+    if start.is_zero() {
+        append_take(sink, source, take);
         return;
     }
-    match source.try_seek(target) {
-        Ok(()) => sink.append(source),
+    let coarse = start.saturating_sub(SEEK_PREROLL);
+    if coarse.is_zero() {
+        append_take(sink, source.skip_duration(start), take);
+        return;
+    }
+    match source.try_seek(coarse) {
+        Ok(()) => append_take(sink, source.skip_duration(start - coarse), take),
         Err(e) => {
             log::warn!(
                 "player: container seek failed ({}); skip_duration fallback",
                 e
             );
-            sink.append(source.skip_duration(target));
+            append_take(sink, source.skip_duration(start), take);
         }
     }
 }
 
-/// Keep a restored position inside the track. A session saved before the file
-/// changed — or a cue point that later moved earlier — would otherwise seek past
-/// the end, and the track would be silently skipped at launch instead of
-/// resuming. A track whose duration is unknown is trusted as-is.
+fn append_take<S>(sink: &Sink, source: S, take: Option<Duration>)
+where
+    S: Source + Send + 'static,
+{
+    match take {
+        Some(d) => sink.append(source.take_duration(d)),
+        None => sink.append(source),
+    }
+}
+
+/// Keep a restored position inside the track, in air seconds against the air
+/// duration. A session saved before the file changed — or a cue-out that has
+/// since moved earlier — would otherwise seek past the end: `take_duration`
+/// would yield nothing, `sink.empty()` would fire at once, and auto-advance
+/// would silently skip the resumed track at launch. Restarting it is the
+/// recoverable answer. A track whose duration is unknown is trusted as-is.
 pub(super) fn clamp_start(seconds: f64, duration: Option<f64>) -> f64 {
     let start = seconds.max(0.0);
     match duration {
@@ -261,6 +302,24 @@ mod tests {
     fn a_negative_restored_position_clamps_to_the_start() {
         assert_eq!(clamp_start(-4.0, Some(200.0)), 0.0);
         assert_eq!(clamp_start(-4.0, None), 0.0);
+    }
+
+    /// The restored position is in air seconds, so it is clamped against air
+    /// time: a cue-out moved in behind the operator's back restarts the track
+    /// instead of landing past the out-point and being skipped.
+    #[test]
+    fn a_restored_position_is_clamped_against_air_time_not_file_time() {
+        // A 200s file trimmed to 20s of air: 30s was valid last session.
+        let air = CuePoints {
+            cue_in_ms: Some(10_000),
+            cue_out_ms: Some(30_000),
+            ..Default::default()
+        }
+        .resolve(Some(200.0))
+        .air_duration();
+        assert_eq!(air, Some(20.0));
+        assert_eq!(clamp_start(30.0, air), 0.0);
+        assert_eq!(clamp_start(12.0, air), 12.0);
     }
 
     /// An unknown duration (no tag, not yet decoded) is no reason to throw the

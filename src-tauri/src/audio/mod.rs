@@ -1,6 +1,7 @@
 pub mod bus;
 pub mod cache;
 pub mod cue;
+pub mod cue_points;
 pub mod deck;
 pub mod devices;
 pub mod formats;

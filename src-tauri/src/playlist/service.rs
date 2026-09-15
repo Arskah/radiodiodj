@@ -323,15 +323,20 @@ impl Inner {
     /// seek in, and a Play would override a restore that is meant to stay
     /// parked.
     fn load_deck(&self, id: i64, start_at: f64, autoplay: bool) -> bool {
-        match self.db.get_track_broadcast_info(id) {
+        match self.db.get_track_load_info(id) {
             Ok(Some(track)) => {
                 let path = PathBuf::from(track.path.clone());
                 let duration = track.duration;
+                // The track's radio edit. Item overrides resolve here too, on
+                // the thread that starts the load — the worker is handed the
+                // markers to apply and never consults the library itself.
+                let cue_points = track.cue_points;
                 self.broadcast.set_pending_track(track.into());
                 self.bus.send_main(Cmd::Load {
                     id,
                     path,
                     duration: (duration > 0.0).then_some(duration),
+                    cue_points,
                     start_at,
                     autoplay,
                 });
