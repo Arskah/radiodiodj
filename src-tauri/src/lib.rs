@@ -17,6 +17,7 @@ pub const APP_NAME: &str = "RadiodioDJ";
 
 use audio::bus::ProgramBus;
 use audio::cue::CueDeck;
+use audio::cue_points::CuePoints;
 use audio::player::{Cmd, PlayerTuning};
 use broadcast::{service::default_now_playing_dir, BroadcastService};
 use library::db::{Db, LibraryStats, Track, TrackMetadataUpdate};
@@ -381,6 +382,9 @@ fn cue_load(state: State<'_, AppState>, id: i64) -> Result<(), String> {
             } else {
                 None
             },
+            // The cue deck auditions in *Absolute* mode: the whole file, no
+            // markers applied, so an operator can scrub it to find an in-point.
+            cue_points: CuePoints::default(),
             start_at: 0.0,
             // Cueing a track starts auditioning it; the renderer's cue transport
             // takes over from there.
@@ -436,6 +440,17 @@ fn get_tuning_config(state: State<'_, AppState>) -> TuningConfig {
 /// display. Interleave/auto-playlist changes apply live; cache/player changes
 /// (which are captured by long-lived worker threads at startup) take effect on
 /// the next restart — the UI surfaces that hint.
+/// Store a track's cue points. Returns the clamped value the backend actually
+/// persisted, so the UI adopts the one rule rather than reimplementing it.
+#[tauri::command(rename_all = "camelCase")]
+fn set_cue_points(
+    state: State<'_, AppState>,
+    id: i64,
+    points: CuePoints,
+) -> Result<CuePoints, String> {
+    state.db.set_cue_points(id, points).map_err(err)
+}
+
 #[tauri::command(rename_all = "camelCase")]
 fn set_tuning_config(
     state: State<'_, AppState>,
@@ -639,6 +654,7 @@ pub fn run() {
             now_playing_test,
             broadcast_shutdown,
             update_track_metadata,
+            set_cue_points,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

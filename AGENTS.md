@@ -9,7 +9,7 @@ pnpm typecheck                                    # svelte-check + tsc on tsconf
 pnpm test                                         # vitest watch
 pnpm test -- run                                  # vitest single run (132 renderer tests)
 pnpm e2e                                          # tauri-driver + WebdriverIO (Linux only — see e2e/README.md)
-cargo test --manifest-path src-tauri/Cargo.toml   # 180 backend tests (db, scanner, session, playlist, audio, config)
+cargo test --manifest-path src-tauri/Cargo.toml   # 199 backend tests (db, scanner, session, playlist, audio, config)
 pnpm lint                                         # eslint
 pnpm format                                       # prettier --write .
 pnpm format:check                                 # prettier --check .
@@ -23,7 +23,7 @@ Tauri 2 app. Two process boundaries: a Rust backend and a Svelte 5 / Vite render
 
 - `lib.rs` — `tauri::Builder` setup (`tauri-plugin-log` first, then `tauri-plugin-dialog`), `AppState`, all `#[tauri::command]` handlers, panic hook (force-capture backtrace → `log::error!`)
 - `main.rs` — thin `pub fn main() { radiodiodj_lib::run() }` binary entry
-- `audio/` — `formats.rs` (supported extension table), `player.rs` (shared deck primitives: the `Cmd` vocabulary, the `Topics` table, whole-file read/retry and symphonia decode for mp3/flac/vorbis/wav/aac/m4a), `output.rs` (one `OutputStream` per device, opened lazily with self-healing retry), `deck.rs` (one rodio `Sink` per deck plus the worker loop that ticks a whole set of them against one output; emits `{role}:time` (10 Hz) / `:duration` / `:pause-state` / `:ended` / `:error` / `:buffering` / `:load-failed` / `:output-unavailable`), `bus.rs` (the program bus — deck A + deck B on one mixer, one worker, `program:roles`), `cue.rs` (the cue deck: one deck on its own output, `cue:*`)
+- `audio/` — `formats.rs` (supported extension table), `player.rs` (shared deck primitives: the `Cmd` vocabulary, the `Topics` table, whole-file read/retry and symphonia decode for mp3/flac/vorbis/wav/aac/m4a), `output.rs` (one `OutputStream` per device, opened lazily with self-healing retry), `deck.rs` (one rodio `Sink` per deck plus the worker loop that ticks a whole set of them against one output; emits `{role}:time` (10 Hz) / `:duration` / `:pause-state` / `:ended` / `:error` / `:buffering` / `:load-failed` / `:output-unavailable`), `bus.rs` (the program bus — deck A + deck B on one mixer, one worker, `program:roles`), `cue.rs` (the cue deck: one deck on its own output, `cue:*`), `cue_points.rs` (the five per-track markers and their resolution to file positions — pure, no device)
 - `library/` — `db.rs` (rusqlite + FTS5, WAL, `parking_lot::Mutex<Connection>`, `user_version` migrations), `scanner.rs` + `scan_state.rs` (recursive walkdir scan, `lofty` tag extraction, mtime+content_type delta cache, background worker thread emitting `scan-progress` / `scan-state-changed` events with cancel token)
 - `persist/` — `config.rs` (`AppConfig` → `{app_data_dir}/config.json`), `session.rs` (`SessionState` per-field defaults → `{app_data_dir}/session.json`)
 - `playlist/` — owner of the playlist and of everything that advances it: `generate.rs` (random selection with jingle/commercial interleaving, every-4 / every-8), `engine.rs` (the pure state machine — queueing, advancement, outage skip-to-cached, refill, stop markers — returning effects), `model.rs` (wire types incl. the `program:playlist-state` snapshot), `service.rs` (effects → deck commands, play counts, prefetch window, retry timers)
@@ -41,6 +41,8 @@ Tauri 2 app. Two process boundaries: a Rust backend and a Svelte 5 / Vite render
 
 **Program bus:** every on-air deck is a `Sink` on one shared `OutputStream` mixer, driven by a single worker thread, so two decks can be audible at once (the precondition for handover). Deck events are **role-mapped**: whichever deck holds `main` emits `main-deck:*`, the armed one emits `arm-deck:*` — the renderer, broadcast service and now-playing webhook never learn which physical deck is on air. Roles are static today (slot A is `main`); handover is a later increment. The cue deck is deliberately off the bus with its own stream, thread and `cue:*` topics. See `docs/program-bus.md`.
 
+**Cue points:** five nullable per-track markers (`cue_in_ms`, `fade_in_ms`, `fade_out_ms`, `cue_out_ms`, `next_start_ms`) stored as columns on `tracks`, deliberately absent from `UPSERT_TRACK_SQL` so a rescan cannot destroy them. `Cmd::Load` carries concrete `CuePoints`; the worker resolves them against the _decoded_ duration (the tag one is wrong on VBR MP3) and plays `take_duration(cueOut − pos)`, so the existing `sink.empty()` → `:ended` path ends a trimmed track with no new termination rule. Everything crossing the Tauri boundary is **air time**, measured from `cue_in` — a trimmed track is simply a shorter track to the renderer. Clamping is backend-owned: `set_cue_points` returns what it stored. Fades and the cue editor are later increments. See `docs/cue-points.md`.
+
 **Search:** FTS5 virtual table on title/artist/album/genre. Triggers keep FTS in sync with tracks table. Query tokenized as prefix match: `foo bar` → `"foo"* "bar"*`.
 
 **Scan + prune:** On scan, the scan worker walks the configured paths, deletes DB rows whose path no longer falls under any configured library path, then upserts present files. Empty paths array → all tracks deleted.
@@ -49,7 +51,7 @@ Tauri 2 app. Two process boundaries: a Rust backend and a Svelte 5 / Vite render
 
 **Auto-playlist:** Toggle mode that keeps a lookahead buffer queued, refilling from random DB selection when it drops below the threshold. Runs in `playlist::engine` alongside advancement, so a refill and the track change that triggered it are one transition.
 
-**Seek:** `audio/player.rs` reloads the source on seek and prefers `Source::try_seek` (container-level binary search). Fallback is `skip_duration` (sample iteration). `seek_offset + sink.get_pos()` keeps `player:time` accurate.
+**Seek:** `audio/player.rs` reloads the source on seek. `append_span` seeks in two stages — `try_seek` (container-level binary search) to ~200 ms short of the target, then `skip_duration` (sample iteration) for the remainder — so a stored marker lands sample-exactly even where symphonia estimates the seek by bitrate. A failing `try_seek` falls back to `skip_duration` from zero. `seek_offset + sink.get_pos()`, less `cue_in`, keeps `{role}:time` accurate.
 
 ## Gotchas
 

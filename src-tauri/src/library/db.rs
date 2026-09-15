@@ -1,9 +1,11 @@
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
-use rusqlite::{params, params_from_iter, Connection, Row};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+
+use crate::audio::cue_points::CuePoints;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Track {
@@ -19,6 +21,9 @@ pub struct Track {
     pub sample_rate: Option<i64>,
     pub bitrate: Option<i64>,
     pub format: Option<String>,
+    /// The track's radio edit. Arrives with every `SELECT *`, so nothing can
+    /// reach air with stale markers.
+    pub cue_points: CuePoints,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -105,15 +110,21 @@ pub struct MediaTrack {
     pub duration: f64,
 }
 
-pub struct TrackBroadcastInfo {
+/// Everything one `Load` needs, in a single query: where the audio is, how the
+/// deck should trim it, and what the now-playing broadcast should announce.
+pub struct TrackLoadInfo {
     pub id: i64,
     pub title: String,
     pub artist: String,
     pub album: String,
     pub genre: Option<String>,
+    /// Tag-derived, so nullable and wrong on VBR MP3. The deck resolves cue
+    /// points against the decoded duration instead; this is the clamp the write
+    /// path and the broadcast payload have to make do with.
     pub duration: f64,
     pub content_type: String,
     pub path: String,
+    pub cue_points: CuePoints,
 }
 
 pub struct Db {
@@ -170,6 +181,9 @@ impl Db {
         }
         if v < 3 {
             tx.execute_batch(MIGRATION_003)?;
+        }
+        if v < 4 {
+            tx.execute_batch(MIGRATION_004)?;
         }
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         tx.commit()?;
@@ -261,14 +275,17 @@ impl Db {
         }
     }
 
-    pub fn get_track_broadcast_info(&self, id: i64) -> Result<Option<TrackBroadcastInfo>> {
+    /// The one query a deck load runs: path and markers for playback, plus the
+    /// fields the now-playing broadcast announces.
+    pub fn get_track_load_info(&self, id: i64) -> Result<Option<TrackLoadInfo>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, title, artist, album, genre, duration, content_type, path \
+            "SELECT id, title, artist, album, genre, duration, content_type, path, \
+                    cue_in_ms, fade_in_ms, fade_out_ms, cue_out_ms, next_start_ms \
              FROM tracks WHERE id = ?",
         )?;
         let mut rows = stmt.query_map([id], |r| {
-            Ok(TrackBroadcastInfo {
+            Ok(TrackLoadInfo {
                 id: r.get(0)?,
                 title: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
                 artist: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
@@ -277,6 +294,7 @@ impl Db {
                 duration: r.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
                 content_type: r.get(6)?,
                 path: r.get(7)?,
+                cue_points: row_to_cue_points(r)?,
             })
         })?;
         match rows.next() {
@@ -364,6 +382,42 @@ impl Db {
             params![peaks, id],
         )?;
         Ok(())
+    }
+
+    /// Store a track's cue points, clamped to the duration the library holds so
+    /// a bad input cannot put the deck out of range. Returns the clamped value
+    /// for the caller to adopt: there is deliberately no second implementation
+    /// of the clamp in the renderer.
+    ///
+    /// The authoritative clamp runs again at load time, against the decoded
+    /// duration — the tag duration this clamps against is nullable and wrong on
+    /// VBR MP3.
+    pub fn set_cue_points(&self, id: i64, points: CuePoints) -> Result<CuePoints> {
+        let conn = self.conn.lock();
+        let duration: Option<f64> = conn
+            .query_row("SELECT duration FROM tracks WHERE id = ?", [id], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .flatten();
+        let clamped = points.clamp(duration);
+        let changed = conn.execute(
+            "UPDATE tracks SET cue_in_ms = ?, fade_in_ms = ?, fade_out_ms = ?, \
+                    cue_out_ms = ?, next_start_ms = ? \
+             WHERE id = ?",
+            params![
+                clamped.cue_in_ms,
+                clamped.fade_in_ms,
+                clamped.fade_out_ms,
+                clamped.cue_out_ms,
+                clamped.next_start_ms,
+                id
+            ],
+        )?;
+        if changed == 0 {
+            anyhow::bail!("track {} is no longer in the library", id);
+        }
+        Ok(clamped)
     }
 
     /// `(id, path, duration)` for every track still missing a waveform, ordered
@@ -708,6 +762,18 @@ fn row_to_track(row: &Row) -> rusqlite::Result<Track> {
         sample_rate: row.get("sample_rate")?,
         bitrate: row.get("bitrate")?,
         format: row.get("format")?,
+        cue_points: row_to_cue_points(row)?,
+    })
+}
+
+/// Read the five marker columns off a row that selected them by name.
+fn row_to_cue_points(row: &Row) -> rusqlite::Result<CuePoints> {
+    Ok(CuePoints {
+        cue_in_ms: row.get("cue_in_ms")?,
+        fade_in_ms: row.get("fade_in_ms")?,
+        fade_out_ms: row.get("fade_out_ms")?,
+        cue_out_ms: row.get("cue_out_ms")?,
+        next_start_ms: row.get("next_start_ms")?,
     })
 }
 
@@ -755,7 +821,7 @@ END;
 "#;
 
 /// Current schema version. Bump alongside every new `MIGRATION_00N`.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// Upsert one track's metadata by path. The waveform column is deliberately
 /// absent: metadata scans run tag-only and fast, and the waveform is filled
@@ -778,6 +844,20 @@ const MIGRATION_002: &str = "ALTER TABLE tracks ADD COLUMN mtime INTEGER;";
 /// scanned before this column (or files that failed to decode) simply have no
 /// waveform.
 const MIGRATION_003: &str = "ALTER TABLE tracks ADD COLUMN waveform BLOB;";
+
+/// Per-track playback markers, milliseconds from the start of the file. All
+/// nullable: `NULL` is "no adjustment" and resolves to a fallback at load.
+/// Absent from `UPSERT_TRACK_SQL` for the same reason `waveform` is — a
+/// metadata rescan must not destroy operator work. `next_start_ms` lands here
+/// despite not being consumed until handover, so the segue work needs no
+/// migration of its own.
+const MIGRATION_004: &str = r#"
+ALTER TABLE tracks ADD COLUMN cue_in_ms     INTEGER;
+ALTER TABLE tracks ADD COLUMN fade_in_ms    INTEGER;
+ALTER TABLE tracks ADD COLUMN fade_out_ms   INTEGER;
+ALTER TABLE tracks ADD COLUMN cue_out_ms    INTEGER;
+ALTER TABLE tracks ADD COLUMN next_start_ms INTEGER;
+"#;
 
 #[cfg(test)]
 mod tests {
@@ -811,18 +891,18 @@ mod tests {
         let v: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 3);
+        assert_eq!(v, SCHEMA_VERSION);
     }
 
     #[test]
     fn migrate_from_v2_adds_waveform_and_bumps_version() {
-        // A released v2 DB (has mtime, no waveform) migrates cleanly to v3.
+        // A released v2 DB (has mtime, no waveform) migrates straight to current.
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(MIGRATION_001).unwrap();
         conn.execute_batch(MIGRATION_002).unwrap();
         conn.pragma_update(None, "user_version", 2).unwrap();
 
-        let db = Db::with_connection(conn).expect("migrate v2 -> v3");
+        let db = Db::with_connection(conn).expect("migrate v2 -> current");
         db.insert_track(&TrackInsert {
             path: "/a.mp3".into(),
             content_type: "music".into(),
@@ -833,7 +913,130 @@ mod tests {
         let v: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 3);
+        assert_eq!(v, SCHEMA_VERSION);
+    }
+
+    /// A released v3 DB (has waveform, no cue points) migrates cleanly to v4.
+    #[test]
+    fn migrate_from_v3_adds_cue_points_and_bumps_version() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(MIGRATION_001).unwrap();
+        conn.execute_batch(MIGRATION_002).unwrap();
+        conn.execute_batch(MIGRATION_003).unwrap();
+        conn.pragma_update(None, "user_version", 3).unwrap();
+
+        let db = Db::with_connection(conn).expect("migrate v3 -> v4");
+        db.insert_track(&TrackInsert {
+            path: "/a.mp3".into(),
+            content_type: "music".into(),
+            duration: Some(200.0),
+            ..Default::default()
+        })
+        .unwrap();
+        let id = only_id(&db);
+        // The columns exist and read back as NULL on a freshly scanned track.
+        assert_eq!(
+            db.get_track(id).unwrap().unwrap().cue_points,
+            CuePoints::default()
+        );
+        let conn = db.conn.lock();
+        let v: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+    }
+
+    /// Cue points are clamped on write and the clamped value comes back, so the
+    /// renderer never has to reimplement the rule.
+    #[test]
+    fn set_cue_points_clamps_and_returns_what_it_stored() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&TrackInsert {
+            path: "/a.mp3".into(),
+            content_type: "music".into(),
+            duration: Some(200.0),
+            ..Default::default()
+        })
+        .unwrap();
+        let id = only_id(&db);
+
+        let stored = db
+            .set_cue_points(
+                id,
+                CuePoints {
+                    cue_in_ms: Some(-1_000),
+                    cue_out_ms: Some(500_000),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(stored.cue_in_ms, Some(0));
+        assert_eq!(stored.cue_out_ms, Some(200_000), "bounded by the file");
+        assert_eq!(db.get_track(id).unwrap().unwrap().cue_points, stored);
+    }
+
+    /// Cue points ride along on the one query a deck load already runs.
+    #[test]
+    fn load_info_carries_the_cue_points() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&TrackInsert {
+            path: "/a.mp3".into(),
+            content_type: "music".into(),
+            duration: Some(200.0),
+            ..Default::default()
+        })
+        .unwrap();
+        let id = only_id(&db);
+        db.set_cue_points(
+            id,
+            CuePoints {
+                cue_in_ms: Some(10_000),
+                cue_out_ms: Some(30_000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let info = db.get_track_load_info(id).unwrap().expect("track present");
+        assert_eq!(info.cue_points.cue_in_ms, Some(10_000));
+        assert_eq!(info.cue_points.cue_out_ms, Some(30_000));
+    }
+
+    /// A metadata rescan rewrites the tag columns; operator work on the same row
+    /// has to survive it, exactly as the waveform does.
+    #[test]
+    fn a_rescan_does_not_clobber_cue_points() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&TrackInsert {
+            path: "/a.mp3".into(),
+            content_type: "music".into(),
+            title: Some("Before".into()),
+            duration: Some(200.0),
+            ..Default::default()
+        })
+        .unwrap();
+        let id = only_id(&db);
+        db.set_cue_points(
+            id,
+            CuePoints {
+                cue_in_ms: Some(10_000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        db.insert_track(&TrackInsert {
+            path: "/a.mp3".into(),
+            content_type: "music".into(),
+            title: Some("After".into()),
+            duration: Some(200.0),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let track = db.get_track(id).unwrap().unwrap();
+        assert_eq!(track.title, "After", "the rescan did land");
+        assert_eq!(track.cue_points.cue_in_ms, Some(10_000));
     }
 
     fn only_id(db: &Db) -> i64 {

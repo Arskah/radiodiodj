@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type {
   ContentType,
+  CuePoints,
   PlaylistItem,
   DeviceInfo,
   DeviceRef,
@@ -274,6 +275,11 @@ export const api = {
     if (updates.genre !== undefined) payload.genre = updates.genre;
     if (updates.year !== undefined) payload.year = updates.year;
     return invoke<Track>("update_track_metadata", { updates: payload });
+  },
+  // Returns the clamped points the backend actually stored, so the UI reflects
+  // any marker that was coerced into order or inside the file.
+  setCuePoints(id: number, points: CuePoints): Promise<CuePoints> {
+    return invoke<CuePoints>("set_cue_points", { id, points });
   },
   async pickDirectory(): Promise<string | null> {
     const dir = await open({ directory: true, multiple: false });

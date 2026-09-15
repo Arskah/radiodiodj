@@ -21,6 +21,25 @@ export interface Track {
   sample_rate?: number | null;
   bitrate?: number | null;
   format?: string;
+  /**
+   * The track's radio edit. Milliseconds from the start of the file, every
+   * marker nullable. Optional here only so test fixtures need not spell it
+   * out — the backend sends it on every track.
+   */
+  cue_points?: CuePoints;
+}
+
+/**
+ * Per-track playback markers. `null` means "no adjustment"; the backend
+ * resolves each one to a fallback at load time. Clamping is backend-owned:
+ * `api.setCuePoints` returns the clamped value to adopt.
+ */
+export interface CuePoints {
+  cue_in_ms: number | null;
+  fade_in_ms: number | null;
+  fade_out_ms: number | null;
+  cue_out_ms: number | null;
+  next_start_ms: number | null;
 }
 
 export type PlaylistTrackItem = { kind: "track"; track: Track };
