@@ -4,7 +4,6 @@
   import defaultCover from "../../assets/radiodiodi_label.svg";
 
   let progressBar: HTMLDivElement;
-  let scrubbing = false;
   let hoverPct = $state<number | null>(null);
 
   function pctFromClientX(clientX: number): number {
@@ -12,29 +11,12 @@
     return ((clientX - rect.left) / rect.width) * 100;
   }
 
-  function seekToClientX(clientX: number): void {
-    app.seekToPct(pctFromClientX(clientX) / 100);
-  }
-
-  function onPointerDown(e: PointerEvent): void {
-    scrubbing = true;
-    progressBar.setPointerCapture(e.pointerId);
-    seekToClientX(e.clientX);
+  function onDoubleClick(e: MouseEvent): void {
+    app.seekToPct(pctFromClientX(e.clientX) / 100);
   }
 
   function onPointerMove(e: PointerEvent): void {
     hoverPct = pctFromClientX(e.clientX);
-    if (scrubbing) seekToClientX(e.clientX);
-  }
-
-  function onPointerUp(e: PointerEvent): void {
-    scrubbing = false;
-    progressBar.releasePointerCapture(e.pointerId);
-  }
-
-  function onPointerCancel(): void {
-    scrubbing = false;
-    hoverPct = null;
   }
 
   function onPointerLeave(): void {
@@ -105,24 +87,6 @@
           <span class="material-symbols-outlined">skip_next</span>
         </button>
       </div>
-      <div id="player-right">
-        <span class="material-symbols-outlined" aria-hidden="true"
-          >volume_up</span
-        >
-        <input
-          type="range"
-          id="volume"
-          min="0"
-          max="1"
-          step="0.01"
-          value={app.volume}
-          title="Volume"
-          oninput={(e) =>
-            app.setVolume(
-              parseFloat((e.currentTarget as HTMLInputElement).value),
-            )}
-        />
-      </div>
       <div
         class="segmented"
         role="group"
@@ -158,14 +122,13 @@
       bind:this={progressBar}
       role="slider"
       tabindex="0"
-      aria-label="Seek"
+      title="Double-click to seek"
+      aria-label="Seek (double-click)"
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={Math.round(app.progressPct)}
-      onpointerdown={onPointerDown}
+      ondblclick={onDoubleClick}
       onpointermove={onPointerMove}
-      onpointerup={onPointerUp}
-      onpointercancel={onPointerCancel}
       onpointerleave={onPointerLeave}
     >
       <Waveform

@@ -355,6 +355,12 @@ export class AppState {
     this.scheduleSave();
   }
 
+  /**
+   * Put a track straight on air, bypassing the playlist. Currently uncalled:
+   * the library's play button was removed in #354 because it is too easy to
+   * hit by accident during a broadcast. Kept for the follow-up that re-exposes
+   * it behind a library-row context menu.
+   */
   playNow(track: Track): void {
     this.playTrack(track);
   }
@@ -783,7 +789,10 @@ export class AppState {
     this.history = resolve(state.historyIds);
     this.autoPlaylistActive = state.autoPlaylistActive;
     this.autoAdvance = state.autoAdvance;
-    this.setVolume(state.volume);
+    // Master level is fixed at unity (#354): the volume slider left the operator
+    // UI, so a persisted value from an older session would be unrecoverable.
+    // Normalization is ReplayGain's job (#80), not the operator's.
+    this.setVolume(1);
     this.setCueVolume(state.cueVolume);
 
     const restored =
@@ -862,7 +871,7 @@ export class AppState {
         currentTime: this.currentTime,
         autoPlaylistActive: this.autoPlaylistActive,
         autoAdvance: this.autoAdvance,
-        volume: this.volume,
+        volume: 1,
         cueVolume: this.cueVolume,
       })
       .catch((err) => {

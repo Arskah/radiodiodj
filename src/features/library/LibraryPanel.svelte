@@ -32,11 +32,6 @@
     searchTimeout = window.setTimeout(() => app.search(), 250);
   }
 
-  function playNow(track: Track, e: MouseEvent): void {
-    e.stopPropagation();
-    app.playNow(track);
-  }
-
   function add(track: Track, e: MouseEvent): void {
     e.stopPropagation();
     app.addToPlaylist(track);
@@ -143,14 +138,6 @@
           <span class="track-album">{track.album}</span>
           <span class="track-plays">{track.play_count || 0}</span>
           <span class="track-duration">{formatTime(track.duration)}</span>
-          <button
-            class="btn-add"
-            title="Add to playlist"
-            aria-label="Add to playlist"
-            onclick={(e) => add(track, e)}
-          >
-            <span class="material-symbols-outlined">add</span>
-          </button>
           {#if app.cueDevice !== null}
             <button
               class="btn-cue"
@@ -170,12 +157,12 @@
             <span class="material-symbols-outlined">edit</span>
           </button>
           <button
-            class="btn-play-track"
-            title="Add and play"
-            aria-label="Add and play"
-            onclick={(e) => playNow(track, e)}
+            class="btn-add"
+            title="Add to playlist"
+            aria-label="Add to playlist"
+            onclick={(e) => add(track, e)}
           >
-            <span class="material-symbols-outlined">play_arrow</span>
+            <span class="material-symbols-outlined">add</span>
           </button>
         </div>
       {/each}
