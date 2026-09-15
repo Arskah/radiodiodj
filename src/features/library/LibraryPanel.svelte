@@ -62,19 +62,44 @@
   // The row the menu was opened from, so focus goes back where it came from.
   let menuRow: HTMLElement | null = null;
 
-  function openMenu(track: Track, e: MouseEvent): void {
-    e.preventDefault();
+  /** `at` is the cursor point; without one the menu hangs off the row itself. */
+  function showMenu(
+    track: Track,
+    row: HTMLElement,
+    at: { x: number; y: number } | null,
+  ): void {
     // The hover tooltip is anchored to the row and would sit under the menu.
     app.clearHover();
-    const row = e.currentTarget as HTMLElement;
-    // The keyboard menu key fires `contextmenu` with no cursor position; anchor
-    // those to the row's bottom-left instead of the viewport corner.
-    const keyboard = e.clientX === 0 && e.clientY === 0;
     const rect = row.getBoundingClientRect();
-    menuX = keyboard ? rect.left : e.clientX;
-    menuY = keyboard ? rect.bottom : e.clientY;
+    menuX = at ? at.x : rect.left;
+    menuY = at ? at.y : rect.bottom;
     menuRow = row;
     menuTrack = track;
+  }
+
+  function openMenu(track: Track, e: MouseEvent): void {
+    e.preventDefault();
+    // Windows and Linux dispatch a `contextmenu` event for the menu key with no
+    // cursor position; anchor those to the row, not the viewport corner.
+    const keyboard = e.clientX === 0 && e.clientY === 0;
+    showMenu(
+      track,
+      e.currentTarget as HTMLElement,
+      keyboard ? null : { x: e.clientX, y: e.clientY },
+    );
+  }
+
+  // Windows and Linux deliver the menu key and Shift+F10 as `contextmenu`, but
+  // macOS keyboards have neither — handle them here and bind Ctrl+Enter too, or
+  // the menu is pointer-only there.
+  function onRowKeyDown(track: Track, e: KeyboardEvent): void {
+    const wants =
+      e.key === "ContextMenu" ||
+      (e.key === "F10" && e.shiftKey) ||
+      (e.key === "Enter" && e.ctrlKey);
+    if (!wants) return;
+    e.preventDefault();
+    showMenu(track, e.currentTarget as HTMLElement, null);
   }
 
   function closeMenu(restoreFocus: boolean): void {
@@ -83,10 +108,9 @@
     menuRow = null;
   }
 
-  // Mirrors the row's action buttons, plus the play-now that #354 took off the
-  // row: reaching air deliberately is fine, reaching it with a stray click is
-  // not. It sits last, behind a divider, so it is never the item under the
-  // cursor when the menu opens.
+  // Play-now sits last, behind a divider: #354 took it off the row because a
+  // stray click must never reach air, so it is never the item under the cursor
+  // when the menu opens.
   let menuItems = $derived.by<MenuItem[]>(() => {
     const track = menuTrack;
     if (!track) return [];
@@ -196,8 +220,11 @@
           onmouseenter={(e) => onEnter(track, e)}
           onmouseleave={() => app.clearHover()}
           oncontextmenu={(e) => openMenu(track, e)}
+          onkeydown={(e) => onRowKeyDown(track, e)}
           role="button"
           aria-label={`Track: ${track.title} by ${track.artist}`}
+          aria-haspopup="menu"
+          aria-expanded={menuTrack?.id === track.id}
           data-track-id={track.id}
           tabindex="0"
         >

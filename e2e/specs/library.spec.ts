@@ -140,6 +140,32 @@ describe("library", () => {
     );
   });
 
+  it("opens the context menu from the keyboard", async () => {
+    await bootAndScan();
+
+    // Rows are tabbable, but reaching one costs a tab per row above it; focus
+    // the first directly and exercise the binding itself.
+    await browser.execute(() =>
+      document.querySelector<HTMLElement>(".track-row")?.focus(),
+    );
+    await browser.keys(["Shift", "F10"]);
+
+    const menu = browser.$(sel.contextMenu);
+    await menu.waitForDisplayed({ timeout: 5_000 });
+    // The first item takes focus, so Enter activates it without a pointer.
+    await browser.keys("Enter");
+    await menu.waitForExist({ timeout: 5_000, reverse: true });
+
+    await browser.waitUntil(
+      async () =>
+        (await browser.$$(`${sel.playlist} ${sel.playlistRow}`).length) === 1,
+      {
+        timeout: 5_000,
+        timeoutMsg: "keyboard context menu add did not reach the playlist",
+      },
+    );
+  });
+
   it("dismisses the context menu on Escape", async () => {
     await bootAndScan();
 

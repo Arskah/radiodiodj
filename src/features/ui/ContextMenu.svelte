@@ -43,7 +43,6 @@
       { width: window.innerWidth, height: window.innerHeight },
     );
     placed = true;
-    // Focus the first item so the menu is usable from the keyboard menu key.
     itemButtons()[0]?.focus();
   });
 
@@ -61,8 +60,7 @@
     switch (e.key) {
       case "Escape":
         e.preventDefault();
-        // Stop here: an open menu swallows Escape rather than letting it reach
-        // whatever else listens on the document.
+        // An open menu swallows Escape rather than passing it to the document.
         e.stopPropagation();
         onclose(true);
         break;
@@ -85,7 +83,6 @@
         break;
       }
       case "Tab":
-        // Tab dismisses the menu instead of walking out of it item by item.
         e.preventDefault();
         onclose(true);
         break;
