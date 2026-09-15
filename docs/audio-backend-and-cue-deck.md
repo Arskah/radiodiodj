@@ -4,6 +4,20 @@ Closes [#43](https://github.com/Arskah/radiodiodj/issues/43) and adds secondary 
 
 Original design locked via grill-me on 2026-05-04 (mpv subprocess on Electron). Decisions referenced as Q# below.
 
+**Status update (2026-09-15): the deck model in this document is superseded.**
+The fixed main-deck/cue-deck pair described throughout §Decks is replaced by a
+**program bus** — one output stream on the main device summing N decks, with
+`main` and `arm` as _roles_ that move between decks rather than fixed
+identities. Track transitions are driven by a per-track `nextStart` cue point
+instead of a configured crossfade duration. See
+[program-bus.md](./program-bus.md) and
+[cue-points.md](./cue-points.md). Still accurate here: the rodio + symphonia
+decode path, the network-resilience machinery, device enumeration and
+`DeviceRef` fallback, and the cue deck itself — which stays off the bus, on its
+own output device, exactly as described below. The `Exclusive output` analysis
+also stands, with the caveat that an exclusive program output would be
+negotiated once for the bus rather than per deck.
+
 **Status update (2026-05-05):** the platform pivoted from Electron → Tauri 2 in PR #76. The chromium `<audio>` pipeline was replaced not by an mpv subprocess but by an in-process rodio + symphonia player living in `src-tauri/src/player.rs`. PR-1 and PR-2 are shipped; PR-3 (cue deck) is reframed for the rodio path and tracked as [#81](https://github.com/Arskah/radiodiodj/issues/81). ReplayGain + LAME-tag gapless trim moved to a separate audio-polish track [#80](https://github.com/Arskah/radiodiodj/issues/80).
 
 ## Goals
