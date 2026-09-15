@@ -1146,7 +1146,9 @@ describe("AppState session persistence", () => {
     expect(app.currentTrack?.id).toBe(2);
     expect(app.autoPlaylistActive).toBe(true);
     expect(app.autoAdvance).toBe(false);
-    expect(app.volume).toBe(0.6);
+    // Master level is pinned to unity regardless of what the session held (#354).
+    expect(app.volume).toBe(1);
+    expect(mock.volume).toBe(1);
     expect(app.currentTime).toBe(12.5);
     expect(mock.lastLoadedId).toBe(2);
     expect(document.title).toBe("t2 - a2 | RadiodioDJ");

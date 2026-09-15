@@ -9,7 +9,7 @@ Desktop music player built for radio stations. Manage music, commercials, and ji
 - **Auto playlist** — toggle continuous random playback with automatic queue refill
 - **Playback modes** — AUTO advances through playlist, MANUAL stops after each track
 - **Native audio** — in-process Rust player (rodio + symphonia) for MP3, FLAC, Vorbis, WAV, AAC, M4A. No browser audio pipeline, no external transcoder
-- **Now playing** — real-time display with seekable progress bar, time, and volume
+- **Now playing** — real-time display with waveform, time, and a progress bar that seeks on double-click (single clicks cannot move an on-air track)
 - **Now-playing broadcast** — outbound webhook + atomic file output for stream overlays, metadata bridges, and scripted consumers (see [docs/now-playing-broadcast.md](docs/now-playing-broadcast.md))
 
 ## Prerequisites

@@ -507,16 +507,6 @@ body {
   filter: brightness(1.08);
 }
 
-#player-right {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-sm);
-  color: var(--outline);
-  padding-left: var(--sp-md);
-  border-left: 1px solid
-    color-mix(in srgb, var(--outline-variant) 30%, transparent);
-}
-
 /* Segmented AUTO / MANUAL toggle */
 .segmented {
   display: inline-flex;
@@ -629,8 +619,9 @@ body {
   border-color: var(--secondary);
 }
 
-/* Volume group mirrors the main deck's #player-right (icon + slider with a
-   left-edge divider); keeps the secondary accent as the cue-deck distinction. */
+/* Cue volume is a monitoring control, so it survived the master-volume removal
+   (#354): icon + slider behind a left-edge divider, secondary accent to keep the
+   cue-deck distinction. */
 .cue-volume-wrap {
   display: flex;
   align-items: center;
@@ -758,6 +749,9 @@ body {
   flex: 1;
   min-width: 0;
   min-height: 56px;
+  /* Seeking here takes a double click (#354); stop that from selecting the
+     time pill text. */
+  user-select: none;
 }
 
 .cue-progress-bar {
@@ -1175,9 +1169,16 @@ body {
   justify-content: flex-end;
 }
 
+/* Reserves the width of the row action buttons (26px each, --sp-md gaps) so the
+   column headers stay aligned with the values above them: cue + edit + add. */
 .track-header-spacer {
-  width: 84px;
+  width: 110px;
   flex-shrink: 0;
+}
+
+/* No cue device: the headphones button is absent, so the strip is two buttons. */
+#workspace.no-cue .track-header-spacer {
+  width: 68px;
 }
 
 /* ---- Lists ---- */

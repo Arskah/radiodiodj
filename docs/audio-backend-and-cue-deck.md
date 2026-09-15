@@ -61,6 +61,7 @@ ALSA dev headers needed at build time on Linux (`libasound2-dev`); already wired
 
 - Two decks: main + cue. Fully independent transport (own current track, position, volume, play state). Shared library source. (Q2)
 - Cue UI is intentionally minimal mini-deck: title + play/pause + click-to-seek progress bar + volume slider + promote-to-main button. No skip buttons. (Q3 gamma minus skip per Q4)
+- **Superseded by #354:** the main deck lost its volume slider — master level is fixed at 1.0 and normalization is ReplayGain's job (#80). The cue volume slider stays; it is a monitoring control. Main-deck seek also now requires a double click, while the cue bar keeps single-click + drag.
 - Cue EOF → idle. No auto-advance, no loop. (Q15a)
 - `trackPlayed` (play_count, history append) fires only on main-deck completion. Cue does not write history.
 
@@ -161,7 +162,7 @@ No existing keyboard bindings to migrate. (Q13)
 ### Throttling
 
 - `player:time` events: throttled in Rust worker to 10 Hz (`TIME_EMIT_INTERVAL = 100ms`). Two decks → ~20 events/s. (Q16a, T2)
-- Volume slider: renderer-side leading + trailing throttle 50ms. ~20 invokes/s during drag. (Q16b, V3)
+- Volume slider: renderer-side leading + trailing throttle 50ms. ~20 invokes/s during drag. (Q16b, V3) — cue only since #354; the main deck has no slider to throttle.
 - Renderer holds local optimistic state — `app.volume`, `currentTime` during seek update immediately on user input; invoke fires after, no waiting on backend ack. (Q16c)
 
 ### Types
