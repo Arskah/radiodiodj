@@ -5,13 +5,15 @@
 //! a whole [`super::bus::ProgramBus`] (or the lone [`super::cue::CueDeck`]).
 
 use anyhow::{Context, Result};
+use rodio::source::SkipDuration;
 use rodio::{Decoder, Sink, Source};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::cue_points::CuePoints;
+use super::cue_points::{CuePoints, Resolved};
+use super::envelope::Enveloped;
 
 /// A background read that neither completes nor errors within this budget is
 /// treated as a wedged (e.g. networked) mount. The audio worker stops waiting
@@ -131,35 +133,58 @@ impl Topics {
 /// sample-exact for the cost of this much pre-roll.
 const SEEK_PREROLL: Duration = Duration::from_millis(200);
 
-/// Hand the sink the span `[start, start + take)` of `source`, in absolute file
-/// positions. `take` of `None` plays to the end of the file.
+/// Hand the sink the track as `cue` shapes it, starting from the absolute file
+/// position `start`: seek in, apply the fade envelope, stop at the out-point.
 ///
 /// Running the sink dry at the out-point is what ends a trimmed track: the
 /// existing `sink.empty()` → `:ended` path fires naturally, with no second
 /// termination rule to keep in step.
 pub(super) fn append_span(
     sink: &Sink,
+    source: Decoder<Cursor<Bytes>>,
+    start: Duration,
+    cue: &Resolved,
+) {
+    let take = cue
+        .take_from(start.as_secs_f64())
+        .map(Duration::from_secs_f64);
+    let source = seek_to(source, start);
+    // A track with no ramps is handed to the sink unwrapped rather than
+    // multiplied by 1.0 for its whole length.
+    if cue.has_fades() {
+        append_take(
+            sink,
+            Enveloped::new(source, start.as_secs_f64(), *cue),
+            take,
+        );
+    } else {
+        append_take(sink, source, take);
+    }
+}
+
+/// Seek `source` to `start` in two stages: the container's own seek (a binary
+/// search over the index) to just short of the target, then decoding forward
+/// for the remainder. A failing container seek decodes forward from zero, which
+/// is what the code did before cue points existed.
+fn seek_to(
     mut source: Decoder<Cursor<Bytes>>,
     start: Duration,
-    take: Option<Duration>,
-) {
+) -> SkipDuration<Decoder<Cursor<Bytes>>> {
     if start.is_zero() {
-        append_take(sink, source, take);
-        return;
+        return source.skip_duration(Duration::ZERO);
     }
     let coarse = start.saturating_sub(SEEK_PREROLL);
     if coarse.is_zero() {
-        append_take(sink, source.skip_duration(start), take);
-        return;
+        return source.skip_duration(start);
     }
     match source.try_seek(coarse) {
-        Ok(()) => append_take(sink, source.skip_duration(start - coarse), take),
+        Ok(()) => source.skip_duration(start - coarse),
         Err(e) => {
             log::warn!(
                 "player: container seek failed ({}); skip_duration fallback",
                 e
             );
-            append_take(sink, source.skip_duration(start), take);
+            source.skip_duration(start)
         }
     }
 }

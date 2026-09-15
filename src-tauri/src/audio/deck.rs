@@ -452,12 +452,7 @@ fn apply(
             };
             match decode_bytes(bytes) {
                 Ok((source, _)) => {
-                    append_span(
-                        sink,
-                        source,
-                        Duration::from_secs_f64(target),
-                        deck.cue.take_from(target).map(Duration::from_secs_f64),
-                    );
+                    append_span(sink, source, Duration::from_secs_f64(target), &deck.cue);
                     deck.seek_offset = target;
                     deck.active = true;
                     if was_paused {
@@ -545,12 +540,7 @@ fn apply_load(
             // alongside the Load would have found none and been dropped.
             let air_start = clamp_start(msg.start_at, air_duration);
             let start_at = cue.file_pos(air_start);
-            append_span(
-                sink,
-                source,
-                Duration::from_secs_f64(start_at),
-                cue.take_from(start_at).map(Duration::from_secs_f64),
-            );
+            append_span(sink, source, Duration::from_secs_f64(start_at), &cue);
             if msg.autoplay {
                 sink.play();
             } else {
