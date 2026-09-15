@@ -7,7 +7,7 @@ use parking_lot::Mutex;
 use tauri::async_runtime::{self, JoinHandle};
 use tauri::{AppHandle, Listener};
 
-use crate::library::db::TrackBroadcastInfo;
+use crate::library::db::TrackLoadInfo;
 use crate::persist::config::Config;
 
 use super::file_sink::FileSink;
@@ -30,15 +30,25 @@ struct Inner {
     shutdown_done: Mutex<bool>,
 }
 
-impl From<TrackBroadcastInfo> for BroadcastTrack {
-    fn from(info: TrackBroadcastInfo) -> Self {
+impl From<TrackLoadInfo> for BroadcastTrack {
+    fn from(info: TrackLoadInfo) -> Self {
+        // Air time, not file time: downstream automation schedules against what
+        // actually goes out. Resolved against the tag duration rather than the
+        // decoded one, so on a VBR file with no cue-out this can differ slightly
+        // from the deck's `:duration` — the same discrepancy that already exists
+        // between the tag and the decoder.
+        let duration_sec = info
+            .cue_points
+            .resolve(Some(info.duration))
+            .air_duration()
+            .unwrap_or(info.duration);
         BroadcastTrack {
             id: info.id,
             title: info.title,
             artist: info.artist,
             album: info.album,
             genre: info.genre,
-            duration_sec: info.duration,
+            duration_sec,
             content_type: info.content_type,
             path: info.path,
         }

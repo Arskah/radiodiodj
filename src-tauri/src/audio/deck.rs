@@ -23,9 +23,10 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 use super::cache::Cache;
+use super::cue_points::{CuePoints, Resolved};
 use super::output::Output;
 use super::player::{
-    append_at, clamp_start, decode_bytes, read_file, read_with_retry, Bytes, Cmd, PlayerTuning,
+    append_span, clamp_start, decode_bytes, read_file, read_with_retry, Bytes, Cmd, PlayerTuning,
     Topics,
 };
 
@@ -76,6 +77,7 @@ struct PendingLoad {
     id: i64,
     path: PathBuf,
     duration: Option<f64>,
+    cue_points: CuePoints,
     start_at: f64,
     autoplay: bool,
 }
@@ -91,6 +93,7 @@ struct LoadMsg {
     /// Track id this read was issued for; reported in `:load-failed` on failure.
     id: i64,
     duration: Option<f64>,
+    cue_points: CuePoints,
     start_at: f64,
     autoplay: bool,
     bytes: Result<Bytes>,
@@ -107,8 +110,13 @@ pub(super) struct Deck {
     current_id: Option<i64>,
     current_path: Option<PathBuf>,
     current_duration: Option<f64>,
+    /// The loaded track's cue points, resolved against the duration the decoder
+    /// reported. Absolute file positions: everything the worker emits or
+    /// receives is air time, and this is what converts between the two.
+    cue: Resolved,
     /// Bytes of the currently loaded track, kept so seeks re-decode from RAM.
     current_bytes: Option<Bytes>,
+    /// Absolute file position the current source starts at.
     seek_offset: f64,
     active: bool,
     /// A background read is in flight; suppresses ended-detection and time
@@ -137,6 +145,7 @@ impl Deck {
             current_id: None,
             current_path: None,
             current_duration: None,
+            cue: Resolved::default(),
             current_bytes: None,
             seek_offset: 0.0,
             active: false,
@@ -187,6 +196,7 @@ impl Deck {
         self.current_id = None;
         self.current_path = None;
         self.current_duration = None;
+        self.cue = Resolved::default();
         self.current_bytes = None;
         self.seek_offset = 0.0;
         self.pending_load = None;
@@ -273,6 +283,7 @@ fn start_load(
     id: i64,
     path: PathBuf,
     duration: Option<f64>,
+    cue_points: CuePoints,
     start_at: f64,
     autoplay: bool,
 ) {
@@ -284,6 +295,7 @@ fn start_load(
             id,
             path,
             duration,
+            cue_points,
             start_at,
             autoplay,
         });
@@ -302,6 +314,7 @@ fn start_load(
     deck.current_id = Some(id);
     deck.current_path = Some(path.clone());
     deck.current_duration = duration;
+    deck.cue = Resolved::default();
     deck.current_bytes = None;
     deck.seek_offset = 0.0;
     deck.active = false;
@@ -319,6 +332,7 @@ fn start_load(
             generation,
             id,
             duration,
+            cue_points,
             start_at,
             autoplay,
             bytes: Ok(bytes),
@@ -339,6 +353,7 @@ fn start_load(
                 generation,
                 id,
                 duration,
+                cue_points,
                 start_at,
                 autoplay,
                 bytes,
@@ -364,6 +379,7 @@ fn apply(
             id,
             path,
             duration,
+            cue_points,
             start_at,
             autoplay,
         } => {
@@ -379,6 +395,7 @@ fn apply(
                 id,
                 path,
                 duration,
+                cue_points,
                 start_at,
                 autoplay,
             );
@@ -418,7 +435,9 @@ fn apply(
             set_pause_state(app, events, true);
         }
         Cmd::Seek(s) => {
-            let target = s.max(0.0);
+            // Air seconds in, absolute file position out — the caller neither
+            // knows nor needs to know where the track's audio really starts.
+            let target = deck.cue.file_pos(s);
             // Seek decodes from the in-RAM bytes — never re-reads the file.
             let Some(bytes) = deck.current_bytes.clone() else {
                 return;
@@ -433,7 +452,12 @@ fn apply(
             };
             match decode_bytes(bytes) {
                 Ok((source, _)) => {
-                    append_at(sink, source, Duration::from_secs_f64(target));
+                    append_span(
+                        sink,
+                        source,
+                        Duration::from_secs_f64(target),
+                        deck.cue.take_from(target).map(Duration::from_secs_f64),
+                    );
                     deck.seek_offset = target;
                     deck.active = true;
                     if was_paused {
@@ -510,12 +534,23 @@ fn apply_load(
             let Some(sink) = deck.sink.as_ref() else {
                 return;
             };
+            // The decoded duration is the only trustworthy one — the tag value
+            // is wrong on VBR MP3 — and cue points anchored to the file end
+            // need it, so resolution happens here rather than at the caller.
             let final_duration = msg.duration.or(decoded_duration);
+            let cue = msg.cue_points.resolve(final_duration);
+            let air_duration = cue.air_duration();
             // The start position travels with the load rather than arriving as
             // a separate Seek: the bytes only exist here, so a Seek issued
             // alongside the Load would have found none and been dropped.
-            let start_at = clamp_start(msg.start_at, final_duration);
-            append_at(sink, source, Duration::from_secs_f64(start_at));
+            let air_start = clamp_start(msg.start_at, air_duration);
+            let start_at = cue.file_pos(air_start);
+            append_span(
+                sink,
+                source,
+                Duration::from_secs_f64(start_at),
+                cue.take_from(start_at).map(Duration::from_secs_f64),
+            );
             if msg.autoplay {
                 sink.play();
             } else {
@@ -523,12 +558,16 @@ fn apply_load(
             }
             deck.current_bytes = Some(bytes);
             deck.current_duration = final_duration;
+            deck.cue = cue;
             deck.seek_offset = start_at;
             deck.active = true;
-            if let Some(d) = final_duration {
+            // Air time, so a trimmed track is simply a shorter track to every
+            // listener of these events. `None` only when the file end is
+            // unknown, which is the same case that emitted nothing before.
+            if let Some(d) = air_duration {
                 let _ = app.emit(&events.topics.duration, d);
             }
-            let _ = app.emit(&events.topics.time, start_at);
+            let _ = app.emit(&events.topics.time, air_start);
             set_pause_state(app, events, !msg.autoplay);
         }
         Err(e) => {
@@ -708,6 +747,7 @@ pub(super) fn run(
                         p.id,
                         p.path,
                         p.duration,
+                        p.cue_points,
                         p.start_at,
                         p.autoplay,
                     );
@@ -729,7 +769,10 @@ pub(super) fn run(
 
             if deck.active && deck.last_time_emit.elapsed() >= TIME_EMIT_INTERVAL {
                 deck.last_time_emit = Instant::now();
-                let _ = app.emit(&events.topics.time, deck.seek_offset + pos);
+                // Air time: `0` is the first audible sample, not the first
+                // sample in the file.
+                let air = deck.cue.air_time(deck.seek_offset + pos);
+                let _ = app.emit(&events.topics.time, air);
             }
 
             if deck.active && !deck.loading && empty {
@@ -766,6 +809,7 @@ mod tests {
             generation: 4,
             id: 1,
             duration: None,
+            cue_points: CuePoints::default(),
             start_at: 0.0,
             autoplay: true,
             bytes: Ok(Arc::from(Vec::new().into_boxed_slice())),
@@ -775,6 +819,7 @@ mod tests {
             generation: 5,
             id: 1,
             duration: None,
+            cue_points: CuePoints::default(),
             start_at: 0.0,
             autoplay: true,
             bytes: Ok(Arc::from(Vec::new().into_boxed_slice())),
@@ -832,6 +877,7 @@ mod tests {
             generation: 1,
             id: 7,
             duration: None,
+            cue_points: CuePoints::default(),
             start_at: 0.0,
             autoplay: true,
             bytes: Ok(Arc::from(Vec::new().into_boxed_slice())),
