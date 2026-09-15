@@ -24,6 +24,32 @@ For that to work, the next item must already be loaded on the arm deck. With a
 renderer-owned playlist the backend would have to ask the renderer what comes next,
 putting an IPC round-trip in the middle of an audible transition.
 
+## Why this lands first
+
+This is the highest-risk change in the cue-points programme — it touches
+advancement, auto-playlist refill, outage skip-to-cached, and session
+persistence, all of which are load-bearing during a live broadcast. It
+nonetheless goes **before** the cue point work rather than after, for one
+reason: test coverage.
+
+`src/shared/state.test.ts` is a mature behavioural specification written against
+current, known-good semantics — advancement order, skip-to-cached during an
+outage, interleave refill, history append, stop-marker handling. Porting that
+specification across the ownership boundary is far safer while it still
+describes today's behaviour.
+
+Land cue points first and the picture degrades: the cue editor increment edits
+those same assertions for air-time semantics, so the refactor would afterwards
+be validated against tests that were themselves recently churned — weaker signal
+exactly where the strongest is wanted.
+
+**Acceptance criterion:** every behavioural assertion in the existing suite
+survives. The tests will not run unmodified — the renderer becomes a projection,
+so tests that drive `AppState.playlist` directly change shape — but each
+assertion ports across intact, moving from renderer logic to backend logic plus
+a thinner projection. An assertion that cannot be ported is a design problem in
+this refactor, not a test to delete.
+
 ## Shape
 
 The backend emits a full snapshot on every mutation and every advance:

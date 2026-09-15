@@ -62,6 +62,18 @@ fades ([#280](https://github.com/Arskah/radiodiodj/issues/280)) and segue ramps
 without touching the source-level track envelope. The two compose by
 multiplication — see [cue-points.md](./cue-points.md#fades-are-source-level).
 
+## Landing it as a pure restructure
+
+The bus replaces thread-per-deck with one worker driving a shared mixer. That is
+a large internal change with no user-visible effect, so it ships **before** the
+cue point work and separately from handover, with roles held static — deck A
+permanently `main`, no deck B in play.
+
+**Acceptance criterion: the existing test suite passes unmodified.** Nothing
+about playback behaviour changes, so any test that needs editing is a signal the
+restructure altered something it should not have. Handover, which does change
+behaviour, is a later increment.
+
 ## Roles, not identities
 
 ```rust
