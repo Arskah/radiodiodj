@@ -15,7 +15,7 @@ tauri-build = { version = "=2.6.3", features = [] }
 
 [dependencies]
 tauri = { version = "=2.11.5", features = [] }
-tauri-plugin-dialog = "=2.7.2"
+tauri-plugin-dialog = "=2.7.3"
 tauri-plugin-log = "=2.8.0"
 tauri-plugin-window-state = "=2.4.1"
 serde = { version = "=1.0.229", features = ["derive"] }
