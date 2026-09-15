@@ -1,5 +1,9 @@
+pub mod bus;
 pub mod cache;
+pub mod cue;
+pub mod deck;
 pub mod devices;
 pub mod formats;
+pub mod output;
 pub mod player;
 pub mod waveform;

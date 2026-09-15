@@ -15,7 +15,9 @@ use audio::devices::{list_output_devices, DeviceInfo};
 
 pub const APP_NAME: &str = "RadiodioDJ";
 
-use audio::player::{Cmd, PlayerHandle, PlayerTuning};
+use audio::bus::ProgramBus;
+use audio::cue::CueDeck;
+use audio::player::{Cmd, PlayerTuning};
 use broadcast::{service::default_now_playing_dir, BroadcastService};
 use library::db::{Db, LibraryStats, Track, TrackMetadataUpdate};
 use library::scan_state::{ScanState, ScanStatus, StartResult};
@@ -47,10 +49,11 @@ pub struct AppState {
     scan: Arc<ScanState>,
     /// Background job that fills track waveforms after a metadata scan.
     waveform: Arc<WaveformJob>,
-    main_deck: Arc<PlayerHandle>,
+    /// The mixer every on-air deck sums into, and the worker driving them.
+    bus: Arc<ProgramBus>,
     /// Owner of the playlist and of everything that advances it.
     playlist: Arc<PlaylistService>,
-    cue: Arc<Mutex<Option<PlayerHandle>>>,
+    cue: Arc<Mutex<Option<CueDeck>>>,
     /// Shared prefetch byte cache, resident in both deck players.
     cache: Arc<Cache>,
     broadcast: Arc<BroadcastService>,
@@ -250,32 +253,32 @@ fn playlist_set_auto_advance(app: State<'_, AppState>, active: bool) {
 /// transport button contradicting what is audible.
 #[tauri::command(rename_all = "camelCase")]
 fn main_deck_is_playing(app_state: State<'_, AppState>) -> bool {
-    app_state.main_deck.is_playing()
+    app_state.bus.main_is_playing()
 }
 
 #[tauri::command(rename_all = "camelCase")]
 fn main_deck_play(app_state: State<'_, AppState>) {
-    app_state.main_deck.send(Cmd::Play);
+    app_state.bus.send_main(Cmd::Play);
 }
 
 #[tauri::command(rename_all = "camelCase")]
 fn main_deck_pause(app_state: State<'_, AppState>) {
-    app_state.main_deck.send(Cmd::Pause);
+    app_state.bus.send_main(Cmd::Pause);
 }
 
 #[tauri::command(rename_all = "camelCase")]
 fn main_deck_stop(app_state: State<'_, AppState>) {
-    app_state.main_deck.send(Cmd::Stop);
+    app_state.bus.send_main(Cmd::Stop);
 }
 
 #[tauri::command(rename_all = "camelCase")]
 fn main_deck_seek(app_state: State<'_, AppState>, seconds: f64) {
-    app_state.main_deck.send(Cmd::Seek(seconds));
+    app_state.bus.send_main(Cmd::Seek(seconds));
 }
 
 #[tauri::command(rename_all = "camelCase")]
 fn main_deck_set_volume(app_state: State<'_, AppState>, volume: f32) {
-    app_state.main_deck.send(Cmd::SetVolume(volume));
+    app_state.bus.send_main(Cmd::SetVolume(volume));
 }
 
 /// Return a track's stored amplitude-curve peaks (one byte per bucket) for the
@@ -334,12 +337,12 @@ fn set_cue_device(state: State<'_, AppState>, device: Option<DeviceRef>) -> Resu
     Ok(())
 }
 
-/// Ensure a cue `PlayerHandle` exists for the configured cue device.
+/// Ensure a `CueDeck` exists for the configured cue device.
 /// Lazy-spawned on first cue command. Errors if no cue device is set
 /// or the saved device cannot be resolved.
 fn with_cue<F>(state: &State<'_, AppState>, f: F) -> Result<(), String>
 where
-    F: FnOnce(&PlayerHandle),
+    F: FnOnce(&CueDeck),
 {
     let mut guard = state.cue.lock();
     if guard.is_none() {
@@ -349,10 +352,9 @@ where
             .ok_or_else(|| "no cue device configured; pick one in Settings → Audio".to_string())?;
         // The worker resolves the DeviceRef lazily and falls back to the default
         // output, mirroring the main deck's self-healing open (#259).
-        *guard = Some(PlayerHandle::spawn(
+        *guard = Some(CueDeck::spawn(
             state.app_handle.clone(),
             Some(cue_ref),
-            "cue",
             Arc::clone(&state.cache),
             player_tuning_from(&state.config.get_tuning()),
         ));
@@ -537,10 +539,9 @@ pub fn run() {
             // takes effect on the next launch.
             let tuning = config.get_tuning();
             let cache = Cache::new(app.handle().clone(), tuning.cache.max_cache_bytes);
-            let main_deck = Arc::new(PlayerHandle::spawn(
+            let bus = Arc::new(ProgramBus::spawn(
                 app.handle().clone(),
                 main_device,
-                "main-deck",
                 Arc::clone(&cache),
                 player_tuning_from(&tuning),
             ));
@@ -556,7 +557,7 @@ pub fn run() {
                 app.handle().clone(),
                 Arc::clone(&db),
                 Arc::clone(&config),
-                Arc::clone(&main_deck),
+                Arc::clone(&bus),
                 Arc::clone(&cache),
                 Arc::clone(&broadcast),
             ));
@@ -572,7 +573,7 @@ pub fn run() {
                 session,
                 scan: Arc::new(ScanState::default()),
                 waveform,
-                main_deck,
+                bus,
                 playlist,
                 cue: Arc::new(Mutex::new(None)),
                 cache,

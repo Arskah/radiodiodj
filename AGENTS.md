@@ -9,7 +9,7 @@ pnpm typecheck                                    # svelte-check + tsc on tsconf
 pnpm test                                         # vitest watch
 pnpm test -- run                                  # vitest single run (132 renderer tests)
 pnpm e2e                                          # tauri-driver + WebdriverIO (Linux only — see e2e/README.md)
-cargo test --manifest-path src-tauri/Cargo.toml   # 176 backend tests (db, scanner, session, playlist, player, config)
+cargo test --manifest-path src-tauri/Cargo.toml   # 180 backend tests (db, scanner, session, playlist, audio, config)
 pnpm lint                                         # eslint
 pnpm format                                       # prettier --write .
 pnpm format:check                                 # prettier --check .
@@ -23,7 +23,7 @@ Tauri 2 app. Two process boundaries: a Rust backend and a Svelte 5 / Vite render
 
 - `lib.rs` — `tauri::Builder` setup (`tauri-plugin-log` first, then `tauri-plugin-dialog`), `AppState`, all `#[tauri::command]` handlers, panic hook (force-capture backtrace → `log::error!`)
 - `main.rs` — thin `pub fn main() { radiodiodj_lib::run() }` binary entry
-- `audio/` — `formats.rs` (supported extension table), `player.rs` (rodio `Sink` on a worker thread driven by `mpsc::Sender<Cmd>`; symphonia decoders for mp3/flac/vorbis/wav/aac/m4a; emits `player:time` (10 Hz) / `player:duration` / `player:pause-state` / `player:ended` / `player:error`)
+- `audio/` — `formats.rs` (supported extension table), `player.rs` (shared deck primitives: the `Cmd` vocabulary, the `Topics` table, whole-file read/retry and symphonia decode for mp3/flac/vorbis/wav/aac/m4a), `output.rs` (one `OutputStream` per device, opened lazily with self-healing retry), `deck.rs` (one rodio `Sink` per deck plus the worker loop that ticks a whole set of them against one output; emits `{role}:time` (10 Hz) / `:duration` / `:pause-state` / `:ended` / `:error` / `:buffering` / `:load-failed` / `:output-unavailable`), `bus.rs` (the program bus — deck A + deck B on one mixer, one worker, `program:roles`), `cue.rs` (the cue deck: one deck on its own output, `cue:*`)
 - `library/` — `db.rs` (rusqlite + FTS5, WAL, `parking_lot::Mutex<Connection>`, `user_version` migrations), `scanner.rs` + `scan_state.rs` (recursive walkdir scan, `lofty` tag extraction, mtime+content_type delta cache, background worker thread emitting `scan-progress` / `scan-state-changed` events with cancel token)
 - `persist/` — `config.rs` (`AppConfig` → `{app_data_dir}/config.json`), `session.rs` (`SessionState` per-field defaults → `{app_data_dir}/session.json`)
 - `playlist/` — owner of the playlist and of everything that advances it: `generate.rs` (random selection with jingle/commercial interleaving, every-4 / every-8), `engine.rs` (the pure state machine — queueing, advancement, outage skip-to-cached, refill, stop markers — returning effects), `model.rs` (wire types incl. the `program:playlist-state` snapshot), `service.rs` (effects → deck commands, play counts, prefetch window, retry timers)
@@ -37,7 +37,9 @@ Tauri 2 app. Two process boundaries: a Rust backend and a Svelte 5 / Vite render
 
 ## Key Patterns
 
-**Audio playback:** in-process Rust player. Renderer calls `player_load(trackId)`; the Rust worker thread decodes via symphonia, emits time/duration/pause-state/ended/error events. No browser `<audio>` element, no `media://` protocol, no transcoder.
+**Audio playback:** in-process Rust decks. The playlist loads tracks onto the main deck; the worker thread decodes via symphonia and emits time/duration/pause-state/ended/error events. No browser `<audio>` element, no `media://` protocol, no transcoder.
+
+**Program bus:** every on-air deck is a `Sink` on one shared `OutputStream` mixer, driven by a single worker thread, so two decks can be audible at once (the precondition for handover). Deck events are **role-mapped**: whichever deck holds `main` emits `main-deck:*`, the armed one emits `arm-deck:*` — the renderer, broadcast service and now-playing webhook never learn which physical deck is on air. Roles are static today (slot A is `main`); handover is a later increment. The cue deck is deliberately off the bus with its own stream, thread and `cue:*` topics. See `docs/program-bus.md`.
 
 **Search:** FTS5 virtual table on title/artist/album/genre. Triggers keep FTS in sync with tracks table. Query tokenized as prefix match: `foo bar` → `"foo"* "bar"*`.
 
