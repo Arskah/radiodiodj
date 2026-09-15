@@ -27,7 +27,7 @@ walkdir = "=2.5.0"
 lofty = "=0.25.0"
 base64 = "=0.23.1"
 tokio = { version = "=1.53.1", features = ["rt", "sync", "time"] }
-log = "=0.4.33"
+log = "=0.4.34"
 rodio = { version = "=0.21.1", features = ["symphonia-aac", "symphonia-isomp4"] }
 cpal = "=0.16.0"
 reqwest = { version = "=0.13.4", default-features = false, features = ["json", "rustls"] }
