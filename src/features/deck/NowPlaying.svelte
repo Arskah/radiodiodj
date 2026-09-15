@@ -11,9 +11,6 @@
     return ((clientX - rect.left) / rect.width) * 100;
   }
 
-  // Main deck is on air: a single misclick must never move the playhead (#354).
-  // Hovering only previews the target; seeking takes a deliberate double click.
-  // The cue deck keeps click-and-drag scrubbing — it is off air.
   function onDoubleClick(e: MouseEvent): void {
     app.seekToPct(pctFromClientX(e.clientX) / 100);
   }

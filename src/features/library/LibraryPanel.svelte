@@ -156,9 +156,6 @@
           >
             <span class="material-symbols-outlined">edit</span>
           </button>
-          <!-- Adding to the playlist is the library's primary action, so it sits
-               rightmost. Putting a track straight on air was removed here (#354);
-               program output is reachable only through the playlist. -->
           <button
             class="btn-add"
             title="Add to playlist"

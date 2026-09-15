@@ -749,8 +749,6 @@ body {
   flex: 1;
   min-width: 0;
   min-height: 56px;
-  /* Seeking here takes a double click (#354); stop that from selecting the
-     time pill text. */
   user-select: none;
 }
 
