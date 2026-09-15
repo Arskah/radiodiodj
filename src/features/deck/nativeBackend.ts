@@ -24,12 +24,12 @@ function ipcFor(deckId: DeckId): DeckIpc {
 export class NativeBackend implements DeckBackend {
   private handlers = new Set<DeckEventHandler>();
   private unlisteners: UnlistenFn[] = [];
-  private ready: Promise<void>;
+  private subscribed: Promise<void>;
   private ipc: DeckIpc;
 
   constructor(deckId: DeckId = "main") {
     this.ipc = ipcFor(deckId);
-    this.ready = this.subscribe();
+    this.subscribed = this.subscribe();
   }
 
   private async subscribe(): Promise<void> {
@@ -67,8 +67,12 @@ export class NativeBackend implements DeckBackend {
     this.unlisteners.push(...subs);
   }
 
+  whenReady(): Promise<void> {
+    return this.subscribed;
+  }
+
   async load(trackId: number): Promise<void> {
-    await this.ready;
+    await this.subscribed;
     await invoke<void>(`${this.ipc.commandPrefix}_load`, { id: trackId });
   }
 

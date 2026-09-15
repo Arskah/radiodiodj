@@ -31,7 +31,7 @@ beforeEach(() => {
 describe("NativeBackend (deckId='main' default)", () => {
   it("subscribes to main-deck:* event topics on construction", async () => {
     const b = new NativeBackend();
-    await b.load(1); // awaits ready
+    await b.whenReady();
     const topics = listen.mock.calls.map((c) => c[0]);
     expect(topics).toEqual(
       expect.arrayContaining([
@@ -47,8 +47,7 @@ describe("NativeBackend (deckId='main' default)", () => {
 
   it("invokes main_deck_* commands", async () => {
     const b = new NativeBackend();
-    await b.load(7);
-    expect(invoke).toHaveBeenCalledWith("main_deck_load", { id: 7 });
+    await b.whenReady();
     await b.play();
     expect(invoke).toHaveBeenCalledWith("main_deck_play");
     await b.pause();
@@ -67,7 +66,7 @@ describe("NativeBackend (deckId='main' default)", () => {
     const b = new NativeBackend();
     const events: DeckEvent[] = [];
     b.on((e) => events.push(e));
-    await b.load(1); // ensure ready
+    await b.whenReady();
     listeners["main-deck:time"]({ payload: 12.5 });
     listeners["main-deck:duration"]({ payload: 200 });
     listeners["main-deck:pause-state"]({ payload: true });
@@ -86,7 +85,7 @@ describe("NativeBackend (deckId='main' default)", () => {
     const b = new NativeBackend();
     const events: DeckEvent[] = [];
     b.on((e) => events.push(e));
-    await b.load(1); // ensure ready
+    await b.whenReady();
     listeners["main-deck:buffering"]({ payload: true });
     listeners["main-deck:buffering"]({ payload: false });
     expect(events).toEqual([
@@ -99,7 +98,7 @@ describe("NativeBackend (deckId='main' default)", () => {
     const b = new NativeBackend();
     const events: DeckEvent[] = [];
     b.on((e) => events.push(e));
-    await b.load(1); // ensure ready
+    await b.whenReady();
     listeners["main-deck:cache-state"]({ payload: [1, 2, 3] });
     expect(events).toEqual([{ type: "cache-state", ids: [1, 2, 3] }]);
   });
@@ -108,7 +107,7 @@ describe("NativeBackend (deckId='main' default)", () => {
     const b = new NativeBackend();
     const events: DeckEvent[] = [];
     b.on((e) => events.push(e));
-    await b.load(1); // ensure ready
+    await b.whenReady();
     listeners["main-deck:load-failed"]({ payload: 99 });
     expect(events).toEqual([{ type: "load-failed", id: 99 }]);
   });

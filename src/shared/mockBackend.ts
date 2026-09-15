@@ -18,6 +18,10 @@ export class MockBackend implements DeckBackend {
 
   private handlers = new Set<DeckEventHandler>();
 
+  whenReady(): Promise<void> {
+    return Promise.resolve();
+  }
+
   async load(trackId: number): Promise<void> {
     this.loadedIds.push(trackId);
     if (this.loadShouldReject) throw new Error("load failed");

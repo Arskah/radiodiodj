@@ -7,9 +7,9 @@ pnpm dev                                          # tauri dev (Vite HMR for rend
 pnpm build                                        # tauri build → src-tauri/target/release/bundle/<format>/
 pnpm typecheck                                    # svelte-check + tsc on tsconfig.node.json
 pnpm test                                         # vitest watch
-pnpm test -- run                                  # vitest single run (62 renderer tests)
+pnpm test -- run                                  # vitest single run (129 renderer tests)
 pnpm e2e                                          # tauri-driver + WebdriverIO (Linux only — see e2e/README.md)
-cargo test --manifest-path src-tauri/Cargo.toml   # 24 backend tests (db, scanner, session, playlist, config)
+cargo test --manifest-path src-tauri/Cargo.toml   # 157 backend tests (db, scanner, session, playlist, player, config)
 pnpm lint                                         # eslint
 pnpm format                                       # prettier --write .
 pnpm format:check                                 # prettier --check .
@@ -26,13 +26,13 @@ Tauri 2 app. Two process boundaries: a Rust backend and a Svelte 5 / Vite render
 - `audio/` — `formats.rs` (supported extension table), `player.rs` (rodio `Sink` on a worker thread driven by `mpsc::Sender<Cmd>`; symphonia decoders for mp3/flac/vorbis/wav/aac/m4a; emits `player:time` (10 Hz) / `player:duration` / `player:pause-state` / `player:ended` / `player:error`)
 - `library/` — `db.rs` (rusqlite + FTS5, WAL, `parking_lot::Mutex<Connection>`, `user_version` migrations), `scanner.rs` + `scan_state.rs` (recursive walkdir scan, `lofty` tag extraction, mtime+content_type delta cache, background worker thread emitting `scan-progress` / `scan-state-changed` events with cancel token)
 - `persist/` — `config.rs` (`AppConfig` → `{app_data_dir}/config.json`), `session.rs` (`SessionState` per-field defaults → `{app_data_dir}/session.json`)
-- `playlist.rs` — random selection with jingle/commercial interleaving (every-4 / every-8)
+- `playlist/` — owner of the playlist and of everything that advances it: `generate.rs` (random selection with jingle/commercial interleaving, every-4 / every-8), `engine.rs` (the pure state machine — queueing, advancement, outage skip-to-cached, refill, stop markers — returning effects), `model.rs` (wire types incl. the `program:playlist-state` snapshot), `service.rs` (effects → deck commands, play counts, prefetch window, retry timers)
 
 **Frontend** (`src/`) — Vite root + Tauri Svelte template convention:
 
 - `main.ts` — app entry; mounts Svelte, hooks Tauri `onCloseRequested` to await `flushSave()` before `win.destroy()`
 - `App.svelte` — top-level UI tree
-- `shared/` — `types.ts`, `api.ts` (typed `invoke()` wrapper, folder picker via `@tauri-apps/plugin-dialog`), `state.svelte.ts` (Svelte 5 `$state` store, talks to backend via `PlayerBackend`), colocated `state.test.ts` + `mockBackend.ts`
+- `shared/` — `types.ts`, `api.ts` (typed `invoke()` wrapper, folder picker via `@tauri-apps/plugin-dialog`), `state.svelte.ts` (Svelte 5 `$state` store; deck transport via `DeckTransport`, playlist state mirrored from backend snapshots), colocated `state.test.ts` + `mockBackend.ts` + `mockPlaylist.ts`
 - `features/<feature>/` — one folder per UI feature: `library/`, `playlist/`, `player/` (NowPlaying.svelte + CueDeck.svelte + backend.ts + nativeBackend.ts), `scan/`, `settings/` (SettingsOverlay.svelte — Library + Audio tabs), `toolbar/`, `track/`
 
 ## Key Patterns
@@ -43,7 +43,9 @@ Tauri 2 app. Two process boundaries: a Rust backend and a Svelte 5 / Vite render
 
 **Scan + prune:** On scan, the scan worker walks the configured paths, deletes DB rows whose path no longer falls under any configured library path, then upserts present files. Empty paths array → all tracks deleted.
 
-**Auto-playlist:** Toggle mode that maintains a 5-track lookahead buffer. Refills from random DB selection when running low.
+**Playlist ownership:** the backend owns the playlist, what is on air, and advancement. The renderer sends `playlist_*` commands and mirrors the `program:playlist-state` snapshot that comes back — it keeps no playlist of its own. History is the one exception: a renderer-side display log fed by each snapshot's `displaced` track. See `docs/backend-owned-playlist.md`.
+
+**Auto-playlist:** Toggle mode that keeps a lookahead buffer queued, refilling from random DB selection when it drops below the threshold. Runs in `playlist::engine` alongside advancement, so a refill and the track change that triggered it are one transition.
 
 **Seek:** `audio/player.rs` reloads the source on seek and prefers `Source::try_seek` (container-level binary search). Fallback is `skip_duration` (sample iteration). `seek_offset + sink.get_pos()` keeps `player:time` accurate.
 

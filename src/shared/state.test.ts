@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MockBackend } from "./mockBackend";
+import { MockPlaylistBackend } from "./mockPlaylist";
 
 const { api } = vi.hoisted(() => {
   const api = {
@@ -12,9 +13,22 @@ const { api } = vi.hoisted(() => {
     loadSession: vi.fn(),
     saveSession: vi.fn(),
     trackPlayed: vi.fn(),
-    prefetch: vi.fn(),
-    generatePlaylist: vi.fn(),
-    pickFiller: vi.fn(),
+    playlistSync: vi.fn(),
+    onPlaylistState: vi.fn(),
+    playlistAdd: vi.fn(),
+    playlistAddFront: vi.fn(),
+    playlistAddStopMarker: vi.fn(),
+    playlistAddFiller: vi.fn(),
+    playlistRemove: vi.fn(),
+    playlistMove: vi.fn(),
+    playlistClear: vi.fn(),
+    playlistPlayIndex: vi.fn(),
+    playlistPlayNow: vi.fn(),
+    playlistNext: vi.fn(),
+    playlistPrev: vi.fn(),
+    playlistStop: vi.fn(),
+    playlistSetAutoPlaylist: vi.fn(),
+    playlistSetAutoAdvance: vi.fn(),
     getStats: vi.fn(),
     getPaths: vi.fn(),
     getAllPaths: vi.fn(),
@@ -99,27 +113,40 @@ vi.mock("../features/deck/nativeBackend", () => ({
 
 import { AppState, formatTime, type Track } from "./state.svelte";
 import type { ScanStatus } from "./api";
-import { isTrackItem, type PlaylistItem } from "./types";
+import { isTrackItem, stopMarker, trackItem, type PlaylistItem } from "./types";
 
 const pid = (i: PlaylistItem): number | "STOP" =>
   isTrackItem(i) ? i.track.id : "STOP";
 
-const t = (id: number, extra: Partial<Track> = {}): Track => ({
-  id,
-  title: `t${id}`,
-  artist: `a${id}`,
-  album: `al${id}`,
-  duration: 100,
-  play_count: 0,
-  ...extra,
-});
+// Stands in for the library the backend resolves ids against: the playlist
+// commands carry ids, so every track a test invents has to be findable by one.
+const library = new Map<number, Track>();
+
+const t = (id: number, extra: Partial<Track> = {}): Track => {
+  const track: Track = {
+    id,
+    title: `t${id}`,
+    artist: `a${id}`,
+    album: `al${id}`,
+    duration: 100,
+    play_count: 0,
+    ...extra,
+  };
+  library.set(id, track);
+  return track;
+};
+
+const known = (id: number): Track => {
+  const track = library.get(id);
+  if (!track) throw new Error(`test track ${id} was never created`);
+  return track;
+};
 
 function resetApi(): void {
   vi.clearAllMocks();
+  library.clear();
   api.search.mockResolvedValue([]);
   api.trackPlayed.mockResolvedValue(undefined);
-  api.prefetch.mockResolvedValue(undefined);
-  api.generatePlaylist.mockResolvedValue([]);
   api.getStats.mockResolvedValue({
     totalTracks: 0,
     totalArtists: 0,
@@ -176,6 +203,59 @@ interface TestApp {
   app: AppState;
   mock: MockBackend;
   cueMock: MockBackend;
+  playlist: MockPlaylistBackend;
+}
+
+/**
+ * Point the playlist half of the api at an in-memory backend, so a command sent
+ * by `AppState` comes back as a snapshot and the projection is exercised end to
+ * end — the same shape as the real IPC round-trip.
+ */
+function wirePlaylist(playlist: MockPlaylistBackend): void {
+  const ok = (run: () => void) => {
+    run();
+    return Promise.resolve();
+  };
+  api.onPlaylistState.mockImplementation((cb: (s: unknown) => void) =>
+    Promise.resolve(playlist.on(cb as never)),
+  );
+  api.playlistSync.mockImplementation(() =>
+    Promise.resolve(playlist.snapshot()),
+  );
+  api.playlistAdd.mockImplementation((id: number) =>
+    ok(() => playlist.add(known(id))),
+  );
+  api.playlistAddFront.mockImplementation((id: number) =>
+    ok(() => playlist.addFront(known(id))),
+  );
+  api.playlistAddStopMarker.mockImplementation(() =>
+    ok(() => playlist.addStopMarker()),
+  );
+  api.playlistAddFiller.mockResolvedValue(undefined);
+  api.playlistRemove.mockImplementation((index: number) =>
+    ok(() => playlist.remove(index)),
+  );
+  api.playlistMove.mockImplementation((from: number, to: number) =>
+    ok(() => playlist.move(from, to)),
+  );
+  api.playlistClear.mockImplementation(() => ok(() => playlist.clear()));
+  api.playlistPlayIndex.mockImplementation((index: number) =>
+    ok(() => playlist.playIndex(index)),
+  );
+  api.playlistPlayNow.mockImplementation((id: number) =>
+    ok(() => playlist.playNow(known(id))),
+  );
+  api.playlistNext.mockImplementation(() => ok(() => playlist.next()));
+  api.playlistPrev.mockImplementation((id: number) =>
+    ok(() => playlist.prev(known(id))),
+  );
+  api.playlistStop.mockImplementation(() => ok(() => playlist.stop()));
+  api.playlistSetAutoPlaylist.mockImplementation((active: boolean) =>
+    ok(() => playlist.setAutoPlaylist(active)),
+  );
+  api.playlistSetAutoAdvance.mockImplementation((active: boolean) =>
+    ok(() => playlist.setAutoAdvance(active)),
+  );
 }
 
 function makeApp(): TestApp {
@@ -183,8 +263,10 @@ function makeApp(): TestApp {
   document.title = "RadiodioDJ";
   const mock = new MockBackend();
   const cueMock = new MockBackend();
+  const playlist = new MockPlaylistBackend();
+  wirePlaylist(playlist);
   const app = new AppState(mock, cueMock);
-  return { app, mock, cueMock };
+  return { app, mock, cueMock, playlist };
 }
 
 async function flushAsync(): Promise<void> {
@@ -219,19 +301,24 @@ describe("AppState playlist mutations", () => {
     expect(pid(app.playlist[1])).toBe(2);
   });
 
-  it("removeFromPlaylist splices the entry without touching currentTrack", () => {
+  it("addToPlaylist forwards the track id, not the track", () => {
+    app.addToPlaylist(t(1));
+    expect(api.playlistAdd).toHaveBeenCalledWith(1);
+  });
+
+  it("removeFromPlaylist splices the entry without touching the track on air", () => {
+    app.playNow(t(99));
     app.addToPlaylist(t(1));
     app.addToPlaylist(t(2));
     app.addToPlaylist(t(3));
-    app.currentTrack = t(99);
     app.removeFromPlaylist(0);
     expect(app.playlist.map(pid)).toEqual([2, 3]);
     expect(app.currentTrack?.id).toBe(99);
   });
 
-  it("clearPlaylist empties the queue but leaves currentTrack playing", () => {
+  it("clearPlaylist empties the queue but leaves the track on air playing", () => {
+    app.playNow(t(99));
     app.addToPlaylist(t(1));
-    app.currentTrack = t(99);
     app.clearPlaylist();
     expect(app.playlist.length).toBe(0);
     expect(app.currentTrack?.id).toBe(99);
@@ -249,7 +336,13 @@ describe("AppState playlist mutations", () => {
     app.addToPlaylist(t(1));
     app.addToPlaylist(t(2));
     app.movePlaylistItem(0, 0);
+    expect(api.playlistMove).not.toHaveBeenCalled();
     expect(app.playlist.map(pid)).toEqual([1, 2]);
+  });
+
+  it("addFiller asks the backend to pick one of that content type", async () => {
+    await app.addFiller("jingle");
+    expect(api.playlistAddFiller).toHaveBeenCalledWith("jingle");
   });
 });
 
@@ -271,7 +364,7 @@ describe("AppState history view", () => {
 
   it("history caps at 100 entries, dropping the oldest", () => {
     for (let i = 0; i < 100; i++) app.history.push(t(i));
-    app.currentTrack = t(500);
+    app.playNow(t(500));
     app.playNow(t(999));
     expect(app.history.length).toBe(100);
     expect(app.history[0].id).toBe(1);
@@ -295,7 +388,7 @@ describe("AppState history view", () => {
 
   it("clearHistory empties history without touching playback", () => {
     app.history.push(t(1), t(2));
-    app.currentTrack = t(99);
+    app.playNow(t(99));
     app.clearHistory();
     expect(app.history.length).toBe(0);
     expect(app.currentTrack?.id).toBe(99);
@@ -326,10 +419,9 @@ describe("AppState playback control", () => {
   it("playIndex pulls track out of playlist into currentTrack and plays it", () => {
     app.addToPlaylist(t(7, { title: "Song", artist: "Band" }));
     app.playIndex(0);
+    expect(api.playlistPlayIndex).toHaveBeenCalledWith(0);
     expect(app.currentTrack?.id).toBe(7);
     expect(app.playlist.length).toBe(0);
-    expect(mock.lastLoadedId).toBe(7);
-    expect(api.trackPlayed).toHaveBeenCalledWith(7);
     expect(document.title).toBe("Song - Band | RadiodioDJ");
   });
 
@@ -348,8 +440,8 @@ describe("AppState playback control", () => {
 
   it("playIndex out of range is a no-op", () => {
     app.playIndex(0);
+    expect(api.playlistPlayIndex).not.toHaveBeenCalled();
     expect(app.currentTrack).toBeNull();
-    expect(api.trackPlayed).not.toHaveBeenCalled();
   });
 
   it("playNow plays directly without enqueuing", () => {
@@ -367,17 +459,18 @@ describe("AppState playback control", () => {
   });
 
   it("next is a no-op when playlist empty", () => {
-    app.currentTrack = t(99);
+    app.playNow(t(99));
     app.next();
     expect(app.currentTrack?.id).toBe(99);
   });
 
   it("prev after 3s seeks to start of current track", () => {
-    app.currentTrack = t(1);
+    app.playNow(t(1));
     app.currentTime = 5;
     app.prev();
     expect(app.currentTime).toBe(0);
     expect(mock.lastSeek).toBe(0);
+    expect(api.playlistPrev).not.toHaveBeenCalled();
     expect(app.currentTrack?.id).toBe(1);
   });
 
@@ -413,7 +506,7 @@ describe("AppState playback control", () => {
   });
 
   it("prev within 3s with empty history just restarts current", () => {
-    app.currentTrack = t(1);
+    app.playNow(t(1));
     app.currentTime = 1;
     app.prev();
     expect(app.currentTime).toBe(0);
@@ -433,7 +526,6 @@ describe("AppState playback control", () => {
     app.addToPlaylist(t(3));
     app.togglePlay();
     expect(app.currentTrack?.id).toBe(3);
-    expect(api.trackPlayed).toHaveBeenCalledWith(3);
   });
 
   it("toggleMode flips autoAdvance", () => {
@@ -452,18 +544,21 @@ describe("AppState playback control", () => {
   });
 
   it("toggleAutoPlaylist deactivates without touching playback", async () => {
-    app.autoPlaylistActive = true;
+    app.addToPlaylist(t(9));
+    await app.toggleAutoPlaylist();
+    expect(app.autoPlaylistActive).toBe(true);
     await app.toggleAutoPlaylist();
     expect(app.autoPlaylistActive).toBe(false);
+    expect(app.currentTrack?.id).toBe(9);
   });
 
-  it("stop clears currentTrack, autoPlaylist flag, time/duration and title, and pushes to history", () => {
+  it("stop clears currentTrack, autoPlaylist flag, time/duration and title, and pushes to history", async () => {
     app.addToPlaylist(t(5));
     app.addToPlaylist(t(6));
     app.playIndex(0);
     app.playIndex(0);
     expect(app.history.length).toBe(1);
-    app.autoPlaylistActive = true;
+    await app.toggleAutoPlaylist();
     app.currentTime = 12;
     app.duration = 200;
     app.stop();
@@ -473,7 +568,6 @@ describe("AppState playback control", () => {
     expect(app.currentTime).toBe(0);
     expect(app.duration).toBe(0);
     expect(document.title).toBe("RadiodioDJ");
-    expect(mock.stopCalls).toBeGreaterThan(0);
   });
 
   it("setVolume updates state and backend", () => {
@@ -646,162 +740,54 @@ describe("AppState backend events", () => {
     expect(app.isPlaying).toBe(false);
   });
 
-  it("ended event triggers auto-advance when enabled", async () => {
+  it("ended is the backend's business now, not the renderer's", async () => {
     app.addToPlaylist(t(1));
     app.addToPlaylist(t(2));
     app.playIndex(0);
     expect(app.currentTrack?.id).toBe(1);
+    // The backend listens to the same `main-deck:ended` topic and advances off
+    // it. A renderer that also advanced would double-skip.
     mock.emitEnded();
     await flushAsync();
-    expect(app.currentTrack?.id).toBe(2);
+    expect(app.currentTrack?.id).toBe(1);
+    expect(api.playlistNext).not.toHaveBeenCalled();
+    expect(api.playlistPlayIndex).toHaveBeenCalledTimes(1);
   });
 
-  it("ended event stops playback when autoAdvance is false", async () => {
+  it("load-failed clears buffering without advancing", async () => {
     app.addToPlaylist(t(1));
     app.addToPlaylist(t(2));
     app.playIndex(0);
-    app.autoAdvance = false;
-    mock.emitEnded();
+    app.isBuffering = true;
+    mock.emitLoadFailed(1);
     await flushAsync();
-    expect(app.currentTrack).toBeNull();
-  });
-
-  it("cache-state event populates cachedIds as a Set", () => {
-    expect(app.cachedIds.size).toBe(0);
-    mock.emitCacheState([3, 7, 9]);
-    expect([...app.cachedIds].sort((a, b) => a - b)).toEqual([3, 7, 9]);
-    mock.emitCacheState([7]);
-    expect([...app.cachedIds]).toEqual([7]);
+    expect(app.isBuffering).toBe(false);
+    expect(app.currentTrack?.id).toBe(1);
+    expect(api.playlistNext).not.toHaveBeenCalled();
   });
 });
 
-describe("AppState outage recovery (skip-to-cached)", () => {
+describe("AppState outage indicators", () => {
   let app: AppState;
   let mock: MockBackend;
   let cueMock: MockBackend;
+  let playlist: MockPlaylistBackend;
   beforeEach(() => {
     resetApi();
-    ({ app, mock, cueMock } = makeApp());
+    ({ app, mock, cueMock, playlist } = makeApp());
   });
 
-  it("on ended, skips an uncached track to the first cached one and keeps the skipped track queued", async () => {
-    app.addToPlaylist(t(1));
-    app.addToPlaylist(t(2));
-    app.addToPlaylist(t(3));
-    app.playIndex(0); // current = 1, playlist = [2, 3]
-    await flushAsync();
-    mock.emitCacheState([3]); // 2 uncached, 3 cached
-    mock.emitEnded();
-    await flushAsync();
-    expect(app.currentTrack?.id).toBe(3);
-    expect(mock.lastLoadedId).toBe(3);
-    // The skipped, still-uncached track stays queued for when the share recovers.
-    expect(app.playlist.map(pid)).toEqual([2]);
-    expect(app.awaitingNetwork).toBe(false);
-  });
+  // Skip-to-cached advancement, the retry backoff and the prefetch window moved
+  // to the backend with the playlist; they are specified by `playlist::engine`.
+  // What is left here is what the renderer still decides: how an outage looks.
 
-  it("waits with a reconnecting banner when nothing upcoming is cached, then resumes on cache-state", async () => {
-    app.addToPlaylist(t(1));
-    app.addToPlaylist(t(2));
-    app.playIndex(0); // current = 1, playlist = [2]
-    await flushAsync();
-    mock.emitCacheState([9]); // nothing in the queue is cached
-    mock.emitEnded();
-    await flushAsync();
+  it("awaitingNetwork is mirrored from the snapshot and raises the banner", () => {
+    expect(app.reconnecting).toBe(false);
+    playlist.setAwaitingNetwork(true);
     expect(app.awaitingNetwork).toBe(true);
-    expect(app.currentTrack?.id).toBe(1); // did not advance
-    expect(mock.loadedIds).toEqual([1]); // no doomed load of track 2
-
-    mock.emitCacheState([2]); // share recovered, track 2 now cached
-    await flushAsync();
-    expect(app.awaitingNetwork).toBe(false);
-    expect(app.currentTrack?.id).toBe(2);
-    expect(mock.lastLoadedId).toBe(2);
-  });
-
-  it("on load-failed, skips to the next cached track", async () => {
-    app.addToPlaylist(t(5));
-    app.addToPlaylist(t(6));
-    app.playIndex(0); // current = 5, playlist = [6]
-    await flushAsync();
-    mock.emitCacheState([6]);
-    mock.emitLoadFailed(5);
-    await flushAsync();
-    expect(app.currentTrack?.id).toBe(6);
-    expect(mock.lastLoadedId).toBe(6);
-  });
-
-  it("on load-failed with no cache knowledge (cold offline start), waits instead of burning the queue", async () => {
-    app.addToPlaylist(t(1));
-    app.addToPlaylist(t(2));
-    app.playIndex(0); // current = 1, playlist = [2]
-    await flushAsync();
-    // cachedIds is empty (never received a cache-state) — a failed head load
-    // must not blindly advance through the queue.
-    mock.emitLoadFailed(1);
-    await flushAsync();
-    expect(app.awaitingNetwork).toBe(true);
-    expect(app.playlist.map(pid)).toEqual([2]);
-    expect(mock.loadedIds).toEqual([1]);
-
-    // Recovery clears the wait and cancels the pending retry timer.
-    mock.emitCacheState([2]);
-    await flushAsync();
-    expect(app.awaitingNetwork).toBe(false);
-    expect(app.currentTrack?.id).toBe(2);
-  });
-
-  it("manual next during an outage wait cancels the pending retry (no skip after load)", async () => {
-    vi.useFakeTimers();
-    try {
-      app.addToPlaylist(t(1));
-      app.addToPlaylist(t(2));
-      app.addToPlaylist(t(3));
-      app.playIndex(0); // current = 1, playlist = [2, 3]
-      await vi.advanceTimersByTimeAsync(0);
-      mock.emitCacheState([9]); // nothing upcoming cached → outage
-      mock.emitEnded();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(app.awaitingNetwork).toBe(true);
-      expect(app.currentTrack?.id).toBe(1);
-
-      // User clicks next → track 2 loads directly; the pending retry is dropped.
-      app.next();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(app.currentTrack?.id).toBe(2);
-      expect(app.awaitingNetwork).toBe(false);
-
-      // Share recovers: track 3 is cached and the old backoff would have fired.
-      // Neither must skip the track the user just started.
-      mock.emitCacheState([3]);
-      await vi.advanceTimersByTimeAsync(6000);
-      expect(app.currentTrack?.id).toBe(2);
-      expect(mock.lastLoadedId).toBe(2);
-      expect(app.playlist.map(pid)).toEqual([3]);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("re-kicks prefetch on each retry tick so recovery needs no manual next", async () => {
-    vi.useFakeTimers();
-    try {
-      app.addToPlaylist(t(1));
-      app.addToPlaylist(t(2));
-      app.playIndex(0); // current = 1, playlist = [2]
-      await vi.advanceTimersByTimeAsync(0);
-      mock.emitCacheState([9]); // nothing upcoming cached → outage
-      mock.emitEnded();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(app.awaitingNetwork).toBe(true);
-      api.prefetch.mockClear();
-
-      // The backoff tick re-pushes the prefetch window to wake the cache worker.
-      await vi.advanceTimersByTimeAsync(1000);
-      expect(api.prefetch).toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(app.reconnecting).toBe(true);
+    playlist.setAwaitingNetwork(false);
+    expect(app.reconnecting).toBe(false);
   });
 
   it("prefetch-failed flags the share unreachable while playback continues, cleared on cache-state", async () => {
@@ -846,38 +832,6 @@ describe("AppState outage recovery (skip-to-cached)", () => {
 
     cueMock.emitOutputUnavailable(false);
     expect(app.cueOutputUnavailable).toBe(false);
-  });
-});
-
-describe("AppState prefetch window", () => {
-  let app: AppState;
-  beforeEach(() => {
-    resetApi();
-    app = makeApp().app;
-  });
-
-  it("prefetches upcoming playlist track ids after a mutation", () => {
-    app.addToPlaylist(t(1));
-    app.addToPlaylist(t(2));
-    expect(api.prefetch).toHaveBeenLastCalledWith([1, 2]);
-  });
-
-  it("prepends the current track id and skips stop markers", () => {
-    app.addToPlaylist(t(1));
-    app.addToPlaylist(t(2));
-    app.addToPlaylist(t(3));
-    // playIndex(0) removes t(1) and makes it current; playlist is [2, 3].
-    app.playIndex(0);
-    app.addStopMarker();
-    expect(api.prefetch).toHaveBeenLastCalledWith([1, 2, 3]);
-  });
-
-  it("prefetches the whole playlist, in order, with no count cap", () => {
-    for (let i = 1; i <= 20; i++) app.addToPlaylist(t(i));
-    const last = api.prefetch.mock.calls.at(-1)?.[0] as number[];
-    expect(last).toHaveLength(20);
-    expect(last[0]).toBe(1);
-    expect(last[19]).toBe(20);
   });
 });
 
@@ -1022,19 +976,6 @@ describe("AppState tuning", () => {
     expect(app.tuning.autoPlaylist.autoPlaylistBuffer).toBe(8);
   });
 
-  it("loaded buffer/threshold drive refill sizing", async () => {
-    const cfg = defaultTuning();
-    cfg.autoPlaylist.autoPlaylistBuffer = 8;
-    cfg.autoPlaylist.autoPlaylistThreshold = 3;
-    api.getTuningConfig.mockResolvedValueOnce(cfg);
-    api.generatePlaylist.mockResolvedValue([]);
-    await app.loadTuning();
-
-    app.autoPlaylistActive = true;
-    await app.maybeRefillPlaylist();
-    expect(api.generatePlaylist).toHaveBeenCalledWith(8, []);
-  });
-
   it("loadTuning keeps defaults when the backend errors", async () => {
     api.getTuningConfig.mockRejectedValueOnce(new Error("boom"));
     await app.loadTuning();
@@ -1057,61 +998,10 @@ describe("AppState tuning", () => {
   });
 });
 
-describe("AppState auto-playlist refill", () => {
-  let app: AppState;
-  const bufferSize = 20;
-  const generateTracks = (start: number, count: number): Track[] =>
-    Array.from({ length: count }, (_, i) => t(start + i));
-
-  beforeEach(() => {
-    resetApi();
-    api.generatePlaylist.mockResolvedValue(generateTracks(0, bufferSize));
-    app = makeApp().app;
-  });
-
-  it("does nothing when auto-playlist is inactive", async () => {
-    await app.maybeRefillPlaylist();
-    expect(api.generatePlaylist).not.toHaveBeenCalled();
-  });
-
-  it("fills empty playlist up to the buffer", async () => {
-    app.autoPlaylistActive = true;
-    await app.maybeRefillPlaylist();
-    expect(api.generatePlaylist).toHaveBeenCalledWith(bufferSize, []);
-    expect(app.playlist.length).toBe(bufferSize);
-  });
-
-  it("requests only the deficit when partially full", async () => {
-    app.autoPlaylistActive = true;
-    app.addToPlaylist(t(1));
-    app.addToPlaylist(t(2));
-    app.addToPlaylist(t(3));
-    app.addToPlaylist(t(4));
-
-    api.generatePlaylist.mockResolvedValueOnce(
-      generateTracks(10, bufferSize - 4),
-    );
-    await app.maybeRefillPlaylist();
-    expect(api.generatePlaylist).toHaveBeenCalledWith(
-      bufferSize - 4,
-      [1, 2, 3, 4],
-    );
-    expect(app.playlist.length).toBe(bufferSize);
-  });
-
-  it("does nothing when remaining threshold is already met", async () => {
-    const threshold = 5;
-    app.autoPlaylistActive = true;
-    const initialTracks = generateTracks(0, threshold);
-    initialTracks.forEach((track) => app.addToPlaylist(track));
-    await app.maybeRefillPlaylist();
-    expect(api.generatePlaylist).not.toHaveBeenCalled();
-  });
-});
-
 describe("AppState session persistence", () => {
   let app: AppState;
   let mock: MockBackend;
+  let playlist: MockPlaylistBackend;
 
   beforeEach(() => {
     resetApi();
@@ -1122,7 +1012,7 @@ describe("AppState session persistence", () => {
     vi.useRealTimers();
   });
 
-  it("loadSession hydrates playlist, history, current track and flags", async () => {
+  it("loadSession mirrors the backend's restored playlist and keeps history and position", async () => {
     api.loadSession.mockResolvedValueOnce({
       state: {
         playlistIds: [2, 3],
@@ -1138,7 +1028,16 @@ describe("AppState session persistence", () => {
       tracks: [t(1), t(2), t(3)],
     });
 
-    ({ app, mock } = makeApp());
+    ({ app, mock, playlist } = makeApp());
+    // The backend restored the same session file before the window opened, so
+    // the playlist, the track on the deck and the auto flags arrive over
+    // playlist_sync rather than out of the session payload.
+    playlist.restore({
+      playlist: [trackItem(t(2)), trackItem(t(3))],
+      current: t(2),
+      autoPlaylistActive: true,
+      autoAdvance: false,
+    });
     await app.loadSession();
 
     expect(app.playlist.map(pid)).toEqual([2, 3]);
@@ -1149,17 +1048,18 @@ describe("AppState session persistence", () => {
     // Master level is pinned to unity regardless of what the session held (#354).
     expect(app.volume).toBe(1);
     expect(mock.volume).toBe(1);
+    // Adopting a snapshot resets the clock; the saved position wins, because
+    // that is where the deck is actually parked.
     expect(app.currentTime).toBe(12.5);
-    expect(mock.lastLoadedId).toBe(2);
     expect(document.title).toBe("t2 - a2 | RadiodioDJ");
   });
 
-  it("loadSession drops missing track ids", async () => {
+  it("loadSession drops history ids the library no longer has", async () => {
     api.loadSession.mockResolvedValueOnce({
       state: {
         playlistIds: [1, 99, 2],
         playlistItems: [],
-        historyIds: [42],
+        historyIds: [42, 1],
         currentTrackId: 7,
         currentTime: 0,
         autoPlaylistActive: false,
@@ -1170,11 +1070,14 @@ describe("AppState session persistence", () => {
       tracks: [t(1), t(2)],
     });
 
-    ({ app, mock } = makeApp());
+    ({ app, mock, playlist } = makeApp());
+    // The backend dropped id 99 and the missing current track when it resolved
+    // the same file, so the snapshot is already clean.
+    playlist.restore({ playlist: [trackItem(t(1)), trackItem(t(2))] });
     await app.loadSession();
 
     expect(app.playlist.map(pid)).toEqual([1, 2]);
-    expect(app.history).toEqual([]);
+    expect(app.history.map((x) => x.id)).toEqual([1]);
     expect(app.currentTrack).toBeNull();
   });
 
@@ -1439,10 +1342,9 @@ describe("AppState session persistence with cue volume", () => {
 
 describe("AppState stop marker", () => {
   let app: AppState;
-  let mock: MockBackend;
   beforeEach(() => {
     resetApi();
-    ({ app, mock } = makeApp());
+    ({ app } = makeApp());
   });
 
   it("addStopMarker appends a stop sentinel", () => {
@@ -1451,32 +1353,17 @@ describe("AppState stop marker", () => {
     expect(pid(app.playlist[0])).toBe("STOP");
   });
 
-  it("playIndex on a stop marker stops playback and consumes the marker", () => {
+  it("playIndex on a stop marker stops playback and consumes the marker", async () => {
     app.addToPlaylist(t(1));
     app.playIndex(0);
     expect(app.currentTrack?.id).toBe(1);
     app.addStopMarker();
-    app.autoPlaylistActive = true;
+    await app.toggleAutoPlaylist();
     app.playIndex(0);
     expect(app.currentTrack).toBeNull();
     expect(app.playlist.length).toBe(0);
     expect(app.autoPlaylistActive).toBe(false);
-    expect(mock.stopCalls).toBeGreaterThan(0);
     expect(app.history.map((x) => x.id)).toEqual([1]);
-  });
-
-  it("ended event onto a stop marker halts auto-advance", async () => {
-    app.addToPlaylist(t(1));
-    app.addStopMarker();
-    app.addToPlaylist(t(2));
-    app.autoPlaylistActive = true;
-    app.playIndex(0);
-    expect(app.currentTrack?.id).toBe(1);
-    mock.emitEnded();
-    await flushAsync();
-    expect(app.currentTrack).toBeNull();
-    expect(app.playlist.map(pid)).toEqual([2]);
-    expect(app.autoPlaylistActive).toBe(false);
   });
 
   it("togglePlay from idle with stop marker at front consumes it without playing", () => {
@@ -1492,19 +1379,10 @@ describe("AppState stop marker", () => {
   it("next() advancing onto a stop marker halts", () => {
     app.addStopMarker();
     app.addToPlaylist(t(5));
-    app.currentTrack = t(99);
+    app.playNow(t(99));
     app.next();
     expect(app.currentTrack).toBeNull();
     expect(app.playlist.map(pid)).toEqual([5]);
-  });
-
-  it("maybeRefillPlaylist skips when any stop marker present", async () => {
-    api.generatePlaylist.mockResolvedValue([t(99)]);
-    app.autoPlaylistActive = true;
-    app.addStopMarker();
-    await app.maybeRefillPlaylist();
-    expect(api.generatePlaylist).not.toHaveBeenCalled();
-    expect(app.playlist.map(pid)).toEqual(["STOP"]);
   });
 
   it("history never contains stop markers", () => {
@@ -1544,48 +1422,13 @@ describe("AppState session persistence (stop markers)", () => {
     expect(arg.playlistIds).toEqual([1, 2]);
   });
 
-  it("loadSession rebuilds playlist from playlistItems including stops", async () => {
-    api.loadSession.mockResolvedValueOnce({
-      state: {
-        playlistIds: [],
-        playlistItems: [
-          { kind: "track", id: 1 },
-          { kind: "stop" },
-          { kind: "track", id: 2 },
-        ],
-        historyIds: [],
-        currentTrackId: null,
-        currentTime: 0,
-        autoPlaylistActive: false,
-        autoAdvance: true,
-        volume: 1,
-        cueVolume: 1,
-      },
-      tracks: [t(1), t(2)],
+  it("mirrors a restored playlist that still holds a stop marker", async () => {
+    const { app: a, playlist } = makeApp();
+    playlist.restore({
+      playlist: [trackItem(t(1)), stopMarker(), trackItem(t(2))],
     });
-    ({ app } = makeApp());
-    await app.loadSession();
-    expect(app.playlist.map(pid)).toEqual([1, "STOP", 2]);
-  });
-
-  it("loadSession falls back to legacy playlistIds when playlistItems empty", async () => {
-    api.loadSession.mockResolvedValueOnce({
-      state: {
-        playlistIds: [3, 4],
-        playlistItems: [],
-        historyIds: [],
-        currentTrackId: null,
-        currentTime: 0,
-        autoPlaylistActive: false,
-        autoAdvance: true,
-        volume: 1,
-        cueVolume: 1,
-      },
-      tracks: [t(3), t(4)],
-    });
-    ({ app } = makeApp());
-    await app.loadSession();
-    expect(app.playlist.map(pid)).toEqual([3, 4]);
+    await a.loadSession();
+    expect(a.playlist.map(pid)).toEqual([1, "STOP", 2]);
   });
 });
 

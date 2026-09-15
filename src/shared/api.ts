@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type {
   ContentType,
+  PlaylistItem,
   DeviceInfo,
   DeviceRef,
   LibraryStats,
@@ -33,6 +34,22 @@ export interface SessionPersistState {
 export interface SessionLoadResult {
   state: SessionPersistState;
   tracks: Track[];
+}
+
+/**
+ * Whole-playlist snapshot from the backend, which owns the playlist. Arrives on
+ * every mutation and every advance; the renderer mirrors it rather than keeping
+ * a playlist of its own. See `docs/backend-owned-playlist.md`.
+ */
+export interface PlaylistSnapshot {
+  playlist: PlaylistItem[];
+  current: Track | null;
+  /** The track that just left the main deck. The renderer appends it to history. */
+  displaced: Track | null;
+  autoPlaylistActive: boolean;
+  autoAdvance: boolean;
+  /** Playback is blocked waiting for the media share. Drives the reconnecting banner. */
+  awaitingNetwork: boolean;
 }
 
 export type ScanStatus =
@@ -87,14 +104,60 @@ export const api = {
   trackPlayed(id: number): Promise<void> {
     return invoke<void>("track_played", { id });
   },
-  prefetch(ids: number[]): Promise<void> {
-    return invoke<void>("main_deck_prefetch", { ids });
+  /** Current playlist state, for a renderer that has just started up. */
+  playlistSync(): Promise<PlaylistSnapshot> {
+    return invoke<PlaylistSnapshot>("playlist_sync");
   },
-  generatePlaylist(count: number, excludeIds: number[]): Promise<Track[]> {
-    return invoke<Track[]>("generate_playlist", { count, excludeIds });
+  onPlaylistState(
+    callback: (snapshot: PlaylistSnapshot) => void,
+  ): Promise<UnlistenFn> {
+    return listen<PlaylistSnapshot>("program:playlist-state", (e) =>
+      callback(e.payload),
+    );
   },
-  pickFiller(contentType: ContentType): Promise<Track | null> {
-    return invoke<Track | null>("pick_filler", { contentType });
+  playlistAdd(id: number): Promise<void> {
+    return invoke<void>("playlist_add", { id });
+  },
+  /** Insert at the head as next-up — cue promotion. */
+  playlistAddFront(id: number): Promise<void> {
+    return invoke<void>("playlist_add_front", { id });
+  },
+  playlistAddStopMarker(): Promise<void> {
+    return invoke<void>("playlist_add_stop_marker");
+  },
+  playlistAddFiller(contentType: ContentType): Promise<void> {
+    return invoke<void>("playlist_add_filler", { contentType });
+  },
+  playlistRemove(index: number): Promise<void> {
+    return invoke<void>("playlist_remove", { index });
+  },
+  playlistMove(from: number, to: number): Promise<void> {
+    return invoke<void>("playlist_move", { from, to });
+  },
+  playlistClear(): Promise<void> {
+    return invoke<void>("playlist_clear");
+  },
+  playlistPlayIndex(index: number): Promise<void> {
+    return invoke<void>("playlist_play_index", { index });
+  },
+  playlistPlayNow(id: number): Promise<void> {
+    return invoke<void>("playlist_play_now", { id });
+  },
+  playlistNext(): Promise<void> {
+    return invoke<void>("playlist_next");
+  },
+  /** Step back to a track taken off the renderer's own history. */
+  playlistPrev(id: number): Promise<void> {
+    return invoke<void>("playlist_prev", { id });
+  },
+  playlistStop(): Promise<void> {
+    return invoke<void>("playlist_stop");
+  },
+  playlistSetAutoPlaylist(active: boolean): Promise<void> {
+    return invoke<void>("playlist_set_auto_playlist", { active });
+  },
+  playlistSetAutoAdvance(active: boolean): Promise<void> {
+    return invoke<void>("playlist_set_auto_advance", { active });
   },
   getStats(): Promise<LibraryStats> {
     return invoke<LibraryStats>("get_stats");

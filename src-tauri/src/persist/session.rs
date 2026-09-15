@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
-pub enum PlaylistItem {
+pub enum SessionPlaylistItem {
     Track { id: i64 },
     Stop,
 }
@@ -17,7 +17,7 @@ pub struct SessionState {
     #[serde(default)]
     pub playlist_ids: Vec<i64>,
     #[serde(default)]
-    pub playlist_items: Vec<PlaylistItem>,
+    pub playlist_items: Vec<SessionPlaylistItem>,
     #[serde(default)]
     pub history_ids: Vec<i64>,
     #[serde(default)]
@@ -145,9 +145,9 @@ mod tests {
         let s1 = Session::open(dir.path());
         let state = SessionState {
             playlist_items: vec![
-                PlaylistItem::Track { id: 7 },
-                PlaylistItem::Stop,
-                PlaylistItem::Track { id: 9 },
+                SessionPlaylistItem::Track { id: 7 },
+                SessionPlaylistItem::Stop,
+                SessionPlaylistItem::Track { id: 9 },
             ],
             ..Default::default()
         };
@@ -158,9 +158,9 @@ mod tests {
         assert_eq!(
             loaded.playlist_items,
             vec![
-                PlaylistItem::Track { id: 7 },
-                PlaylistItem::Stop,
-                PlaylistItem::Track { id: 9 },
+                SessionPlaylistItem::Track { id: 7 },
+                SessionPlaylistItem::Stop,
+                SessionPlaylistItem::Track { id: 9 },
             ]
         );
     }
@@ -182,7 +182,10 @@ mod tests {
         let s: SessionState = serde_json::from_str(raw).unwrap();
         assert_eq!(
             s.playlist_items,
-            vec![PlaylistItem::Track { id: 7 }, PlaylistItem::Stop]
+            vec![
+                SessionPlaylistItem::Track { id: 7 },
+                SessionPlaylistItem::Stop
+            ]
         );
     }
 
