@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.17.0](https://github.com/Arskah/radiodiodj/compare/v0.16.0...v0.17.0) (2026-09-15)
+
+
+### Features
+
+* **audio:** put every on-air deck on a program bus ([#361](https://github.com/Arskah/radiodiodj/issues/361)) ([20653ef](https://github.com/Arskah/radiodiodj/commit/20653efeaf10010a9eef25428b92afff889df479))
+* **playlist:** move the playlist into the backend ([#359](https://github.com/Arskah/radiodiodj/issues/359)) ([5532bc0](https://github.com/Arskah/radiodiodj/commit/5532bc09c056dfe3ef91e04d5a19b9a9efe972d2))
+
+
+### Documentation
+
+* **audio:** cue points, program bus, playlist ownership ([#358](https://github.com/Arskah/radiodiodj/issues/358)) ([24d5c4c](https://github.com/Arskah/radiodiodj/commit/24d5c4c8bb6e55a137f2c13cbb8f454556d91188))
+
 ## [0.16.0](https://github.com/Arskah/radiodiodj/compare/v0.15.0...v0.16.0) (2026-09-15)
 
 
