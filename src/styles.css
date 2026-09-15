@@ -2361,6 +2361,71 @@ body {
 }
 
 /* ============================================================
+   Context menu (library rows — #314)
+   ============================================================ */
+
+/* Fixed, so the menu escapes the track list's scroll clipping; above the hover
+   tooltip (z-index 200) and below the settings/editor overlays. */
+.context-menu {
+  position: fixed;
+  z-index: 300;
+  min-width: 200px;
+  padding: var(--sp-xs) 0;
+  background: var(--surface-container-high);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--r-xl);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+}
+
+.ctx-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  width: 100%;
+  padding: var(--sp-sm) var(--sp-md);
+  background: none;
+  border: none;
+  color: var(--on-surface);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ctx-item .material-symbols-outlined {
+  font-size: 18px;
+  color: var(--outline);
+}
+
+.ctx-item:hover,
+.ctx-item:focus-visible {
+  background: color-mix(in srgb, var(--surface-variant) 60%, transparent);
+  outline: none;
+}
+
+.ctx-item:hover .material-symbols-outlined,
+.ctx-item:focus-visible .material-symbols-outlined {
+  color: var(--primary);
+}
+
+/* Goes straight to air: warm-tinted so it never reads as another add action. */
+.ctx-item.danger,
+.ctx-item.danger .material-symbols-outlined,
+.ctx-item.danger:hover .material-symbols-outlined,
+.ctx-item.danger:focus-visible .material-symbols-outlined {
+  color: var(--tertiary);
+}
+
+.ctx-sep {
+  height: 1px;
+  margin: var(--sp-xs) 0;
+  background: color-mix(in srgb, var(--outline-variant) 60%, transparent);
+}
+
+/* ============================================================
    Scrollbar
    ============================================================ */
 ::-webkit-scrollbar {

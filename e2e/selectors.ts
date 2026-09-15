@@ -19,6 +19,10 @@ export const sel = {
   btnPrev: "#btn-prev",
   timeDisplay: ".time-pill",
   editButton: ".btn-edit",
+  contextMenu: "#context-menu",
+  // Scope this from the menu element: WebdriverIO's `*=` text selectors accept
+  // only a tag with one class/id/attribute, never a descendant combinator.
+  contextMenuItem: (label: string) => `button[role="menuitem"]*=${label}`,
   editorDialog: "#editor-dialog",
   editorTitle: "#editor-title",
   editorArtist: "#editor-artist",
