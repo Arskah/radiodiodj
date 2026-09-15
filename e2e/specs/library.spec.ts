@@ -127,7 +127,7 @@ describe("library", () => {
     const menu = browser.$(sel.contextMenu);
     await menu.waitForDisplayed({ timeout: 5_000 });
 
-    await browser.$(sel.contextMenuItem("Add to playlist")).click();
+    await menu.$(sel.contextMenuItem("Add to playlist")).click();
     await menu.waitForExist({ timeout: 5_000, reverse: true });
 
     await browser.waitUntil(

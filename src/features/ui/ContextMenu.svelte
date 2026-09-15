@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { contextMenuPosition, type MenuItem } from "./contextMenu";
 
   let {
@@ -43,7 +44,9 @@
       { width: window.innerWidth, height: window.innerHeight },
     );
     placed = true;
-    itemButtons()[0]?.focus();
+    // Focus waits for that flush: the menu is `visibility: hidden` until it is
+    // placed, and a hidden element cannot take focus.
+    void tick().then(() => itemButtons()[0]?.focus());
   });
 
   function move(delta: number): void {
