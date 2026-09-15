@@ -74,6 +74,15 @@ about playback behaviour changes, so any test that needs editing is a signal the
 restructure altered something it should not have. Handover, which does change
 behaviour, is a later increment.
 
+**Status: landed.** `audio/bus.rs` owns the mixer and the worker; `audio/deck.rs`
+holds a deck and the loop that ticks a set of them; `audio/output.rs` holds the
+shared self-healing open; `audio/cue.rs` is the off-bus cue deck reusing the
+same deck worker on its own stream. Roles are static (A `main`, B `arm` and
+idle — B connects no sink until handover gives it something to play), and
+`program:roles` is emitted but not yet consumed. The 176 backend and 132
+renderer tests passed unmodified; four new tests cover role routing and the
+role snapshot. Next: handover.
+
 ## Roles, not identities
 
 ```rust

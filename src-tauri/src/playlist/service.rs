@@ -17,8 +17,9 @@ use tauri::{AppHandle, Emitter, Listener};
 use super::engine::{Effect, Playlist, Refiller, Transition};
 use super::generate;
 use super::model::{PlaylistItem, Snapshot};
+use crate::audio::bus::ProgramBus;
 use crate::audio::cache::Cache;
-use crate::audio::player::{Cmd, PlayerHandle};
+use crate::audio::player::Cmd;
 use crate::broadcast::BroadcastService;
 use crate::library::db::{Db, Track};
 use crate::persist::config::Config;
@@ -63,7 +64,7 @@ struct Inner {
     playlist: Mutex<Playlist>,
     db: Arc<Db>,
     config: Arc<Config>,
-    deck: Arc<PlayerHandle>,
+    bus: Arc<ProgramBus>,
     cache: Arc<Cache>,
     broadcast: Arc<BroadcastService>,
     app: AppHandle,
@@ -82,7 +83,7 @@ impl PlaylistService {
         app: AppHandle,
         db: Arc<Db>,
         config: Arc<Config>,
-        deck: Arc<PlayerHandle>,
+        bus: Arc<ProgramBus>,
         cache: Arc<Cache>,
         broadcast: Arc<BroadcastService>,
     ) -> Self {
@@ -91,7 +92,7 @@ impl PlaylistService {
                 playlist: Mutex::new(Playlist::new()),
                 db,
                 config,
-                deck,
+                bus,
                 cache,
                 broadcast,
                 app,
@@ -293,13 +294,13 @@ impl Inner {
                     // Redundant for the audio — the load plays itself once the
                     // bytes are decoded — but it reports "playing" immediately
                     // instead of after a read that may be crossing a network.
-                    inner.deck.send(Cmd::Play);
+                    inner.bus.send_main(Cmd::Play);
                 }
             }
             Effect::Resume { id, seconds } => {
                 inner.load_deck(*id, *seconds, false);
             }
-            Effect::Stop => inner.deck.send(Cmd::Stop),
+            Effect::Stop => inner.bus.send_main(Cmd::Stop),
             Effect::TrackPlayed(id) => {
                 if let Err(e) = inner.db.increment_play_count(*id) {
                     log::error!("play count update failed for track {}: {}", id, e);
@@ -312,7 +313,7 @@ impl Inner {
         }
     }
 
-    /// Resolve the track's path and hand it to the deck. Reports whether the
+    /// Resolve the track's path and hand it to the main deck. Reports whether the
     /// load was actually issued, so a missing row does not leave the caller
     /// sending Play at nothing.
     ///
@@ -327,7 +328,7 @@ impl Inner {
                 let path = PathBuf::from(track.path.clone());
                 let duration = track.duration;
                 self.broadcast.set_pending_track(track.into());
-                self.deck.send(Cmd::Load {
+                self.bus.send_main(Cmd::Load {
                     id,
                     path,
                     duration: (duration > 0.0).then_some(duration),
