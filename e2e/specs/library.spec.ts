@@ -119,4 +119,35 @@ describe("library", () => {
 
     await expect(firstAsc).not.toBe(firstDesc);
   });
+
+  it("adds a track through the row context menu", async () => {
+    await bootAndScan();
+
+    await browser.$(sel.trackRow).click({ button: "right" });
+    const menu = browser.$(sel.contextMenu);
+    await menu.waitForDisplayed({ timeout: 5_000 });
+
+    await browser.$(sel.contextMenuItem("Add to playlist")).click();
+    await menu.waitForExist({ timeout: 5_000, reverse: true });
+
+    await browser.waitUntil(
+      async () =>
+        (await browser.$$(`${sel.playlist} ${sel.playlistRow}`).length) === 1,
+      {
+        timeout: 5_000,
+        timeoutMsg: "context menu add did not reach the playlist",
+      },
+    );
+  });
+
+  it("dismisses the context menu on Escape", async () => {
+    await bootAndScan();
+
+    await browser.$(sel.trackRow).click({ button: "right" });
+    const menu = browser.$(sel.contextMenu);
+    await menu.waitForDisplayed({ timeout: 5_000 });
+
+    await browser.keys("Escape");
+    await menu.waitForExist({ timeout: 5_000, reverse: true });
+  });
 });

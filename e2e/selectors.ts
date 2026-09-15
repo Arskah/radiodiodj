@@ -19,6 +19,9 @@ export const sel = {
   btnPrev: "#btn-prev",
   timeDisplay: ".time-pill",
   editButton: ".btn-edit",
+  contextMenu: "#context-menu",
+  contextMenuItem: (label: string) =>
+    `#context-menu [role="menuitem"]*=${label}`,
   editorDialog: "#editor-dialog",
   editorTitle: "#editor-title",
   editorArtist: "#editor-artist",

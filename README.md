@@ -71,6 +71,6 @@ Set `RUST_LOG=debug` (or `trace`) before launching to raise verbosity. Default i
 1. Click **Paths** to configure folders for music, commercials, and jingles
 2. Click **Scan** to index audio files and extract metadata
 3. Use the **library tabs** to browse by content type
-4. Double-click a track or use **+** to add to playlist
+4. Double-click a track or use **+** to add to playlist; right-click a row for cue, metadata editing, and play-now
 5. Toggle **Auto Playlist** for continuous random playback
 6. Switch between **AUTO** and **MANUAL** playback modes

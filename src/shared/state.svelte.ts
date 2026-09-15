@@ -356,10 +356,10 @@ export class AppState {
   }
 
   /**
-   * Put a track straight on air, bypassing the playlist. Currently uncalled:
-   * the library's play button was removed in #354 because it is too easy to
-   * hit by accident during a broadcast. Kept for the follow-up that re-exposes
-   * it behind a library-row context menu.
+   * Put a track straight on air, bypassing the playlist. #354 took this off the
+   * library row because a button there is too easy to hit by accident during a
+   * broadcast; it is reachable from the row's right-click menu (#314), where it
+   * sits last and needs a deliberate two-step gesture.
    */
   playNow(track: Track): void {
     this.playTrack(track);

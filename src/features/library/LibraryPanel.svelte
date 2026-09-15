@@ -1,6 +1,8 @@
 <script lang="ts">
   import { app, formatTime, type Track } from "../../shared/state.svelte";
   import type { ContentType, SortColumn } from "../../shared/types";
+  import ContextMenu from "../ui/ContextMenu.svelte";
+  import type { MenuItem } from "../ui/contextMenu";
 
   const tabs: { type: ContentType; label: string }[] = [
     { type: "music", label: "Music" },
@@ -51,6 +53,71 @@
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     app.setHover(track, rect);
   }
+
+  // ----- Row context menu (#314) -----
+
+  let menuTrack = $state<Track | null>(null);
+  let menuX = $state(0);
+  let menuY = $state(0);
+  // The row the menu was opened from, so focus goes back where it came from.
+  let menuRow: HTMLElement | null = null;
+
+  function openMenu(track: Track, e: MouseEvent): void {
+    e.preventDefault();
+    // The hover tooltip is anchored to the row and would sit under the menu.
+    app.clearHover();
+    const row = e.currentTarget as HTMLElement;
+    // The keyboard menu key fires `contextmenu` with no cursor position; anchor
+    // those to the row's bottom-left instead of the viewport corner.
+    const keyboard = e.clientX === 0 && e.clientY === 0;
+    const rect = row.getBoundingClientRect();
+    menuX = keyboard ? rect.left : e.clientX;
+    menuY = keyboard ? rect.bottom : e.clientY;
+    menuRow = row;
+    menuTrack = track;
+  }
+
+  function closeMenu(restoreFocus: boolean): void {
+    menuTrack = null;
+    if (restoreFocus) menuRow?.focus();
+    menuRow = null;
+  }
+
+  // Mirrors the row's action buttons, plus the play-now that #354 took off the
+  // row: reaching air deliberately is fine, reaching it with a stray click is
+  // not. It sits last, behind a divider, so it is never the item under the
+  // cursor when the menu opens.
+  let menuItems = $derived.by<MenuItem[]>(() => {
+    const track = menuTrack;
+    if (!track) return [];
+    const items: MenuItem[] = [
+      {
+        label: "Add to playlist",
+        icon: "add",
+        onselect: () => app.addToPlaylist(track),
+      },
+    ];
+    if (app.cueDevice !== null) {
+      items.push({
+        label: "Preview on cue deck",
+        icon: "headphones",
+        onselect: () => app.cueLoadAndPlay(track),
+      });
+    }
+    items.push({
+      label: "Edit metadata…",
+      icon: "edit",
+      onselect: () => (app.editingTrack = track),
+    });
+    items.push({
+      label: "Play now (on air)",
+      icon: "play_arrow",
+      onselect: () => app.playNow(track),
+      separated: true,
+      danger: true,
+    });
+    return items;
+  });
 </script>
 
 <section id="library-panel" class="panel">
@@ -128,6 +195,7 @@
           }}
           onmouseenter={(e) => onEnter(track, e)}
           onmouseleave={() => app.clearHover()}
+          oncontextmenu={(e) => openMenu(track, e)}
           role="button"
           aria-label={`Track: ${track.title} by ${track.artist}`}
           data-track-id={track.id}
@@ -168,4 +236,13 @@
       {/each}
     {/if}
   </div>
+  {#if menuTrack}
+    <ContextMenu
+      x={menuX}
+      y={menuY}
+      items={menuItems}
+      label={`Actions for ${menuTrack.title}`}
+      onclose={closeMenu}
+    />
+  {/if}
 </section>
