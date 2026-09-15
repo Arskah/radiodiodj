@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
 use std::thread;
@@ -67,6 +68,8 @@ struct PendingLoad {
     id: i64,
     path: PathBuf,
     duration: Option<f64>,
+    start_at: f64,
+    autoplay: bool,
 }
 
 /// Whole track file resident in RAM. Shared (cheaply cloned) between the
@@ -82,6 +85,14 @@ pub enum Cmd {
         id: i64,
         path: PathBuf,
         duration: Option<f64>,
+        /// Where to start, in seconds. Applied once the bytes are decoded — a
+        /// `Seek` issued straight after a `Load` would find no bytes to seek in
+        /// and be dropped, so resuming a position has to travel with the load.
+        start_at: f64,
+        /// Start playing once ready. `false` loads the track parked and silent,
+        /// which is what restoring a session needs: a restart must not put
+        /// audio on air by itself.
+        autoplay: bool,
     },
     Play,
     Pause,
@@ -98,6 +109,8 @@ struct LoadMsg {
     /// Track id this read was issued for; reported in `:load-failed` on failure.
     id: i64,
     duration: Option<f64>,
+    start_at: f64,
+    autoplay: bool,
     bytes: Result<Bytes>,
 }
 
@@ -129,6 +142,10 @@ impl Topics {
 
 pub struct PlayerHandle {
     tx: Sender<Cmd>,
+    /// Mirrors the last `pause-state` this deck emitted. A renderer that
+    /// attaches after an event was emitted — a reload, or a session restored
+    /// before the window existed — can read the truth instead of assuming.
+    playing: Arc<AtomicBool>,
 }
 
 impl PlayerHandle {
@@ -141,17 +158,31 @@ impl PlayerHandle {
     ) -> Self {
         let (tx, rx) = channel();
         let topics = Topics::new(event_prefix);
+        let playing = Arc::new(AtomicBool::new(false));
+        let worker_playing = Arc::clone(&playing);
         thread::spawn(move || {
-            if let Err(e) = run(app.clone(), rx, device, &topics, cache, tuning) {
+            if let Err(e) = run(
+                app.clone(),
+                rx,
+                device,
+                &topics,
+                cache,
+                tuning,
+                &worker_playing,
+            ) {
                 log::error!("[{}] player thread exited: {}", event_prefix, e);
                 let _ = app.emit(&topics.error, e.to_string());
             }
         });
-        Self { tx }
+        Self { tx, playing }
     }
 
     pub fn send(&self, cmd: Cmd) {
         let _ = self.tx.send(cmd);
+    }
+
+    pub fn is_playing(&self) -> bool {
+        self.playing.load(Ordering::SeqCst)
     }
 }
 
@@ -184,6 +215,35 @@ struct State {
     /// `output-unavailable` event fires only on transitions (no per-retry spam).
     /// Optimistic at start — nothing is emitted until the first real failure.
     output_ok: bool,
+}
+
+/// Emit a pause-state change and record it on `playing`.
+///
+/// Every pause-state transition goes through here, so the flag the handle
+/// exposes cannot drift from what the renderer was told.
+fn set_pause_state(app: &AppHandle, topics: &Topics, playing: &AtomicBool, paused: bool) {
+    playing.store(!paused, Ordering::SeqCst);
+    let _ = app.emit(&topics.pause_state, paused);
+}
+
+/// Seek `source` to `target` and hand it to the sink. Prefers the container's
+/// own seek (a binary search over the index) and falls back to decoding forward
+/// when the format has none.
+fn append_at(sink: &Sink, mut source: Decoder<Cursor<Bytes>>, target: Duration) {
+    if target.is_zero() {
+        sink.append(source);
+        return;
+    }
+    match source.try_seek(target) {
+        Ok(()) => sink.append(source),
+        Err(e) => {
+            log::warn!(
+                "player: container seek failed ({}); skip_duration fallback",
+                e
+            );
+            sink.append(source.skip_duration(target));
+        }
+    }
 }
 
 const AUDIO_BUFFER_FRAMES: u32 = 4096;
@@ -300,6 +360,7 @@ fn run(
     topics: &Topics,
     cache: Arc<Cache>,
     tuning: PlayerTuning,
+    playing: &AtomicBool,
 ) -> Result<()> {
     // Output is opened lazily and re-opened on demand: a stream-open failure at
     // launch (device not ready yet, briefly held, momentarily gone) must not
@@ -339,6 +400,7 @@ fn run(
                     &load_tx,
                     &cache,
                     &tuning.read_retry_backoffs,
+                    playing,
                     cmd,
                 ),
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -348,7 +410,7 @@ fn run(
 
         // Drain any completed background reads.
         while let Ok(msg) = load_rx.try_recv() {
-            apply_load(&app, &mut output, &device, &mut state, topics, msg);
+            apply_load(&app, &mut output, &device, &mut state, topics, playing, msg);
         }
 
         // Watchdog: a read that neither completed nor errored within the budget
@@ -360,7 +422,13 @@ fn run(
             Instant::now(),
             tuning.read_watchdog_timeout,
         ) {
-            handle_load_timeout(&app, &mut state, topics, tuning.read_watchdog_timeout);
+            handle_load_timeout(
+                &app,
+                &mut state,
+                topics,
+                playing,
+                tuning.read_watchdog_timeout,
+            );
         }
 
         // Idle auto-retry: a load deferred because the audio device could not be
@@ -401,6 +469,8 @@ fn run(
                         p.id,
                         p.path,
                         p.duration,
+                        p.start_at,
+                        p.autoplay,
                     );
                 }
             }
@@ -416,7 +486,7 @@ fn run(
 
             if state.active && !state.loading && sink.empty() {
                 state.active = false;
-                let _ = app.emit(&topics.pause_state, true);
+                set_pause_state(&app, topics, playing, true);
                 let _ = app.emit(&topics.ended, ());
             }
         }
@@ -443,12 +513,20 @@ fn start_load(
     id: i64,
     path: PathBuf,
     duration: Option<f64>,
+    start_at: f64,
+    autoplay: bool,
 ) {
     let Some((stream, sink)) = ensure_output(output, device, state, app, topics) else {
         // No device yet: remember the intent and let the idle loop retry the
         // open. `ensure_output` already emitted the error; keep the buffering
         // indicator up while we wait for the device.
-        state.pending_load = Some(PendingLoad { id, path, duration });
+        state.pending_load = Some(PendingLoad {
+            id,
+            path,
+            duration,
+            start_at,
+            autoplay,
+        });
         state.last_open_retry = Some(Instant::now());
         state.current_id = Some(id);
         let _ = app.emit(&topics.buffering, true);
@@ -482,6 +560,8 @@ fn start_load(
             generation,
             id,
             duration,
+            start_at,
+            autoplay,
             bytes: Ok(bytes),
         });
     } else {
@@ -499,6 +579,8 @@ fn start_load(
                 generation,
                 id,
                 duration,
+                start_at,
+                autoplay,
                 bytes,
             });
         });
@@ -515,10 +597,17 @@ fn apply(
     load_tx: &Sender<LoadMsg>,
     cache: &Arc<Cache>,
     read_retry_backoffs: &[Duration],
+    playing: &AtomicBool,
     cmd: Cmd,
 ) {
     match cmd {
-        Cmd::Load { id, path, duration } => {
+        Cmd::Load {
+            id,
+            path,
+            duration,
+            start_at,
+            autoplay,
+        } => {
             start_load(
                 app,
                 output,
@@ -531,6 +620,8 @@ fn apply(
                 id,
                 path,
                 duration,
+                start_at,
+                autoplay,
             );
         }
         Cmd::Play => {
@@ -542,7 +633,7 @@ fn apply(
             sink.play();
             // Only report playing if there is (or will be) something to play.
             if state.active || state.loading {
-                let _ = app.emit(&topics.pause_state, false);
+                set_pause_state(app, topics, playing, false);
             }
         }
         Cmd::Pause => {
@@ -550,7 +641,7 @@ fn apply(
             if let Some((_, sink)) = output.as_mut() {
                 sink.pause();
             }
-            let _ = app.emit(&topics.pause_state, true);
+            set_pause_state(app, topics, playing, true);
         }
         Cmd::Stop => {
             if let Some((stream, sink)) = output.as_mut() {
@@ -572,7 +663,7 @@ fn apply(
             state.pending_load = None;
             state.last_open_retry = None;
             let _ = app.emit(&topics.buffering, false);
-            let _ = app.emit(&topics.pause_state, true);
+            set_pause_state(app, topics, playing, true);
         }
         Cmd::Seek(s) => {
             let target = s.max(0.0);
@@ -588,23 +679,9 @@ fn apply(
             *sink = Sink::connect_new(stream.mixer());
             sink.set_volume(state.volume);
             match decode_bytes(bytes) {
-                Ok((mut source, _)) => {
-                    let target_dur = Duration::from_secs_f64(target);
-                    match source.try_seek(target_dur) {
-                        Ok(()) => {
-                            sink.append(source);
-                            state.seek_offset = target;
-                        }
-                        Err(e) => {
-                            log::warn!(
-                                "player: container seek failed ({}); skip_duration fallback",
-                                e
-                            );
-                            let skipped = source.skip_duration(target_dur);
-                            sink.append(skipped);
-                            state.seek_offset = target;
-                        }
-                    }
+                Ok((source, _)) => {
+                    append_at(sink, source, Duration::from_secs_f64(target));
+                    state.seek_offset = target;
                     state.active = true;
                     if was_paused {
                         sink.pause();
@@ -638,6 +715,7 @@ fn apply_load(
     device: &Option<DeviceRef>,
     state: &mut State,
     topics: &Topics,
+    playing: &AtomicBool,
     msg: LoadMsg,
 ) {
     if msg.generation != state.generation {
@@ -661,7 +739,7 @@ fn apply_load(
             reset_after_failure(state);
             // Programmatic signal carrying the track id (human message above).
             let _ = app.emit(&topics.load_failed, msg.id);
-            let _ = app.emit(&topics.pause_state, true);
+            set_pause_state(app, topics, playing, true);
             return;
         }
     };
@@ -674,26 +752,35 @@ fn apply_load(
             let Some((_, sink)) = ensure_output(output, device, state, app, topics) else {
                 reset_after_failure(state);
                 let _ = app.emit(&topics.load_failed, msg.id);
-                let _ = app.emit(&topics.pause_state, true);
+                set_pause_state(app, topics, playing, true);
                 return;
             };
             let final_duration = msg.duration.or(decoded_duration);
-            sink.append(source);
-            sink.play();
+            // The start position travels with the load rather than arriving as
+            // a separate Seek: the bytes only exist here, so a Seek issued
+            // alongside the Load would have found none and been dropped.
+            let start_at = clamp_start(msg.start_at, final_duration);
+            append_at(sink, source, Duration::from_secs_f64(start_at));
+            if msg.autoplay {
+                sink.play();
+            } else {
+                sink.pause();
+            }
             state.current_bytes = Some(bytes);
             state.current_duration = final_duration;
-            state.seek_offset = 0.0;
+            state.seek_offset = start_at;
             state.active = true;
             if let Some(d) = final_duration {
                 let _ = app.emit(&topics.duration, d);
             }
-            let _ = app.emit(&topics.pause_state, false);
+            let _ = app.emit(&topics.time, start_at);
+            set_pause_state(app, topics, playing, !msg.autoplay);
         }
         Err(e) => {
             log::error!("player: decode failed: {}", e);
             let _ = app.emit(&topics.error, format!("decode failed: {}", e));
             reset_after_failure(state);
-            let _ = app.emit(&topics.pause_state, true);
+            set_pause_state(app, topics, playing, true);
         }
     }
 }
@@ -742,7 +829,13 @@ fn watchdog_timed_out(
 /// plus a `:load-failed` carrying the track id, and reset load state. The
 /// generation is bumped so a late `LoadMsg` from the abandoned thread is
 /// discarded rather than played.
-fn handle_load_timeout(app: &AppHandle, state: &mut State, topics: &Topics, timeout: Duration) {
+fn handle_load_timeout(
+    app: &AppHandle,
+    state: &mut State,
+    topics: &Topics,
+    playing: &AtomicBool,
+    timeout: Duration,
+) {
     let id = state.current_id;
     let path = state
         .current_path
@@ -761,7 +854,19 @@ fn handle_load_timeout(app: &AppHandle, state: &mut State, topics: &Topics, time
     if let Some(id) = id {
         let _ = app.emit(&topics.load_failed, id);
     }
-    let _ = app.emit(&topics.pause_state, true);
+    set_pause_state(app, topics, playing, true);
+}
+
+/// Keep a restored position inside the track. A session saved before the file
+/// changed — or a cue point that later moved earlier — would otherwise seek past
+/// the end, and the track would be silently skipped at launch instead of
+/// resuming. A track whose duration is unknown is trusted as-is.
+fn clamp_start(seconds: f64, duration: Option<f64>) -> f64 {
+    let start = seconds.max(0.0);
+    match duration {
+        Some(d) if d > 0.0 && start >= d => 0.0,
+        _ => start,
+    }
 }
 
 /// Read a file with bounded retry + backoff for *transient* failures. Makes an
@@ -865,16 +970,48 @@ mod tests {
             generation: 4,
             id: 1,
             duration: None,
+            start_at: 0.0,
+            autoplay: true,
             bytes: Ok(Arc::from(Vec::new().into_boxed_slice())),
         };
         let fresh = LoadMsg {
             generation: 5,
             id: 1,
             duration: None,
+            start_at: 0.0,
+            autoplay: true,
             bytes: Ok(Arc::from(Vec::new().into_boxed_slice())),
         };
         assert_ne!(stale.generation, latest);
         assert_eq!(fresh.generation, latest);
+    }
+
+    #[test]
+    fn a_restored_position_survives_when_it_is_inside_the_track() {
+        assert_eq!(clamp_start(12.5, Some(200.0)), 12.5);
+        assert_eq!(clamp_start(0.0, Some(200.0)), 0.0);
+    }
+
+    /// A position past the end would seek out of range and the track would be
+    /// silently skipped at launch. Restarting it is the recoverable answer.
+    #[test]
+    fn a_restored_position_past_the_end_restarts_the_track() {
+        assert_eq!(clamp_start(500.0, Some(200.0)), 0.0);
+        assert_eq!(clamp_start(200.0, Some(200.0)), 0.0);
+    }
+
+    #[test]
+    fn a_negative_restored_position_clamps_to_the_start() {
+        assert_eq!(clamp_start(-4.0, Some(200.0)), 0.0);
+        assert_eq!(clamp_start(-4.0, None), 0.0);
+    }
+
+    /// An unknown duration (no tag, not yet decoded) is no reason to throw the
+    /// position away.
+    #[test]
+    fn a_restored_position_is_trusted_when_the_duration_is_unknown() {
+        assert_eq!(clamp_start(12.5, None), 12.5);
+        assert_eq!(clamp_start(12.5, Some(0.0)), 12.5);
     }
 
     /// The backoff schedule is the agreed 0.5s / 1s / 2s with three entries

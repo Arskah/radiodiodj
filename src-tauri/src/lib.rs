@@ -242,6 +242,17 @@ fn playlist_set_auto_advance(app: State<'_, AppState>, active: bool) {
     app.playlist.set_auto_advance(active);
 }
 
+/// Whether the main deck is playing right now.
+///
+/// The renderer reads this at startup because `pause-state` is an event, and an
+/// event emitted before the window was listening is gone: a session restored
+/// during backend setup, or a reload mid-show, would otherwise leave the
+/// transport button contradicting what is audible.
+#[tauri::command(rename_all = "camelCase")]
+fn main_deck_is_playing(app_state: State<'_, AppState>) -> bool {
+    app_state.main_deck.is_playing()
+}
+
 #[tauri::command(rename_all = "camelCase")]
 fn main_deck_play(app_state: State<'_, AppState>) {
     app_state.main_deck.send(Cmd::Play);
@@ -368,6 +379,10 @@ fn cue_load(state: State<'_, AppState>, id: i64) -> Result<(), String> {
             } else {
                 None
             },
+            start_at: 0.0,
+            // Cueing a track starts auditioning it; the renderer's cue transport
+            // takes over from there.
+            autoplay: true,
         });
     })
 }
@@ -608,6 +623,7 @@ pub fn run() {
             cue_stop,
             cue_seek,
             cue_set_volume,
+            main_deck_is_playing,
             main_deck_play,
             main_deck_pause,
             main_deck_stop,

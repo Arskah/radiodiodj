@@ -104,6 +104,14 @@ export const api = {
   trackPlayed(id: number): Promise<void> {
     return invoke<void>("track_played", { id });
   },
+  /**
+   * Whether the main deck is playing right now. `pause-state` is an event, so a
+   * window that attaches late — a reload, or a session the backend restored
+   * before this window existed — has to ask rather than assume.
+   */
+  mainDeckIsPlaying(): Promise<boolean> {
+    return invoke<boolean>("main_deck_is_playing");
+  },
   /** Current playlist state, for a renderer that has just started up. */
   playlistSync(): Promise<PlaylistSnapshot> {
     return invoke<PlaylistSnapshot>("playlist_sync");

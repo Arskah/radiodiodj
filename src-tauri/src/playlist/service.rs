@@ -289,14 +289,15 @@ impl Inner {
     fn run(inner: &Arc<Inner>, effect: &Effect) {
         match effect {
             Effect::Play(id) => {
-                if inner.load_deck(*id) {
+                if inner.load_deck(*id, 0.0, true) {
+                    // Redundant for the audio — the load plays itself once the
+                    // bytes are decoded — but it reports "playing" immediately
+                    // instead of after a read that may be crossing a network.
                     inner.deck.send(Cmd::Play);
                 }
             }
             Effect::Resume { id, seconds } => {
-                if inner.load_deck(*id) && *seconds > 0.0 {
-                    inner.deck.send(Cmd::Seek(*seconds));
-                }
+                inner.load_deck(*id, *seconds, false);
             }
             Effect::Stop => inner.deck.send(Cmd::Stop),
             Effect::TrackPlayed(id) => {
@@ -314,7 +315,13 @@ impl Inner {
     /// Resolve the track's path and hand it to the deck. Reports whether the
     /// load was actually issued, so a missing row does not leave the caller
     /// sending Play at nothing.
-    fn load_deck(&self, id: i64) -> bool {
+    ///
+    /// `start_at` and `autoplay` travel with the load rather than following it
+    /// as separate commands: the deck reads the file on a background thread, so
+    /// a Seek sent straight after a Load arrives before there is anything to
+    /// seek in, and a Play would override a restore that is meant to stay
+    /// parked.
+    fn load_deck(&self, id: i64, start_at: f64, autoplay: bool) -> bool {
         match self.db.get_track_broadcast_info(id) {
             Ok(Some(track)) => {
                 let path = PathBuf::from(track.path.clone());
@@ -324,6 +331,8 @@ impl Inner {
                     id,
                     path,
                     duration: (duration > 0.0).then_some(duration),
+                    start_at,
+                    autoplay,
                 });
                 true
             }

@@ -13,6 +13,7 @@ const { api } = vi.hoisted(() => {
     loadSession: vi.fn(),
     saveSession: vi.fn(),
     trackPlayed: vi.fn(),
+    mainDeckIsPlaying: vi.fn(),
     playlistSync: vi.fn(),
     onPlaylistState: vi.fn(),
     playlistAdd: vi.fn(),
@@ -147,6 +148,7 @@ function resetApi(): void {
   library.clear();
   api.search.mockResolvedValue([]);
   api.trackPlayed.mockResolvedValue(undefined);
+  api.mainDeckIsPlaying.mockResolvedValue(false);
   api.getStats.mockResolvedValue({
     totalTracks: 0,
     totalArtists: 0,
@@ -1054,6 +1056,26 @@ describe("AppState session persistence", () => {
     expect(document.title).toBe("t2 - a2 | RadiodioDJ");
   });
 
+  it("loadSession asks the deck whether it is playing", async () => {
+    // The deck's pause-state was emitted while the backend restored the session,
+    // before this window was listening — the button would otherwise say paused
+    // over audible playback.
+    api.mainDeckIsPlaying.mockResolvedValueOnce(true);
+    ({ app, mock, playlist } = makeApp());
+    playlist.restore({ current: t(2) });
+    await app.loadSession();
+    expect(app.isPlaying).toBe(true);
+  });
+
+  it("loadSession survives the deck state query failing", async () => {
+    api.mainDeckIsPlaying.mockRejectedValueOnce(new Error("boom"));
+    ({ app, mock, playlist } = makeApp());
+    playlist.restore({ playlist: [trackItem(t(1))] });
+    await app.loadSession();
+    expect(app.isPlaying).toBe(false);
+    expect(app.playlist.map(pid)).toEqual([1]);
+  });
+
   it("loadSession drops history ids the library no longer has", async () => {
     api.loadSession.mockResolvedValueOnce({
       state: {
@@ -1079,6 +1101,19 @@ describe("AppState session persistence", () => {
     expect(app.playlist.map(pid)).toEqual([1, 2]);
     expect(app.history.map((x) => x.id)).toEqual([1]);
     expect(app.currentTrack).toBeNull();
+  });
+
+  it("a snapshot that does not change the track leaves the clock alone", async () => {
+    ({ app, mock, playlist } = makeApp());
+    playlist.restore({ current: t(2) });
+    await app.loadSession();
+    app.currentTime = 30;
+    // A queue mutation snapshots the whole playlist, including the unchanged
+    // current track. Treating that as a track change would jump the seek bar
+    // back to zero on every add.
+    app.addToPlaylist(t(5));
+    expect(app.currentTime).toBe(30);
+    expect(app.currentTrack?.id).toBe(2);
   });
 
   it("does not save before session is loaded", () => {

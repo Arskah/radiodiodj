@@ -719,12 +719,21 @@ export class AppState {
     this.setCueVolume(state.cueVolume);
 
     // The backend restored the playlist from the same session file and put the
-    // saved track back on the deck, paused. Pull its state rather than waiting
-    // for a snapshot that was emitted before this window was listening.
+    // saved track back on the deck. Pull its state rather than waiting for a
+    // snapshot that was emitted before this window was listening.
     try {
       this.applySnapshot(await api.playlistSync());
     } catch (err) {
       logger.error("Playlist sync failed:", err);
+    }
+    // Same reason, for the deck: whatever `pause-state` the deck emitted while
+    // this window was still starting up went nowhere, so ask it directly. Left
+    // at its default if the call fails — a wrong transport button is better
+    // than no session.
+    try {
+      this.isPlaying = await api.mainDeckIsPlaying();
+    } catch (err) {
+      logger.error("Deck state sync failed:", err);
     }
     // After the snapshot: adopting one resets the clock, and the saved position
     // is what the deck is actually parked at.
