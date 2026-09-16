@@ -101,6 +101,24 @@ impl Session {
         *self.last.lock() = state;
         Ok(())
     }
+
+    /// Drop every track reference after the library was reset. Ids restart at
+    /// 1 in a fresh database, so a kept id would restore a different track.
+    /// Volumes and modes survive; the previous file is kept as a backup.
+    pub fn forget_tracks(&self) -> Result<()> {
+        if self.path.exists() {
+            fs::copy(&self.path, self.path.with_extension("legacy.bak.json"))
+                .context("back up session.json")?;
+        }
+        let kept = self.load();
+        self.save(SessionState {
+            auto_playlist_active: kept.auto_playlist_active,
+            auto_advance: kept.auto_advance,
+            volume: kept.volume,
+            cue_volume: kept.cue_volume,
+            ..SessionState::default()
+        })
+    }
 }
 
 #[cfg(test)]
@@ -262,5 +280,33 @@ mod tests {
         let s2 = Session::open(dir.path());
         let loaded = s2.load();
         assert_eq!(loaded.cue_volume, 0.4);
+    }
+
+    #[test]
+    fn forget_tracks_clears_ids_keeps_settings_and_backs_up() {
+        let dir = tempdir().unwrap();
+        let session = Session::open(dir.path());
+        session
+            .save(SessionState {
+                playlist_ids: vec![1, 2],
+                history_ids: vec![3],
+                current_track_id: Some(4),
+                current_time: 12.0,
+                volume: 0.4,
+                auto_advance: false,
+                ..Default::default()
+            })
+            .unwrap();
+
+        session.forget_tracks().unwrap();
+
+        let loaded = Session::open(dir.path()).load();
+        assert!(loaded.playlist_ids.is_empty());
+        assert!(loaded.history_ids.is_empty());
+        assert_eq!(loaded.current_track_id, None);
+        assert_eq!(loaded.current_time, 0.0);
+        assert_eq!(loaded.volume, 0.4);
+        assert!(!loaded.auto_advance);
+        assert!(dir.path().join("session.legacy.bak.json").exists());
     }
 }

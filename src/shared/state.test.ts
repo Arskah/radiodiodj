@@ -190,6 +190,7 @@ function resetApi(): void {
       cueVolume: 1,
     },
     tracks: [],
+    libraryReset: false,
   });
   api.saveSession.mockResolvedValue(undefined);
   api.listAudioDevices.mockResolvedValue([]);
@@ -1077,6 +1078,7 @@ describe("AppState session persistence", () => {
         cueVolume: 0.3,
       },
       tracks: [t(1), t(2), t(3)],
+      libraryReset: false,
     });
 
     ({ app, mock, playlist } = makeApp());
@@ -1103,6 +1105,63 @@ describe("AppState session persistence", () => {
     // that is where the deck is actually parked.
     expect(app.currentTime).toBe(12.5);
     expect(document.title).toBe("t2 - a2 | RadiodioDJ");
+  });
+
+  it("loadSession shows the rebuild notice until the rescan finishes", async () => {
+    let emitScanState: (s: unknown) => void = () => {};
+    api.onScanStateChanged.mockImplementation((cb: (s: unknown) => void) => {
+      emitScanState = cb;
+    });
+    api.getScanStatus.mockResolvedValue({
+      status: "running",
+      processed: 0,
+      total: 0,
+    });
+    api.loadSession.mockResolvedValueOnce({
+      state: {
+        playlistIds: [],
+        playlistItems: [],
+        historyIds: [],
+        currentTrackId: null,
+        currentTime: 0,
+        autoPlaylistActive: false,
+        autoAdvance: true,
+        volume: 1,
+        cueVolume: 1,
+      },
+      tracks: [],
+      libraryReset: true,
+    });
+    ({ app } = makeApp());
+    await app.hydrateScanStatus();
+    await app.loadSession();
+    await flushAsync();
+    expect(app.libraryReset).toBe(true);
+
+    emitScanState({ status: "idle", lastResult: { total: 1, added: 1 } });
+    expect(app.libraryReset).toBe(false);
+  });
+
+  it("loadSession skips the rebuild notice when the rescan already ended", async () => {
+    api.loadSession.mockResolvedValueOnce({
+      state: {
+        playlistIds: [],
+        playlistItems: [],
+        historyIds: [],
+        currentTrackId: null,
+        currentTime: 0,
+        autoPlaylistActive: false,
+        autoAdvance: true,
+        volume: 1,
+        cueVolume: 1,
+      },
+      tracks: [],
+      libraryReset: true,
+    });
+    ({ app } = makeApp());
+    await app.loadSession();
+    await flushAsync();
+    expect(app.libraryReset).toBe(false);
   });
 
   it("loadSession asks the deck whether it is playing", async () => {

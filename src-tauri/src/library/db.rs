@@ -1,9 +1,10 @@
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
+use rusqlite_migration::{Migrations, M};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::audio::cue_points::CuePoints;
 
@@ -132,8 +133,21 @@ pub struct Db {
 }
 
 impl Db {
-    pub fn open(path: &Path) -> Result<Self> {
-        let conn = Connection::open(path).context("open sqlite")?;
+    /// Open the library database, migrating it to the current schema.
+    ///
+    /// A database from before the current [`DB_EPOCH`] is moved aside and
+    /// replaced by an empty one; the outcome names the backup so the caller can
+    /// drop session state that points at the old ids. A database written by a
+    /// newer build is refused untouched with [`OpenError`]. Pending migrations
+    /// run only after a `VACUUM INTO` copy of the file has been taken.
+    pub fn open(path: &Path) -> Result<Opened> {
+        let reset_backup = retire_legacy(path)?;
+        let mut conn = Connection::open(path).context("open sqlite")?;
+        let found = user_version(&conn)?;
+        let supported = schema_version();
+        if found > supported {
+            return Err(OpenError::TooNew { found, supported }.into());
+        }
         // WAL for concurrent read/write; `synchronous = NORMAL` drops the fsync
         // on every autocommit (e.g. the per-track waveform writes) — safe under
         // WAL since only a crash mid-commit can lose the last transaction, and
@@ -145,49 +159,25 @@ impl Db {
              PRAGMA synchronous = NORMAL;
              PRAGMA busy_timeout = 5000;",
         )?;
-        Self::with_connection(conn)
-    }
-
-    fn with_connection(conn: Connection) -> Result<Self> {
-        let db = Self {
-            conn: Mutex::new(conn),
-        };
-        db.migrate()?;
-        Ok(db)
+        if found > 0 && found < supported {
+            backup(&conn, path, found)?;
+        }
+        MIGRATIONS.to_latest(&mut conn).context("migrate library")?;
+        Ok(Opened {
+            db: Self {
+                conn: Mutex::new(conn),
+            },
+            reset_backup,
+        })
     }
 
     #[cfg(test)]
     pub fn open_in_memory() -> Result<Self> {
-        Self::with_connection(Connection::open_in_memory()?)
-    }
-
-    fn migrate(&self) -> Result<()> {
-        let mut conn = self.conn.lock();
-        let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if v >= SCHEMA_VERSION {
-            return Ok(());
-        }
-        // Apply pending steps and bump user_version in a single transaction so
-        // the schema change and its version bump commit together. An interrupted
-        // migration rolls back cleanly instead of leaving the DB half-applied
-        // (schema ahead of version), which on the next launch would re-run an
-        // ADD COLUMN and fail with "duplicate column name".
-        let tx = conn.transaction()?;
-        if v < 1 {
-            tx.execute_batch(MIGRATION_001)?;
-        }
-        if v < 2 {
-            tx.execute_batch(MIGRATION_002)?;
-        }
-        if v < 3 {
-            tx.execute_batch(MIGRATION_003)?;
-        }
-        if v < 4 {
-            tx.execute_batch(MIGRATION_004)?;
-        }
-        tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-        tx.commit()?;
-        Ok(())
+        let mut conn = Connection::open_in_memory()?;
+        MIGRATIONS.to_latest(&mut conn)?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     pub fn search(
@@ -318,8 +308,7 @@ impl Db {
             return Ok(vec![]);
         }
         let conn = self.conn.lock();
-        let placeholders = std::iter::repeat("?")
-            .take(ids.len())
+        let placeholders = std::iter::repeat_n("?", ids.len())
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!("SELECT * FROM tracks WHERE id IN ({})", placeholders);
@@ -341,8 +330,7 @@ impl Db {
             return Ok(vec![]);
         }
         let conn = self.conn.lock();
-        let placeholders = std::iter::repeat("?")
-            .take(ids.len())
+        let placeholders = std::iter::repeat_n("?", ids.len())
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!("SELECT id, path FROM tracks WHERE id IN ({})", placeholders);
@@ -501,8 +489,7 @@ impl Db {
         let tx = conn.transaction()?;
         let mut total = 0usize;
         for chunk in paths.chunks(500) {
-            let placeholders = std::iter::repeat("?")
-                .take(chunk.len())
+            let placeholders = std::iter::repeat_n("?", chunk.len())
                 .collect::<Vec<_>>()
                 .join(",");
             let sql = format!("DELETE FROM tracks WHERE path IN ({})", placeholders);
@@ -777,42 +764,92 @@ fn row_to_cue_points(row: &Row) -> rusqlite::Result<CuePoints> {
     })
 }
 
-const MIGRATION_001: &str = r#"
-CREATE TABLE IF NOT EXISTS tracks (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  path TEXT UNIQUE NOT NULL,
-  content_type TEXT NOT NULL DEFAULT 'music',
-  title TEXT,
-  artist TEXT,
-  album TEXT,
-  genre TEXT,
-  year INTEGER,
-  duration REAL,
-  bpm REAL,
-  sample_rate INTEGER,
-  bitrate INTEGER,
-  format TEXT,
-  play_count INTEGER NOT NULL DEFAULT 0,
-  added_at TEXT DEFAULT (datetime('now'))
+/// Identifies a database created by the current schema baseline, stored in
+/// `PRAGMA application_id` ("RDJ1"). Pre-1.0 the schema may be squashed into a
+/// new baseline: bump this, move the old value into [`LEGACY_EPOCHS`], and every
+/// older database is reset on its next open.
+const DB_EPOCH: i32 = 0x5244_4a31;
+
+/// Epochs this build knows to be older than [`DB_EPOCH`]. `0` is every
+/// database written before epochs existed. Any other foreign value is treated as
+/// newer and refused, so an old build never resets a newer library.
+const LEGACY_EPOCHS: &[i32] = &[0];
+
+/// How many pre-migration backups to keep beside the database.
+const KEPT_BACKUPS: usize = 2;
+
+/// The schema, as an append-only list. Never edit a step that has shipped: add
+/// a new one and regenerate `schema.sql` (see `docs/database.md`).
+const MIGRATION_STEPS: &[M] = &[M::up(BASELINE)];
+const MIGRATIONS: Migrations = Migrations::from_slice(MIGRATION_STEPS);
+
+fn schema_version() -> usize {
+    MIGRATION_STEPS.len()
+}
+
+/// Epoch-1 baseline.
+///
+/// - The operator-work columns (`play_count`, `waveform`, the five cue
+///   markers) are absent from `UPSERT_TRACK_SQL`, so a rescan cannot destroy
+///   them. The markers are milliseconds from the start of the file and `NULL`
+///   means "no adjustment".
+/// - `fingerprint` identifies the audio independently of path and tags;
+///   `missing_since` (unix ms) marks a row whose file is gone. Only present
+///   rows are held to a unique path, so a missing row can keep its old path
+///   while a different file takes it.
+/// - `tracks_au` fires only when an indexed column changes, not on every
+///   waveform write or play count bump.
+const BASELINE: &str = r#"
+PRAGMA application_id = 1380207153;
+
+CREATE TABLE tracks (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  path          TEXT NOT NULL,
+  content_type  TEXT NOT NULL DEFAULT 'music'
+                CHECK (content_type IN ('music', 'jingle', 'commercial')),
+  title         TEXT,
+  artist        TEXT,
+  album         TEXT,
+  genre         TEXT,
+  year          INTEGER,
+  duration      REAL,
+  bpm           REAL,
+  sample_rate   INTEGER,
+  bitrate       INTEGER,
+  format        TEXT,
+  mtime         INTEGER,
+  play_count    INTEGER NOT NULL DEFAULT 0,
+  added_at      TEXT DEFAULT (datetime('now')),
+  waveform      BLOB,
+  cue_in_ms     INTEGER,
+  fade_in_ms    INTEGER,
+  fade_out_ms   INTEGER,
+  cue_out_ms    INTEGER,
+  next_start_ms INTEGER,
+  fingerprint   TEXT,
+  missing_since INTEGER
 );
 
-CREATE VIRTUAL TABLE IF NOT EXISTS tracks_fts USING fts5(
+CREATE UNIQUE INDEX tracks_path_present ON tracks(path) WHERE missing_since IS NULL;
+CREATE INDEX tracks_fingerprint ON tracks(fingerprint) WHERE fingerprint IS NOT NULL;
+
+CREATE VIRTUAL TABLE tracks_fts USING fts5(
   title, artist, album, genre,
   content='tracks',
   content_rowid='id'
 );
 
-CREATE TRIGGER IF NOT EXISTS tracks_ai AFTER INSERT ON tracks BEGIN
+CREATE TRIGGER tracks_ai AFTER INSERT ON tracks BEGIN
   INSERT INTO tracks_fts(rowid, title, artist, album, genre)
   VALUES (new.id, new.title, new.artist, new.album, new.genre);
 END;
 
-CREATE TRIGGER IF NOT EXISTS tracks_ad AFTER DELETE ON tracks BEGIN
+CREATE TRIGGER tracks_ad AFTER DELETE ON tracks BEGIN
   INSERT INTO tracks_fts(tracks_fts, rowid, title, artist, album, genre)
   VALUES ('delete', old.id, old.title, old.artist, old.album, old.genre);
 END;
 
-CREATE TRIGGER IF NOT EXISTS tracks_au AFTER UPDATE ON tracks BEGIN
+CREATE TRIGGER tracks_au AFTER UPDATE OF title, artist, album, genre ON tracks BEGIN
   INSERT INTO tracks_fts(tracks_fts, rowid, title, artist, album, genre)
   VALUES ('delete', old.id, old.title, old.artist, old.album, old.genre);
   INSERT INTO tracks_fts(rowid, title, artist, album, genre)
@@ -820,44 +857,125 @@ CREATE TRIGGER IF NOT EXISTS tracks_au AFTER UPDATE ON tracks BEGIN
 END;
 "#;
 
-/// Current schema version. Bump alongside every new `MIGRATION_00N`.
-const SCHEMA_VERSION: i64 = 4;
-
-/// Upsert one track's metadata by path. The waveform column is deliberately
-/// absent: metadata scans run tag-only and fast, and the waveform is filled
-/// asynchronously by the waveform worker (`set_waveform`). Omitting it here
-/// means a metadata rescan never clobbers an already-computed waveform.
+/// Upsert one present track's metadata by path. The operator-work columns are
+/// deliberately absent: the waveform is filled asynchronously by the waveform
+/// worker (`set_waveform`), and cue points and play counts are operator work a
+/// metadata rescan must never clobber.
 const UPSERT_TRACK_SQL: &str = "INSERT INTO tracks \
      (path, content_type, title, artist, album, genre, year, duration, bpm, \
       sample_rate, bitrate, format, mtime) \
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) \
-     ON CONFLICT(path) DO UPDATE SET \
+     ON CONFLICT(path) WHERE missing_since IS NULL DO UPDATE SET \
         content_type=excluded.content_type, \
         title=excluded.title, artist=excluded.artist, album=excluded.album, \
         genre=excluded.genre, year=excluded.year, duration=excluded.duration, \
         bpm=excluded.bpm, sample_rate=excluded.sample_rate, \
         bitrate=excluded.bitrate, format=excluded.format, mtime=excluded.mtime";
 
-const MIGRATION_002: &str = "ALTER TABLE tracks ADD COLUMN mtime INTEGER;";
+/// A database this build must not touch.
+#[derive(Debug, PartialEq)]
+pub enum OpenError {
+    /// Written by a newer build: migrated past what this build knows, or
+    /// stamped with an epoch it does not recognise.
+    TooNew { found: usize, supported: usize },
+}
 
-/// Amplitude-curve peaks for the seek UI, one byte per bucket. Nullable so rows
-/// scanned before this column (or files that failed to decode) simply have no
-/// waveform.
-const MIGRATION_003: &str = "ALTER TABLE tracks ADD COLUMN waveform BLOB;";
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OpenError::TooNew { found, supported } => write!(
+                f,
+                "the library database was written by a newer RadiodioDJ \
+                 (schema {found}, this version supports {supported})"
+            ),
+        }
+    }
+}
 
-/// Per-track playback markers, milliseconds from the start of the file. All
-/// nullable: `NULL` is "no adjustment" and resolves to a fallback at load.
-/// Absent from `UPSERT_TRACK_SQL` for the same reason `waveform` is — a
-/// metadata rescan must not destroy operator work. `next_start_ms` lands here
-/// despite not being consumed until handover, so the segue work needs no
-/// migration of its own.
-const MIGRATION_004: &str = r#"
-ALTER TABLE tracks ADD COLUMN cue_in_ms     INTEGER;
-ALTER TABLE tracks ADD COLUMN fade_in_ms    INTEGER;
-ALTER TABLE tracks ADD COLUMN fade_out_ms   INTEGER;
-ALTER TABLE tracks ADD COLUMN cue_out_ms    INTEGER;
-ALTER TABLE tracks ADD COLUMN next_start_ms INTEGER;
-"#;
+impl std::error::Error for OpenError {}
+
+pub struct Opened {
+    pub db: Db,
+    /// Where a pre-epoch database was moved, when opening reset the library.
+    pub reset_backup: Option<PathBuf>,
+}
+
+fn user_version(conn: &Connection) -> Result<usize> {
+    let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    Ok(usize::try_from(v).unwrap_or(0))
+}
+
+fn sibling(path: &Path, suffix: &str) -> PathBuf {
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("library");
+    path.with_file_name(format!("{stem}.{suffix}"))
+}
+
+/// Move a database from an older epoch aside, so a fresh one is created in its
+/// place. Returns the backup path when that happened.
+fn retire_legacy(path: &Path) -> Result<Option<PathBuf>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let (version, epoch) = {
+        let conn = Connection::open(path).context("open sqlite")?;
+        let version = user_version(&conn)?;
+        let epoch: i32 = conn.pragma_query_value(None, "application_id", |r| r.get(0))?;
+        if version == 0 || epoch == DB_EPOCH {
+            return Ok(None);
+        }
+        if !LEGACY_EPOCHS.contains(&epoch) {
+            return Err(OpenError::TooNew {
+                found: version,
+                supported: schema_version(),
+            }
+            .into());
+        }
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        (version, epoch)
+    };
+    let backup = sibling(path, &format!("legacy-v{version}.bak.db"));
+    std::fs::rename(path, &backup).context("move legacy library aside")?;
+    for ext in ["-wal", "-shm"] {
+        let mut side = path.as_os_str().to_owned();
+        side.push(ext);
+        let _ = std::fs::remove_file(PathBuf::from(side));
+    }
+    log::warn!(
+        "library database from epoch {epoch:#x} (schema {version}) moved to {}; starting fresh",
+        backup.display()
+    );
+    Ok(Some(backup))
+}
+
+/// Copy the database before migrating it, keeping the newest few copies.
+fn backup(conn: &Connection, path: &Path, version: usize) -> Result<()> {
+    let target = sibling(path, &format!("v{version}.bak.db"));
+    let _ = std::fs::remove_file(&target);
+    conn.execute("VACUUM INTO ?1", [target.to_string_lossy()])
+        .context("back up library before migrating")?;
+    log::info!("library backed up to {}", target.display());
+
+    let (Some(dir), Some(stem)) = (path.parent(), path.file_stem().and_then(|s| s.to_str())) else {
+        return Ok(());
+    };
+    let prefix = format!("{stem}.v");
+    let mut copies: Vec<(usize, PathBuf)> = std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            let v = name.strip_prefix(&prefix)?.strip_suffix(".bak.db")?;
+            Some((v.parse().ok()?, e.path()))
+        })
+        .collect();
+    copies.sort_by_key(|c| std::cmp::Reverse(c.0));
+    for (_, old) in copies.into_iter().skip(KEPT_BACKUPS) {
+        let _ = std::fs::remove_file(old);
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
@@ -884,66 +1002,220 @@ mod tests {
         .unwrap();
     }
 
+    fn application_id(conn: &Connection) -> i32 {
+        conn.pragma_query_value(None, "application_id", |r| r.get(0))
+            .unwrap()
+    }
+
     #[test]
-    fn migrate_sets_user_version() {
+    fn migrations_are_valid() {
+        MIGRATIONS.validate().unwrap();
+    }
+
+    #[test]
+    fn a_fresh_database_is_stamped_with_the_epoch_and_latest_version() {
+        assert_eq!(DB_EPOCH, 1_380_207_153, "BASELINE stamps this literal");
         let db = Db::open_in_memory().unwrap();
         let conn = db.conn.lock();
-        let v: i64 = conn
-            .pragma_query_value(None, "user_version", |r| r.get(0))
-            .unwrap();
-        assert_eq!(v, SCHEMA_VERSION);
+        assert_eq!(user_version(&conn).unwrap(), schema_version());
+        assert_eq!(application_id(&conn), DB_EPOCH);
     }
 
+    /// The checked-in `schema.sql` is what a fresh database looks like, so a
+    /// schema change shows up in review. `UPDATE_SCHEMA=1` rewrites it.
     #[test]
-    fn migrate_from_v2_adds_waveform_and_bumps_version() {
-        // A released v2 DB (has mtime, no waveform) migrates straight to current.
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(MIGRATION_001).unwrap();
-        conn.execute_batch(MIGRATION_002).unwrap();
-        conn.pragma_update(None, "user_version", 2).unwrap();
-
-        let db = Db::with_connection(conn).expect("migrate v2 -> current");
-        db.insert_track(&TrackInsert {
-            path: "/a.mp3".into(),
-            content_type: "music".into(),
-            ..Default::default()
-        })
-        .unwrap();
-        let conn = db.conn.lock();
-        let v: i64 = conn
-            .pragma_query_value(None, "user_version", |r| r.get(0))
-            .unwrap();
-        assert_eq!(v, SCHEMA_VERSION);
-    }
-
-    /// A released v3 DB (has waveform, no cue points) migrates cleanly to v4.
-    #[test]
-    fn migrate_from_v3_adds_cue_points_and_bumps_version() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(MIGRATION_001).unwrap();
-        conn.execute_batch(MIGRATION_002).unwrap();
-        conn.execute_batch(MIGRATION_003).unwrap();
-        conn.pragma_update(None, "user_version", 3).unwrap();
-
-        let db = Db::with_connection(conn).expect("migrate v3 -> v4");
-        db.insert_track(&TrackInsert {
-            path: "/a.mp3".into(),
-            content_type: "music".into(),
-            duration: Some(200.0),
-            ..Default::default()
-        })
-        .unwrap();
-        let id = only_id(&db);
-        // The columns exist and read back as NULL on a freshly scanned track.
+    fn schema_matches_snapshot() {
+        let db = Db::open_in_memory().unwrap();
+        let actual = {
+            let conn = db.conn.lock();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT sql FROM sqlite_master \
+                     WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' \
+                     ORDER BY type, name",
+                )
+                .unwrap();
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
+            let mut out: String = rows.map(|r| format!("{};\n\n", r.unwrap())).collect();
+            out.truncate(out.trim_end().len());
+            out.push('\n');
+            out
+        };
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/library/schema.sql");
+        if std::env::var_os("UPDATE_SCHEMA").is_some() {
+            std::fs::write(&path, &actual).unwrap();
+        }
+        let expected = std::fs::read_to_string(&path).unwrap_or_default();
         assert_eq!(
-            db.get_track(id).unwrap().unwrap().cue_points,
-            CuePoints::default()
+            actual, expected,
+            "schema changed: rerun with UPDATE_SCHEMA=1 and commit schema.sql"
         );
-        let conn = db.conn.lock();
-        let v: i64 = conn
-            .pragma_query_value(None, "user_version", |r| r.get(0))
+    }
+
+    /// Seeds one representative row into a database at schema version `i + 1`.
+    /// Append one whenever a migration step is appended.
+    const SEEDS: &[fn(&Connection)] = &[|conn| {
+        conn.execute_batch(
+            "INSERT INTO tracks (path, content_type, title, artist, album, duration, \
+                                 play_count, waveform, cue_in_ms, fingerprint) \
+             VALUES ('/seed.mp3', 'music', 'Seed', 'A', 'B', 100.0, 3, x'00ff', 1000, 'v1:ab')",
+        )
+        .unwrap();
+    }];
+
+    /// Operator work written at any schema version survives every later step.
+    #[test]
+    fn every_step_preserves_seeded_rows() {
+        assert_eq!(
+            SEEDS.len(),
+            schema_version(),
+            "add a seed for the new migration step"
+        );
+        for version in 1..=schema_version() {
+            let mut conn = Connection::open_in_memory().unwrap();
+            MIGRATIONS.to_version(&mut conn, version).unwrap();
+            SEEDS[version - 1](&conn);
+            MIGRATIONS.to_latest(&mut conn).unwrap();
+            let db = Db {
+                conn: Mutex::new(conn),
+            };
+            let id = only_id(&db);
+            let track = db.get_track(id).unwrap().unwrap();
+            assert_eq!(track.title, "Seed", "seeded at v{version}");
+            assert_eq!(track.play_count, 3, "seeded at v{version}");
+            assert_eq!(
+                track.cue_points.cue_in_ms,
+                Some(1000),
+                "seeded at v{version}"
+            );
+            assert_eq!(db.get_waveform(id).unwrap(), Some(vec![0x00, 0xff]));
+        }
+    }
+
+    /// A database from before epochs existed, shaped like the released 0.17.0
+    /// schema, with WAL on as the app leaves it.
+    fn write_legacy_db(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             CREATE TABLE tracks (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               path TEXT UNIQUE NOT NULL,
+               content_type TEXT NOT NULL DEFAULT 'music',
+               title TEXT, play_count INTEGER NOT NULL DEFAULT 0,
+               mtime INTEGER, waveform BLOB
+             );
+             INSERT INTO tracks (path, title) VALUES ('/old.mp3', 'Old');
+             PRAGMA user_version = 3;",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_legacy_database_is_moved_aside_and_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("radiodiodj.db");
+        write_legacy_db(&path);
+
+        let opened = Db::open(&path).unwrap();
+
+        let backup = opened.reset_backup.expect("reset reported");
+        assert_eq!(backup, dir.path().join("radiodiodj.legacy-v3.bak.db"));
+        let old = Connection::open(&backup).unwrap();
+        let title: String = old
+            .query_row("SELECT title FROM tracks", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, SCHEMA_VERSION);
+        assert_eq!(title, "Old");
+        assert_eq!(opened.db.get_stats().unwrap().total_tracks, 0);
+        let conn = opened.db.conn.lock();
+        assert_eq!(application_id(&conn), DB_EPOCH);
+        assert_eq!(user_version(&conn).unwrap(), schema_version());
+    }
+
+    #[test]
+    fn reopening_a_current_database_neither_resets_nor_backs_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("radiodiodj.db");
+        let first = Db::open(&path).unwrap();
+        first
+            .db
+            .insert_track(&TrackInsert {
+                path: "/a.mp3".into(),
+                content_type: "music".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        drop(first);
+
+        let again = Db::open(&path).unwrap();
+        assert!(again.reset_backup.is_none());
+        assert_eq!(again.db.get_stats().unwrap().total_tracks, 1);
+        let names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert!(!names.iter().any(|n| n.contains(".bak.")), "{names:?}");
+    }
+
+    fn assert_refused_untouched(path: &Path) {
+        let before = std::fs::read(path).unwrap();
+        let err = Db::open(path).err().expect("refused");
+        assert!(
+            matches!(
+                err.downcast_ref::<OpenError>(),
+                Some(OpenError::TooNew { .. })
+            ),
+            "{err:#}"
+        );
+        assert_eq!(std::fs::read(path).unwrap(), before);
+    }
+
+    #[test]
+    fn a_database_from_a_newer_build_is_refused_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("radiodiodj.db");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE t (x); PRAGMA application_id = 1380207153; PRAGMA user_version = 99;",
+            )
+            .unwrap();
+        assert_refused_untouched(&path);
+    }
+
+    #[test]
+    fn a_database_from_an_unknown_epoch_is_refused_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("radiodiodj.db");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE t (x); PRAGMA application_id = 7; PRAGMA user_version = 1;",
+            )
+            .unwrap();
+        assert_refused_untouched(&path);
+    }
+
+    #[test]
+    fn backups_keep_only_the_newest_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("radiodiodj.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE t (x); INSERT INTO t VALUES (1);")
+            .unwrap();
+        for version in [1, 2, 3] {
+            backup(&conn, &path, version).unwrap();
+        }
+        let mut names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n.contains(".bak."))
+            .collect();
+        names.sort();
+        assert_eq!(names, ["radiodiodj.v2.bak.db", "radiodiodj.v3.bak.db"]);
+        let copy = Connection::open(dir.path().join("radiodiodj.v3.bak.db")).unwrap();
+        let x: i64 = copy.query_row("SELECT x FROM t", [], |r| r.get(0)).unwrap();
+        assert_eq!(x, 1);
     }
 
     /// Cue points are clamped on write and the clamped value comes back, so the

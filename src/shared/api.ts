@@ -38,6 +38,8 @@ export interface SessionPersistState {
 export interface SessionLoadResult {
   state: SessionPersistState;
   tracks: Track[];
+  /** This launch replaced a library database from an older version. */
+  libraryReset: boolean;
 }
 
 /**

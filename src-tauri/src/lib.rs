@@ -20,7 +20,7 @@ use audio::cue::CueDeck;
 use audio::cue_points::CuePoints;
 use audio::player::{Cmd, PlayerTuning};
 use broadcast::{service::default_now_playing_dir, BroadcastService};
-use library::db::{Db, LibraryStats, Track, TrackMetadataUpdate};
+use library::db::{Db, LibraryStats, OpenError, Track, TrackMetadataUpdate};
 use library::scan_state::{ScanState, ScanStatus, StartResult};
 use library::waveform_scan::{WaveformJob, WaveformStatus};
 use persist::config::{Config, DeviceRef, NowPlayingConfig, TuningConfig};
@@ -43,6 +43,25 @@ fn player_tuning_from(t: &TuningConfig) -> PlayerTuning {
     }
 }
 
+/// Keep a database written by a newer build untouched: hide the window, say
+/// why, and quit once the operator acknowledges.
+fn refuse_to_start(app: &AppHandle, refusal: &OpenError) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    log::error!("{refusal}");
+    for window in app.webview_windows().values() {
+        let _ = window.hide();
+    }
+    let handle = app.clone();
+    app.dialog()
+        .message(format!(
+            "{refusal}.\n\nInstall the newer version to open this library. \
+             It has not been modified."
+        ))
+        .title(APP_NAME)
+        .kind(MessageDialogKind::Error)
+        .show(move |_| handle.exit(1));
+}
+
 pub struct AppState {
     db: Arc<Db>,
     config: Arc<Config>,
@@ -58,6 +77,9 @@ pub struct AppState {
     /// Shared prefetch byte cache, resident in both deck players.
     cache: Arc<Cache>,
     broadcast: Arc<BroadcastService>,
+    /// Set when this launch replaced a database from an older epoch, so the
+    /// renderer can say why the library is rescanning.
+    library_reset: bool,
     app_handle: AppHandle,
 }
 
@@ -65,6 +87,7 @@ pub struct AppState {
 struct SessionLoadResult {
     state: SessionState,
     tracks: Vec<Track>,
+    library_reset: bool,
 }
 
 fn err<E: std::fmt::Display>(e: E) -> String {
@@ -155,7 +178,11 @@ fn load_session(app: State<'_, AppState>) -> Result<SessionLoadResult, String> {
         }
     }
     let tracks = app.db.get_tracks_by_ids(&ids).map_err(err)?;
-    Ok(SessionLoadResult { state: s, tracks })
+    Ok(SessionLoadResult {
+        state: s,
+        tracks,
+        library_reset: app.library_reset,
+    })
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -582,9 +609,23 @@ pub fn run() {
             }));
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
-            let db = Arc::new(Db::open(&data_dir.join("radiodiodj.db"))?);
+            let opened = match Db::open(&data_dir.join("radiodiodj.db")) {
+                Ok(opened) => opened,
+                Err(e) => match e.downcast_ref::<OpenError>() {
+                    Some(refusal) => {
+                        refuse_to_start(app.handle(), refusal);
+                        return Ok(());
+                    }
+                    None => return Err(e.into()),
+                },
+            };
+            let library_reset = opened.reset_backup.is_some();
+            let db = Arc::new(opened.db);
             let config = Arc::new(Config::open(&data_dir)?);
             let session = Arc::new(Session::open(&data_dir));
+            if library_reset {
+                session.forget_tracks()?;
+            }
             // Pass the saved DeviceRef (not a pre-resolved device): the worker
             // resolves it lazily on the audio thread and falls back to the
             // system default, so a device unavailable at launch no longer kills
@@ -623,11 +664,20 @@ pub fn run() {
             // Backfill waveforms for any already-indexed tracks that lack one,
             // without waiting for the next scan. No-op on an empty library.
             Arc::clone(&waveform).start(app.handle().clone(), Arc::clone(&db));
+            let scan = Arc::new(ScanState::default());
+            if library_reset {
+                Arc::clone(&scan).start(
+                    app.handle().clone(),
+                    Arc::clone(&db),
+                    Arc::clone(&config),
+                    Arc::clone(&waveform),
+                );
+            }
             app.manage(AppState {
                 db,
                 config,
                 session,
-                scan: Arc::new(ScanState::default()),
+                scan,
                 waveform,
                 bus,
                 playlist,
@@ -635,6 +685,7 @@ pub fn run() {
                 cache,
                 broadcast,
                 app_handle: app.handle().clone(),
+                library_reset,
             });
             Ok(())
         })

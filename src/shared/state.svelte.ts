@@ -137,6 +137,9 @@ export class AppState {
   // clears this on recovery. Distinct from a network outage: the device, not
   // the media share, is the problem. See issue #259.
   outputUnavailable = $state(false);
+  // True from a launch that replaced an older library database until the scan
+  // that repopulates it finishes.
+  libraryReset = $state(false);
 
   // Cue deck (independent transport on a separate audio device)
   cueTrack = $state<Track | null>(null);
@@ -291,6 +294,7 @@ export class AppState {
       const wasRunning = this.scanStatus.status === "running";
       this.scanStatus = next;
       if (wasRunning && next.status !== "running") {
+        this.libraryReset = false;
         void this.search();
         void this.loadStats();
       }
@@ -898,6 +902,7 @@ export class AppState {
       return;
     }
     const { state, tracks } = result;
+    if (result.libraryReset) void this.noteLibraryReset();
     const byId = new Map(tracks.map((t) => [t.id, t]));
     this.history = state.historyIds
       .map((id) => byId.get(id))
@@ -1034,6 +1039,17 @@ export class AppState {
 
   async cancelScan(): Promise<void> {
     await api.cancelScan();
+  }
+
+  /** Show the rebuild notice unless the rescan already finished. */
+  private async noteLibraryReset(): Promise<void> {
+    this.libraryReset = true;
+    try {
+      const status = await api.getScanStatus();
+      if (status.status !== "running") this.libraryReset = false;
+    } catch (err) {
+      logger.error("Scan status lookup failed:", err);
+    }
   }
 
   async hydrateScanStatus(): Promise<void> {
