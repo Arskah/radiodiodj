@@ -1,8 +1,11 @@
-//! Background waveform computation, decoupled from the metadata scan.
+//! Background waveform and fingerprint computation, decoupled from the
+//! metadata scan.
 //!
 //! The metadata scan (tag reads) is fast and finishes quickly. Computing a
 //! track's amplitude curve requires a full audio decode, which is far heavier —
-//! so it runs here, on its own worker thread, after the scan. Waveforms land in
+//! so it runs here, on its own worker thread, after the scan. The same pass
+//! backfills [fingerprints](super::fingerprint): from the bytes already read
+//! when a waveform is due, from the head of the file otherwise. Waveforms land in
 //! the DB one at a time and a `waveform-ready` event is emitted per track so the
 //! renderer can refresh a curve for the deck that is currently showing it.
 //!
@@ -13,20 +16,25 @@
 //! missing-waveform list spanning every library).
 //!
 //! The job is single-flight (only one worker at a time) and cancelable. It
-//! drains [`Db::tracks_missing_waveform`] in a loop so tracks added while it runs
+//! drains [`Db::tracks_needing_analysis`] in a loop so tracks added while it runs
 //! are still picked up; ids that fail to decode are remembered for the run so a
 //! permanently-undecodable file never causes an infinite retry loop.
 
 use parking_lot::Mutex;
 use serde::Serialize;
 use std::collections::HashSet;
+use std::io::Cursor;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
-use super::db::Db;
+use super::db::{AnalysisJob, Db};
+use super::fingerprint;
 use crate::audio::waveform;
+
+type Bytes = Arc<[u8]>;
 
 /// Event emitted after a track's waveform is stored. Payload is the track id.
 const WAVEFORM_READY_EVENT: &str = "waveform-ready";
@@ -127,18 +135,18 @@ fn run(job: &WaveformJob, app: &AppHandle, db: &Db) {
         if job.cancel.load(Ordering::SeqCst) {
             break;
         }
-        let missing = match db.tracks_missing_waveform() {
+        let missing = match db.tracks_needing_analysis() {
             Ok(m) => m,
             Err(e) => {
                 log::error!("waveform: query missing failed: {}", e);
                 break;
             }
         };
-        let pending: Vec<(i64, String, Option<f64>)> = {
+        let pending: Vec<AnalysisJob> = {
             let f = failed.lock();
             missing
                 .into_iter()
-                .filter(|(id, _, _)| !f.contains(id))
+                .filter(|job| !f.contains(&job.id))
                 .collect()
         };
         if pending.is_empty() {
@@ -170,28 +178,11 @@ fn run(job: &WaveformJob, app: &AppHandle, db: &Db) {
                         break;
                     }
                     let i = next.fetch_add(1, Ordering::Relaxed);
-                    let Some((id, path, _duration)) = pending.get(i) else {
+                    let Some(track) = pending.get(i) else {
                         break;
                     };
-                    match compute(path) {
-                        Some((peaks, decode_ms)) => {
-                            let store_start = Instant::now();
-                            if let Err(e) = db.set_waveform(*id, &peaks) {
-                                log::error!("waveform: store {} failed: {}", id, e);
-                                failed.lock().insert(*id);
-                            } else {
-                                log::debug!(
-                                    "waveform: {} decode {}ms write {}ms",
-                                    path,
-                                    decode_ms,
-                                    store_start.elapsed().as_millis()
-                                );
-                                let _ = app.emit(WAVEFORM_READY_EVENT, *id);
-                            }
-                        }
-                        None => {
-                            failed.lock().insert(*id);
-                        }
+                    if !analyse(track, db, app) {
+                        failed.lock().insert(track.id);
                     }
                     let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
                     *job.status.lock() = WaveformStatus::Running {
@@ -220,24 +211,61 @@ fn run(job: &WaveformJob, app: &AppHandle, db: &Db) {
     }
 }
 
-/// Read and decode a file into its amplitude curve. Returns the curve plus the
-/// read+decode duration in milliseconds (for the debug timing log), or `None`
-/// (logged) on any read/decode failure so a single bad file never stops the
-/// worker.
-fn compute(path: &str) -> Option<(Vec<u8>, u128)> {
-    let start = Instant::now();
-    let bytes = match std::fs::read(path) {
-        Ok(v) => Arc::from(v.into_boxed_slice()),
-        Err(e) => {
-            log::warn!("waveform: read {} failed: {}", path, e);
-            return None;
+/// Fill whatever `job` is missing and store it. Returns false when anything
+/// failed, so the drain loop does not retry the track this run.
+fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle) -> bool {
+    let path = Path::new(&job.path);
+    let mut ok = true;
+    let fingerprint = if job.needs_waveform {
+        let start = Instant::now();
+        let bytes: Bytes = match std::fs::read(path) {
+            Ok(v) => Arc::from(v.into_boxed_slice()),
+            Err(e) => {
+                log::warn!("waveform: read {} failed: {}", job.path, e);
+                return false;
+            }
+        };
+        match waveform::compute_peaks(Arc::clone(&bytes)) {
+            Ok(peaks) => {
+                let decode_ms = start.elapsed().as_millis();
+                let store_start = Instant::now();
+                if let Err(e) = db.set_waveform(job.id, &peaks) {
+                    log::error!("waveform: store {} failed: {}", job.id, e);
+                    ok = false;
+                } else {
+                    log::debug!(
+                        "waveform: {} decode {}ms write {}ms",
+                        job.path,
+                        decode_ms,
+                        store_start.elapsed().as_millis()
+                    );
+                    let _ = app.emit(WAVEFORM_READY_EVENT, job.id);
+                }
+            }
+            Err(e) => {
+                log::warn!("waveform: decode {} failed: {}", job.path, e);
+                ok = false;
+            }
         }
+        job.needs_fingerprint.then(|| {
+            let ext = path.extension().and_then(|e| e.to_str());
+            fingerprint::of_source(Box::new(Cursor::new(bytes)), ext)
+        })
+    } else {
+        job.needs_fingerprint.then(|| fingerprint::of_file(path))
     };
-    match waveform::compute_peaks(bytes) {
-        Ok(peaks) => Some((peaks, start.elapsed().as_millis())),
-        Err(e) => {
-            log::warn!("waveform: decode {} failed: {}", path, e);
-            None
+    match fingerprint {
+        Some(Ok(fp)) => {
+            if let Err(e) = db.set_fingerprint(job.id, &fp) {
+                log::error!("fingerprint: store {} failed: {}", job.id, e);
+                ok = false;
+            }
         }
+        Some(Err(e)) => {
+            log::warn!("fingerprint: {} failed: {:#}", job.path, e);
+            ok = false;
+        }
+        None => {}
     }
+    ok
 }

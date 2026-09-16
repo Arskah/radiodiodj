@@ -1,4 +1,5 @@
 pub mod db;
+pub mod fingerprint;
 pub mod scan_state;
 pub mod scanner;
 #[cfg(test)]

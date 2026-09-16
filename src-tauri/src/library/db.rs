@@ -101,6 +101,14 @@ pub struct TrackInsert {
     pub mtime: Option<i64>,
 }
 
+/// A track the analysis worker still has to read.
+pub struct AnalysisJob {
+    pub id: i64,
+    pub path: String,
+    pub needs_waveform: bool,
+    pub needs_fingerprint: bool,
+}
+
 /// One row as the scanner sees it.
 pub struct IndexRow {
     pub id: i64,
@@ -420,24 +428,33 @@ impl Db {
         Ok(clamped)
     }
 
-    /// `(id, path, duration)` for every track still missing a waveform, ordered
-    /// by id. Drives the background waveform worker's work list (backfill
-    /// included); the duration seeds the peak-bucket sizing so the worker
-    /// decodes each file only once.
-    pub fn tracks_missing_waveform(&self) -> Result<Vec<(i64, String, Option<f64>)>> {
+    /// Every present track still missing a waveform or a fingerprint, ordered
+    /// by id. Drives the background analysis worker (backfill included).
+    pub fn tracks_needing_analysis(&self) -> Result<Vec<AnalysisJob>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, path, duration FROM tracks \
-             WHERE waveform IS NULL AND missing_since IS NULL ORDER BY id",
+            "SELECT id, path, waveform IS NULL, fingerprint IS NULL FROM tracks \
+             WHERE missing_since IS NULL AND (waveform IS NULL OR fingerprint IS NULL) \
+             ORDER BY id",
         )?;
         let rows = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, Option<f64>>(2)?,
-            ))
+            Ok(AnalysisJob {
+                id: r.get(0)?,
+                path: r.get(1)?,
+                needs_waveform: r.get(2)?,
+                needs_fingerprint: r.get(3)?,
+            })
         })?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+    }
+
+    pub fn set_fingerprint(&self, id: i64, fingerprint: &str) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE tracks SET fingerprint = ? WHERE id = ?",
+            params![fingerprint, id],
+        )?;
+        Ok(())
     }
 
     /// Single-track upsert. Only the tests need this; the scanner batches via
@@ -1268,10 +1285,10 @@ mod tests {
             [(here, "/here.mp3".to_string())]
         );
         let unfilled: Vec<i64> = db
-            .tracks_missing_waveform()
+            .tracks_needing_analysis()
             .unwrap()
             .iter()
-            .map(|r| r.0)
+            .map(|job| job.id)
             .collect();
         assert_eq!(unfilled, [here]);
 
@@ -1427,27 +1444,30 @@ mod tests {
     }
 
     #[test]
-    fn tracks_missing_waveform_lists_only_unfilled() {
+    fn analysis_lists_tracks_until_both_waveform_and_fingerprint_are_filled() {
         let db = Db::open_in_memory().unwrap();
-        db.insert_track(&TrackInsert {
-            path: "/a.mp3".into(),
-            content_type: "music".into(),
-            ..Default::default()
-        })
-        .unwrap();
-        db.insert_track(&TrackInsert {
-            path: "/b.mp3".into(),
-            content_type: "music".into(),
-            ..Default::default()
-        })
-        .unwrap();
-        assert_eq!(db.tracks_missing_waveform().unwrap().len(), 2);
+        for path in ["/a.mp3", "/b.mp3"] {
+            db.insert_track(&TrackInsert {
+                path: path.into(),
+                content_type: "music".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        let jobs = db.tracks_needing_analysis().unwrap();
+        assert_eq!(jobs.len(), 2);
+        assert!(jobs.iter().all(|j| j.needs_waveform && j.needs_fingerprint));
 
-        let first = db.tracks_missing_waveform().unwrap()[0].0;
-        db.set_waveform(first, &[9]).unwrap();
-        let remaining = db.tracks_missing_waveform().unwrap();
-        assert_eq!(remaining.len(), 1);
-        assert_ne!(remaining[0].0, first);
+        let (a, b) = (jobs[0].id, jobs[1].id);
+        db.set_waveform(a, &[9]).unwrap();
+        db.set_waveform(b, &[9]).unwrap();
+        db.set_fingerprint(b, "v1:b").unwrap();
+
+        let jobs = db.tracks_needing_analysis().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].id, a);
+        assert!(!jobs[0].needs_waveform);
+        assert!(jobs[0].needs_fingerprint);
     }
 
     #[test]
