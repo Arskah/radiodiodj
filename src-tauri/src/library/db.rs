@@ -1,9 +1,10 @@
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
+use rusqlite_migration::{Migrations, M};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::audio::cue_points::CuePoints;
 
@@ -34,6 +35,15 @@ pub struct LibraryStats {
     pub total_albums: i64,
     pub total_hours: f64,
     pub tracks_by_type: TracksByType,
+}
+
+/// Tracks whose file is gone, as the purge confirmation names them.
+#[derive(Serialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MissingSummary {
+    pub tracks: i64,
+    /// Of those, how many carry a radio edit the purge would destroy.
+    pub with_cue_points: i64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -98,11 +108,49 @@ pub struct TrackInsert {
     pub bitrate: Option<i64>,
     pub format: Option<String>,
     pub mtime: Option<i64>,
+    /// Left as stored when `None`.
+    pub fingerprint: Option<String>,
 }
 
-pub struct TrackMtimeRow {
+/// A track the analysis worker still has to read.
+pub struct AnalysisJob {
+    pub id: i64,
+    pub path: String,
+    pub needs_waveform: bool,
+    pub needs_fingerprint: bool,
+}
+
+/// One row as the scanner sees it.
+pub struct IndexRow {
+    pub id: i64,
+    pub path: String,
     pub content_type: String,
     pub mtime: Option<i64>,
+    pub missing_since: Option<i64>,
+    pub fingerprint: Option<String>,
+}
+
+/// Everything one scan changes, applied in a single transaction.
+#[derive(Default)]
+pub struct Reconcile {
+    /// Missing rows whose file is back at the same path.
+    pub revive: Vec<i64>,
+    /// Rows for paths the library already holds.
+    pub upserts: Vec<TrackInsert>,
+    /// Present rows whose file is gone.
+    pub gone: Vec<i64>,
+    /// Files at paths the library does not hold. Matched by fingerprint
+    /// after `gone` is marked, so a file moved within one scan reattaches.
+    pub new_files: Vec<TrackInsert>,
+    pub now_ms: i64,
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub struct Reconciled {
+    pub missing: usize,
+    pub reattached: usize,
+    pub duplicated: usize,
+    pub inserted: usize,
 }
 
 pub struct MediaTrack {
@@ -132,8 +180,21 @@ pub struct Db {
 }
 
 impl Db {
-    pub fn open(path: &Path) -> Result<Self> {
-        let conn = Connection::open(path).context("open sqlite")?;
+    /// Open the library database, migrating it to the current schema.
+    ///
+    /// A database from before the current [`DB_EPOCH`] is moved aside and
+    /// replaced by an empty one; the outcome names the backup so the caller can
+    /// drop session state that points at the old ids. A database written by a
+    /// newer build is refused untouched with [`OpenError`]. Pending migrations
+    /// run only after a `VACUUM INTO` copy of the file has been taken.
+    pub fn open(path: &Path) -> Result<Opened> {
+        let reset_backup = retire_legacy(path)?;
+        let mut conn = Connection::open(path).context("open sqlite")?;
+        let found = user_version(&conn)?;
+        let supported = schema_version();
+        if found > supported {
+            return Err(OpenError::TooNew { found, supported }.into());
+        }
         // WAL for concurrent read/write; `synchronous = NORMAL` drops the fsync
         // on every autocommit (e.g. the per-track waveform writes) — safe under
         // WAL since only a crash mid-commit can lose the last transaction, and
@@ -145,49 +206,25 @@ impl Db {
              PRAGMA synchronous = NORMAL;
              PRAGMA busy_timeout = 5000;",
         )?;
-        Self::with_connection(conn)
-    }
-
-    fn with_connection(conn: Connection) -> Result<Self> {
-        let db = Self {
-            conn: Mutex::new(conn),
-        };
-        db.migrate()?;
-        Ok(db)
+        if found > 0 && found < supported {
+            backup(&conn, path, found)?;
+        }
+        MIGRATIONS.to_latest(&mut conn).context("migrate library")?;
+        Ok(Opened {
+            db: Self {
+                conn: Mutex::new(conn),
+            },
+            reset_backup,
+        })
     }
 
     #[cfg(test)]
     pub fn open_in_memory() -> Result<Self> {
-        Self::with_connection(Connection::open_in_memory()?)
-    }
-
-    fn migrate(&self) -> Result<()> {
-        let mut conn = self.conn.lock();
-        let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if v >= SCHEMA_VERSION {
-            return Ok(());
-        }
-        // Apply pending steps and bump user_version in a single transaction so
-        // the schema change and its version bump commit together. An interrupted
-        // migration rolls back cleanly instead of leaving the DB half-applied
-        // (schema ahead of version), which on the next launch would re-run an
-        // ADD COLUMN and fail with "duplicate column name".
-        let tx = conn.transaction()?;
-        if v < 1 {
-            tx.execute_batch(MIGRATION_001)?;
-        }
-        if v < 2 {
-            tx.execute_batch(MIGRATION_002)?;
-        }
-        if v < 3 {
-            tx.execute_batch(MIGRATION_003)?;
-        }
-        if v < 4 {
-            tx.execute_batch(MIGRATION_004)?;
-        }
-        tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-        tx.commit()?;
-        Ok(())
+        let mut conn = Connection::open_in_memory()?;
+        MIGRATIONS.to_latest(&mut conn)?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     pub fn search(
@@ -209,14 +246,18 @@ impl Db {
             {
                 (
                     format!(
-                        "SELECT * FROM tracks WHERE content_type = ? ORDER BY {} LIMIT 200",
+                        "SELECT * FROM tracks WHERE missing_since IS NULL AND content_type = ? \
+                         ORDER BY {} LIMIT 200",
                         order_sql
                     ),
                     vec![t.to_owned().into()],
                 )
             } else {
                 (
-                    format!("SELECT * FROM tracks ORDER BY {} LIMIT 200", order_sql),
+                    format!(
+                        "SELECT * FROM tracks WHERE missing_since IS NULL ORDER BY {} LIMIT 200",
+                        order_sql
+                    ),
                     vec![],
                 )
             };
@@ -237,7 +278,8 @@ impl Db {
                 format!(
                     "SELECT tracks.* FROM tracks_fts \
                      JOIN tracks ON tracks.id = tracks_fts.rowid \
-                     WHERE tracks_fts MATCH ? AND tracks.content_type = ? \
+                     WHERE tracks_fts MATCH ? AND tracks.missing_since IS NULL \
+                       AND tracks.content_type = ? \
                      ORDER BY {} LIMIT 200",
                     order_sql
                 ),
@@ -248,7 +290,7 @@ impl Db {
                 format!(
                     "SELECT tracks.* FROM tracks_fts \
                      JOIN tracks ON tracks.id = tracks_fts.rowid \
-                     WHERE tracks_fts MATCH ? \
+                     WHERE tracks_fts MATCH ? AND tracks.missing_since IS NULL \
                      ORDER BY {} LIMIT 200",
                     order_sql
                 ),
@@ -318,8 +360,7 @@ impl Db {
             return Ok(vec![]);
         }
         let conn = self.conn.lock();
-        let placeholders = std::iter::repeat("?")
-            .take(ids.len())
+        let placeholders = std::iter::repeat_n("?", ids.len())
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!("SELECT * FROM tracks WHERE id IN ({})", placeholders);
@@ -341,11 +382,13 @@ impl Db {
             return Ok(vec![]);
         }
         let conn = self.conn.lock();
-        let placeholders = std::iter::repeat("?")
-            .take(ids.len())
+        let placeholders = std::iter::repeat_n("?", ids.len())
             .collect::<Vec<_>>()
             .join(",");
-        let sql = format!("SELECT id, path FROM tracks WHERE id IN ({})", placeholders);
+        let sql = format!(
+            "SELECT id, path FROM tracks WHERE missing_since IS NULL AND id IN ({})",
+            placeholders
+        );
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(ids.iter()), |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
@@ -420,113 +463,178 @@ impl Db {
         Ok(clamped)
     }
 
-    /// `(id, path, duration)` for every track still missing a waveform, ordered
-    /// by id. Drives the background waveform worker's work list (backfill
-    /// included); the duration seeds the peak-bucket sizing so the worker
-    /// decodes each file only once.
-    pub fn tracks_missing_waveform(&self) -> Result<Vec<(i64, String, Option<f64>)>> {
+    /// Every present track still missing a waveform or a fingerprint, ordered
+    /// by id. Drives the background analysis worker (backfill included).
+    pub fn tracks_needing_analysis(&self) -> Result<Vec<AnalysisJob>> {
         let conn = self.conn.lock();
-        let mut stmt = conn
-            .prepare("SELECT id, path, duration FROM tracks WHERE waveform IS NULL ORDER BY id")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, path, waveform IS NULL, fingerprint IS NULL FROM tracks \
+             WHERE missing_since IS NULL AND (waveform IS NULL OR fingerprint IS NULL) \
+             ORDER BY id",
+        )?;
         let rows = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, Option<f64>>(2)?,
-            ))
+            Ok(AnalysisJob {
+                id: r.get(0)?,
+                path: r.get(1)?,
+                needs_waveform: r.get(2)?,
+                needs_fingerprint: r.get(3)?,
+            })
         })?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
 
-    /// Single-track upsert. Only the tests need this; the scanner batches via
-    /// [`Db::insert_tracks`].
-    #[cfg(test)]
-    pub fn insert_track(&self, t: &TrackInsert) -> Result<()> {
-        self.insert_tracks(std::slice::from_ref(t))
-    }
-
-    /// Upsert many tracks in a single transaction with one prepared statement.
-    /// Used by the scanner: a per-row autocommit costs a WAL commit each, which
-    /// dominates a large scan — one transaction turns thousands of commits into
-    /// one. A no-op for an empty slice.
-    pub fn insert_tracks(&self, tracks: &[TrackInsert]) -> Result<()> {
-        if tracks.is_empty() {
-            return Ok(());
-        }
-        let mut conn = self.conn.lock();
-        let tx = conn.transaction()?;
-        {
-            let mut stmt = tx.prepare(UPSERT_TRACK_SQL)?;
-            for t in tracks {
-                stmt.execute(upsert_params(t))?;
-            }
-        }
-        tx.commit()?;
+    pub fn set_fingerprint(&self, id: i64, fingerprint: &str) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE tracks SET fingerprint = ? WHERE id = ?",
+            params![fingerprint, id],
+        )?;
         Ok(())
     }
 
-    /// Map of `path -> (content_type, mtime)` for every track under `root`, in a
-    /// single query. Lets the scanner decide what to re-parse without a
-    /// per-file SELECT.
-    pub fn track_meta_under(&self, root: &str) -> Result<HashMap<String, TrackMtimeRow>> {
+    /// Single-track upsert, for tests; the scanner goes through
+    /// [`Db::reconcile`].
+    #[cfg(test)]
+    pub fn insert_track(&self, t: &TrackInsert) -> Result<()> {
+        self.conn
+            .lock()
+            .execute(UPSERT_TRACK_SQL, upsert_params(t))?;
+        Ok(())
+    }
+
+    /// Every row, reduced to what the scanner reconciles against. Loaded once
+    /// per scan so root membership can be decided by path component in Rust
+    /// rather than by a `LIKE` prefix.
+    pub fn track_index(&self) -> Result<Vec<IndexRow>> {
         let conn = self.conn.lock();
-        let pattern = format!("{}%", root);
-        let mut stmt =
-            conn.prepare("SELECT path, content_type, mtime FROM tracks WHERE path LIKE ?")?;
-        let rows = stmt.query_map([pattern], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                TrackMtimeRow {
-                    content_type: r.get(1)?,
-                    mtime: r.get::<_, Option<i64>>(2)?,
-                },
-            ))
+        let mut stmt = conn.prepare(
+            "SELECT id, path, content_type, mtime, missing_since, fingerprint FROM tracks",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(IndexRow {
+                id: r.get(0)?,
+                path: r.get(1)?,
+                content_type: r.get(2)?,
+                mtime: r.get(3)?,
+                missing_since: r.get(4)?,
+                fingerprint: r.get(5)?,
+            })
         })?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
 
-    pub fn get_paths_under(&self, root: &str) -> Result<Vec<String>> {
-        let conn = self.conn.lock();
-        let pattern = format!("{}%", root);
-        let mut stmt = conn.prepare("SELECT path FROM tracks WHERE path LIKE ?")?;
-        let rows = stmt.query_map([pattern], |r| r.get::<_, String>(0))?;
-        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
-    }
-
-    pub fn delete_by_paths(&self, paths: &[String]) -> Result<usize> {
-        if paths.is_empty() {
-            return Ok(0);
-        }
+    /// Apply a scan's changes atomically. For each new file, in order:
+    ///
+    /// 1. **Reattach** to a missing row with the same fingerprint (newest
+    ///    first): only path, content type and mtime change, so everything the
+    ///    operator did to the track — tags edited in the app included — stays.
+    /// 2. **Duplicate** a present row with the same fingerprint (oldest
+    ///    first): a new row that starts with a copy of that row's operator
+    ///    state.
+    /// 3. Otherwise insert it as a new track.
+    pub fn reconcile(&self, change: &Reconcile) -> Result<Reconciled> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
-        let mut total = 0usize;
-        for chunk in paths.chunks(500) {
-            let placeholders = std::iter::repeat("?")
-                .take(chunk.len())
-                .collect::<Vec<_>>()
-                .join(",");
-            let sql = format!("DELETE FROM tracks WHERE path IN ({})", placeholders);
-            total += tx.execute(&sql, params_from_iter(chunk.iter()))?;
+        let mut done = Reconciled::default();
+        for chunk in change.revive.chunks(500) {
+            let sql = format!(
+                "UPDATE tracks SET missing_since = NULL WHERE id IN ({})",
+                vec!["?"; chunk.len()].join(",")
+            );
+            tx.execute(&sql, params_from_iter(chunk))?;
+        }
+        {
+            let mut upsert = tx.prepare(UPSERT_TRACK_SQL)?;
+            for t in &change.upserts {
+                upsert.execute(upsert_params(t))?;
+            }
+        }
+        for chunk in change.gone.chunks(500) {
+            let sql = format!(
+                "UPDATE tracks SET missing_since = ?1 \
+                 WHERE missing_since IS NULL AND id IN ({})",
+                (0..chunk.len())
+                    .map(|i| format!("?{}", i + 2))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            let params = std::iter::once(&change.now_ms).chain(chunk);
+            done.missing += tx.execute(&sql, params_from_iter(params))?;
+        }
+        {
+            let mut missing_twin = tx.prepare(
+                "SELECT id FROM tracks WHERE fingerprint = ?1 AND missing_since IS NOT NULL \
+                 ORDER BY missing_since DESC, id DESC LIMIT 1",
+            )?;
+            let mut reattach = tx.prepare(
+                "UPDATE tracks SET path = ?1, content_type = ?2, mtime = ?3, \
+                        missing_since = NULL \
+                 WHERE id = ?4",
+            )?;
+            let mut present_twin = tx.prepare(
+                "SELECT id FROM tracks WHERE fingerprint = ?1 AND missing_since IS NULL \
+                 ORDER BY id LIMIT 1",
+            )?;
+            let mut insert = tx.prepare(&format!("{UPSERT_TRACK_SQL} RETURNING id"))?;
+            let mut copy_state = tx.prepare(
+                "UPDATE tracks SET title = s.title, artist = s.artist, album = s.album, \
+                        genre = s.genre, year = s.year, bpm = s.bpm, \
+                        play_count = s.play_count, waveform = s.waveform, \
+                        cue_in_ms = s.cue_in_ms, fade_in_ms = s.fade_in_ms, \
+                        fade_out_ms = s.fade_out_ms, cue_out_ms = s.cue_out_ms, \
+                        next_start_ms = s.next_start_ms \
+                 FROM (SELECT * FROM tracks WHERE id = ?1) AS s \
+                 WHERE tracks.id = ?2",
+            )?;
+            for t in &change.new_files {
+                let Some(fp) = &t.fingerprint else {
+                    insert.query_row(upsert_params(t), |_| Ok(()))?;
+                    done.inserted += 1;
+                    continue;
+                };
+                let twin: Option<i64> = missing_twin.query_row([fp], |r| r.get(0)).optional()?;
+                if let Some(id) = twin {
+                    reattach.execute(params![t.path, t.content_type, t.mtime, id])?;
+                    done.reattached += 1;
+                    continue;
+                }
+                let source: Option<i64> = present_twin.query_row([fp], |r| r.get(0)).optional()?;
+                let id: i64 = insert.query_row(upsert_params(t), |r| r.get(0))?;
+                match source {
+                    Some(source) => {
+                        copy_state.execute(params![source, id])?;
+                        done.duplicated += 1;
+                    }
+                    None => done.inserted += 1,
+                }
+            }
         }
         tx.commit()?;
-        Ok(total)
+        Ok(done)
     }
 
-    pub fn remove_tracks_not_in_paths(&self, roots: &[String]) -> Result<usize> {
+    pub fn missing_summary(&self) -> Result<MissingSummary> {
         let conn = self.conn.lock();
-        if roots.is_empty() {
-            let n = conn.execute("DELETE FROM tracks", [])?;
-            return Ok(n);
-        }
-        let mut where_parts = Vec::new();
-        let mut p: Vec<rusqlite::types::Value> = Vec::new();
-        for r in roots {
-            where_parts.push("path NOT LIKE ?".to_string());
-            p.push(format!("{}%", r).into());
-        }
-        let sql = format!("DELETE FROM tracks WHERE {}", where_parts.join(" AND "));
-        let n = conn.execute(&sql, params_from_iter(p.iter()))?;
-        Ok(n)
+        conn.query_row(
+            "SELECT COUNT(*), \
+                    COUNT(*) FILTER (WHERE COALESCE(cue_in_ms, fade_in_ms, fade_out_ms, \
+                                                    cue_out_ms, next_start_ms) IS NOT NULL) \
+             FROM tracks WHERE missing_since IS NOT NULL",
+            [],
+            |r| {
+                Ok(MissingSummary {
+                    tracks: r.get(0)?,
+                    with_cue_points: r.get(1)?,
+                })
+            },
+        )
+        .map_err(Into::into)
+    }
+
+    /// Delete every missing row for good. The only path that deletes tracks.
+    pub fn purge_missing(&self) -> Result<usize> {
+        let conn = self.conn.lock();
+        Ok(conn.execute("DELETE FROM tracks WHERE missing_since IS NOT NULL", [])?)
     }
 
     pub fn increment_play_count(&self, id: i64) -> Result<()> {
@@ -614,7 +722,7 @@ impl Db {
         // there is something to exclude.
         let exclude_clause = exclude_sql(exclude_ids);
         let sql = format!(
-            "SELECT * FROM tracks WHERE content_type = ?{exclude_clause} \
+            "SELECT * FROM tracks WHERE missing_since IS NULL AND content_type = ?{exclude_clause} \
              ORDER BY RANDOM() LIMIT ?"
         );
         let mut stmt = conn.prepare(&sql)?;
@@ -645,7 +753,8 @@ impl Db {
         let exclude_clause = exclude_sql(exclude_ids);
         let sql = format!(
             "WITH bucket AS ( \
-                SELECT * FROM tracks WHERE content_type = ?{exclude_clause} \
+                SELECT * FROM tracks \
+                WHERE missing_since IS NULL AND content_type = ?{exclude_clause} \
                 ORDER BY play_count ASC, RANDOM() LIMIT ? \
             ) SELECT * FROM bucket ORDER BY RANDOM() LIMIT ?"
         );
@@ -671,13 +780,14 @@ impl Db {
         let (total_tracks, total_artists, total_albums, total_hours): (i64, i64, i64, f64) = conn
             .query_row(
             "SELECT COUNT(*), COUNT(DISTINCT artist), COUNT(DISTINCT album), \
-                 COALESCE(ROUND(SUM(duration) / 3600.0, 1), 0) FROM tracks",
+                 COALESCE(ROUND(SUM(duration) / 3600.0, 1), 0) FROM tracks \
+                 WHERE missing_since IS NULL",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )?;
         let mut tracks_by_type = TracksByType::default();
         let mut stmt =
-            conn.prepare("SELECT content_type, COUNT(*) FROM tracks GROUP BY content_type")?;
+            conn.prepare("SELECT content_type, COUNT(*) FROM tracks WHERE missing_since IS NULL GROUP BY content_type")?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
         for row in rows {
             let (kind, n) = row?;
@@ -700,7 +810,7 @@ impl Db {
 
 /// Bind params for [`UPSERT_TRACK_SQL`], in column order. Shared by the single
 /// and batch insert paths so the two never drift.
-fn upsert_params(t: &TrackInsert) -> [&dyn rusqlite::ToSql; 13] {
+fn upsert_params(t: &TrackInsert) -> [&dyn rusqlite::ToSql; 14] {
     [
         &t.path,
         &t.content_type,
@@ -715,6 +825,7 @@ fn upsert_params(t: &TrackInsert) -> [&dyn rusqlite::ToSql; 13] {
         &t.bitrate,
         &t.format,
         &t.mtime,
+        &t.fingerprint,
     ]
 }
 
@@ -777,42 +888,92 @@ fn row_to_cue_points(row: &Row) -> rusqlite::Result<CuePoints> {
     })
 }
 
-const MIGRATION_001: &str = r#"
-CREATE TABLE IF NOT EXISTS tracks (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  path TEXT UNIQUE NOT NULL,
-  content_type TEXT NOT NULL DEFAULT 'music',
-  title TEXT,
-  artist TEXT,
-  album TEXT,
-  genre TEXT,
-  year INTEGER,
-  duration REAL,
-  bpm REAL,
-  sample_rate INTEGER,
-  bitrate INTEGER,
-  format TEXT,
-  play_count INTEGER NOT NULL DEFAULT 0,
-  added_at TEXT DEFAULT (datetime('now'))
+/// Identifies a database created by the current schema baseline, stored in
+/// `PRAGMA application_id` ("RDJ1"). Pre-1.0 the schema may be squashed into a
+/// new baseline: bump this, move the old value into [`LEGACY_EPOCHS`], and every
+/// older database is reset on its next open.
+const DB_EPOCH: i32 = 0x5244_4a31;
+
+/// Epochs this build knows to be older than [`DB_EPOCH`]. `0` is every
+/// database written before epochs existed. Any other foreign value is treated as
+/// newer and refused, so an old build never resets a newer library.
+const LEGACY_EPOCHS: &[i32] = &[0];
+
+/// How many pre-migration backups to keep beside the database.
+const KEPT_BACKUPS: usize = 2;
+
+/// The schema, as an append-only list. Never edit a step that has shipped: add
+/// a new one and regenerate `schema.sql` (see `docs/database.md`).
+const MIGRATION_STEPS: &[M] = &[M::up(BASELINE)];
+const MIGRATIONS: Migrations = Migrations::from_slice(MIGRATION_STEPS);
+
+fn schema_version() -> usize {
+    MIGRATION_STEPS.len()
+}
+
+/// Epoch-1 baseline.
+///
+/// - The operator-work columns (`play_count`, `waveform`, the five cue
+///   markers) are absent from `UPSERT_TRACK_SQL`, so a rescan cannot destroy
+///   them. The markers are milliseconds from the start of the file and `NULL`
+///   means "no adjustment".
+/// - `fingerprint` identifies the audio independently of path and tags;
+///   `missing_since` (unix ms) marks a row whose file is gone. Only present
+///   rows are held to a unique path, so a missing row can keep its old path
+///   while a different file takes it.
+/// - `tracks_au` fires only when an indexed column changes, not on every
+///   waveform write or play count bump.
+const BASELINE: &str = r#"
+PRAGMA application_id = 1380207153;
+
+CREATE TABLE tracks (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  path          TEXT NOT NULL,
+  content_type  TEXT NOT NULL DEFAULT 'music'
+                CHECK (content_type IN ('music', 'jingle', 'commercial')),
+  title         TEXT,
+  artist        TEXT,
+  album         TEXT,
+  genre         TEXT,
+  year          INTEGER,
+  duration      REAL,
+  bpm           REAL,
+  sample_rate   INTEGER,
+  bitrate       INTEGER,
+  format        TEXT,
+  mtime         INTEGER,
+  play_count    INTEGER NOT NULL DEFAULT 0,
+  added_at      TEXT DEFAULT (datetime('now')),
+  waveform      BLOB,
+  cue_in_ms     INTEGER,
+  fade_in_ms    INTEGER,
+  fade_out_ms   INTEGER,
+  cue_out_ms    INTEGER,
+  next_start_ms INTEGER,
+  fingerprint   TEXT,
+  missing_since INTEGER
 );
 
-CREATE VIRTUAL TABLE IF NOT EXISTS tracks_fts USING fts5(
+CREATE UNIQUE INDEX tracks_path_present ON tracks(path) WHERE missing_since IS NULL;
+CREATE INDEX tracks_fingerprint ON tracks(fingerprint) WHERE fingerprint IS NOT NULL;
+
+CREATE VIRTUAL TABLE tracks_fts USING fts5(
   title, artist, album, genre,
   content='tracks',
   content_rowid='id'
 );
 
-CREATE TRIGGER IF NOT EXISTS tracks_ai AFTER INSERT ON tracks BEGIN
+CREATE TRIGGER tracks_ai AFTER INSERT ON tracks BEGIN
   INSERT INTO tracks_fts(rowid, title, artist, album, genre)
   VALUES (new.id, new.title, new.artist, new.album, new.genre);
 END;
 
-CREATE TRIGGER IF NOT EXISTS tracks_ad AFTER DELETE ON tracks BEGIN
+CREATE TRIGGER tracks_ad AFTER DELETE ON tracks BEGIN
   INSERT INTO tracks_fts(tracks_fts, rowid, title, artist, album, genre)
   VALUES ('delete', old.id, old.title, old.artist, old.album, old.genre);
 END;
 
-CREATE TRIGGER IF NOT EXISTS tracks_au AFTER UPDATE ON tracks BEGIN
+CREATE TRIGGER tracks_au AFTER UPDATE OF title, artist, album, genre ON tracks BEGIN
   INSERT INTO tracks_fts(tracks_fts, rowid, title, artist, album, genre)
   VALUES ('delete', old.id, old.title, old.artist, old.album, old.genre);
   INSERT INTO tracks_fts(rowid, title, artist, album, genre)
@@ -820,44 +981,126 @@ CREATE TRIGGER IF NOT EXISTS tracks_au AFTER UPDATE ON tracks BEGIN
 END;
 "#;
 
-/// Current schema version. Bump alongside every new `MIGRATION_00N`.
-const SCHEMA_VERSION: i64 = 4;
-
-/// Upsert one track's metadata by path. The waveform column is deliberately
-/// absent: metadata scans run tag-only and fast, and the waveform is filled
-/// asynchronously by the waveform worker (`set_waveform`). Omitting it here
-/// means a metadata rescan never clobbers an already-computed waveform.
+/// Upsert one present track's metadata by path. The operator-work columns are
+/// deliberately absent: the waveform is filled asynchronously by the waveform
+/// worker (`set_waveform`), and cue points and play counts are operator work a
+/// metadata rescan must never clobber.
 const UPSERT_TRACK_SQL: &str = "INSERT INTO tracks \
      (path, content_type, title, artist, album, genre, year, duration, bpm, \
-      sample_rate, bitrate, format, mtime) \
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) \
-     ON CONFLICT(path) DO UPDATE SET \
+      sample_rate, bitrate, format, mtime, fingerprint) \
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
+     ON CONFLICT(path) WHERE missing_since IS NULL DO UPDATE SET \
         content_type=excluded.content_type, \
         title=excluded.title, artist=excluded.artist, album=excluded.album, \
         genre=excluded.genre, year=excluded.year, duration=excluded.duration, \
         bpm=excluded.bpm, sample_rate=excluded.sample_rate, \
-        bitrate=excluded.bitrate, format=excluded.format, mtime=excluded.mtime";
+        bitrate=excluded.bitrate, format=excluded.format, mtime=excluded.mtime, \
+        fingerprint=COALESCE(excluded.fingerprint, fingerprint)";
 
-const MIGRATION_002: &str = "ALTER TABLE tracks ADD COLUMN mtime INTEGER;";
+/// A database this build must not touch.
+#[derive(Debug, PartialEq)]
+pub enum OpenError {
+    /// Written by a newer build: migrated past what this build knows, or
+    /// stamped with an epoch it does not recognise.
+    TooNew { found: usize, supported: usize },
+}
 
-/// Amplitude-curve peaks for the seek UI, one byte per bucket. Nullable so rows
-/// scanned before this column (or files that failed to decode) simply have no
-/// waveform.
-const MIGRATION_003: &str = "ALTER TABLE tracks ADD COLUMN waveform BLOB;";
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OpenError::TooNew { found, supported } => write!(
+                f,
+                "the library database was written by a newer RadiodioDJ \
+                 (schema {found}, this version supports {supported})"
+            ),
+        }
+    }
+}
 
-/// Per-track playback markers, milliseconds from the start of the file. All
-/// nullable: `NULL` is "no adjustment" and resolves to a fallback at load.
-/// Absent from `UPSERT_TRACK_SQL` for the same reason `waveform` is — a
-/// metadata rescan must not destroy operator work. `next_start_ms` lands here
-/// despite not being consumed until handover, so the segue work needs no
-/// migration of its own.
-const MIGRATION_004: &str = r#"
-ALTER TABLE tracks ADD COLUMN cue_in_ms     INTEGER;
-ALTER TABLE tracks ADD COLUMN fade_in_ms    INTEGER;
-ALTER TABLE tracks ADD COLUMN fade_out_ms   INTEGER;
-ALTER TABLE tracks ADD COLUMN cue_out_ms    INTEGER;
-ALTER TABLE tracks ADD COLUMN next_start_ms INTEGER;
-"#;
+impl std::error::Error for OpenError {}
+
+pub struct Opened {
+    pub db: Db,
+    /// Where a pre-epoch database was moved, when opening reset the library.
+    pub reset_backup: Option<PathBuf>,
+}
+
+fn user_version(conn: &Connection) -> Result<usize> {
+    let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    Ok(usize::try_from(v).unwrap_or(0))
+}
+
+fn sibling(path: &Path, suffix: &str) -> PathBuf {
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("library");
+    path.with_file_name(format!("{stem}.{suffix}"))
+}
+
+/// Move a database from an older epoch aside, so a fresh one is created in its
+/// place. Returns the backup path when that happened.
+fn retire_legacy(path: &Path) -> Result<Option<PathBuf>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let (version, epoch) = {
+        let conn = Connection::open(path).context("open sqlite")?;
+        let version = user_version(&conn)?;
+        let epoch: i32 = conn.pragma_query_value(None, "application_id", |r| r.get(0))?;
+        if version == 0 || epoch == DB_EPOCH {
+            return Ok(None);
+        }
+        if !LEGACY_EPOCHS.contains(&epoch) {
+            return Err(OpenError::TooNew {
+                found: version,
+                supported: schema_version(),
+            }
+            .into());
+        }
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        (version, epoch)
+    };
+    let backup = sibling(path, &format!("legacy-v{version}.bak.db"));
+    std::fs::rename(path, &backup).context("move legacy library aside")?;
+    for ext in ["-wal", "-shm"] {
+        let mut side = path.as_os_str().to_owned();
+        side.push(ext);
+        let _ = std::fs::remove_file(PathBuf::from(side));
+    }
+    log::warn!(
+        "library database from epoch {epoch:#x} (schema {version}) moved to {}; starting fresh",
+        backup.display()
+    );
+    Ok(Some(backup))
+}
+
+/// Copy the database before migrating it, keeping the newest few copies.
+fn backup(conn: &Connection, path: &Path, version: usize) -> Result<()> {
+    let target = sibling(path, &format!("v{version}.bak.db"));
+    let _ = std::fs::remove_file(&target);
+    conn.execute("VACUUM INTO ?1", [target.to_string_lossy()])
+        .context("back up library before migrating")?;
+    log::info!("library backed up to {}", target.display());
+
+    let (Some(dir), Some(stem)) = (path.parent(), path.file_stem().and_then(|s| s.to_str())) else {
+        return Ok(());
+    };
+    let prefix = format!("{stem}.v");
+    let mut copies: Vec<(usize, PathBuf)> = std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            let v = name.strip_prefix(&prefix)?.strip_suffix(".bak.db")?;
+            Some((v.parse().ok()?, e.path()))
+        })
+        .collect();
+    copies.sort_by_key(|c| std::cmp::Reverse(c.0));
+    for (_, old) in copies.into_iter().skip(KEPT_BACKUPS) {
+        let _ = std::fs::remove_file(old);
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
@@ -884,66 +1127,393 @@ mod tests {
         .unwrap();
     }
 
+    fn application_id(conn: &Connection) -> i32 {
+        conn.pragma_query_value(None, "application_id", |r| r.get(0))
+            .unwrap()
+    }
+
     #[test]
-    fn migrate_sets_user_version() {
+    fn migrations_are_valid() {
+        MIGRATIONS.validate().unwrap();
+    }
+
+    #[test]
+    fn a_fresh_database_is_stamped_with_the_epoch_and_latest_version() {
+        assert_eq!(DB_EPOCH, 1_380_207_153, "BASELINE stamps this literal");
         let db = Db::open_in_memory().unwrap();
         let conn = db.conn.lock();
-        let v: i64 = conn
-            .pragma_query_value(None, "user_version", |r| r.get(0))
-            .unwrap();
-        assert_eq!(v, SCHEMA_VERSION);
+        assert_eq!(user_version(&conn).unwrap(), schema_version());
+        assert_eq!(application_id(&conn), DB_EPOCH);
     }
 
+    /// The checked-in `schema.sql` is what a fresh database looks like, so a
+    /// schema change shows up in review. `UPDATE_SCHEMA=1` rewrites it.
     #[test]
-    fn migrate_from_v2_adds_waveform_and_bumps_version() {
-        // A released v2 DB (has mtime, no waveform) migrates straight to current.
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(MIGRATION_001).unwrap();
-        conn.execute_batch(MIGRATION_002).unwrap();
-        conn.pragma_update(None, "user_version", 2).unwrap();
-
-        let db = Db::with_connection(conn).expect("migrate v2 -> current");
-        db.insert_track(&TrackInsert {
-            path: "/a.mp3".into(),
-            content_type: "music".into(),
-            ..Default::default()
-        })
-        .unwrap();
-        let conn = db.conn.lock();
-        let v: i64 = conn
-            .pragma_query_value(None, "user_version", |r| r.get(0))
-            .unwrap();
-        assert_eq!(v, SCHEMA_VERSION);
-    }
-
-    /// A released v3 DB (has waveform, no cue points) migrates cleanly to v4.
-    #[test]
-    fn migrate_from_v3_adds_cue_points_and_bumps_version() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(MIGRATION_001).unwrap();
-        conn.execute_batch(MIGRATION_002).unwrap();
-        conn.execute_batch(MIGRATION_003).unwrap();
-        conn.pragma_update(None, "user_version", 3).unwrap();
-
-        let db = Db::with_connection(conn).expect("migrate v3 -> v4");
-        db.insert_track(&TrackInsert {
-            path: "/a.mp3".into(),
-            content_type: "music".into(),
-            duration: Some(200.0),
-            ..Default::default()
-        })
-        .unwrap();
-        let id = only_id(&db);
-        // The columns exist and read back as NULL on a freshly scanned track.
+    fn schema_matches_snapshot() {
+        let db = Db::open_in_memory().unwrap();
+        let actual = {
+            let conn = db.conn.lock();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT sql FROM sqlite_master \
+                     WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' \
+                     ORDER BY type, name",
+                )
+                .unwrap();
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
+            let mut out: String = rows.map(|r| format!("{};\n\n", r.unwrap())).collect();
+            out.truncate(out.trim_end().len());
+            out.push('\n');
+            out
+        };
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/library/schema.sql");
+        if std::env::var_os("UPDATE_SCHEMA").is_some() {
+            std::fs::write(&path, &actual).unwrap();
+        }
+        let expected = std::fs::read_to_string(&path).unwrap_or_default();
         assert_eq!(
-            db.get_track(id).unwrap().unwrap().cue_points,
-            CuePoints::default()
+            actual, expected,
+            "schema changed: rerun with UPDATE_SCHEMA=1 and commit schema.sql"
         );
-        let conn = db.conn.lock();
-        let v: i64 = conn
-            .pragma_query_value(None, "user_version", |r| r.get(0))
+    }
+
+    /// Seeds one representative row into a database at schema version `i + 1`.
+    /// Append one whenever a migration step is appended.
+    const SEEDS: &[fn(&Connection)] = &[|conn| {
+        conn.execute_batch(
+            "INSERT INTO tracks (path, content_type, title, artist, album, duration, \
+                                 play_count, waveform, cue_in_ms, fingerprint) \
+             VALUES ('/seed.mp3', 'music', 'Seed', 'A', 'B', 100.0, 3, x'00ff', 1000, 'v1:ab')",
+        )
+        .unwrap();
+    }];
+
+    /// Operator work written at any schema version survives every later step.
+    #[test]
+    fn every_step_preserves_seeded_rows() {
+        assert_eq!(
+            SEEDS.len(),
+            schema_version(),
+            "add a seed for the new migration step"
+        );
+        for version in 1..=schema_version() {
+            let mut conn = Connection::open_in_memory().unwrap();
+            MIGRATIONS.to_version(&mut conn, version).unwrap();
+            SEEDS[version - 1](&conn);
+            MIGRATIONS.to_latest(&mut conn).unwrap();
+            let db = Db {
+                conn: Mutex::new(conn),
+            };
+            let id = only_id(&db);
+            let track = db.get_track(id).unwrap().unwrap();
+            assert_eq!(track.title, "Seed", "seeded at v{version}");
+            assert_eq!(track.play_count, 3, "seeded at v{version}");
+            assert_eq!(
+                track.cue_points.cue_in_ms,
+                Some(1000),
+                "seeded at v{version}"
+            );
+            assert_eq!(db.get_waveform(id).unwrap(), Some(vec![0x00, 0xff]));
+        }
+    }
+
+    /// A database from before epochs existed, shaped like the released 0.17.0
+    /// schema, with WAL on as the app leaves it.
+    fn write_legacy_db(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             CREATE TABLE tracks (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               path TEXT UNIQUE NOT NULL,
+               content_type TEXT NOT NULL DEFAULT 'music',
+               title TEXT, play_count INTEGER NOT NULL DEFAULT 0,
+               mtime INTEGER, waveform BLOB
+             );
+             INSERT INTO tracks (path, title) VALUES ('/old.mp3', 'Old');
+             PRAGMA user_version = 3;",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_legacy_database_is_moved_aside_and_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("radiodiodj.db");
+        write_legacy_db(&path);
+
+        let opened = Db::open(&path).unwrap();
+
+        let backup = opened.reset_backup.expect("reset reported");
+        assert_eq!(backup, dir.path().join("radiodiodj.legacy-v3.bak.db"));
+        let old = Connection::open(&backup).unwrap();
+        let title: String = old
+            .query_row("SELECT title FROM tracks", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, SCHEMA_VERSION);
+        assert_eq!(title, "Old");
+        assert_eq!(opened.db.get_stats().unwrap().total_tracks, 0);
+        let conn = opened.db.conn.lock();
+        assert_eq!(application_id(&conn), DB_EPOCH);
+        assert_eq!(user_version(&conn).unwrap(), schema_version());
+    }
+
+    #[test]
+    fn reopening_a_current_database_neither_resets_nor_backs_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("radiodiodj.db");
+        let first = Db::open(&path).unwrap();
+        first
+            .db
+            .insert_track(&TrackInsert {
+                path: "/a.mp3".into(),
+                content_type: "music".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        drop(first);
+
+        let again = Db::open(&path).unwrap();
+        assert!(again.reset_backup.is_none());
+        assert_eq!(again.db.get_stats().unwrap().total_tracks, 1);
+        let names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert!(!names.iter().any(|n| n.contains(".bak.")), "{names:?}");
+    }
+
+    fn assert_refused_untouched(path: &Path) {
+        let before = std::fs::read(path).unwrap();
+        let err = Db::open(path).err().expect("refused");
+        assert!(
+            matches!(
+                err.downcast_ref::<OpenError>(),
+                Some(OpenError::TooNew { .. })
+            ),
+            "{err:#}"
+        );
+        assert_eq!(std::fs::read(path).unwrap(), before);
+    }
+
+    #[test]
+    fn a_database_from_a_newer_build_is_refused_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("radiodiodj.db");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE t (x); PRAGMA application_id = 1380207153; PRAGMA user_version = 99;",
+            )
+            .unwrap();
+        assert_refused_untouched(&path);
+    }
+
+    #[test]
+    fn a_database_from_an_unknown_epoch_is_refused_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("radiodiodj.db");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE t (x); PRAGMA application_id = 7; PRAGMA user_version = 1;",
+            )
+            .unwrap();
+        assert_refused_untouched(&path);
+    }
+
+    #[test]
+    fn backups_keep_only_the_newest_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("radiodiodj.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE t (x); INSERT INTO t VALUES (1);")
+            .unwrap();
+        for version in [1, 2, 3] {
+            backup(&conn, &path, version).unwrap();
+        }
+        let mut names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n.contains(".bak."))
+            .collect();
+        names.sort();
+        assert_eq!(names, ["radiodiodj.v2.bak.db", "radiodiodj.v3.bak.db"]);
+        let copy = Connection::open(dir.path().join("radiodiodj.v3.bak.db")).unwrap();
+        let x: i64 = copy.query_row("SELECT x FROM t", [], |r| r.get(0)).unwrap();
+        assert_eq!(x, 1);
+    }
+
+    #[test]
+    fn missing_rows_are_hidden_but_readable_by_id() {
+        let db = Db::open_in_memory().unwrap();
+        insert_with_play_count(&db, "/gone.mp3", "music", 0);
+        insert_with_play_count(&db, "/here.mp3", "music", 0);
+        let ids: Vec<i64> = db.track_index().unwrap().iter().map(|r| r.id).collect();
+        let (gone, here) = (ids[0], ids[1]);
+        let mark = |now_ms| {
+            db.reconcile(&Reconcile {
+                gone: vec![gone],
+                now_ms,
+                ..Default::default()
+            })
+            .unwrap()
+            .missing
+        };
+        assert_eq!(mark(1_000), 1);
+        assert_eq!(mark(2_000), 0, "first mark wins");
+
+        let only_here = |tracks: Vec<Track>| tracks.iter().map(|t| t.id).collect::<Vec<_>>();
+        assert_eq!(only_here(db.search("", None, None, None).unwrap()), [here]);
+        assert_eq!(only_here(db.search("t", None, None, None).unwrap()), [here]);
+        assert_eq!(
+            only_here(db.search("t", Some("music"), None, None).unwrap()),
+            [here]
+        );
+        assert_eq!(
+            only_here(db.get_random_tracks("music", 10, &[]).unwrap()),
+            [here]
+        );
+        assert_eq!(
+            only_here(db.pick_random_from_bottom("music", 10, 10, &[]).unwrap()),
+            [here]
+        );
+        assert_eq!(db.get_stats().unwrap().total_tracks, 1);
+        assert_eq!(db.get_stats().unwrap().tracks_by_type.music, 1);
+        assert_eq!(
+            db.get_paths_by_ids(&[gone, here]).unwrap(),
+            [(here, "/here.mp3".to_string())]
+        );
+        let unfilled: Vec<i64> = db
+            .tracks_needing_analysis()
+            .unwrap()
+            .iter()
+            .map(|job| job.id)
+            .collect();
+        assert_eq!(unfilled, [here]);
+
+        assert!(db.get_track(gone).unwrap().is_some());
+        assert!(db.get_track_load_info(gone).unwrap().is_some());
+        assert_eq!(db.get_tracks_by_ids(&[gone]).unwrap().len(), 1);
+
+        db.reconcile(&Reconcile {
+            revive: vec![gone],
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(db.get_stats().unwrap().total_tracks, 2);
+    }
+
+    fn new_file(path: &str, fingerprint: &str) -> TrackInsert {
+        TrackInsert {
+            path: path.into(),
+            content_type: "music".into(),
+            title: Some(path.into()),
+            fingerprint: Some(fingerprint.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_most_recently_missing_twin_reattaches() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&new_file("/old.mp3", "v1:x")).unwrap();
+        db.insert_track(&new_file("/older.mp3", "v1:x")).unwrap();
+        let ids: Vec<i64> = db.track_index().unwrap().iter().map(|r| r.id).collect();
+        let (old, older) = (ids[0], ids[1]);
+        for (id, now_ms) in [(older, 1_000), (old, 2_000)] {
+            db.reconcile(&Reconcile {
+                gone: vec![id],
+                now_ms,
+                ..Default::default()
+            })
+            .unwrap();
+        }
+
+        let done = db
+            .reconcile(&Reconcile {
+                new_files: vec![new_file("/new.mp3", "v1:x")],
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(done.reattached, 1);
+        let index = db.track_index().unwrap();
+        let row = |id| index.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(row(old).path, "/new.mp3");
+        assert_eq!(row(old).missing_since, None);
+        assert_eq!(row(older).missing_since, Some(1_000));
+        assert_eq!(index.len(), 2, "nothing inserted");
+    }
+
+    #[test]
+    fn two_copies_of_one_missing_track_reattach_one_and_duplicate_it() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&new_file("/a.mp3", "v1:x")).unwrap();
+        let id = only_id(&db);
+        db.increment_play_count(id).unwrap();
+        db.reconcile(&Reconcile {
+            gone: vec![id],
+            now_ms: 1,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let done = db
+            .reconcile(&Reconcile {
+                new_files: vec![new_file("/b.mp3", "v1:x"), new_file("/c.mp3", "v1:x")],
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!((done.reattached, done.duplicated), (1, 1));
+        let tracks = db.search("", None, None, None).unwrap();
+        assert_eq!(tracks.len(), 2);
+        assert!(tracks.iter().all(|t| t.play_count == 1));
+    }
+
+    #[test]
+    fn purge_deletes_only_missing_rows() {
+        let db = Db::open_in_memory().unwrap();
+        for path in ["/a.mp3", "/b.mp3", "/c.mp3"] {
+            db.insert_track(&TrackInsert {
+                path: path.into(),
+                content_type: "music".into(),
+                title: Some(path.into()),
+                duration: Some(100.0),
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        let ids: Vec<i64> = db.track_index().unwrap().iter().map(|r| r.id).collect();
+        db.set_cue_points(
+            ids[0],
+            CuePoints {
+                cue_out_ms: Some(50_000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        db.reconcile(&Reconcile {
+            gone: vec![ids[0], ids[1]],
+            now_ms: 1,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(
+            db.missing_summary().unwrap(),
+            MissingSummary {
+                tracks: 2,
+                with_cue_points: 1
+            }
+        );
+
+        assert_eq!(db.purge_missing().unwrap(), 2);
+
+        assert_eq!(db.missing_summary().unwrap(), MissingSummary::default());
+        assert_eq!(db.track_index().unwrap().len(), 1);
+        assert!(db.get_track(ids[0]).unwrap().is_none());
+        assert_eq!(db.search("c", None, None, None).unwrap().len(), 1);
+        assert!(db.search("a", None, None, None).unwrap().is_empty());
     }
 
     /// Cue points are clamped on write and the clamped value comes back, so the
@@ -1090,27 +1660,30 @@ mod tests {
     }
 
     #[test]
-    fn tracks_missing_waveform_lists_only_unfilled() {
+    fn analysis_lists_tracks_until_both_waveform_and_fingerprint_are_filled() {
         let db = Db::open_in_memory().unwrap();
-        db.insert_track(&TrackInsert {
-            path: "/a.mp3".into(),
-            content_type: "music".into(),
-            ..Default::default()
-        })
-        .unwrap();
-        db.insert_track(&TrackInsert {
-            path: "/b.mp3".into(),
-            content_type: "music".into(),
-            ..Default::default()
-        })
-        .unwrap();
-        assert_eq!(db.tracks_missing_waveform().unwrap().len(), 2);
+        for path in ["/a.mp3", "/b.mp3"] {
+            db.insert_track(&TrackInsert {
+                path: path.into(),
+                content_type: "music".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        let jobs = db.tracks_needing_analysis().unwrap();
+        assert_eq!(jobs.len(), 2);
+        assert!(jobs.iter().all(|j| j.needs_waveform && j.needs_fingerprint));
 
-        let first = db.tracks_missing_waveform().unwrap()[0].0;
-        db.set_waveform(first, &[9]).unwrap();
-        let remaining = db.tracks_missing_waveform().unwrap();
-        assert_eq!(remaining.len(), 1);
-        assert_ne!(remaining[0].0, first);
+        let (a, b) = (jobs[0].id, jobs[1].id);
+        db.set_waveform(a, &[9]).unwrap();
+        db.set_waveform(b, &[9]).unwrap();
+        db.set_fingerprint(b, "v1:b").unwrap();
+
+        let jobs = db.tracks_needing_analysis().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].id, a);
+        assert!(!jobs[0].needs_waveform);
+        assert!(jobs[0].needs_fingerprint);
     }
 
     #[test]

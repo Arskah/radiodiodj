@@ -10,6 +10,7 @@ Desktop music player built for radio stations. Manage music, commercials, and ji
 - **Playback modes** — AUTO advances through playlist, MANUAL stops after each track
 - **Native audio** — in-process Rust player (rodio + symphonia) for MP3, FLAC, Vorbis, WAV, AAC, M4A. No browser audio pipeline, no external transcoder
 - **Now playing** — real-time display with waveform, time, and a progress bar that seeks on double-click (single clicks cannot move an on-air track)
+- **Stable tracks** — moving, renaming or re-adding files keeps each track's cue points, play count and edits (see [Moving and reorganising files](#moving-and-reorganising-files))
 - **Now-playing broadcast** — outbound webhook + atomic file output for stream overlays, metadata bridges, and scripted consumers (see [docs/now-playing-broadcast.md](docs/now-playing-broadcast.md))
 
 ## Prerequisites
@@ -44,7 +45,9 @@ pnpm typecheck && pnpm lint                                 # tsc + svelte-check
 
 RadiodioDJ stores its database (`radiodiodj.db`), config (`config.json`), session
 state (`session.json`), and default now-playing output in a per-user data
-directory.
+directory. Database backups sit beside it: `radiodiodj.v{N}.bak.db` (before a
+migration, newest two kept) and `radiodiodj.legacy-v{N}.bak.db` (a pre-baseline
+library that was reset).
 
 - macOS: `~/Library/Application Support/com.radiodiodj/`
 - Linux: `~/.local/share/com.radiodiodj/` (or `$XDG_DATA_HOME/com.radiodiodj/`)
@@ -74,3 +77,53 @@ Set `RUST_LOG=debug` (or `trace`) before launching to raise verbosity. Default i
 4. Double-click a track or use **+** to add to playlist; right-click a row for cue, metadata editing, and play-now
 5. Toggle **Auto Playlist** for continuous random playback
 6. Switch between **AUTO** and **MANUAL** playback modes
+
+## Moving and reorganising files
+
+A track is more than its file path. RadiodioDJ fingerprints each track's audio
+and follows it when the file moves, so the work you put into a track stays with
+it.
+
+**Example.** You set cue points on `/Music/a.mp3`, and it has aired a dozen
+times. You then move it to `/Music/80s/a.mp3` and rescan. The rescan:
+
+1. no longer finds `/Music/a.mp3`, and marks that track **missing**.
+2. finds `/Music/80s/a.mp3` as a new path, and fingerprints its audio.
+3. matches the fingerprint to the missing track and **reattaches** the file to
+   it.
+
+The track keeps its cue points, play count, waveform, the metadata you edited
+in the app, and its place in the playlist and history. The scan summary reports
+_1 moved_.
+
+**What survives:**
+
+- **Renames, and moves within a library path or into another one.** A move into
+  another library path takes that path's content type, e.g. music → jingles.
+- **Tag edits in other apps.** The fingerprint ignores tags.
+- **Removing a library path and adding it back.** Its tracks come back as they
+  were.
+- **A network share that is offline during a scan.** Nothing under it is marked
+  missing.
+- **Copies.** A second copy of a track becomes its own track, starting with the
+  original's cue points, play count and edits.
+
+**What does not:**
+
+- **Files moved before they were fingerprinted.** After the first scan of a new
+  library, fingerprints are computed in the background, alongside waveforms. A
+  file moved before its fingerprint exists comes back as a new track.
+- **Re-encoded or otherwise changed audio.** Different audio is a different
+  track.
+- **Files moved out of every library path.** They stay missing until they appear
+  under one again.
+- **Two files that swap names** and keep their modification times. Each track
+  keeps its old path, so the two tracks swap files.
+- **Recordings that share their first megabyte of audio**, e.g. a radio edit and
+  an album version with the same intro. They look identical, so one may be
+  reattached in place of the other.
+
+**Missing tracks** are hidden from the library, search and the auto playlist,
+but kept. _Settings → Library_ shows how many there are, and **Purge** deletes
+them for good; that is the only way a track is deleted. See
+[docs/track-identity.md](docs/track-identity.md) for the full design.

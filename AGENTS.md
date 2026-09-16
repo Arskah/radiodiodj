@@ -24,7 +24,7 @@ Tauri 2 app. Two process boundaries: a Rust backend and a Svelte 5 / Vite render
 - `lib.rs` — `tauri::Builder` setup (`tauri-plugin-log` first, then `tauri-plugin-dialog`), `AppState`, all `#[tauri::command]` handlers, panic hook (force-capture backtrace → `log::error!`)
 - `main.rs` — thin `pub fn main() { radiodiodj_lib::run() }` binary entry
 - `audio/` — `formats.rs` (supported extension table), `player.rs` (shared deck primitives: the `Cmd` vocabulary, the `Topics` table, whole-file read/retry and symphonia decode for mp3/flac/vorbis/wav/aac/m4a), `output.rs` (one `OutputStream` per device, opened lazily with self-healing retry), `deck.rs` (one rodio `Sink` per deck plus the worker loop that ticks a whole set of them against one output; emits `{role}:time` (10 Hz) / `:duration` / `:pause-state` / `:ended` / `:error` / `:buffering` / `:load-failed` / `:output-unavailable`), `bus.rs` (the program bus — deck A + deck B on one mixer, one worker, `program:roles`), `cue.rs` (the cue deck: one deck on its own output, `cue:*`), `cue_points.rs` (the five per-track markers and their resolution to file positions — pure, no device), `envelope.rs` (the `Enveloped<I>` source applying a track's stored fades)
-- `library/` — `db.rs` (rusqlite + FTS5, WAL, `parking_lot::Mutex<Connection>`, `user_version` migrations), `scanner.rs` + `scan_state.rs` (recursive walkdir scan, `lofty` tag extraction, mtime+content_type delta cache, background worker thread emitting `scan-progress` / `scan-state-changed` events with cancel token)
+- `library/` — `db.rs` (rusqlite + FTS5, WAL, `parking_lot::Mutex<Connection>`, append-only `rusqlite_migration` steps with a `schema.sql` snapshot, pre-migration backup, newer-DB refusal), `scanner.rs` + `scan_state.rs` (recursive walkdir scan, `lofty` tag extraction, mtime+content_type delta cache, one reconcile transaction per scan, background worker thread emitting `scan-progress` / `scan-state-changed` events with cancel token), `fingerprint.rs` (tag-independent content hash of the first MiB of demuxed packets), `waveform_scan.rs` (background pass filling waveforms and fingerprints)
 - `persist/` — `config.rs` (`AppConfig` → `{app_data_dir}/config.json`), `session.rs` (`SessionState` per-field defaults → `{app_data_dir}/session.json`)
 - `playlist/` — owner of the playlist and of everything that advances it: `generate.rs` (random selection with jingle/commercial interleaving, every-4 / every-8), `engine.rs` (the pure state machine — queueing, advancement, outage skip-to-cached, refill, stop markers — returning effects), `model.rs` (wire types incl. the `program:playlist-state` snapshot), `service.rs` (effects → deck commands, play counts, prefetch window, retry timers)
 
@@ -53,7 +53,7 @@ Tauri 2 app. Two process boundaries: a Rust backend and a Svelte 5 / Vite render
 
 **Search:** FTS5 virtual table on title/artist/album/genre. Triggers keep FTS in sync with tracks table. Query tokenized as prefix match: `foo bar` → `"foo"* "bar"*`.
 
-**Scan + prune:** On scan, the scan worker walks the configured paths, deletes DB rows whose path no longer falls under any configured library path, then upserts present files. Empty paths array → all tracks deleted.
+**Scan + prune:** A scan never deletes a track. It lists every configured path, then applies one `Db::reconcile` transaction. Changed files are re-tagged. Rows whose file is gone get `missing_since`, but only under a fully listed root or outside every root — an unreachable or partly unreadable root marks nothing. New paths **reattach** to a missing row with the same fingerprint, or **duplicate** a present one (copying its operator state), or are inserted. Missing rows are hidden everywhere but stay readable by id; only _Settings → Purge_ deletes them. Root membership is `Path::starts_with`, never `LIKE`. A first scan into an empty library skips fingerprinting and leaves it to the background pass. See `docs/track-identity.md`.
 
 **Playlist ownership:** the backend owns the playlist, what is on air, and advancement. The renderer sends `playlist_*` commands and mirrors the `program:playlist-state` snapshot that comes back — it keeps no playlist of its own. History is the one exception: a renderer-side display log fed by each snapshot's `displaced` track. See `docs/backend-owned-playlist.md`.
 
@@ -65,6 +65,7 @@ Tauri 2 app. Two process boundaries: a Rust backend and a Svelte 5 / Vite render
 
 - `tauri::generate_context!()` runs at compile time and validates `frontendDist=../dist`. `cargo clippy` / `cargo test` panic with "frontendDist path doesn't exist" unless `pnpm vite build` has run; CI does this in `rust.yml` before cargo steps.
 - `serde(default)` per-field on `SessionState` / `AppConfig` lets new fields land without a schema version bump. Match this pattern when adding fields.
+- DB schema changes: append a step to `MIGRATION_STEPS` (never edit a shipped one), add a `SEEDS` entry, and regenerate `src-tauri/src/library/schema.sql` with `UPDATE_SCHEMA=1 cargo test schema_matches_snapshot`. Operator-work columns stay out of `UPSERT_TRACK_SQL`'s `SET` list. See `docs/database.md`.
 - pnpm `minimumReleaseAge` constraint blocks plugin versions younger than ~3 days; pin to a slightly older stable version when adding `tauri-plugin-*` deps.
 - Tauri command argument name `state` collides with the `State<AppState>` injection; the managed state arg is named `app` in command handlers.
 - `release-please-config.json` bumps `package.json`, `src-tauri/tauri.conf.json` (jsonpath `$.version`), and `src-tauri/Cargo.toml` (`# x-release-please-version` annotation) on each release. Keep all three in sync.
@@ -74,7 +75,9 @@ Tauri 2 app. Two process boundaries: a Rust backend and a Svelte 5 / Vite render
 
 RadiodioDJ stores its database (`radiodiodj.db`), config (`config.json`), session
 state (`session.json`), and default now-playing output in a per-user data
-directory.
+directory. Database backups sit beside it: `radiodiodj.v{N}.bak.db` (before a
+migration, newest two kept) and `radiodiodj.legacy-v{N}.bak.db` (a pre-baseline
+library that was reset).
 
 - macOS: `~/Library/Application Support/com.radiodiodj/`
 - Linux: `~/.local/share/com.radiodiodj/` (or `$XDG_DATA_HOME/com.radiodiodj/`)

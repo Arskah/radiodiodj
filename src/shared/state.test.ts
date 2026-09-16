@@ -36,6 +36,8 @@ const { api } = vi.hoisted(() => {
     getAllPaths: vi.fn(),
     addPath: vi.fn(),
     removePath: vi.fn(),
+    getMissingSummary: vi.fn(),
+    purgeMissingTracks: vi.fn(),
     scanLibraries: vi.fn(),
     cancelScan: vi.fn(),
     getScanStatus: vi.fn(),
@@ -170,6 +172,8 @@ function resetApi(): void {
   });
   api.addPath.mockResolvedValue(null);
   api.removePath.mockResolvedValue(true);
+  api.getMissingSummary.mockResolvedValue({ tracks: 0, withCuePoints: 0 });
+  api.purgeMissingTracks.mockResolvedValue(0);
   api.scanLibraries.mockResolvedValue({ alreadyRunning: false });
   api.cancelScan.mockResolvedValue(undefined);
   api.getScanStatus.mockResolvedValue({ status: "idle", lastResult: null });
@@ -190,6 +194,7 @@ function resetApi(): void {
       cueVolume: 1,
     },
     tracks: [],
+    libraryReset: false,
   });
   api.saveSession.mockResolvedValue(undefined);
   api.listAudioDevices.mockResolvedValue([]);
@@ -966,6 +971,35 @@ describe("AppState library + paths", () => {
     expect(api.getAllPaths).toHaveBeenCalled();
   });
 
+  it("purgeMissingTracks deletes, then refreshes the summary, stats and library", async () => {
+    api.getMissingSummary.mockResolvedValueOnce({
+      tracks: 0,
+      withCuePoints: 0,
+    });
+    app.missingSummary = { tracks: 3, withCuePoints: 1 };
+    api.getStats.mockClear();
+    api.search.mockClear();
+
+    await app.purgeMissingTracks();
+
+    expect(api.purgeMissingTracks).toHaveBeenCalled();
+    expect(app.missingSummary).toEqual({ tracks: 0, withCuePoints: 0 });
+    expect(api.getStats).toHaveBeenCalled();
+    expect(api.search).toHaveBeenCalled();
+  });
+
+  it("purgeMissingTracks still refreshes when the backend refuses", async () => {
+    api.purgeMissingTracks.mockRejectedValueOnce("a library scan is running");
+    api.getMissingSummary.mockResolvedValueOnce({
+      tracks: 2,
+      withCuePoints: 0,
+    });
+
+    await app.purgeMissingTracks();
+
+    expect(app.missingSummary).toEqual({ tracks: 2, withCuePoints: 0 });
+  });
+
   it("scan invokes scanLibraries fire-and-forget without blocking on result", async () => {
     await app.scan();
     expect(api.scanLibraries).toHaveBeenCalled();
@@ -988,6 +1022,7 @@ describe("AppState library + paths", () => {
     await Promise.resolve();
     expect(api.search).toHaveBeenCalled();
     expect(api.getStats).toHaveBeenCalled();
+    expect(api.getMissingSummary).toHaveBeenCalled();
   });
 
   it("scan-progress patches running state", () => {
@@ -1077,6 +1112,7 @@ describe("AppState session persistence", () => {
         cueVolume: 0.3,
       },
       tracks: [t(1), t(2), t(3)],
+      libraryReset: false,
     });
 
     ({ app, mock, playlist } = makeApp());
@@ -1103,6 +1139,63 @@ describe("AppState session persistence", () => {
     // that is where the deck is actually parked.
     expect(app.currentTime).toBe(12.5);
     expect(document.title).toBe("t2 - a2 | RadiodioDJ");
+  });
+
+  it("loadSession shows the rebuild notice until the rescan finishes", async () => {
+    let emitScanState: (s: unknown) => void = () => {};
+    api.onScanStateChanged.mockImplementation((cb: (s: unknown) => void) => {
+      emitScanState = cb;
+    });
+    api.getScanStatus.mockResolvedValue({
+      status: "running",
+      processed: 0,
+      total: 0,
+    });
+    api.loadSession.mockResolvedValueOnce({
+      state: {
+        playlistIds: [],
+        playlistItems: [],
+        historyIds: [],
+        currentTrackId: null,
+        currentTime: 0,
+        autoPlaylistActive: false,
+        autoAdvance: true,
+        volume: 1,
+        cueVolume: 1,
+      },
+      tracks: [],
+      libraryReset: true,
+    });
+    ({ app } = makeApp());
+    await app.hydrateScanStatus();
+    await app.loadSession();
+    await flushAsync();
+    expect(app.libraryReset).toBe(true);
+
+    emitScanState({ status: "idle", lastResult: { total: 1, added: 1 } });
+    expect(app.libraryReset).toBe(false);
+  });
+
+  it("loadSession skips the rebuild notice when the rescan already ended", async () => {
+    api.loadSession.mockResolvedValueOnce({
+      state: {
+        playlistIds: [],
+        playlistItems: [],
+        historyIds: [],
+        currentTrackId: null,
+        currentTime: 0,
+        autoPlaylistActive: false,
+        autoAdvance: true,
+        volume: 1,
+        cueVolume: 1,
+      },
+      tracks: [],
+      libraryReset: true,
+    });
+    ({ app } = makeApp());
+    await app.loadSession();
+    await flushAsync();
+    expect(app.libraryReset).toBe(false);
   });
 
   it("loadSession asks the deck whether it is playing", async () => {

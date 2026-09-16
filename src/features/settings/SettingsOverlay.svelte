@@ -30,6 +30,8 @@
     fileEnabled: true,
     webhookEnabled: true,
   });
+  let confirmingPurge = $state(false);
+  let purging = $state(false);
   let testResult = $state<string | null>(null);
   let testing = $state(false);
   let showSecret = $state(false);
@@ -40,8 +42,21 @@
       void loadNowPlayingConfig();
       tuning = $state.snapshot(app.tuning);
       mainDeviceChanged = false;
+      confirmingPurge = false;
+      void app.loadMissingSummary();
     }
   });
+
+  async function purge(): Promise<void> {
+    purging = true;
+    await app.purgeMissingTracks();
+    purging = false;
+    confirmingPurge = false;
+  }
+
+  function plural(n: number, one: string): string {
+    return `${n} ${one}${n === 1 ? "" : "s"}`;
+  }
 
   // Persist the current draft, then adopt the backend's clamped result so the
   // inputs snap to any coerced values.
@@ -322,6 +337,57 @@
                 Scan Library Now
               </button>
             </div>
+            {#if app.missingSummary.tracks > 0}
+              <div class="missing-tracks" id="missing-tracks">
+                <span class="material-symbols-outlined" aria-hidden="true"
+                  >link_off</span
+                >
+                <p class="missing-tracks-text">
+                  {plural(app.missingSummary.tracks, "track")} missing{#if app.missingSummary.withCuePoints > 0}
+                    ({app.missingSummary.withCuePoints} with cue points){/if}.
+                  They are hidden, and come back with their cue points and play
+                  counts if the files reappear — even under a new name or
+                  folder.
+                </p>
+                {#if confirmingPurge}
+                  <div class="missing-tracks-confirm" role="alert">
+                    <span>
+                      Delete {plural(
+                        app.missingSummary.tracks,
+                        "track",
+                      )}{#if app.missingSummary.withCuePoints > 0}
+                        and the cue points of {app.missingSummary
+                          .withCuePoints}{/if} for good?
+                    </span>
+                    <button
+                      id="btn-purge-confirm"
+                      class="btn-purge-confirm"
+                      disabled={purging}
+                      onclick={purge}
+                    >
+                      Delete
+                    </button>
+                    <button
+                      class="btn-purge-cancel"
+                      disabled={purging}
+                      onclick={() => (confirmingPurge = false)}
+                    >
+                      Keep
+                    </button>
+                  </div>
+                {:else}
+                  <button
+                    id="btn-purge-missing"
+                    class="btn-purge"
+                    title="Permanently delete tracks whose files are gone"
+                    disabled={app.scanStatus.status === "running"}
+                    onclick={() => (confirmingPurge = true)}
+                  >
+                    Purge…
+                  </button>
+                {/if}
+              </div>
+            {/if}
           </div>
         {:else if activeTab === "now-playing"}
           <div class="settings-section">

@@ -35,12 +35,28 @@ _Avoid_: Folder, source, watch dir
 ### Scan lifecycle
 
 **Scan**:
-Traversal of all library paths that upserts present tracks and prunes orphaned rows.
+Traversal of all library paths that upserts present tracks, reattaches moved ones and prunes the rest.
 _Avoid_: Index, crawl, refresh
 
 **Prune**:
-Deletion of tracks whose file path no longer falls under any configured library path.
-_Avoid_: Cleanup, gc, sweep
+Marking tracks **Missing** when their file is gone from a fully listed library path, or no library path covers it any more. Never deletes. A library path that cannot be read prunes nothing.
+_Avoid_: Cleanup, gc, sweep, delete
+
+**Missing track**:
+A track whose file a scan could not find. Hidden from every library but kept with its id, cue points and play count until **Purge**.
+_Avoid_: Deleted, orphan, stale
+
+**Fingerprint**:
+Hash of a track's audio (codec parameters plus the first MiB of packet data), independent of path and tags. Identifies the same recording at a new path.
+_Avoid_: Checksum, file hash
+
+**Reattach**:
+Matching a file at a new path to the **Missing track** with the same **Fingerprint**, so the track keeps its id and everything on it.
+_Avoid_: Relink, merge, re-import
+
+**Purge**:
+The operator's explicit, permanent deletion of **Missing tracks**. The only way a track row is deleted.
+_Avoid_: Prune, cleanup
 
 **Delta cache**:
 mtime + content-type cache letting the scanner skip unchanged files.
@@ -162,6 +178,7 @@ _Avoid_: Persist, sync
 - Exactly one **Deck** holds the `main` **Deck role** at a time; **Handover** moves it
 - A **Track** may carry a **Radio edit**; a **Playlist** item may carry an **Item override** that wins for that airing
 - **Air time** derives from the **Cue points** that apply to an airing, not from the **Track**'s file duration
+- A **Track** is identified by its row, not its path: **Prune** makes it **Missing**, **Reattach** or a returning path restores it, and only **Purge** deletes it
 
 ## Example dialogue
 
@@ -195,7 +212,7 @@ _Avoid_: Persist, sync
 >
 > **Dev:** "If a **Library path** is removed, what happens to **Now playing** if it points to a track from there?"
 >
-> **Domain expert:** "Playback continues — the **Main deck** holds the decoded source. The next **Auto-playlist** refill won't pick it because **Prune** removed it from the **Music library**."
+> **Domain expert:** "Playback continues — the **Main deck** holds the decoded source. After the next **Scan**, **Prune** marks the track **Missing**, so no **Auto-playlist** refill picks it. Add the path back and the next **Scan** brings it back with its cue points intact."
 
 ## Flagged ambiguities
 

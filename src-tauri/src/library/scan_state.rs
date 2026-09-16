@@ -1,13 +1,12 @@
 use parking_lot::Mutex;
 use serde::Serialize;
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 use super::db::Db;
-use super::scanner;
+use super::scanner::{self, ScanRoot};
 use super::waveform_scan::WaveformJob;
 use crate::persist::config::Config;
 
@@ -33,9 +32,14 @@ pub enum ScanStatus {
 }
 
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct ScanResult {
     pub total: usize,
     pub added: usize,
+    /// Files matched back to the track they were before moving.
+    pub reattached: usize,
+    /// Tracks whose file this scan no longer found.
+    pub missing: usize,
 }
 
 #[derive(Serialize, Clone)]
@@ -138,107 +142,67 @@ fn run(
     cancel: Arc<AtomicBool>,
 ) {
     const PROGRESS_THROTTLE: Duration = Duration::from_millis(200);
-    let mut cum_processed: usize = 0;
-    let mut cum_total: usize = 0;
-    let mut cum_added: usize = 0;
-    let mut live_by_root: Vec<(String, HashSet<String>)> = Vec::new();
-    let last_emit = Arc::new(Mutex::new(Instant::now() - PROGRESS_THROTTLE));
+    let last_emit = Mutex::new(Instant::now() - PROGRESS_THROTTLE);
+    let roots: Vec<ScanRoot> = ["music", "commercial", "jingle"]
+        .into_iter()
+        .flat_map(|content_type| {
+            config
+                .get_paths(content_type)
+                .into_iter()
+                .map(move |path| ScanRoot { content_type, path })
+        })
+        .collect();
 
-    let outcome: anyhow::Result<()> = (|| {
-        let all_paths = config.get_all_paths_flat();
-        db.remove_tracks_not_in_paths(&all_paths)?;
-
-        for content_type in ["music", "commercial", "jingle"] {
-            let paths = config.get_paths(content_type);
-            for p in paths {
-                let path = std::path::PathBuf::from(&p);
-                let cancel_check = || cancel.load(Ordering::SeqCst);
-                let snapshot_total = cum_total;
-                let snapshot_processed = cum_processed;
-                let s_clone = state.clone();
-                let app_clone = app.clone();
-                let last_emit_clone = last_emit.clone();
-                let r = scanner::scan_directory(
-                    &db,
-                    &path,
-                    content_type,
-                    &cancel_check,
-                    move |processed, total| {
-                        let proc_now = snapshot_processed + processed;
-                        let total_now = snapshot_total + total;
-                        s_clone.inner.lock().status = ScanStatus::Running {
-                            processed: proc_now,
-                            total: total_now,
-                        };
-                        let mut last = last_emit_clone.lock();
-                        if last.elapsed() >= PROGRESS_THROTTLE {
-                            *last = Instant::now();
-                            drop(last);
-                            let _ = app_clone.emit(
-                                "scan-progress",
-                                ScanProgress {
-                                    processed: proc_now,
-                                    total: total_now,
-                                },
-                            );
-                        }
-                    },
-                )?;
-                cum_processed += r.total;
-                cum_total += r.total;
-                cum_added += r.added;
-                live_by_root.push((p, r.live_files.into_iter().collect()));
-                if cancel.load(Ordering::SeqCst) {
-                    state.emit_status(
-                        &app,
-                        ScanStatus::Canceled {
-                            processed: cum_processed,
-                            total: cum_total,
-                            added: cum_added,
-                        },
-                    );
-                    return Ok(());
-                }
+    let outcome = scanner::scan_all(
+        &db,
+        &roots,
+        &|| cancel.load(Ordering::SeqCst),
+        |processed, total| {
+            state.inner.lock().status = ScanStatus::Running { processed, total };
+            let mut last = last_emit.lock();
+            if last.elapsed() >= PROGRESS_THROTTLE {
+                *last = Instant::now();
+                drop(last);
+                let _ = app.emit("scan-progress", ScanProgress { processed, total });
             }
-        }
+        },
+    );
 
-        let mut pruned = 0usize;
-        for (root, live) in live_by_root {
-            let dbpaths = db.get_paths_under(&root)?;
-            let stale: Vec<String> = dbpaths.into_iter().filter(|p| !live.contains(p)).collect();
-            if !stale.is_empty() {
-                pruned += db.delete_by_paths(&stale)?;
-            }
-        }
-        if pruned > 0 {
-            log::info!("scan pruned {} missing files", pruned);
-        }
-
-        state.emit_status(
+    match outcome {
+        Ok(o) if o.canceled => state.emit_status(
             &app,
-            ScanStatus::Idle {
-                last_result: Some(ScanResult {
-                    total: cum_total,
-                    added: cum_added,
-                }),
+            ScanStatus::Canceled {
+                processed: o.total,
+                total: o.total,
+                added: o.added,
             },
-        );
-
-        // Metadata is in — kick the async waveform pass. It runs on its own
-        // thread and lands waveforms later, so the scan reports done now and
-        // never blocks on the heavy per-track decode.
-        Arc::clone(&waveform).start(app.clone(), Arc::clone(&db));
-        Ok(())
-    })();
-
-    if let Err(e) = outcome {
-        log::error!("scan failed: {}", e);
-        state.emit_status(
-            &app,
-            ScanStatus::Error {
-                message: e.to_string(),
-            },
-        );
+        ),
+        Ok(o) => {
+            state.emit_status(
+                &app,
+                ScanStatus::Idle {
+                    last_result: Some(ScanResult {
+                        total: o.total,
+                        added: o.added,
+                        reattached: o.reattached,
+                        missing: o.missing,
+                    }),
+                },
+            );
+            // Metadata is in — kick the async waveform pass. It runs on its own
+            // thread and lands waveforms later, so the scan reports done now and
+            // never blocks on the heavy per-track decode.
+            Arc::clone(&waveform).start(app.clone(), Arc::clone(&db));
+        }
+        Err(e) => {
+            log::error!("scan failed: {}", e);
+            state.emit_status(
+                &app,
+                ScanStatus::Error {
+                    message: e.to_string(),
+                },
+            );
+        }
     }
 
     state.inner.lock().cancel = None;

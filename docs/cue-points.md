@@ -264,15 +264,14 @@ documented `NULL` fallbacks.
 
 ## Edge cases
 
-**Prune destroys cue points.** `tracks.id` is `AUTOINCREMENT` and **Prune**
-hard-`DELETE`s rows whose path no longer falls under a configured library path,
-so removing a library path destroys the cue points of every track under it, and
-a rescan mints new ids that cannot reconnect. Keying by `path` instead was
-rejected: a rename or move already drops the track from the library, so that
-swaps one broken identity for another. Cue points key on the track row and will
-inherit any future stable-track-identity work; the outstanding mitigation is a
-confirm dialog on the Settings path-removal button, naming how many tracks and
-cue points will be lost.
+**Moves, renames and re-adds keep cue points.** Cue points key on the track
+row, and since [#373](https://github.com/Arskah/radiodiodj/issues/373) that row
+outlives its file. **Prune** only marks a row missing. A file moved or renamed
+is **reattached** to its row by content fingerprint, and a library path removed
+and added back revives its rows by path. The radio edit is lost only when the
+operator **purges** missing tracks, and the confirm step names how many of them
+carry cue points. Keying cue points by `path` instead was rejected, because a
+move would break it too. See [track-identity.md](./track-identity.md).
 
 **Stale resume.** `session.json` stores the playback position in air time. If a
 track's cue-out moved earlier between sessions, the stored position can fall

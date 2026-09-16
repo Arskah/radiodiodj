@@ -267,14 +267,6 @@ impl Config {
         })
     }
 
-    pub fn get_all_paths_flat(&self) -> Vec<String> {
-        let cfg = self.inner.lock();
-        let mut out = cfg.music_paths.clone();
-        out.extend(cfg.commercial_paths.iter().cloned());
-        out.extend(cfg.jingle_paths.iter().cloned());
-        out
-    }
-
     pub fn add_path(&self, kind: &str, dir_path: &str) -> Result<bool> {
         let resolved = canonicalize_lossy(dir_path);
         let mut cfg = self.inner.lock();

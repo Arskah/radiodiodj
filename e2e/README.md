@@ -56,7 +56,7 @@ Headless: prefix with `xvfb-run -a` if you don't have a display server.
 
 ## Architecture
 
-- **Per-test launch.** Each `it()` spawns a fresh app process with its own `XDG_DATA_HOME=/tmp/radiodiodj-e2e-XXXX`, so `config.json`, `library.db`, and `session.json` are hermetic.
+- **Per-test launch.** Each `it()` spawns a fresh app process with its own `XDG_DATA_HOME=/tmp/radiodiodj-e2e-XXXX`, so `config.json`, `radiodiodj.db`, and `session.json` are hermetic.
 - **Fixture libraries** are synthesized at runtime as 1-second 16-bit mono PCM WAVs. No binaries committed.
 - **Selectors** prefer ARIA (`role`, `aria-label`, `aria-sort`) over CSS classes; falls back to stable `id="..."` attributes.
 - **Audio** in CI uses `snd-dummy`; rodio decodes through symphonia and writes to the dummy device, so `main-deck:time` advances normally.
@@ -67,7 +67,7 @@ On test failure, the runner writes to `e2e-results/<spec-name>/`:
 
 - `failure.png` — screenshot
 - `tauri-driver.log` — driver stderr/stdout
-- per-test temp dir snapshot (logs, session.json, library.db) when copied by the test's `afterEach`
+- per-test temp dir snapshot (logs, session.json, radiodiodj.db) when copied by the test's `afterEach`
 
 CI uploads this directory as an artifact with 7-day retention.
 

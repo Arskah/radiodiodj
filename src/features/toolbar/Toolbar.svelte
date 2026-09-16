@@ -33,6 +33,11 @@
       <ErrorBanner message="Cue output unavailable — retrying…" type="error" />
     {:else if app.reconnecting}
       <ErrorBanner message="Reconnecting…" type="warning" />
+    {:else if app.libraryReset}
+      <ErrorBanner
+        message="Library rebuilt for this version — rescanning…"
+        type="warning"
+      />
     {/if}
   </div>
 
