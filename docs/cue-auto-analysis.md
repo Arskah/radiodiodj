@@ -494,9 +494,7 @@ Cancellation behaves similarly: already committed Tracks stay complete, and Trac
 
 Automatic and manual Cue points inherit the Track-row lifecycle described in [cue-points.md](./cue-points.md).
 
-Prune currently destroys the row and therefore its Radio edit. Remove/re-add durability is deliberately not solved here.
-
-This is the same broader identity/lifecycle problem already tracked for in-app metadata edits. If that work later introduces a durable override or stable-track-identity mechanism, automatic-cue ownership and provenance should move with the Cue points rather than inventing a separate identity system.
+The row survives moves, renames and removing then re-adding a Library path, and is deleted only by an explicit purge (see [track-identity.md](./track-identity.md)). Automatic-cue ownership and provenance live on the same row, so they move with the Cue points rather than inventing a separate identity system.
 
 ## Configuration
 
