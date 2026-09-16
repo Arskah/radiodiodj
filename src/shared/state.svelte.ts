@@ -3,6 +3,7 @@ import type {
   CuePoints,
   DeviceInfo,
   DeviceRef,
+  HealthReport,
   LibraryStats,
   MissingSummary,
   PlaylistItem,
@@ -68,6 +69,16 @@ const DEFAULT_TUNING: TuningConfig = {
     readRetryBackoffsMs: [500, 1000, 2000],
   },
   library: { checkIntervalMin: 15 },
+};
+
+export const EMPTY_HEALTH: HealthReport = {
+  missing: [],
+  missingDismissed: false,
+  exact: [],
+  possible: [],
+  unhashed: 0,
+  check: null,
+  checkDismissed: false,
 };
 
 export type PlaylistTab = "playlist" | "history";
@@ -143,6 +154,14 @@ export class AppState {
   // that repopulates it finishes.
   libraryReset = $state(false);
   missingSummary = $state<MissingSummary>({ tracks: 0, withCuePoints: 0 });
+  // Missing tracks, duplicates and disk changes, mirrored from the backend's
+  // `library-health` report.
+  health = $state<HealthReport>(structuredClone(EMPTY_HEALTH));
+  // When each missing track went missing, keyed by id — what the playlist,
+  // history and deck badge their rows from.
+  missingSince = $derived(
+    new Map(this.health.missing.map((t) => [t.id, t.missingSince])),
+  );
 
   // Cue deck (independent transport on a separate audio device)
   cueTrack = $state<Track | null>(null);
@@ -286,6 +305,7 @@ export class AppState {
     });
 
     void api.onPlaylistState((snapshot) => this.applySnapshot(snapshot));
+    void api.onLibraryHealth((report) => (this.health = report));
 
     api.onScanProgress(({ processed, total }) => {
       if (this.scanStatus.status === "running") {
@@ -1003,6 +1023,14 @@ export class AppState {
   async removePath(type: ContentType, p: string): Promise<void> {
     await api.removePath(type, p);
     await this.loadLibraryPaths();
+  }
+
+  async loadHealth(): Promise<void> {
+    try {
+      this.health = await api.libraryHealth();
+    } catch (err) {
+      logger.error("Library health lookup failed:", err);
+    }
   }
 
   async loadMissingSummary(): Promise<void> {

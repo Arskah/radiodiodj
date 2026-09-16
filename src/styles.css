@@ -1596,6 +1596,17 @@ body {
   font-size: 14px;
 }
 
+/* A track whose file a scan found gone (library health). */
+.missing-badge {
+  display: inline-flex;
+  align-items: center;
+  color: var(--error);
+}
+
+.missing-badge .material-symbols-outlined {
+  font-size: 14px;
+}
+
 /* Mini progress bar on the now-playing item. */
 .pl-mini-progress {
   width: 80px;

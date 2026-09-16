@@ -39,6 +39,12 @@ const { api } = vi.hoisted(() => {
     removePath: vi.fn(),
     getMissingSummary: vi.fn(),
     purgeMissingTracks: vi.fn(),
+    purgeTracks: vi.fn(),
+    libraryHealth: vi.fn(),
+    onLibraryHealth: vi.fn(),
+    libraryCheckNow: vi.fn(),
+    healthDismiss: vi.fn(),
+    healthUndismiss: vi.fn(),
     scanLibraries: vi.fn(),
     cancelScan: vi.fn(),
     getScanStatus: vi.fn(),
@@ -118,13 +124,20 @@ vi.mock("../features/deck/nativeBackend", () => ({
   },
 }));
 
-import { AppState, formatSpan, formatTime, type Track } from "./state.svelte";
+import {
+  AppState,
+  EMPTY_HEALTH,
+  formatSpan,
+  formatTime,
+  type Track,
+} from "./state.svelte";
 import type { ScanStatus } from "./api";
 import {
   isTrackItem,
   stopMarker,
   trackItem,
   type CuePoints,
+  type HealthReport,
   type PlaylistItem,
 } from "./types";
 
@@ -176,6 +189,7 @@ function resetApi(): void {
   api.removePath.mockResolvedValue(true);
   api.getMissingSummary.mockResolvedValue({ tracks: 0, withCuePoints: 0 });
   api.purgeMissingTracks.mockResolvedValue(0);
+  api.libraryHealth.mockResolvedValue(structuredClone(EMPTY_HEALTH));
   api.scanLibraries.mockResolvedValue({ alreadyRunning: false });
   api.cancelScan.mockResolvedValue(undefined);
   api.getScanStatus.mockResolvedValue({ status: "idle", lastResult: null });
@@ -2089,5 +2103,53 @@ describe("AppState item cue overrides", () => {
     playlist.restore({ playlist: [trackItem(t(1), audition)] });
     await app.loadSession();
     expect(overrideAt(0)).toEqual(audition);
+  });
+});
+
+describe("AppState library health", () => {
+  const missing = (id: number, missingSince: number) => ({
+    id,
+    title: `t${id}`,
+    artist: `a${id}`,
+    path: `/m/${id}.mp3`,
+    missingSince,
+    playCount: 0,
+    hasCuePoints: false,
+    outsideRoots: false,
+  });
+  const report = (ids: [number, number][]) => ({
+    ...EMPTY_HEALTH,
+    missing: ids.map(([id, since]) => missing(id, since)),
+  });
+
+  beforeEach(() => {
+    resetApi();
+  });
+
+  it("loadHealth adopts the backend report and indexes missing tracks", async () => {
+    api.libraryHealth.mockResolvedValueOnce(report([[3, 100]]));
+    const { app } = makeApp();
+    await app.loadHealth();
+    expect(app.health.missing).toHaveLength(1);
+    expect(app.missingSince.get(3)).toBe(100);
+    expect(app.missingSince.has(1)).toBe(false);
+  });
+
+  it("a library-health event replaces the report", () => {
+    const { app } = makeApp();
+    const cb = api.onLibraryHealth.mock.calls[0]?.[0] as
+      ((r: HealthReport) => void) | undefined;
+    expect(cb).toBeDefined();
+    cb!(report([[1, 5]]));
+    expect(app.missingSince.get(1)).toBe(5);
+    cb!(report([]));
+    expect(app.missingSince.size).toBe(0);
+  });
+
+  it("a failing lookup keeps the report it had", async () => {
+    api.libraryHealth.mockRejectedValueOnce("boom");
+    const { app } = makeApp();
+    await app.loadHealth();
+    expect(app.health).toEqual(EMPTY_HEALTH);
   });
 });

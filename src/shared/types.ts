@@ -105,6 +105,59 @@ export interface MissingSummary {
   withCuePoints: number;
 }
 
+/** A track whose file a scan found gone. */
+export interface MissingTrack {
+  id: number;
+  title: string;
+  artist: string;
+  /** Where the file was last seen. */
+  path: string;
+  /** Unix ms. */
+  missingSince: number;
+  playCount: number;
+  hasCuePoints: boolean;
+  /** No library path contains `path` any more. */
+  outsideRoots: boolean;
+}
+
+export interface DuplicateMember {
+  track: Track;
+  path: string;
+  contentType: ContentType;
+}
+
+export interface DuplicateGroup {
+  key: string;
+  dismissed: boolean;
+  tracks: DuplicateMember[];
+}
+
+/** What a library check found on disk that no scan has applied yet. */
+export interface CheckReport {
+  /** Unix ms. */
+  checkedAt: number;
+  new: string[];
+  changed: string[];
+  gone: string[];
+  /** Tracks no library path contains any more. */
+  unrooted: string[];
+  unreachable: string[];
+  partial: string[];
+}
+
+export interface HealthReport {
+  missing: MissingTrack[];
+  missingDismissed: boolean;
+  exact: DuplicateGroup[];
+  possible: DuplicateGroup[];
+  /** Present tracks not fingerprinted yet. */
+  unhashed: number;
+  check: CheckReport | null;
+  checkDismissed: boolean;
+}
+
+export type FindingKind = "exact" | "possible" | "missing" | "check";
+
 export interface ScanResult {
   total: number;
   added: number;

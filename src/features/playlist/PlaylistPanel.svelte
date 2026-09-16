@@ -7,6 +7,7 @@
   } from "../../shared/state.svelte";
   import { isStopMarker, type PlaylistItem } from "../../shared/types";
   import { airDuration, airedTrack, isTrimmed } from "../../shared/cuePoints";
+  import MissingBadge from "../track/MissingBadge.svelte";
 
   let dragFromIndex = $state(-1);
   let dropTarget = $state(-1);
@@ -242,6 +243,7 @@
                   <span class="pl-artist">{item.track.artist}</span>
                 </div>
                 <div class="pl-right">
+                  <MissingBadge trackId={item.track.id} />
                   {#if i === 0}
                     <span class="pl-status next-up">Next Up</span>
                   {/if}
@@ -324,6 +326,7 @@
                 <span class="pl-artist">{track.artist}</span>
               </div>
               <div class="pl-right">
+                <MissingBadge trackId={track.id} />
                 <span class="pl-duration" class:trimmed={isTrimmed(track)}
                   >{formatTime(airDuration(track))}</span
                 >

@@ -109,6 +109,8 @@ pub struct Playlist {
     auto_advance: bool,
     /// Track ids resident in the prefetch cache, from `main-deck:cache-state`.
     cached_ids: HashSet<i64>,
+    /// Track ids whose file a scan found gone, from the library health report.
+    missing_ids: HashSet<i64>,
     awaiting_network: bool,
     /// Index into the backoff schedule for the next retry arm.
     retry_attempt: usize,
@@ -219,9 +221,10 @@ impl Playlist {
     // ----- transport -----
 
     /// Pull the item at `index` out of the playlist and act on it: play a
-    /// track, or honour a stop marker by stopping (consuming it either way).
+    /// track, or honour a stop marker by stopping (consuming it either way). A
+    /// track whose file is missing is left where it is.
     pub fn play_index(&mut self, index: usize, r: &dyn Refiller) -> Transition {
-        if index >= self.items.len() {
+        if index >= self.items.len() || self.is_missing_at(index) {
             return Transition::default();
         }
         match self.items.remove(index) {
@@ -239,6 +242,7 @@ impl Playlist {
     }
 
     pub fn next(&mut self, r: &dyn Refiller) -> Transition {
+        self.drop_missing_ahead();
         if self.items.is_empty() {
             return Transition::default();
         }
@@ -320,6 +324,23 @@ impl Playlist {
             return self.advance(true, r);
         }
         Transition::default()
+    }
+
+    /// The set of missing tracks changed. A wait may have been held up by
+    /// tracks that are now known to be gone.
+    pub fn on_missing_state(&mut self, ids: HashSet<i64>, r: &dyn Refiller) -> Transition {
+        self.missing_ids = ids;
+        if self.awaiting_network {
+            return self.advance(true, r);
+        }
+        Transition::default()
+    }
+
+    pub fn is_missing_at(&self, index: usize) -> bool {
+        self.items
+            .get(index)
+            .and_then(PlaylistItem::as_track)
+            .is_some_and(|t| self.missing_ids.contains(&t.id))
     }
 
     /// The outage retry timer fired. The service re-pushes the prefetch window
@@ -418,7 +439,27 @@ impl Playlist {
         ])
     }
 
+    /// Drop missing tracks up to the next stop marker: advancement would pass
+    /// them, and unlike an uncached track they have nothing to wait for.
+    fn drop_missing_ahead(&mut self) {
+        let barrier = self
+            .items
+            .iter()
+            .position(PlaylistItem::is_stop)
+            .unwrap_or(self.items.len());
+        let mut i = 0;
+        self.items.retain(|item| {
+            let keep = i >= barrier
+                || item
+                    .as_track()
+                    .is_none_or(|t| !self.missing_ids.contains(&t.id));
+            i += 1;
+            keep
+        });
+    }
+
     fn advance(&mut self, after_failure: bool, r: &dyn Refiller) -> Transition {
+        self.drop_missing_ahead();
         match self.plan() {
             Plan::Empty => {
                 self.clear_retry();
@@ -1050,6 +1091,75 @@ mod tests {
         assert_eq!(t.effects, vec![Effect::ArmRetry(0)]);
         assert_eq!(queued(&p), vec![Some(1), Some(2)]);
         assert_eq!(current_id(&p), None);
+    }
+
+    // ----- missing tracks -----
+
+    fn missing(ids: &[i64]) -> HashSet<i64> {
+        ids.iter().copied().collect()
+    }
+
+    #[test]
+    fn ended_skips_and_drops_missing_tracks_even_on_a_cold_cache() {
+        let mut p = with(&[Some(1), Some(2), Some(3)]);
+        p.play_now(track(9), &NoRefill);
+        p.on_missing_state(missing(&[1, 2]), &NoRefill);
+        p.on_ended(&FakeRefiller::new());
+        assert_eq!(current_id(&p), Some(3));
+        assert!(queued(&p).is_empty());
+    }
+
+    #[test]
+    fn missing_tracks_past_a_stop_marker_stay_queued() {
+        let mut p = with(&[Some(1), None, Some(2)]);
+        p.play_now(track(9), &NoRefill);
+        p.on_missing_state(missing(&[1, 2]), &NoRefill);
+        let t = p.on_ended(&FakeRefiller::new());
+        assert_eq!(t.effects, vec![Effect::CancelRetry, Effect::Stop]);
+        assert_eq!(queued(&p), vec![Some(2)]);
+    }
+
+    #[test]
+    fn a_missing_track_is_dropped_while_an_uncached_one_waits() {
+        let mut p = with(&[Some(1), Some(2)]);
+        p.play_now(track(9), &NoRefill);
+        p.on_cache_state(vec![9], &NoRefill);
+        p.on_missing_state(missing(&[1]), &NoRefill);
+        let t = p.on_ended(&FakeRefiller::new());
+        assert_eq!(t.effects, vec![Effect::ArmRetry(0)]);
+        assert_eq!(queued(&p), vec![Some(2)]);
+    }
+
+    #[test]
+    fn a_wait_held_up_only_by_missing_tracks_ends_when_they_are_known() {
+        let mut p = with(&[Some(1)]);
+        p.play_now(track(9), &NoRefill);
+        p.on_cache_state(vec![9], &NoRefill);
+        p.on_ended(&FakeRefiller::new());
+        assert!(p.snapshot(None).awaiting_network);
+
+        let t = p.on_missing_state(missing(&[1]), &NoRefill);
+        assert_eq!(t.effects, vec![Effect::CancelRetry]);
+        assert!(!p.snapshot(None).awaiting_network);
+        assert!(queued(&p).is_empty());
+    }
+
+    #[test]
+    fn next_skips_missing_tracks() {
+        let mut p = with(&[Some(1), Some(2)]);
+        p.on_missing_state(missing(&[1]), &NoRefill);
+        p.next(&NoRefill);
+        assert_eq!(current_id(&p), Some(2));
+    }
+
+    #[test]
+    fn a_missing_track_cannot_be_played_from_the_playlist() {
+        let mut p = with(&[Some(1), Some(2)]);
+        p.on_missing_state(missing(&[1]), &NoRefill);
+        assert!(p.is_missing_at(0));
+        assert_eq!(p.play_index(0, &NoRefill), Transition::default());
+        assert_eq!(current_id(&p), None);
+        assert_eq!(queued(&p), vec![Some(1), Some(2)]);
     }
 
     #[test]

@@ -285,8 +285,8 @@ fn playlist_clear(app: State<'_, AppState>) {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn playlist_play_index(app: State<'_, AppState>, index: usize) {
-    app.playlist.play_index(index);
+fn playlist_play_index(app: State<'_, AppState>, index: usize) -> Result<(), String> {
+    app.playlist.play_index(index)
 }
 
 #[tauri::command(rename_all = "camelCase")]

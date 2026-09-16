@@ -24,8 +24,20 @@ use crate::audio::cue_points::CuePoints;
 use crate::audio::player::Cmd;
 use crate::broadcast::BroadcastService;
 use crate::library::db::{Db, Track};
+use crate::library::health::HEALTH_EVENT;
 use crate::persist::config::Config;
 use crate::persist::session::SessionState;
+
+/// The part of the library health report the playlist needs.
+#[derive(serde::Deserialize)]
+struct MissingIds {
+    missing: Vec<IdOnly>,
+}
+
+#[derive(serde::Deserialize)]
+struct IdOnly {
+    id: i64,
+}
 
 /// Topic the whole-playlist snapshot is emitted on.
 pub const PLAYLIST_STATE_EVENT: &str = "program:playlist-state";
@@ -115,6 +127,15 @@ impl PlaylistService {
         let failed = Arc::clone(&self.inner);
         app.listen("main-deck:load-failed", move |_| {
             Inner::apply(&failed, |p, r| p.on_load_failed(r));
+        });
+
+        let missing = Arc::clone(&self.inner);
+        app.listen(HEALTH_EVENT, move |event| {
+            let Ok(report) = serde_json::from_str::<MissingIds>(event.payload()) else {
+                return;
+            };
+            let ids = report.missing.into_iter().map(|t| t.id).collect();
+            Inner::apply(&missing, |p, r| p.on_missing_state(ids, r));
         });
 
         let cache_state = Arc::clone(&self.inner);
@@ -207,8 +228,12 @@ impl PlaylistService {
         Inner::apply(&self.inner, |p, _| p.clear());
     }
 
-    pub fn play_index(&self, index: usize) {
+    pub fn play_index(&self, index: usize) -> Result<(), String> {
+        if self.inner.playlist.lock().is_missing_at(index) {
+            return Err("this track's file is missing".into());
+        }
         Inner::apply(&self.inner, move |p, r| p.play_index(index, r));
+        Ok(())
     }
 
     pub fn play_now(&self, id: i64) -> Result<(), String> {
