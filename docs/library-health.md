@@ -267,6 +267,10 @@ even if the setting has since been turned off. _Dismiss_ drops the entry and
 keeps the edit. The list lives in memory, so it is empty after a restart. See
 [library.md](./library.md#editing-a-track).
 
+On a macOS SMB mount, a file whose name another system created can sometimes
+be read but not renamed. The write then fails with _the share could not rename
+this file_. Rename the file on the server, then _Retry_.
+
 ## Wire and storage
 
 `library/health.rs` keeps one `HealthReport`:

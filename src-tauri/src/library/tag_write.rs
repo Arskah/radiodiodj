@@ -273,8 +273,22 @@ fn replace(path: &Path, temp: &Path, bytes: &[u8], abandoned: &AtomicBool) -> Re
     if abandoned.load(Ordering::SeqCst) {
         bail!("abandoned after the timeout");
     }
-    std::fs::rename(temp, path).context("replace the file")?;
-    Ok(())
+    std::fs::rename(temp, path).map_err(|e| rename_error(e, temp, path))
+}
+
+/// A rename that reports "not found" while both files are there is the share
+/// refusing to rename this file: seen on macOS smbfs with a name another
+/// system created. Say so, since the OS error alone reads as a missing file.
+fn rename_error(e: std::io::Error, temp: &Path, path: &Path) -> anyhow::Error {
+    if e.kind() == std::io::ErrorKind::NotFound && temp.exists() && path.exists() {
+        anyhow::anyhow!(
+            "the share could not rename this file, although it is there. Its name \
+             may have been created by another system: rename the file on the \
+             server, then retry ({e})"
+        )
+    } else {
+        anyhow::Error::new(e).context("replace the file")
+    }
 }
 
 fn mtime_ms(path: &Path) -> Result<i64> {
@@ -445,6 +459,29 @@ mod tests {
         f.wait();
         assert!(f.writer.failures().is_empty());
         assert_eq!(f.track().edited_fields, 0);
+    }
+
+    #[test]
+    fn a_rename_the_share_refuses_is_explained() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("a.mp3");
+        let temp = temp_path(&path);
+        let not_found = || std::io::Error::from(std::io::ErrorKind::NotFound);
+
+        let e = rename_error(not_found(), &temp, &path);
+        assert!(format!("{e:#}").starts_with("replace the file"), "{e:#}");
+
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::write(&temp, b"new").unwrap();
+        let e = rename_error(not_found(), &temp, &path);
+        assert!(
+            format!("{e:#}").contains("rename the file on the server"),
+            "{e:#}"
+        );
+
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let e = rename_error(denied, &temp, &path);
+        assert!(format!("{e:#}").starts_with("replace the file"), "{e:#}");
     }
 
     #[test]
