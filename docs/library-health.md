@@ -14,8 +14,8 @@ Implements [#376](https://github.com/Arskah/radiodiodj/issues/376). It builds on
 the identity model in [track-identity.md](./track-identity.md), and its one
 schema change follows [database.md](./database.md).
 
-Status (2026-09-16): designed, not built. The increments are at the
-[end](#increments).
+Status (2026-09-16): increments 1 to 5 built. _Locate…_ (increment 6) is
+not. The increments are at the [end](#increments).
 
 ## Problem
 
@@ -214,8 +214,8 @@ along with _Edit metadata…_ and _Cue points…_ from the library row menu.
 
 ### Purge
 
-`purge_tracks(ids)` replaces `purge_missing_tracks`, and _Purge all_ passes
-every missing id. It:
+`purge_tracks(ids)` replaced `purge_missing_tracks` and `get_missing_summary`.
+_Purge all_ passes every missing id. It:
 
 - refuses while a scan is running, as today, because the scan may be about to
   reattach some of them

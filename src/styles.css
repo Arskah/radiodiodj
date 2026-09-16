@@ -328,6 +328,35 @@ body {
   transform: scale(0.95);
 }
 
+#btn-settings {
+  position: relative;
+}
+
+/* Count of library health findings (Settings button and tab). */
+.attention-badge {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: var(--r-pill);
+  background: var(--error);
+  color: var(--on-error);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+
+.settings-tab .attention-badge {
+  margin-left: auto;
+}
+
+.attention-badge--corner {
+  position: absolute;
+  top: 0;
+  right: 0;
+  transform: translate(25%, -25%);
+}
+
 /* ============================================================
    Workspace grid: main deck (8) + cue (4) over library (8) + playlist (4)
    ============================================================ */

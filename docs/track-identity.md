@@ -151,7 +151,7 @@ The scan summary reports how many files moved and how many went missing.
 
 Missing rows are deleted only by **Purge** in _Settings → Library_. The panel
 shows how many tracks are missing and how many of those carry cue points, and
-the confirm step names both counts. `purge_missing_tracks` refuses while a scan
+the confirm step names both counts. `purge_tracks` refuses while a scan
 is running, since the scan may be about to reattach some of them. There is no
 automatic retention.
 

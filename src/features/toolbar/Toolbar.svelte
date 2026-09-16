@@ -74,11 +74,20 @@
     <button
       id="btn-settings"
       class="nav-icon-btn"
-      title="Settings — library paths, audio devices, scan"
-      aria-label="Settings"
+      title={app.healthAttention > 0
+        ? `Settings — the library needs attention (${app.healthAttention})`
+        : "Settings — library paths, audio devices, scan"}
+      aria-label={app.healthAttention > 0
+        ? `Settings, ${app.healthAttention} library issues`
+        : "Settings"}
       onclick={openSettings}
     >
       <span class="material-symbols-outlined">settings</span>
+      {#if app.healthAttention > 0}
+        <span class="attention-badge attention-badge--corner" aria-hidden="true"
+          >{app.healthAttention}</span
+        >
+      {/if}
     </button>
   </div>
 </nav>

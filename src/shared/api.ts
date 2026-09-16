@@ -10,7 +10,6 @@ import type {
   FindingKind,
   HealthReport,
   LibraryStats,
-  MissingSummary,
   NowPlayingConfig,
   ScanResult,
   SortColumn,
@@ -212,13 +211,6 @@ export const api = {
   },
   removePath(type: ContentType, dirPath: string): Promise<boolean> {
     return invoke<boolean>("remove_path", { type, dirPath });
-  },
-  getMissingSummary(): Promise<MissingSummary> {
-    return invoke<MissingSummary>("get_missing_summary");
-  },
-  /** Permanently delete missing tracks; resolves to how many were deleted. */
-  purgeMissingTracks(): Promise<number> {
-    return invoke<number>("purge_missing_tracks");
   },
   /**
    * Permanently delete the given missing tracks. Ids of tracks that are not

@@ -21,7 +21,7 @@ use audio::cue_points::CuePoints;
 use audio::player::{Cmd, PlayerTuning};
 use broadcast::{service::default_now_playing_dir, BroadcastService};
 use library::check::LibraryCheck;
-use library::db::{Db, LibraryStats, MissingSummary, OpenError, Track, TrackMetadataUpdate};
+use library::db::{Db, LibraryStats, OpenError, Track, TrackMetadataUpdate};
 use library::health::{FindingKind, Health, HealthReport};
 use library::scan_state::{ScanState, ScanStatus, StartResult};
 use library::waveform_scan::{WaveformJob, WaveformStatus};
@@ -583,31 +583,15 @@ fn cancel_scan(state: State<'_, AppState>) {
     state.waveform.cancel();
 }
 
-#[tauri::command(rename_all = "camelCase")]
-fn get_missing_summary(state: State<'_, AppState>) -> Result<MissingSummary, String> {
-    state.db.missing_summary().map_err(err)
-}
-
-/// Permanently delete the tracks whose files are gone. Refused mid-scan: the
-/// scan may be about to reattach some of them.
-#[tauri::command(rename_all = "camelCase")]
-fn purge_missing_tracks(state: State<'_, AppState>) -> Result<usize, String> {
-    let ids: Vec<i64> = state.health.report().missing.iter().map(|t| t.id).collect();
-    purge(&state, &ids)
-}
-
 /// Permanently delete the chosen missing tracks. Ids of tracks that are not
-/// missing are ignored. Returns how many were deleted.
+/// missing are ignored. Refused mid-scan: the scan may be about to reattach
+/// some of them. Returns how many were deleted.
 #[tauri::command(rename_all = "camelCase")]
 fn purge_tracks(state: State<'_, AppState>, ids: Vec<i64>) -> Result<usize, String> {
-    purge(&state, &ids)
-}
-
-fn purge(state: &State<'_, AppState>, ids: &[i64]) -> Result<usize, String> {
     if state.scan.is_running() {
         return Err("a library scan is running; purge when it finishes".into());
     }
-    let deleted = state.db.purge_tracks(ids).map_err(err)?;
+    let deleted = state.db.purge_tracks(&ids).map_err(err)?;
     // No queued item may point at a row that no longer exists.
     state
         .playlist
@@ -824,8 +808,6 @@ pub fn run() {
             scan_libraries,
             cancel_scan,
             get_scan_status,
-            get_missing_summary,
-            purge_missing_tracks,
             purge_tracks,
             library_health,
             library_check_now,

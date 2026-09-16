@@ -37,8 +37,6 @@ const { api } = vi.hoisted(() => {
     getAllPaths: vi.fn(),
     addPath: vi.fn(),
     removePath: vi.fn(),
-    getMissingSummary: vi.fn(),
-    purgeMissingTracks: vi.fn(),
     purgeTracks: vi.fn(),
     libraryHealth: vi.fn(),
     onLibraryHealth: vi.fn(),
@@ -187,8 +185,7 @@ function resetApi(): void {
   });
   api.addPath.mockResolvedValue(null);
   api.removePath.mockResolvedValue(true);
-  api.getMissingSummary.mockResolvedValue({ tracks: 0, withCuePoints: 0 });
-  api.purgeMissingTracks.mockResolvedValue(0);
+  api.purgeTracks.mockResolvedValue(0);
   api.libraryHealth.mockResolvedValue(structuredClone(EMPTY_HEALTH));
   api.scanLibraries.mockResolvedValue({ alreadyRunning: false });
   api.cancelScan.mockResolvedValue(undefined);
@@ -1001,33 +998,24 @@ describe("AppState library + paths", () => {
     expect(api.getAllPaths).toHaveBeenCalled();
   });
 
-  it("purgeMissingTracks deletes, then refreshes the summary, stats and library", async () => {
-    api.getMissingSummary.mockResolvedValueOnce({
-      tracks: 0,
-      withCuePoints: 0,
-    });
-    app.missingSummary = { tracks: 3, withCuePoints: 1 };
+  it("purgeTracks deletes the chosen tracks, then refreshes stats and library", async () => {
     api.getStats.mockClear();
     api.search.mockClear();
 
-    await app.purgeMissingTracks();
+    await app.purgeTracks([3, 4]);
 
-    expect(api.purgeMissingTracks).toHaveBeenCalled();
-    expect(app.missingSummary).toEqual({ tracks: 0, withCuePoints: 0 });
+    expect(api.purgeTracks).toHaveBeenCalledWith([3, 4]);
     expect(api.getStats).toHaveBeenCalled();
     expect(api.search).toHaveBeenCalled();
   });
 
-  it("purgeMissingTracks still refreshes when the backend refuses", async () => {
-    api.purgeMissingTracks.mockRejectedValueOnce("a library scan is running");
-    api.getMissingSummary.mockResolvedValueOnce({
-      tracks: 2,
-      withCuePoints: 0,
-    });
+  it("purgeTracks still refreshes when the backend refuses", async () => {
+    api.purgeTracks.mockRejectedValueOnce("a library scan is running");
+    api.getStats.mockClear();
 
-    await app.purgeMissingTracks();
+    await app.purgeTracks([3]);
 
-    expect(app.missingSummary).toEqual({ tracks: 2, withCuePoints: 0 });
+    expect(api.getStats).toHaveBeenCalled();
   });
 
   it("scan invokes scanLibraries fire-and-forget without blocking on result", async () => {
@@ -1052,7 +1040,6 @@ describe("AppState library + paths", () => {
     await Promise.resolve();
     expect(api.search).toHaveBeenCalled();
     expect(api.getStats).toHaveBeenCalled();
-    expect(api.getMissingSummary).toHaveBeenCalled();
   });
 
   it("scan-progress patches running state", () => {
@@ -2144,6 +2131,38 @@ describe("AppState library health", () => {
     expect(app.missingSince.get(1)).toBe(5);
     cb!(report([]));
     expect(app.missingSince.size).toBe(0);
+  });
+
+  it("counts findings for the Settings badge", () => {
+    const { app } = makeApp();
+    const cb = api.onLibraryHealth.mock.calls[0]?.[0] as (
+      r: HealthReport,
+    ) => void;
+    cb({
+      ...report([[1, 5]]),
+      exact: [{ key: "v1:a", dismissed: false, tracks: [] }],
+    });
+    expect(app.healthAttention).toBe(2);
+  });
+
+  it("dismiss, undo and check-now go to the backend", () => {
+    api.healthDismiss.mockResolvedValue(undefined);
+    api.healthUndismiss.mockResolvedValue(undefined);
+    api.libraryCheckNow.mockResolvedValue(undefined);
+    const { app } = makeApp();
+    app.dismissFinding("exact", "v1:a");
+    app.undismissFinding("missing");
+    app.checkLibraryNow();
+    expect(api.healthDismiss).toHaveBeenCalledWith("exact", "v1:a");
+    expect(api.healthUndismiss).toHaveBeenCalledWith("missing", "");
+    expect(api.libraryCheckNow).toHaveBeenCalled();
+  });
+
+  it("openLibraryHealth opens Settings on the health tab", () => {
+    const { app } = makeApp();
+    app.openLibraryHealth();
+    expect(app.settingsOpen).toBe(true);
+    expect(app.settingsTab).toBe("health");
   });
 
   it("a failing lookup keeps the report it had", async () => {

@@ -98,13 +98,6 @@ export interface TrackMetadataInput {
   year?: number | null;
 }
 
-/** Tracks whose file is gone, kept until purged. */
-export interface MissingSummary {
-  tracks: number;
-  /** Of those, how many carry cue points a purge would destroy. */
-  withCuePoints: number;
-}
-
 /** A track whose file a scan found gone. */
 export interface MissingTrack {
   id: number;

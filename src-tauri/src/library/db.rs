@@ -37,15 +37,6 @@ pub struct LibraryStats {
     pub tracks_by_type: TracksByType,
 }
 
-/// Tracks whose file is gone, as the purge confirmation names them.
-#[derive(Serialize, Clone, Debug, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct MissingSummary {
-    pub tracks: i64,
-    /// Of those, how many carry a radio edit the purge would destroy.
-    pub with_cue_points: i64,
-}
-
 /// A missing row, as the library health view lists it.
 pub struct MissingRow {
     pub id: i64,
@@ -639,24 +630,6 @@ impl Db {
         }
         tx.commit()?;
         Ok(done)
-    }
-
-    pub fn missing_summary(&self) -> Result<MissingSummary> {
-        let conn = self.conn.lock();
-        conn.query_row(
-            "SELECT COUNT(*), \
-                    COUNT(*) FILTER (WHERE COALESCE(cue_in_ms, fade_in_ms, fade_out_ms, \
-                                                    cue_out_ms, next_start_ms) IS NOT NULL) \
-             FROM tracks WHERE missing_since IS NOT NULL",
-            [],
-            |r| {
-                Ok(MissingSummary {
-                    tracks: r.get(0)?,
-                    with_cue_points: r.get(1)?,
-                })
-            },
-        )
-        .map_err(Into::into)
     }
 
     /// Every missing row, newest first, with what a purge would destroy.
@@ -1677,17 +1650,13 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        assert_eq!(
-            db.missing_summary().unwrap(),
-            MissingSummary {
-                tracks: 2,
-                with_cue_points: 1
-            }
-        );
+        let missing = db.missing_tracks().unwrap();
+        assert_eq!(missing.len(), 2);
+        assert_eq!(missing.iter().filter(|m| m.has_cue_points).count(), 1);
 
         assert_eq!(db.purge_tracks(&ids).unwrap().len(), 2);
 
-        assert_eq!(db.missing_summary().unwrap(), MissingSummary::default());
+        assert!(db.missing_tracks().unwrap().is_empty());
         assert_eq!(db.track_index().unwrap().len(), 1);
         assert!(db.get_track(ids[0]).unwrap().is_none());
         assert_eq!(db.search("c", None, None, None).unwrap().len(), 1);

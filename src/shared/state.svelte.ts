@@ -4,8 +4,8 @@ import type {
   DeviceInfo,
   DeviceRef,
   HealthReport,
+  FindingKind,
   LibraryStats,
-  MissingSummary,
   PlaylistItem,
   SortColumn,
   SortDir,
@@ -34,6 +34,7 @@ import { NativeBackend } from "../features/deck/nativeBackend";
 import { throttle, type Throttled } from "./throttle";
 import { isStrictNever } from "./isStrictNever";
 import { APP_NAME } from "./appName";
+import { healthAttention as attentionOf } from "./health";
 
 const logger = {
   error: (...args: unknown[]) => console.error(...args),
@@ -82,6 +83,8 @@ export const EMPTY_HEALTH: HealthReport = {
 };
 
 export type PlaylistTab = "playlist" | "history";
+export type SettingsTab =
+  "audio" | "library" | "health" | "now-playing" | "advanced";
 
 /**
  * What the cue deck was showing when a surface borrowed it. `previewing` rather
@@ -107,6 +110,7 @@ export class AppState {
     jingle: [],
   });
   settingsOpen = $state(false);
+  settingsTab = $state<SettingsTab>("library");
   scanStatus = $state<ScanStatus>({ status: "idle", lastResult: null });
   // Progress of the background waveform pass (runs after the metadata scan).
   waveformStatus = $state<WaveformStatus>({ status: "idle" });
@@ -153,7 +157,6 @@ export class AppState {
   // True from a launch that replaced an older library database until the scan
   // that repopulates it finishes.
   libraryReset = $state(false);
-  missingSummary = $state<MissingSummary>({ tracks: 0, withCuePoints: 0 });
   // Missing tracks, duplicates and disk changes, mirrored from the backend's
   // `library-health` report.
   health = $state<HealthReport>(structuredClone(EMPTY_HEALTH));
@@ -162,6 +165,8 @@ export class AppState {
   missingSince = $derived(
     new Map(this.health.missing.map((t) => [t.id, t.missingSince])),
   );
+  // Findings that want the operator's attention; badges the Settings button.
+  healthAttention = $derived(attentionOf(this.health));
 
   // Cue deck (independent transport on a separate audio device)
   cueTrack = $state<Track | null>(null);
@@ -320,7 +325,6 @@ export class AppState {
         this.libraryReset = false;
         void this.search();
         void this.loadStats();
-        void this.loadMissingSummary();
       }
     });
 
@@ -1033,22 +1037,41 @@ export class AppState {
     }
   }
 
-  async loadMissingSummary(): Promise<void> {
-    this.missingSummary = await api.getMissingSummary();
-  }
-
-  /** Permanently delete the tracks whose files are gone. */
-  async purgeMissingTracks(): Promise<void> {
+  /**
+   * Permanently delete the chosen missing tracks. The backend skips any that a
+   * scan revived meanwhile, and sends a fresh health report.
+   */
+  async purgeTracks(ids: number[]): Promise<void> {
     try {
-      await api.purgeMissingTracks();
+      await api.purgeTracks(ids);
     } catch (err) {
       logger.error("Purge failed:", err);
     }
-    await Promise.all([
-      this.loadMissingSummary(),
-      this.loadStats(),
-      this.search(),
-    ]);
+    await Promise.all([this.loadStats(), this.search()]);
+  }
+
+  /** Stop a health finding from lighting the badge while it stays as it is. */
+  dismissFinding(kind: FindingKind, key = ""): void {
+    void api.healthDismiss(kind, key).catch((err) => {
+      logger.error("Dismiss failed:", err);
+    });
+  }
+
+  undismissFinding(kind: FindingKind, key = ""): void {
+    void api.healthUndismiss(kind, key).catch((err) => {
+      logger.error("Undo dismiss failed:", err);
+    });
+  }
+
+  checkLibraryNow(): void {
+    void api.libraryCheckNow().catch((err) => {
+      logger.error("Library check request failed:", err);
+    });
+  }
+
+  openLibraryHealth(): void {
+    this.settingsTab = "health";
+    this.settingsOpen = true;
   }
 
   /** Update a track's embedded metadata fields and reflect the change in the local tracks array. */
