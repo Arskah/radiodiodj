@@ -330,6 +330,29 @@
                 Scan Library Now
               </button>
             </div>
+            <div class="np-group" class:disabled={!tuning.library.writeTags}>
+              <div class="np-group-header">
+                <span class="material-symbols-outlined" aria-hidden="true"
+                  >edit_document</span
+                >
+                <span class="np-group-title">Write edits to file tags</span>
+                <label class="np-toggle" title="Write metadata edits to files">
+                  <input
+                    id="setting-write-tags"
+                    type="checkbox"
+                    bind:checked={tuning.library.writeTags}
+                    onchange={saveTuning}
+                  />
+                  <span class="np-toggle-track"></span>
+                </label>
+              </div>
+              <p class="settings-section-desc">
+                Metadata edits are always kept in the library. With this on,
+                they are also written into the audio file, so they travel with
+                it. This modifies files on your library paths, network shares
+                included. Failed writes are listed under Library health.
+              </p>
+            </div>
             <LibraryHealth />
           </div>
         {:else if app.settingsTab === "now-playing"}
@@ -497,6 +520,25 @@
                 How often to look for files added, changed or removed since the
                 last scan. Reads no audio, and never changes the library. 0
                 turns it off.
+              </div>
+            </div>
+            <div class="device-row">
+              <label for="tune-tag-write-timeout"
+                >Tag write timeout (seconds)</label
+              >
+              <input
+                id="tune-tag-write-timeout"
+                type="number"
+                min="5"
+                max="300"
+                value={tuning.library.tagWriteTimeoutSec}
+                oninput={(e) =>
+                  numInput(e, (v) => (tuning.library.tagWriteTimeoutSec = v))}
+                onchange={saveTuning}
+              />
+              <div class="hint">
+                How long writing an edit into a file may take before it is
+                reported as failed.
               </div>
             </div>
 

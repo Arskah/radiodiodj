@@ -327,6 +327,15 @@ export const api = {
     if (updates.year !== undefined) payload.year = updates.year;
     return invoke<Track>("update_track_metadata", { updates: payload });
   },
+  revertTrackTags(id: number): Promise<Track> {
+    return invoke<Track>("revert_track_tags", { id });
+  },
+  retryTagWrite(id: number): Promise<void> {
+    return invoke<void>("retry_tag_write", { id });
+  },
+  dismissTagWrite(id: number): Promise<void> {
+    return invoke<void>("dismiss_tag_write", { id });
+  },
   // Returns the clamped points the backend actually stored, so the UI reflects
   // any marker that was coerced into order or inside the file.
   setCuePoints(id: number, points: CuePoints): Promise<CuePoints> {

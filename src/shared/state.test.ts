@@ -58,6 +58,9 @@ const { api } = vi.hoisted(() => {
     getCueDevice: vi.fn(),
     setCueDevice: vi.fn(),
     updateTrackMetadata: vi.fn(),
+    revertTrackTags: vi.fn(),
+    retryTagWrite: vi.fn(),
+    dismissTagWrite: vi.fn(),
     getTuningConfig: vi.fn(),
     setTuningConfig: vi.fn(),
     setCuePoints: vi.fn(),
@@ -87,7 +90,7 @@ function defaultTuning() {
       openRetryIntervalMs: 2000,
       readRetryBackoffsMs: [500, 1000, 2000],
     },
-    library: { checkIntervalMin: 15 },
+    library: { checkIntervalMin: 15, writeTags: false, tagWriteTimeoutSec: 30 },
   };
 }
 
@@ -1627,6 +1630,35 @@ describe("AppState session persistence (stop markers)", () => {
     });
     await a.loadSession();
     expect(a.playlist.map(pid)).toEqual([1, "STOP", 2]);
+  });
+});
+
+describe("AppState revertTrackTags", () => {
+  let app: AppState;
+  beforeEach(() => {
+    resetApi();
+    app = makeApp().app;
+  });
+
+  it("replaces the track and the one open in the editor", async () => {
+    const reverted = t(5, { title: "From File", edited_fields: 0 });
+    api.revertTrackTags.mockResolvedValue(reverted);
+    app.tracks = [t(4), t(5, { title: "Edited", edited_fields: 1 })];
+    app.editingMetadata = app.tracks[1];
+
+    await app.revertTrackTags(5);
+
+    expect(api.revertTrackTags).toHaveBeenCalledWith(5);
+    expect(app.tracks[1].title).toBe("From File");
+    expect(app.editingMetadata?.edited_fields).toBe(0);
+  });
+
+  it("keeps the edits when the file cannot be read", async () => {
+    api.revertTrackTags.mockRejectedValue(new Error("read tags"));
+    app.tracks = [t(5, { title: "Edited", edited_fields: 1 })];
+
+    await expect(app.revertTrackTags(5)).rejects.toThrow("read tags");
+    expect(app.tracks[0].title).toBe("Edited");
   });
 });
 

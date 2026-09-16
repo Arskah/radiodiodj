@@ -204,16 +204,27 @@ pub struct LibraryConfig {
     /// Minutes between library checks; 0 turns the timer off.
     #[serde(default = "default_check_interval_min")]
     pub check_interval_min: u64,
+    /// Write metadata edits into the file's tags as well as the library.
+    #[serde(default)]
+    pub write_tags: bool,
+    /// Seconds a tag write may take before it is reported as failed.
+    #[serde(default = "default_tag_write_timeout_sec")]
+    pub tag_write_timeout_sec: u64,
 }
 
 fn default_check_interval_min() -> u64 {
     15
+}
+fn default_tag_write_timeout_sec() -> u64 {
+    30
 }
 
 impl Default for LibraryConfig {
     fn default() -> Self {
         Self {
             check_interval_min: default_check_interval_min(),
+            write_tags: false,
+            tag_write_timeout_sec: default_tag_write_timeout_sec(),
         }
     }
 }
@@ -409,6 +420,8 @@ fn normalize_tuning(mut t: TuningConfig) -> TuningConfig {
             *b = (*b).max(1);
         }
     }
+
+    t.library.tag_write_timeout_sec = t.library.tag_write_timeout_sec.clamp(5, 300);
 
     t
 }

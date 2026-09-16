@@ -1,0 +1,530 @@
+//! Writing metadata edits back into the audio file's tags, when the operator
+//! has turned it on.
+//!
+//! Files may live on a network share, so a write never edits the file in
+//! place (lofty rewrites a whole file in place for several formats, and a
+//! dropped connection would leave it truncated). The file is read into memory,
+//! tagged there, written to a sibling temp file and renamed over the original.
+//! A tagged copy whose fingerprint differs from the stored one is never
+//! written, so a write cannot cost the track its identity.
+//!
+//! One worker thread drains a queue of track ids; each job reads the row when
+//! it runs, so the latest edit wins. A job that outlives the timeout is
+//! reported as failed and left behind, since std file I/O cannot be canceled.
+//! Failures stay listed in the library health report until a retry succeeds or
+//! the operator dismisses them.
+
+use anyhow::{bail, Context, Result};
+use lofty::config::WriteOptions;
+use lofty::file::{AudioFile, FileType, TaggedFileExt};
+use lofty::probe::Probe;
+use lofty::tag::{ItemKey, Tag};
+use parking_lot::Mutex;
+use serde::Serialize;
+use std::collections::{BTreeMap, VecDeque};
+use std::io::{Cursor, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use super::db::{Db, TagValues};
+use super::fingerprint;
+use crate::persist::config::Config;
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TagWriteFailure {
+    pub id: i64,
+    pub title: String,
+    pub artist: String,
+    pub path: String,
+    pub error: String,
+    /// Unix ms.
+    pub at: i64,
+}
+
+type Listener = Arc<dyn Fn() + Send + Sync>;
+
+#[derive(Default)]
+struct Queue {
+    pending: VecDeque<i64>,
+    running: bool,
+}
+
+pub struct TagWriter {
+    db: Arc<Db>,
+    config: Arc<Config>,
+    queue: Mutex<Queue>,
+    failures: Mutex<BTreeMap<i64, TagWriteFailure>>,
+    listener: Mutex<Option<Listener>>,
+}
+
+impl TagWriter {
+    pub fn new(db: Arc<Db>, config: Arc<Config>) -> Arc<Self> {
+        Arc::new(Self {
+            db,
+            config,
+            queue: Mutex::new(Queue::default()),
+            failures: Mutex::new(BTreeMap::new()),
+            listener: Mutex::new(None),
+        })
+    }
+
+    /// Called whenever the failure list changes.
+    pub fn set_listener(&self, listener: impl Fn() + Send + Sync + 'static) {
+        *self.listener.lock() = Some(Arc::new(listener));
+    }
+
+    pub fn failures(&self) -> Vec<TagWriteFailure> {
+        self.failures.lock().values().cloned().collect()
+    }
+
+    /// Queue a write of the track's current tags, when write-back is on.
+    pub fn request(self: &Arc<Self>, id: i64) {
+        if self.config.get_tuning().library.write_tags {
+            self.enqueue(id);
+        }
+    }
+
+    /// Queue a write regardless of the setting: the operator asked for it.
+    pub fn retry(self: &Arc<Self>, id: i64) {
+        self.enqueue(id);
+    }
+
+    /// Forget a failure. The edit stays in the library.
+    pub fn dismiss(&self, id: i64) {
+        if self.failures.lock().remove(&id).is_some() {
+            self.notify();
+        }
+    }
+
+    fn enqueue(self: &Arc<Self>, id: i64) {
+        let mut queue = self.queue.lock();
+        if !queue.pending.contains(&id) {
+            queue.pending.push_back(id);
+        }
+        if !queue.running {
+            queue.running = true;
+            let this = Arc::clone(self);
+            std::thread::spawn(move || this.drain());
+        }
+    }
+
+    fn drain(self: Arc<Self>) {
+        loop {
+            let id = {
+                let mut queue = self.queue.lock();
+                match queue.pending.pop_front() {
+                    Some(id) => id,
+                    None => {
+                        queue.running = false;
+                        return;
+                    }
+                }
+            };
+            self.run(id);
+        }
+    }
+
+    fn run(&self, id: i64) {
+        let values = match self.db.tag_values(id) {
+            Ok(Some(values)) => values,
+            Ok(None) => return,
+            Err(e) => {
+                log::error!("tag write: cannot read track {id}: {e:#}");
+                return;
+            }
+        };
+        if values.edited_fields == 0 {
+            return;
+        }
+        let timeout = Duration::from_secs(self.config.get_tuning().library.tag_write_timeout_sec);
+        let outcome = write_with_timeout(values.clone(), timeout).and_then(|mtime| {
+            self.db.finish_tag_write(id, &values, mtime)?;
+            Ok(())
+        });
+        let changed = match outcome {
+            Ok(()) => {
+                log::info!("tag write: wrote {}", values.path);
+                self.failures.lock().remove(&id).is_some()
+            }
+            Err(e) => {
+                log::warn!("tag write: {}: {e:#}", values.path);
+                self.failures.lock().insert(
+                    id,
+                    TagWriteFailure {
+                        id,
+                        title: values.title.clone().unwrap_or_default(),
+                        artist: values.artist.clone().unwrap_or_default(),
+                        path: values.path.clone(),
+                        error: format!("{e:#}"),
+                        at: now_ms(),
+                    },
+                );
+                true
+            }
+        };
+        if changed {
+            self.notify();
+        }
+    }
+
+    fn notify(&self) {
+        let listener = self.listener.lock().clone();
+        if let Some(listener) = listener {
+            listener();
+        }
+    }
+}
+
+/// Run [`write_tags`] on its own thread and give up on it after `timeout`.
+/// Returns the file's new mtime.
+fn write_with_timeout(values: TagValues, timeout: Duration) -> Result<i64> {
+    let (tx, rx) = mpsc::channel();
+    let abandoned = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&abandoned);
+    std::thread::spawn(move || {
+        let _ = tx.send(write_tags(&values, &flag));
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(_) => {
+            abandoned.store(true, Ordering::SeqCst);
+            bail!("timed out after {} s", timeout.as_secs())
+        }
+    }
+}
+
+/// Write `values` into the file's tags. Returns the file's new mtime.
+fn write_tags(values: &TagValues, abandoned: &AtomicBool) -> Result<i64> {
+    let path = Path::new(&values.path);
+    let bytes = std::fs::read(path).context("read")?;
+    let tagged = retag(bytes, values, path)?;
+
+    if let Some(stored) = &values.fingerprint {
+        let extension = path.extension().and_then(|e| e.to_str());
+        let written = fingerprint::of_source(Box::new(Cursor::new(tagged.clone())), extension)
+            .context("fingerprint the tagged copy")?;
+        if &written != stored {
+            bail!("writing the tags would change the track's audio identity");
+        }
+    }
+
+    let temp = temp_path(path);
+    let result = replace(path, &temp, &tagged, abandoned);
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result?;
+    mtime_ms(path)
+}
+
+/// `bytes` with `values` in its primary tag.
+fn retag(bytes: Vec<u8>, values: &TagValues, path: &Path) -> Result<Vec<u8>> {
+    let mut probe = Probe::new(Cursor::new(&bytes[..])).guess_file_type()?;
+    if probe.file_type().is_none() {
+        probe = probe.set_file_type(FileType::from_path(path).context("unknown file type")?);
+    }
+    let mut file = probe.read().context("read tags")?;
+    if file.primary_tag().is_none() {
+        let tag_type = file.primary_tag_type();
+        file.insert_tag(Tag::new(tag_type));
+    }
+    let tag = file.primary_tag_mut().context("no writable tag")?;
+    set(tag, ItemKey::TrackTitle, values.title.clone());
+    set(tag, ItemKey::TrackArtist, values.artist.clone());
+    set(tag, ItemKey::AlbumTitle, values.album.clone());
+    set(tag, ItemKey::Genre, values.genre.clone());
+    set(tag, ItemKey::Year, values.year.map(|y| y.to_string()));
+
+    let mut out = Cursor::new(bytes);
+    file.save_to(&mut out, WriteOptions::default())
+        .context("write tags")?;
+    Ok(out.into_inner())
+}
+
+fn set(tag: &mut Tag, key: ItemKey, value: Option<String>) {
+    match value {
+        Some(value) if !value.is_empty() => {
+            tag.insert_text(key, value);
+        }
+        _ => tag.remove_key(key),
+    }
+}
+
+fn temp_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".rdj-tmp");
+    path.with_file_name(name)
+}
+
+/// Write `bytes` beside `path` and rename them over it.
+fn replace(path: &Path, temp: &Path, bytes: &[u8], abandoned: &AtomicBool) -> Result<()> {
+    let permissions = std::fs::metadata(path).context("stat")?.permissions();
+    if permissions.readonly() {
+        bail!("the file is read-only");
+    }
+    let mut file = std::fs::File::create(temp).context("create temp file")?;
+    file.write_all(bytes).context("write temp file")?;
+    file.sync_all().context("flush temp file")?;
+    drop(file);
+    std::fs::set_permissions(temp, permissions).context("copy permissions")?;
+    if abandoned.load(Ordering::SeqCst) {
+        bail!("abandoned after the timeout");
+    }
+    std::fs::rename(temp, path).map_err(|e| rename_error(e, temp, path))
+}
+
+/// A rename that reports "not found" while both files are there is the share
+/// refusing to rename this file: seen on macOS smbfs with a name another
+/// system created. Say so, since the OS error alone reads as a missing file.
+fn rename_error(e: std::io::Error, temp: &Path, path: &Path) -> anyhow::Error {
+    if e.kind() == std::io::ErrorKind::NotFound && temp.exists() && path.exists() {
+        anyhow::anyhow!(
+            "the share could not rename this file, although it is there. Its name \
+             may have been created by another system: rename the file on the \
+             server, then retry ({e})"
+        )
+    } else {
+        anyhow::Error::new(e).context("replace the file")
+    }
+}
+
+fn mtime_ms(path: &Path) -> Result<i64> {
+    let modified = std::fs::metadata(path).context("stat")?.modified()?;
+    Ok(modified.duration_since(UNIX_EPOCH)?.as_millis() as i64)
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::library::db::{EditedFields, Track, TrackMetadataUpdate};
+    use crate::library::listing::{should_rescan, ScanRoot};
+    use crate::library::scanner::{read_file_tags, scan_all};
+    use crate::library::test_audio::write_wav;
+    use std::time::Instant;
+    use tempfile::TempDir;
+
+    struct Fixture {
+        _dir: TempDir,
+        db: Arc<Db>,
+        writer: Arc<TagWriter>,
+        path: PathBuf,
+        id: i64,
+    }
+
+    fn fixture(write_tags: bool) -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("music/a.wav");
+        write_wav(&path, 1, 1);
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        let root = ScanRoot {
+            content_type: "music",
+            path: dir.path().join("music").to_string_lossy().into_owned(),
+        };
+        scan_all(&db, &[root], &|| false, |_, _| {}).unwrap();
+        let id = db.search("", None, None, None).unwrap()[0].id;
+        db.set_fingerprint(id, &fingerprint::of_file(&path).unwrap())
+            .unwrap();
+        let config = Arc::new(Config::open(dir.path()).unwrap());
+        let mut tuning = config.get_tuning();
+        tuning.library.write_tags = write_tags;
+        config.set_tuning(tuning).unwrap();
+        let writer = TagWriter::new(Arc::clone(&db), Arc::clone(&config));
+        Fixture {
+            _dir: dir,
+            db,
+            writer,
+            path,
+            id,
+        }
+    }
+
+    impl Fixture {
+        fn edit(&self, title: &str) -> Track {
+            let track = self
+                .db
+                .update_track_metadata(&TrackMetadataUpdate {
+                    id: self.id,
+                    title: Some(title.into()),
+                    genre: Some(Some("Jazz".into())),
+                    ..Default::default()
+                })
+                .unwrap();
+            self.writer.request(self.id);
+            track
+        }
+
+        fn wait(&self) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while self.writer.queue.lock().running {
+                assert!(Instant::now() < deadline, "tag writer did not finish");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        fn track(&self) -> Track {
+            self.db.get_track(self.id).unwrap().unwrap()
+        }
+
+        fn stored_mtime(&self) -> Option<i64> {
+            self.db.track_index().unwrap()[0].mtime
+        }
+
+        fn leftovers(&self) -> Vec<PathBuf> {
+            std::fs::read_dir(self.path.parent().unwrap())
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .filter(|p| p != &self.path)
+                .collect()
+        }
+    }
+
+    #[test]
+    fn an_edit_lands_in_the_file_and_the_track_keeps_its_identity() {
+        let f = fixture(true);
+        let fingerprint = fingerprint::of_file(&f.path).unwrap();
+        let listener_calls = Arc::new(Mutex::new(0));
+        let counter = Arc::clone(&listener_calls);
+        f.writer.set_listener(move || *counter.lock() += 1);
+
+        f.edit("Written");
+        f.wait();
+
+        let on_disk = read_file_tags(&f.path.to_string_lossy()).unwrap();
+        assert_eq!(on_disk.title.as_deref(), Some("Written"));
+        assert_eq!(on_disk.genre.as_deref(), Some("Jazz"));
+        assert_eq!(fingerprint::of_file(&f.path).unwrap(), fingerprint);
+        assert_eq!(f.track().edited_fields, 0);
+        assert_eq!(f.stored_mtime(), on_disk.mtime);
+        assert!(
+            !should_rescan(
+                Some("music"),
+                f.stored_mtime(),
+                on_disk.mtime.unwrap(),
+                "music"
+            ),
+            "the next scan must not re-read our own write"
+        );
+        assert!(f.writer.failures().is_empty());
+        assert_eq!(*listener_calls.lock(), 0, "nothing to report");
+        assert!(f.leftovers().is_empty());
+    }
+
+    #[test]
+    fn a_failed_write_keeps_the_edit_and_is_reported() {
+        let f = fixture(true);
+        let before = std::fs::read(&f.path).unwrap();
+        let mut permissions = std::fs::metadata(&f.path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&f.path, permissions.clone()).unwrap();
+        let notified = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&notified);
+        f.writer
+            .set_listener(move || flag.store(true, Ordering::SeqCst));
+
+        f.edit("Unwritable");
+        f.wait();
+
+        assert_eq!(std::fs::read(&f.path).unwrap(), before);
+        let track = f.track();
+        assert_eq!(track.title, "Unwritable");
+        assert_eq!(
+            track.edited_fields,
+            EditedFields::TITLE | EditedFields::GENRE
+        );
+        let failures = f.writer.failures();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].id, f.id);
+        assert!(
+            failures[0].error.contains("read-only"),
+            "{}",
+            failures[0].error
+        );
+        assert!(notified.load(Ordering::SeqCst));
+        assert!(f.leftovers().is_empty());
+
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&f.path, permissions).unwrap();
+        f.writer.retry(f.id);
+        f.wait();
+        assert!(f.writer.failures().is_empty());
+        assert_eq!(f.track().edited_fields, 0);
+    }
+
+    #[test]
+    fn a_rename_the_share_refuses_is_explained() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("a.mp3");
+        let temp = temp_path(&path);
+        let not_found = || std::io::Error::from(std::io::ErrorKind::NotFound);
+
+        let e = rename_error(not_found(), &temp, &path);
+        assert!(format!("{e:#}").starts_with("replace the file"), "{e:#}");
+
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::write(&temp, b"new").unwrap();
+        let e = rename_error(not_found(), &temp, &path);
+        assert!(
+            format!("{e:#}").contains("rename the file on the server"),
+            "{e:#}"
+        );
+
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let e = rename_error(denied, &temp, &path);
+        assert!(format!("{e:#}").starts_with("replace the file"), "{e:#}");
+    }
+
+    #[test]
+    fn a_missing_file_is_reported() {
+        let f = fixture(true);
+        std::fs::remove_file(&f.path).unwrap();
+        f.edit("Gone");
+        f.wait();
+        assert_eq!(f.writer.failures().len(), 1);
+        assert_eq!(f.track().title, "Gone");
+
+        f.writer.dismiss(f.id);
+        assert!(f.writer.failures().is_empty());
+        assert_ne!(f.track().edited_fields, 0);
+    }
+
+    #[test]
+    fn nothing_is_written_while_write_back_is_off() {
+        let f = fixture(false);
+        let before = std::fs::read(&f.path).unwrap();
+        let mtime = f.stored_mtime();
+
+        f.edit("Library only");
+        f.wait();
+
+        assert_eq!(std::fs::read(&f.path).unwrap(), before);
+        assert_eq!(f.stored_mtime(), mtime);
+        assert_eq!(
+            f.track().edited_fields,
+            EditedFields::TITLE | EditedFields::GENRE
+        );
+    }
+
+    #[test]
+    fn a_copy_that_would_change_identity_is_not_written() {
+        let f = fixture(true);
+        f.db.set_fingerprint(f.id, "v1:someone-else").unwrap();
+        let before = std::fs::read(&f.path).unwrap();
+
+        f.edit("Mismatch");
+        f.wait();
+
+        assert_eq!(std::fs::read(&f.path).unwrap(), before);
+        assert!(f.writer.failures()[0].error.contains("identity"));
+    }
+}

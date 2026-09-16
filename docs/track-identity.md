@@ -169,9 +169,10 @@ drops purged tracks from the playlist. Purge stays explicit, with no retention.
 - **Libraries from before the baseline** are reset rather than migrated
   (see [database.md](./database.md#pre-10-resets)), so this starts from a fresh
   library.
-- **Metadata edits and rescans.** A file whose mtime changes is re-tagged,
-  which overwrites edits made in the app. That clobber is
-  [#313](https://github.com/Arskah/radiodiodj/issues/313)'s. It should build on
-  this identity rather than add a path-keyed overrides table.
+- **Metadata edits live on the row.** A field edited in the app is flagged
+  in `edited_fields`, and a rescan of a changed file keeps it. The flags move
+  with the row when it is reattached, and a duplicate copies them. A database
+  reset loses edits that were never written into the file; see
+  [library.md](./library.md#editing-a-track) for the opt-in write-back.
 - **Automatic cue ownership** ([#372](https://github.com/Arskah/radiodiodj/issues/372))
   lives on the track row and inherits all of the above.

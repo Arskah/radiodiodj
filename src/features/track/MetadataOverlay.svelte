@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from "../../shared/state.svelte";
+  import { EditedField } from "../../shared/types";
 
   const MIN_YEAR = 1900;
   const MAX_YEAR = 2100;
@@ -15,6 +16,9 @@
   let year = $state<string | number | null>("");
   let saving = $state(false);
   let error = $state<string | null>(null);
+  let confirmingRevert = $state(false);
+
+  const edited = $derived(app.editingMetadata?.edited_fields ?? 0);
 
   $effect(() => {
     if (app.editingMetadata) {
@@ -24,6 +28,7 @@
       genre = app.editingMetadata.genre ?? "";
       year = app.editingMetadata.year ? String(app.editingMetadata.year) : "";
       error = null;
+      confirmingRevert = false;
     } else {
       title = "";
       artist = "";
@@ -81,6 +86,21 @@
       error = e instanceof Error ? e.message : String(e);
     } finally {
       saving = false;
+    }
+  }
+
+  async function handleRevert(): Promise<void> {
+    const track = app.editingMetadata;
+    if (!track) return;
+    saving = true;
+    error = null;
+    try {
+      await app.revertTrackTags(track.id);
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      saving = false;
+      confirmingRevert = false;
     }
   }
 
@@ -145,7 +165,11 @@
       </div>
       <div class="editor-body">
         <label class="field">
-          <span>Title</span>
+          <span
+            >Title{#if edited & EditedField.title}<em class="edited-mark"
+                >edited</em
+              >{/if}</span
+          >
           <input
             id="metadata-title"
             type="text"
@@ -155,7 +179,11 @@
           />
         </label>
         <label class="field">
-          <span>Artist</span>
+          <span
+            >Artist{#if edited & EditedField.artist}<em class="edited-mark"
+                >edited</em
+              >{/if}</span
+          >
           <input
             id="metadata-artist"
             type="text"
@@ -164,7 +192,11 @@
           />
         </label>
         <label class="field">
-          <span>Album</span>
+          <span
+            >Album{#if edited & EditedField.album}<em class="edited-mark"
+                >edited</em
+              >{/if}</span
+          >
           <input
             id="metadata-album"
             type="text"
@@ -173,7 +205,11 @@
           />
         </label>
         <label class="field">
-          <span>Genre</span>
+          <span
+            >Genre{#if edited & EditedField.genre}<em class="edited-mark"
+                >edited</em
+              >{/if}</span
+          >
           <input
             id="metadata-genre"
             type="text"
@@ -183,7 +219,11 @@
           />
         </label>
         <label class="field">
-          <span>Year</span>
+          <span
+            >Year{#if edited & EditedField.year}<em class="edited-mark"
+                >edited</em
+              >{/if}</span
+          >
           <input
             id="metadata-year"
             type="number"
@@ -198,22 +238,49 @@
         {/if}
       </div>
       <div class="editor-footer">
-        <button
-          id="btn-metadata-save"
-          class="btn btn-primary"
-          onclick={handleSave}
-          disabled={saving}
-        >
-          {saving ? "Saving…" : "Save"}
-        </button>
-        <button
-          id="btn-metadata-cancel"
-          class="btn"
-          onclick={close}
-          disabled={saving}
-        >
-          Cancel
-        </button>
+        {#if confirmingRevert}
+          <span class="editor-confirm"
+            >Discard the edits and use the file's tags?</span
+          >
+          <button
+            id="btn-metadata-revert-confirm"
+            class="btn"
+            onclick={handleRevert}
+            disabled={saving}>Revert</button
+          >
+          <button
+            class="btn"
+            onclick={() => (confirmingRevert = false)}
+            disabled={saving}>Keep edits</button
+          >
+        {:else}
+          {#if edited}
+            <button
+              id="btn-metadata-revert"
+              class="btn btn-revert"
+              onclick={() => (confirmingRevert = true)}
+              disabled={saving}
+              title="Discard the edited fields and read them from the file again"
+              >Revert to file tags</button
+            >
+          {/if}
+          <button
+            id="btn-metadata-save"
+            class="btn btn-primary"
+            onclick={handleSave}
+            disabled={saving}
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
+          <button
+            id="btn-metadata-cancel"
+            class="btn"
+            onclick={close}
+            disabled={saving}
+          >
+            Cancel
+          </button>
+        {/if}
       </div>
     </div>
   </div>
@@ -323,6 +390,23 @@
     padding: 8px 10px;
     background: rgba(231, 76, 60, 0.1);
     border-radius: 4px;
+  }
+
+  .edited-mark {
+    margin-left: 6px;
+    font-style: normal;
+    text-transform: none;
+    color: #4e7af5;
+  }
+
+  .editor-confirm {
+    margin-right: auto;
+    font-size: 13px;
+    color: #ccc;
+  }
+
+  .btn-revert {
+    margin-right: auto;
   }
 
   .editor-footer {

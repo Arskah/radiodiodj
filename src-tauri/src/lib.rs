@@ -24,6 +24,7 @@ use library::check::LibraryCheck;
 use library::db::{Db, LibraryStats, OpenError, Track, TrackMetadataUpdate};
 use library::health::{FindingKind, Health, HealthReport};
 use library::scan_state::{ScanState, ScanStatus, StartResult};
+use library::tag_write::TagWriter;
 use library::waveform_scan::{WaveformJob, WaveformStatus};
 use persist::config::{Config, DeviceRef, NowPlayingConfig, TuningConfig};
 use persist::session::{Session, SessionPlaylistItem, SessionState};
@@ -75,6 +76,8 @@ pub struct AppState {
     health: Arc<Health>,
     /// Compares the disk with the library between scans.
     check: Arc<LibraryCheck>,
+    /// Writes metadata edits into the files' tags, when enabled.
+    tag_writer: Arc<TagWriter>,
     /// The mixer every on-air deck sums into, and the worker driving them.
     bus: Arc<ProgramBus>,
     /// Owner of the playlist and of everything that advances it.
@@ -384,9 +387,44 @@ fn update_track_metadata(
     updates: TrackMetadataUpdate,
 ) -> Result<Track, String> {
     let track = state.db.update_track_metadata(&updates).map_err(err)?;
+    if track.edited_fields != 0 {
+        state.tag_writer.request(track.id);
+    }
     // Artist and title decide possible duplicates.
     state.health.refresh();
     Ok(track)
+}
+
+/// Drop a track's metadata edits and take its tags from the file again. The
+/// file is re-read now: a rescan skips a file whose mtime has not changed.
+#[tauri::command(rename_all = "camelCase")]
+async fn revert_track_tags(state: State<'_, AppState>, id: i64) -> Result<Track, String> {
+    let db = Arc::clone(&state.db);
+    let track = tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<Track> {
+        let media = db
+            .get_media_track(id)?
+            .ok_or_else(|| anyhow::anyhow!("track not found"))?;
+        let parsed = library::scanner::read_file_tags(&media.path)?;
+        db.revert_track_tags(id, &parsed)
+    })
+    .await
+    .map_err(err)?
+    .map_err(|e| format!("{e:#}"))?;
+    state.tag_writer.dismiss(id);
+    state.health.refresh();
+    Ok(track)
+}
+
+/// Try a failed tag write again.
+#[tauri::command(rename_all = "camelCase")]
+fn retry_tag_write(state: State<'_, AppState>, id: i64) {
+    state.tag_writer.retry(id);
+}
+
+/// Stop listing a failed tag write. The edit stays in the library.
+#[tauri::command(rename_all = "camelCase")]
+fn dismiss_tag_write(state: State<'_, AppState>, id: i64) {
+    state.tag_writer.dismiss(id);
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -740,7 +778,13 @@ pub fn run() {
             // Backfill waveforms for any already-indexed tracks that lack one,
             // without waiting for the next scan. No-op on an empty library.
             Arc::clone(&waveform).start(app.handle().clone(), Arc::clone(&db));
-            let health = Health::new(app.handle().clone(), Arc::clone(&db), Arc::clone(&config));
+            let tag_writer = TagWriter::new(Arc::clone(&db), Arc::clone(&config));
+            let health = Health::new(
+                app.handle().clone(),
+                Arc::clone(&db),
+                Arc::clone(&config),
+                Arc::clone(&tag_writer),
+            );
             health.attach_to_app(app.handle());
             let scan = Arc::new(ScanState::default());
             let check = LibraryCheck::new(
@@ -766,6 +810,7 @@ pub fn run() {
                 waveform,
                 health,
                 check,
+                tag_writer,
                 bus,
                 playlist,
                 cue: Arc::new(Mutex::new(None)),
@@ -840,6 +885,9 @@ pub fn run() {
             now_playing_test,
             broadcast_shutdown,
             update_track_metadata,
+            revert_track_tags,
+            retry_tag_write,
+            dismiss_tag_write,
             set_cue_points,
         ])
         .build(tauri::generate_context!())

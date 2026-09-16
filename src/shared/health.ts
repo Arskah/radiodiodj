@@ -16,7 +16,8 @@ export function checkHasChanges(check: CheckReport | null): boolean {
  * How many findings want the operator's attention: what the Settings button
  * and the Library health tab show. Missing tracks count once, not per track,
  * so removing a library path does not put hundreds on the button. An
- * unreachable path cannot be dismissed; it clears when the share is back.
+ * unreachable path cannot be dismissed; it clears when the share is back. A
+ * failed tag write counts until it is retried or dismissed.
  */
 export function healthAttention(report: HealthReport): number {
   let count = 0;
@@ -25,6 +26,7 @@ export function healthAttention(report: HealthReport): number {
   count += report.possible.filter((g) => !g.dismissed).length;
   if (checkHasChanges(report.check) && !report.checkDismissed) count += 1;
   count += report.check?.unreachable.length ?? 0;
+  count += report.tagWriteFailures.length;
   return count;
 }
 
