@@ -351,43 +351,72 @@ fn exact_groups(rows: Vec<HealthRow>) -> Vec<DuplicateGroup> {
     groups
 }
 
-/// Group tracks by normalised artist and title. A group whose tracks all share
-/// one fingerprint is an exact group and is left to that list.
+/// Group tracks by normalised artist, album and title. A track without an album
+/// joins the tracks of the one album it shares a title with, or only other
+/// album-less tracks when there are several. A group whose tracks all share one
+/// fingerprint is an exact group and is left to that list.
 fn possible_groups(rows: Vec<HealthRow>) -> Vec<DuplicateGroup> {
-    let mut by_key: HashMap<String, Vec<HealthRow>> = HashMap::new();
+    let mut by_title: HashMap<(String, String), Vec<HealthRow>> = HashMap::new();
     for row in rows {
         let artist = normalise(&row.track.artist);
         let title = normalise(&row.track.title);
         // The scanner fills an untagged file's artist with "Unknown".
-        if artist.is_empty() || title.is_empty() || artist == "unknown" {
+        if artist.is_empty() || title.is_empty() || artist == UNKNOWN {
             continue;
         }
-        by_key
-            .entry(format!("{artist}\u{1f}{title}"))
-            .or_default()
-            .push(row);
+        by_title.entry((artist, title)).or_default().push(row);
     }
-    let mut groups: Vec<DuplicateGroup> = by_key
-        .into_iter()
-        .filter(|(_, rows)| rows.len() > 1)
-        .filter(|(_, rows)| {
+    let mut groups: Vec<DuplicateGroup> = Vec::new();
+    for ((artist, title), rows) in by_title {
+        let mut by_album: HashMap<String, Vec<HealthRow>> = HashMap::new();
+        for row in rows {
+            by_album.entry(album_of(&row)).or_default().push(row);
+        }
+        if by_album.len() == 2 {
+            if let Some(loose) = by_album.remove("") {
+                if let Some(rows) = by_album.values_mut().next() {
+                    rows.extend(loose);
+                }
+            }
+        }
+        for (album, mut rows) in by_album {
             let first = &rows[0].fingerprint;
-            first.is_none() || rows.iter().any(|r| &r.fingerprint != first)
-        })
-        .map(|(key, rows)| DuplicateGroup {
-            key,
-            dismissed: false,
-            tracks: rows.into_iter().map(member).collect(),
-        })
-        .collect();
+            if rows.len() < 2 || (first.is_some() && rows.iter().all(|r| &r.fingerprint == first)) {
+                continue;
+            }
+            rows.sort_by_key(|r| r.track.id);
+            groups.push(DuplicateGroup {
+                key: format!("{artist}\u{1f}{album}\u{1f}{title}"),
+                dismissed: false,
+                tracks: rows.into_iter().map(member).collect(),
+            });
+        }
+    }
     sort_groups(&mut groups);
     groups
+}
+
+/// What the scanner fills in for a missing artist or album tag, normalised.
+const UNKNOWN: &str = "unknown";
+
+fn album_of(row: &HealthRow) -> String {
+    let album = normalise(&row.track.album);
+    if album == UNKNOWN {
+        String::new()
+    } else {
+        album
+    }
 }
 
 fn sort_groups(groups: &mut [DuplicateGroup]) {
     groups.sort_by_cached_key(|g| {
         let first = &g.tracks[0].track;
-        (normalise(&first.artist), normalise(&first.title), first.id)
+        (
+            normalise(&first.artist),
+            normalise(&first.title),
+            normalise(&first.album),
+            first.id,
+        )
     });
 }
 
@@ -416,12 +445,24 @@ mod tests {
         title: &str,
         fp: Option<&str>,
     ) -> i64 {
+        insert_on(db, path, content_type, artist, "Album", title, fp)
+    }
+
+    fn insert_on(
+        db: &Db,
+        path: &str,
+        content_type: &str,
+        artist: &str,
+        album: &str,
+        title: &str,
+        fp: Option<&str>,
+    ) -> i64 {
         db.insert_track(&TrackInsert {
             path: path.into(),
             content_type: content_type.into(),
             title: Some(title.into()),
             artist: Some(artist.into()),
-            album: Some("Album".into()),
+            album: Some(album.into()),
             duration: Some(200.0),
             mtime: Some(1),
             fingerprint: fp.map(Into::into),
@@ -541,6 +582,82 @@ mod tests {
         assert_eq!(report.possible.len(), 1);
         assert_eq!(ids(&report.possible[0]), vec![a, b, c]);
         assert!(report.exact.is_empty());
+    }
+
+    #[test]
+    fn the_same_title_on_different_albums_is_not_a_possible_duplicate() {
+        let db = Db::open_in_memory().unwrap();
+        insert_on(
+            &db,
+            "/music/a.mp3",
+            "music",
+            "X",
+            "First",
+            "Intro",
+            Some("v1:1"),
+        );
+        insert_on(
+            &db,
+            "/music/b.mp3",
+            "music",
+            "X",
+            "Second",
+            "Intro",
+            Some("v1:2"),
+        );
+        let report = build(&db, &music_root()).unwrap();
+        assert!(report.possible.is_empty());
+    }
+
+    #[test]
+    fn a_track_without_an_album_joins_the_one_album_sharing_its_title() {
+        let db = Db::open_in_memory().unwrap();
+        let a = insert_on(
+            &db,
+            "/music/a.mp3",
+            "music",
+            "X",
+            "Album",
+            "Song",
+            Some("v1:1"),
+        );
+        let b = insert_on(&db, "/music/b.mp3", "music", "X", "", "Song", Some("v1:2"));
+        let c = insert_on(&db, "/music/c.mp3", "music", "X", "Unknown", "Song", None);
+        let report = build(&db, &music_root()).unwrap();
+        assert_eq!(report.possible.len(), 1);
+        assert_eq!(ids(&report.possible[0]), vec![a, b, c]);
+        assert_eq!(report.possible[0].key, "x\u{1f}album\u{1f}song");
+    }
+
+    #[test]
+    fn tracks_without_an_album_group_only_together_beside_two_albums() {
+        let db = Db::open_in_memory().unwrap();
+        insert_on(
+            &db,
+            "/music/a.mp3",
+            "music",
+            "X",
+            "First",
+            "Intro",
+            Some("v1:1"),
+        );
+        insert_on(
+            &db,
+            "/music/b.mp3",
+            "music",
+            "X",
+            "Second",
+            "Intro",
+            Some("v1:2"),
+        );
+        let c = insert_on(&db, "/music/c.mp3", "music", "X", "", "Intro", Some("v1:3"));
+        assert!(build(&db, &music_root()).unwrap().possible.is_empty());
+
+        let d = insert_on(&db, "/music/d.mp3", "music", "X", "Unknown", "Intro", None);
+        let report = build(&db, &music_root()).unwrap();
+        assert_eq!(report.possible.len(), 1);
+        assert_eq!(ids(&report.possible[0]), vec![c, d]);
+        assert_eq!(report.possible[0].key, "x\u{1f}\u{1f}intro");
     }
 
     #[test]
@@ -672,7 +789,12 @@ mod tests {
             &group.key,
             &group_signature(&group),
         );
-        dismiss(&db, FindingKind::Possible, "nobody\u{1f}nothing", "1,2");
+        dismiss(
+            &db,
+            FindingKind::Possible,
+            "nobody\u{1f}\u{1f}nothing",
+            "1,2",
+        );
 
         mark_missing(&db, &[b], 10);
         build(&db, &music_root()).unwrap();

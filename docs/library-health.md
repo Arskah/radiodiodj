@@ -227,17 +227,31 @@ tracks](#unreadable-tracks) instead, so the note does not stay up for good.
 
 ### Possible duplicates
 
-Present **music** tracks with the same artist and title but different audio,
-usually the same song in another encoding or edit. In practice they almost
-always are the same recording, so the operator is told and decides.
+Present **music** tracks with the same artist, album and title but different
+audio, usually the same song in another encoding or edit. In practice they
+almost always are the same recording, so the operator is told and decides.
 
-Artist and title are compared after:
+Artist, album and title are compared after:
 
 - lower-casing
 - turning every run of anything but letters and digits into one space
 
 Words are kept, so `Song (Remix)` and `Song` stay apart, while `Don't Stop!!`
 and `DON'T STOP` match.
+
+The album keeps an artist's many _Intro_ tracks apart. A track without an album
+(or with the scanner's `Unknown`) matches any album, so a loose file still sits
+with its album copy. The one exception: when the title is on two or more
+albums, a track without an album cannot pick one, so it is grouped only with
+other tracks that have no album.
+
+| same artist and title, albums | grouped                       |
+| ----------------------------- | ----------------------------- |
+| `A`, `A`                      | yes                           |
+| `A`, `B`                      | no                            |
+| `A`, none                     | yes                           |
+| `A`, `B`, none                | no                            |
+| `A`, `B`, none, none          | only the two without an album |
 
 Left out:
 
@@ -320,7 +334,8 @@ The renderer loads it with `library_health` and replaces it on every
 
 - when a scan starts, finishes, is canceled or fails
 - when the analysis pass starts or finishes
-- after a metadata edit, since artist and title decide possible duplicates
+- after a metadata edit, since artist, album and title decide possible
+  duplicates
 - after a library path is added or removed
 - after a purge, a dismissal, and every check
 - when the tag write failures change
@@ -344,7 +359,7 @@ Migration step 2 added the dismissals table:
 ```sql
 CREATE TABLE health_dismissals (
   kind  TEXT NOT NULL CHECK (kind IN ('exact', 'possible', 'missing')),
-  key   TEXT NOT NULL,   -- fingerprint, normalised "artist\x1ftitle", or ''
+  key   TEXT NOT NULL,   -- fingerprint, normalised "artist\x1falbum\x1ftitle", or ''
   value TEXT NOT NULL,   -- sorted ids, or the newest missing_since
   PRIMARY KEY (kind, key)
 );
@@ -384,9 +399,16 @@ moment a file moves.
 **No merging.** Folding one track into another means rewriting queued items,
 history and play counts. Keeping one copy covers the real case.
 
-**Possible duplicates from the start.** Tracks that share an artist and title
-are nearly always the same recording. The notice is worth more than the
+**Possible duplicates from the start.** Tracks that share an artist, album and
+title are nearly always the same recording. The notice is worth more than the
 occasional wrong group, which _Dismiss_ handles.
+
+**The album is part of the match.** Artist and title alone grouped every
+_Intro_, _Outro_ and _Skit_ an artist ever released. With the album, a song on
+both a single and an album, or on a compilation, is no longer a possible
+duplicate. Exact copies are still found by fingerprint, so only a re-encode on
+another release is missed. A list of generic titles would keep that catch, but
+depends on the language of the library.
 
 **A timer, not a watcher.** FSEvents and inotify do not report changes made by
 other SMB or NFS clients, which is where this library lives.
