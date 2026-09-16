@@ -3,7 +3,9 @@ import {
   CUE_MARKERS,
   NO_CUE_POINTS,
   airDuration,
+  airedTrack,
   cueMarkerPositions,
+  cuePointsEqual,
   hasCuePoints,
   isTrimmed,
   resolveCuePoints,
@@ -144,5 +146,45 @@ describe("cueMarkerPositions", () => {
 
   it("draws nothing without a file duration to scale against", () => {
     expect(cueMarkerPositions(points({ cue_in_ms: 1000 }), 0)).toEqual([]);
+  });
+});
+
+describe("airedTrack", () => {
+  it("is the track itself when the item carries no override", () => {
+    const t = track(200, { cue_out_ms: 180_000 });
+    expect(airedTrack(t, null)).toBe(t);
+    expect(airedTrack(t, undefined)).toBe(t);
+  });
+
+  it("swaps in the override, leaving the stored track untouched", () => {
+    const t = track(200, { cue_out_ms: 180_000 });
+    const aired = airedTrack(t, points({ cue_out_ms: 60_000 }));
+    expect(airDuration(aired)).toBe(60);
+    expect(airDuration(t)).toBe(180);
+  });
+
+  // An all-null override is "play the whole file this once", not "no override".
+  it("an all-null override restores the whole file", () => {
+    const aired = airedTrack(track(200, { cue_out_ms: 60_000 }), NO_CUE_POINTS);
+    expect(airDuration(aired)).toBe(200);
+  });
+});
+
+describe("cuePointsEqual", () => {
+  it("counts an absent marker set as all-null", () => {
+    expect(cuePointsEqual(undefined, null)).toBe(true);
+    expect(cuePointsEqual(NO_CUE_POINTS, undefined)).toBe(true);
+    expect(cuePointsEqual(points({ cue_in_ms: 1000 }), null)).toBe(false);
+  });
+
+  it("compares every marker", () => {
+    for (const { key } of CUE_MARKERS) {
+      expect(
+        cuePointsEqual(points({ [key]: 1000 }), points({ [key]: 1000 })),
+      ).toBe(true);
+      expect(
+        cuePointsEqual(points({ [key]: 1000 }), points({ [key]: 2000 })),
+      ).toBe(false);
+    }
   });
 });

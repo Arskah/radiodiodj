@@ -1560,6 +1560,28 @@ body {
   flex-shrink: 0;
 }
 
+/* Marks an item airing under cue points of its own rather than the track's.
+   Tinted like the trimmed duration it usually sits above, so the two read as
+   one statement about this airing. */
+.pl-override {
+  display: flex;
+  align-items: center;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--cue-in-color);
+  cursor: pointer;
+  opacity: 0.85;
+}
+
+.pl-override:hover {
+  opacity: 1;
+}
+
+.pl-override .material-symbols-outlined {
+  font-size: 14px;
+}
+
 /* Mini progress bar on the now-playing item. */
 .pl-mini-progress {
   width: 80px;

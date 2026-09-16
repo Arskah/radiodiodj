@@ -130,6 +130,15 @@ describe("cue points", () => {
     return { current: seconds(current ?? ""), total: seconds(total ?? "") };
   }
 
+  /** The duration cell of one playlist row, in seconds. */
+  async function playlistRowSeconds(index: number): Promise<number> {
+    const stamp = await browser.execute((i) => {
+      const row = document.querySelectorAll("#playlist .playlist-row")[i];
+      return (row?.querySelector(".pl-duration")?.textContent ?? "").trim();
+    }, index);
+    return seconds(stamp);
+  }
+
   /** The duration cell of one library row, in seconds. */
   async function rowDuration(index: number): Promise<number> {
     const stamp = await browser.execute((i) => {
@@ -317,6 +326,52 @@ describe("cue points", () => {
           "trimmed track did not end at its cue-out and hand over — " +
           "cue points are not reaching the player",
       },
+    );
+  });
+
+  /**
+   * Item overrides — the last slice of #279. Cue points that belong to one
+   * queued airing rather than to the track, sent straight from the editor by
+   * _Use once_. The library row is the control: it must still read 30 s
+   * afterwards, because the track itself is never written to.
+   */
+  it("queues an unsaved edit for one airing", async () => {
+    await bootAndScan();
+    const edited = await rowIndexByTitle("cue-fixture");
+
+    // Two airings of the same one-off: one gets handed back to the track, the
+    // other goes on air still carrying it.
+    for (let i = 0; i < 2; i += 1) {
+      await openCuePoints(edited);
+      await setField("cue_out_ms", 4_000);
+      await closeCuePoints(sel.cuePointUseOnce);
+    }
+    await browser.waitUntil(
+      async () =>
+        (await browser.$$(`${sel.playlist} ${sel.playlistRow}`).length) >= 2,
+      { timeout: 5_000, timeoutMsg: "Use once never reached the playlist" },
+    );
+    expect(await count(`${sel.playlist} ${sel.playlistRowOverride}`)).toBe(2);
+    expect(await playlistRowSeconds(0)).toBe(4);
+    // Nothing was saved, so the track still airs in full.
+    expect(await rowDuration(edited)).toBe(30);
+
+    // The badge hands one item back to the track's own cue points, which for an
+    // unedited track means the whole file.
+    await browser.$(`${sel.playlist} ${sel.playlistRowOverride}`).click();
+    await browser.waitUntil(async () => (await playlistRowSeconds(0)) === 30, {
+      timeout: 5_000,
+      timeoutMsg: "clearing the override did not restore the track's duration",
+    });
+    expect(await count(`${sel.playlist} ${sel.playlistRowOverride}`)).toBe(1);
+
+    // And the item that kept it reaches the player: the main deck reports the
+    // override's air time, not the file's 30 seconds.
+    const queued = await browser.$$(`${sel.playlist} ${sel.playlistRow}`);
+    await queued[1].doubleClick();
+    await browser.waitUntil(
+      async () => (await pill(sel.timeDisplay)).total === 4,
+      { timeout: 10_000, timeoutMsg: "override never reached the main deck" },
     );
   });
 

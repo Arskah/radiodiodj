@@ -42,13 +42,27 @@ export interface CuePoints {
   next_start_ms: number | null;
 }
 
-export type PlaylistTrackItem = { kind: "track"; track: Track };
+export type PlaylistTrackItem = {
+  kind: "track";
+  track: Track;
+  /**
+   * Cue points for this one airing, overriding the track's radio edit. Absent
+   * — the common case — means the item references the track, so correcting a
+   * radio edit corrects every queued airing of it. An all-`null` override is
+   * distinct: it says "play the whole file this once".
+   */
+  cue_override?: CuePoints | null;
+};
 export type StopMarker = { kind: "stop" };
 export type PlaylistItem = PlaylistTrackItem | StopMarker;
 
-export const trackItem = (track: Track): PlaylistTrackItem => ({
+export const trackItem = (
+  track: Track,
+  cue_override: CuePoints | null = null,
+): PlaylistTrackItem => ({
   kind: "track",
   track,
+  cue_override,
 });
 export const stopMarker = (): StopMarker => ({ kind: "stop" });
 export const isTrackItem = (i: PlaylistItem): i is PlaylistTrackItem =>

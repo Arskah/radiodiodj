@@ -140,7 +140,7 @@ fn load_session(app: State<'_, AppState>) -> Result<SessionLoadResult, String> {
     let mut ids: Vec<i64> = Vec::new();
     let mut seen: HashSet<i64> = HashSet::new();
     let item_ids = s.playlist_items.iter().filter_map(|item| match item {
-        SessionPlaylistItem::Track { id } => Some(id),
+        SessionPlaylistItem::Track { id, .. } => Some(id),
         SessionPlaylistItem::Stop => None,
     });
     for id in s
@@ -177,9 +177,29 @@ fn playlist_add(app: State<'_, AppState>, id: i64) -> Result<(), String> {
 }
 
 /// Insert at the head as next-up — cue promotion.
+///
+/// `cue_points` is an override for this one airing, which the cue deck sends
+/// when what the operator auditioned differs from the track's radio edit.
+/// Absent or `null` leaves the item referencing the track.
 #[tauri::command(rename_all = "camelCase")]
-fn playlist_add_front(app: State<'_, AppState>, id: i64) -> Result<(), String> {
-    app.playlist.add_front(id)
+fn playlist_add_front(
+    app: State<'_, AppState>,
+    id: i64,
+    cue_points: Option<CuePoints>,
+) -> Result<(), String> {
+    app.playlist.add_front(id, cue_points)
+}
+
+/// Set or clear a queued item's override. `null` drops the item back to the
+/// track's radio edit; an all-`null` object is a deliberate "whole file this
+/// once" and is stored as one.
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_set_item_cue_points(
+    app: State<'_, AppState>,
+    index: usize,
+    cue_points: Option<CuePoints>,
+) {
+    app.playlist.set_item_cue_points(index, cue_points);
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -464,7 +484,12 @@ fn set_cue_points(
     id: i64,
     points: CuePoints,
 ) -> Result<CuePoints, String> {
-    state.db.set_cue_points(id, points).map_err(err)
+    let stored = state.db.set_cue_points(id, points).map_err(err)?;
+    // Queued items hold a copy of the track for display. Refresh it, or the
+    // next snapshot would undo the renderer's optimistic patch and put the
+    // pre-edit duration back on the row.
+    state.playlist.on_cue_points_saved(id, stored);
+    Ok(stored)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -623,6 +648,7 @@ pub fn run() {
             playlist_sync,
             playlist_add,
             playlist_add_front,
+            playlist_set_item_cue_points,
             playlist_add_stop_marker,
             playlist_add_filler,
             playlist_remove,

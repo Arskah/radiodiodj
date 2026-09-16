@@ -103,7 +103,9 @@ Playlist items carry their cue-point override (see
 [cue-points.md](./cue-points.md#radio-edit-vs-item-override)), so it travels with
 the item through arm-load and handover automatically.
 
-This dissolves a defect the renderer-owned design had. `prev()` does
+Implemented as `cue_override` on `PlaylistItem::Track`, resolved in
+`PlaylistService::load_deck`. This dissolves a defect the renderer-owned design
+had. `prev()` does
 `playlist.unshift(trackItem(this.currentTrack))` — `currentTrack` is a `Track`,
 not an item, so the override is stripped the moment a track starts playing.
 Pressing prev mid-show would silently return an unedited track to the playlist.
@@ -124,10 +126,12 @@ The three flagged in 2026-07 are still the ones that need care:
   backend owns playlist and current, the renderer owns history and UI state. Both
   halves must survive a restart and reassemble consistently.
 
-`session.json` keeps its additive `serde(default)` convention. `PlaylistItem::Track`
-gains `cue_points: Option<CuePoints>`, and `history_items` joins `history_ids`
-with the same legacy fallback `rebuildPlaylist` already implements for
-`playlist_ids` — old session files load untouched.
+`session.json` keeps its additive `serde(default)` convention. `SessionPlaylistItem::Track`
+gained `cue_override: Option<CuePoints>` and `SessionState` gained
+`current_cue_override`, both defaulted, so a session file written before
+overrides existed loads untouched. `history_items` alongside `history_ids` is
+still unbuilt — history stores tracks, so a custom airing replays under the radio
+edit.
 
 ## Not in scope
 

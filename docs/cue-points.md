@@ -9,15 +9,15 @@ Implements [#279](https://github.com/Arskah/radiodiodj/issues/279). The segue
 marker (`next_start_ms`) is consumed by the program bus — see
 [program-bus.md](./program-bus.md).
 
-**Status: authored and on air.** Shipped as the first three of four slices —
+**Status: complete.** Shipped in four slices —
 `MIGRATION_004` and the five columns, `audio/cue_points.rs` (clamp and
 resolution), `Cmd::Load` carrying concrete `CuePoints`, the air timeline on
 `<deck>:time` / `:duration` / `Cmd::Seek`, the two-stage accurate seek,
 `take_duration` at the out-point, air time as the broadcast `durationSec`,
 `audio/envelope.rs` applying the stored ramps, and the operator surfaces:
 `CuePointOverlay.svelte`, the cue deck's _Absolute_ / _Preview_ modes, and
-air-time durations everywhere a duration is shown. Clamping is backend-owned via
-`set_cue_points`. Still to come: per-item overrides (the last slice) and the
+air-time durations everywhere a duration is shown, and per-item overrides on the
+backend playlist. Clamping is backend-owned via `set_cue_points`. Still open: the
 confirm dialog on library-path removal described under
 [Prune destroys cue points](#prune-destroys-cue-points--accepted).
 
@@ -265,12 +265,50 @@ queued airing of it. An item that should deliberately play the whole file
 carries an all-`NULL` override, which is representable and distinct from "no
 override".
 
-Resolution is backend-side. `load` takes `Option<CuePoints>`: `None` means read
-the radio edit from the track row, on the same thread that starts the load;
-`Some` is an override used verbatim. Nothing on the playback path consults
-renderer state, so no staleness can put an unedited track on air.
+Resolution is backend-side. `PlaylistItem::Track` carries
+`cue_override: Option<CuePoints>`, and `load_deck` resolves it: `None` reads the
+radio edit off the track row, on the same thread that starts the load; `Some` is
+used verbatim, and is written back onto the load info so the now-playing
+webhook's `durationSec` reports the airing rather than the radio edit. Nothing on
+the playback path consults renderer state, so no staleness can put an unedited
+track on air.
 
-Item overrides live on backend playlist items — see
+`Effect::Play` and `Effect::Resume` carry the override rather than only an id.
+The item they came from has already been spliced out of the queue by the time
+the service runs the effect, so there is nothing left to look it up on.
+
+### Where an override comes from, and how it goes away
+
+**The editor's _Use once_** is the ordinary route: it queues the track next-up
+carrying the draft, and never writes to the track. A draft identical to the
+radio edit deliberately carries nothing (`cuePointsEqual` decides), so a later
+correction to the track still reaches the queued airing.
+
+**Promoting from the cue deck** attaches one under the same rule, for the case
+where what the deck has applied differs from the radio edit. Promoting from
+_Absolute_ carries nothing: auditioning the whole file is how an in-point gets
+found, not a statement about how the track should air.
+
+**Clearing** is the marker badge on the playlist row, which hands the item back
+to the track's radio edit (`playlist_set_item_cue_points` with `null`).
+
+**Stepping back** keeps it. `prev` returns the outgoing track to the head of the
+queue as an _item_, carrying whatever override it was airing under. The
+renderer-owned playlist could not do this — its `currentTrack` was a `Track`, not
+an item, so pressing prev mid-show silently returned an unedited track to the
+queue. The track being stepped back _to_ comes off the renderer's history, which
+stores tracks, so it replays under the radio edit.
+
+**Saving a radio edit** does not disturb one. Queued items hold a copy of the
+track for display, so `set_cue_points` refreshes those copies through
+`Playlist::on_cue_points_saved` — otherwise the next snapshot would put the
+pre-edit duration back on the row. The copy under an override is refreshed too;
+what that item _airs_ is still its own markers. The track on air is left alone,
+matching the rule that a radio edit applies from the next airing.
+
+Both the queued overrides and the one the track on air is playing under live in
+`session.json`, so a custom airing survives a restart. Item overrides live on
+backend playlist items — see
 [backend-owned-playlist.md](./backend-owned-playlist.md).
 
 ## Editing
@@ -313,10 +351,14 @@ _Preview_ re-resolved against the track's markers as they are then, so closing
 after a save shows the edit that was just stored. Nothing is left armed behind a
 closed dialog.
 
-That leaves two ways out, and they are labelled by scope:
+That leaves three ways out, labelled by scope, and a draft leaves the dialog
+through exactly two of them:
 
 - **Save to track** writes the radio edit: every airing of the track, from its
   next one.
+- **Use once** queues the track next-up carrying the draft as an
+  [item override](#radio-edit-vs-item-override), and writes nothing to the
+  track.
 - **Cancel** (and ×, Escape, and the backdrop) discards. With changes pending it
   asks first, because the one thing an operator could not tell before was
   whether closing kept them.

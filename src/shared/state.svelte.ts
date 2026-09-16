@@ -12,7 +12,13 @@ import type {
   TuningConfig,
 } from "./types";
 import { isStopMarker, isTrackItem } from "./types";
-import { airDuration, NO_CUE_POINTS, resolveCuePoints } from "./cuePoints";
+import {
+  airDuration,
+  airedTrack,
+  cuePointsEqual,
+  NO_CUE_POINTS,
+  resolveCuePoints,
+} from "./cuePoints";
 import {
   api,
   type PlaylistSnapshot,
@@ -95,6 +101,9 @@ export class AppState {
   // `program:playlist-state` snapshots. Assigning to these fields does not
   // change what goes to air — the `playlist*` commands do.
   playlist = $state<PlaylistItem[]>([]);
+  // The override the track on air is playing under, when it came off an item
+  // that carried one. Mirrored from the snapshot like everything else here.
+  currentCueOverride = $state<CuePoints | null>(null);
   currentTrack = $state<Track | null>(null);
   autoPlaylistActive = $state(false);
   autoAdvance = $state(true);
@@ -434,6 +443,7 @@ export class AppState {
    */
   private applySnapshot(snapshot: PlaylistSnapshot): void {
     this.playlist = snapshot.playlist;
+    this.currentCueOverride = snapshot.currentOverride ?? null;
     this.autoPlaylistActive = snapshot.autoPlaylistActive;
     this.autoAdvance = snapshot.autoAdvance;
     this.awaitingNetwork = snapshot.awaitingNetwork;
@@ -464,7 +474,7 @@ export class AppState {
     // that counts on a VBR file with a wrong tag. Air time, not file time: the
     // deck reports air time too, so the two never disagree about what a
     // trimmed track's bar means.
-    this.duration = airDuration(track);
+    this.duration = airDuration(airedTrack(track, this.currentCueOverride));
     this.loadWaveform(track.id);
     this.loadCoverArt(track.id);
     document.title = `${track.title} - ${track.artist} | ${APP_NAME}`;
@@ -761,10 +771,49 @@ export class AppState {
   /**
    * Insert the cue track at the head of the main playlist as next-up.
    * Cue keeps playing — independent transport.
+   *
+   * A Preview audition that differs from the track's radio edit travels with
+   * the item as an override, so what the operator just heard is what airs. An
+   * audition matching the radio edit deliberately carries nothing: the item
+   * keeps referencing the track, and a later correction still reaches it.
    */
   promoteCueToMain(): void {
-    if (!this.cueTrack) return;
-    this.send(api.playlistAddFront(this.cueTrack.id));
+    const track = this.cueTrack;
+    if (!track) return;
+    this.send(api.playlistAddFront(track.id, this.cuePromoteOverride));
+  }
+
+  /** The override a promotion would carry, `null` when it would carry none. */
+  get cuePromoteOverride(): CuePoints | null {
+    const track = this.cueTrack;
+    const applied = this.cueAppliedPoints;
+    if (!track || !applied) return null;
+    return cuePointsEqual(applied, track.cue_points) ? null : applied;
+  }
+
+  /**
+   * Queue a track next-up carrying `points` for that airing alone — the cue
+   * editor's _Use once_, and the ordinary way an item override is authored.
+   * Points identical to the track's radio edit carry nothing, so a later
+   * correction to the track still reaches the queued airing.
+   */
+  queueCueDraft(track: Track, points: CuePoints): void {
+    const override = cuePointsEqual(points, track.cue_points) ? null : points;
+    this.send(api.playlistAddFront(track.id, override));
+  }
+
+  /** Whether promoting right now would hand the item its own cue points. */
+  get cuePromoteCarriesOverride(): boolean {
+    return this.cuePromoteOverride !== null;
+  }
+
+  /**
+   * Set or clear one queued item's override. `null` drops the item back to the
+   * track's radio edit.
+   */
+  setItemCuePoints(index: number, points: CuePoints | null): void {
+    if (index < 0 || index >= this.playlist.length) return;
+    this.send(api.playlistSetItemCuePoints(index, points));
   }
 
   // ----- Audio device config -----
@@ -889,11 +938,16 @@ export class AppState {
         playlistItems: this.playlist.map((i) =>
           isStopMarker(i)
             ? { kind: "stop" as const }
-            : { kind: "track" as const, id: i.track.id },
+            : {
+                kind: "track" as const,
+                id: i.track.id,
+                cue_override: i.cue_override ?? null,
+              },
         ),
         historyIds: this.history.map((t) => t.id),
         currentTrackId: this.currentTrack?.id ?? null,
         currentTime: this.currentTime,
+        currentCueOverride: this.currentCueOverride,
         autoPlaylistActive: this.autoPlaylistActive,
         autoAdvance: this.autoAdvance,
         volume: 1,

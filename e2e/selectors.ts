@@ -14,6 +14,8 @@ export const sel = {
   playlist: "#playlist",
   playlistRow: ".playlist-row",
   playlistRowDuration: ".pl-duration",
+  /** Marks a queued item airing under cue points of its own. */
+  playlistRowOverride: ".pl-override",
   clearPlaylist: "#btn-clear-playlist",
   autoPlaylistToggle: "#btn-generate",
   btnPlay: "#btn-play",
@@ -50,6 +52,8 @@ export const sel = {
   /** Plays the draft on the cue deck without leaving the dialog. */
   cuePointAudition: "#btn-cue-points-audition",
   cuePointStop: "#btn-cue-points-stop",
+  /** Queues the draft as a single airing, leaving the track untouched. */
+  cuePointUseOnce: "#btn-cue-points-use-once",
   cuePointClearAll: "#btn-cue-points-clear",
 
   // Cue deck. Hidden entirely until an output device is picked in Settings, so
