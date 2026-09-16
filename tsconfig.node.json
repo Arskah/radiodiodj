@@ -10,7 +10,7 @@
     "eslint.config.mjs",
     "prettier.config.mjs",
     "svelte.config.mjs",
-    "vite.config.ts",
-    "vitest.config.ts"
+    "vite.config.mts",
+    "vitest.config.mts"
   ]
 }
