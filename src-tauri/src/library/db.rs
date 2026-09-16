@@ -101,7 +101,10 @@ pub struct TrackInsert {
     pub mtime: Option<i64>,
 }
 
-pub struct TrackMtimeRow {
+/// One row as the scanner sees it.
+pub struct IndexRow {
+    pub id: i64,
+    pub path: String,
     pub content_type: String,
     pub mtime: Option<i64>,
 }
@@ -453,67 +456,39 @@ impl Db {
         Ok(())
     }
 
-    /// Map of `path -> (content_type, mtime)` for every track under `root`, in a
-    /// single query. Lets the scanner decide what to re-parse without a
-    /// per-file SELECT.
-    pub fn track_meta_under(&self, root: &str) -> Result<HashMap<String, TrackMtimeRow>> {
+    /// Every row, reduced to what the scanner reconciles against. Loaded once
+    /// per scan so root membership can be decided by path component in Rust
+    /// rather than by a `LIKE` prefix.
+    pub fn track_index(&self) -> Result<Vec<IndexRow>> {
         let conn = self.conn.lock();
-        let pattern = format!("{}%", root);
-        let mut stmt =
-            conn.prepare("SELECT path, content_type, mtime FROM tracks WHERE path LIKE ?")?;
-        let rows = stmt.query_map([pattern], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                TrackMtimeRow {
-                    content_type: r.get(1)?,
-                    mtime: r.get::<_, Option<i64>>(2)?,
-                },
-            ))
+        let mut stmt = conn.prepare("SELECT id, path, content_type, mtime FROM tracks")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(IndexRow {
+                id: r.get(0)?,
+                path: r.get(1)?,
+                content_type: r.get(2)?,
+                mtime: r.get(3)?,
+            })
         })?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
 
-    pub fn get_paths_under(&self, root: &str) -> Result<Vec<String>> {
-        let conn = self.conn.lock();
-        let pattern = format!("{}%", root);
-        let mut stmt = conn.prepare("SELECT path FROM tracks WHERE path LIKE ?")?;
-        let rows = stmt.query_map([pattern], |r| r.get::<_, String>(0))?;
-        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
-    }
-
-    pub fn delete_by_paths(&self, paths: &[String]) -> Result<usize> {
-        if paths.is_empty() {
+    pub fn delete_tracks(&self, ids: &[i64]) -> Result<usize> {
+        if ids.is_empty() {
             return Ok(0);
         }
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         let mut total = 0usize;
-        for chunk in paths.chunks(500) {
-            let placeholders = std::iter::repeat_n("?", chunk.len())
-                .collect::<Vec<_>>()
-                .join(",");
-            let sql = format!("DELETE FROM tracks WHERE path IN ({})", placeholders);
+        for chunk in ids.chunks(500) {
+            let sql = format!(
+                "DELETE FROM tracks WHERE id IN ({})",
+                vec!["?"; chunk.len()].join(",")
+            );
             total += tx.execute(&sql, params_from_iter(chunk.iter()))?;
         }
         tx.commit()?;
         Ok(total)
-    }
-
-    pub fn remove_tracks_not_in_paths(&self, roots: &[String]) -> Result<usize> {
-        let conn = self.conn.lock();
-        if roots.is_empty() {
-            let n = conn.execute("DELETE FROM tracks", [])?;
-            return Ok(n);
-        }
-        let mut where_parts = Vec::new();
-        let mut p: Vec<rusqlite::types::Value> = Vec::new();
-        for r in roots {
-            where_parts.push("path NOT LIKE ?".to_string());
-            p.push(format!("{}%", r).into());
-        }
-        let sql = format!("DELETE FROM tracks WHERE {}", where_parts.join(" AND "));
-        let n = conn.execute(&sql, params_from_iter(p.iter()))?;
-        Ok(n)
     }
 
     pub fn increment_play_count(&self, id: i64) -> Result<()> {

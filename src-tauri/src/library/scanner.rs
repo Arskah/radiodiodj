@@ -1,17 +1,17 @@
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use base64::Engine;
 use lofty::file::TaggedFileExt;
 use lofty::prelude::*;
 use lofty::probe::Probe;
 use lofty::tag::ItemKey;
 use parking_lot::Mutex;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
-use super::db::{Db, TrackInsert};
+use super::db::{Db, IndexRow, TrackInsert};
 use crate::audio::formats;
 
 /// Upper bound on parallel tag-read workers. A scan is dominated by per-file
@@ -20,14 +20,25 @@ use crate::audio::formats;
 /// hammer the share.
 const SCAN_CONCURRENCY: usize = 4;
 
-pub struct ScanRunResult {
-    pub total: usize,
-    pub added: usize,
-    pub live_files: Vec<String>,
+/// The audio files found under one root. `complete` is false when part of the
+/// tree could not be read, so the listing cannot prove a file is gone.
+pub struct Enumeration {
+    pub files: Vec<PathBuf>,
+    pub complete: bool,
 }
 
-pub fn find_audio_files(dir: &Path) -> Vec<PathBuf> {
-    WalkDir::new(dir)
+/// List the audio files under `dir`, skipping hidden entries. Fails when `dir`
+/// itself is not a readable directory — an unmounted share must never look
+/// like an empty one.
+pub fn find_audio_files(dir: &Path) -> Result<Enumeration> {
+    let meta = std::fs::metadata(dir)
+        .with_context(|| format!("library path {} is unreachable", dir.display()))?;
+    if !meta.is_dir() {
+        bail!("library path {} is not a directory", dir.display());
+    }
+    let mut files = Vec::new();
+    let mut complete = true;
+    let walk = WalkDir::new(dir)
         .follow_links(false)
         .into_iter()
         .filter_entry(|e| {
@@ -38,18 +49,27 @@ pub fn find_audio_files(dir: &Path) -> Vec<PathBuf> {
                     .next()
                     .map(|c| c != '.')
                     .unwrap_or(true)
-        })
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .and_then(|x| x.to_str())
-                .map(formats::is_audio_extension)
-                .unwrap_or(false)
-        })
-        .map(|e| e.into_path())
-        .collect()
+        });
+    for entry in walk {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                log::warn!("scan: cannot read under {}: {}", dir.display(), e);
+                complete = false;
+                continue;
+            }
+        };
+        let is_audio = entry
+            .path()
+            .extension()
+            .and_then(|x| x.to_str())
+            .map(formats::is_audio_extension)
+            .unwrap_or(false);
+        if entry.file_type().is_file() && is_audio {
+            files.push(entry.into_path());
+        }
+    }
+    Ok(Enumeration { files, complete })
 }
 
 pub fn should_rescan(
@@ -83,81 +103,90 @@ pub struct ScanOutcome {
     pub canceled: bool,
 }
 
+/// A file found on disk, with the content type of the root it was found under.
+struct Found {
+    path: String,
+    content_type: &'static str,
+}
+
 /// Scan every root and bring the library in line with what is on disk.
 /// `on_progress` receives `(processed, total)` counted across all roots.
+///
+/// A row is only pruned when a root that contains it was listed completely,
+/// or when no configured root contains it at all. Roots are matched by path
+/// component, so `/Music` does not contain `/Music2`.
 pub fn scan_all(
     db: &Db,
     roots: &[ScanRoot],
     cancel: &(impl Fn() -> bool + Sync),
     on_progress: impl Fn(usize, usize) + Sync,
 ) -> Result<ScanOutcome> {
-    let all_paths: Vec<String> = roots.iter().map(|r| r.path.clone()).collect();
-    db.remove_tracks_not_in_paths(&all_paths)?;
-
-    let mut outcome = ScanOutcome::default();
-    let mut live_by_root: Vec<(&str, HashSet<String>)> = Vec::new();
+    let mut found: Vec<Found> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut listed: Vec<&Path> = Vec::new();
     for root in roots {
-        let (done_before, total_before) = (outcome.total, outcome.total);
-        let r = scan_directory(
-            db,
-            Path::new(&root.path),
-            root.content_type,
-            cancel,
-            |processed, total| on_progress(done_before + processed, total_before + total),
-        )?;
-        outcome.total += r.total;
-        outcome.added += r.added;
-        live_by_root.push((&root.path, r.live_files.into_iter().collect()));
-        if cancel() {
-            outcome.canceled = true;
-            return Ok(outcome);
+        match find_audio_files(Path::new(&root.path)) {
+            Ok(listing) => {
+                if listing.complete {
+                    listed.push(Path::new(&root.path));
+                } else {
+                    log::warn!("scan: {} was listed partially; not pruning it", root.path);
+                }
+                for file in listing.files {
+                    let path = file.to_string_lossy().into_owned();
+                    if seen.insert(path.clone()) {
+                        found.push(Found {
+                            path,
+                            content_type: root.content_type,
+                        });
+                    }
+                }
+            }
+            Err(e) => log::warn!("scan: {e:#}; keeping its tracks"),
         }
     }
 
-    let mut pruned = 0usize;
-    for (root, live) in live_by_root {
-        let stale: Vec<String> = db
-            .get_paths_under(root)?
-            .into_iter()
-            .filter(|p| !live.contains(p))
-            .collect();
-        if !stale.is_empty() {
-            pruned += db.delete_by_paths(&stale)?;
-        }
+    let index = db.track_index()?;
+    let existing: HashMap<&str, &IndexRow> = index.iter().map(|r| (r.path.as_str(), r)).collect();
+    let parsed = parse_changed(&found, &existing, cancel, &on_progress);
+    let outcome = ScanOutcome {
+        total: found.len(),
+        added: parsed.len(),
+        canceled: cancel(),
+    };
+    db.insert_tracks(&parsed)?;
+    if outcome.canceled {
+        return Ok(outcome);
     }
+
+    let stale: Vec<i64> = index
+        .iter()
+        .filter(|row| !seen.contains(&row.path))
+        .filter(|row| {
+            let path = Path::new(&row.path);
+            let configured = roots.iter().any(|r| path.starts_with(&r.path));
+            !configured || listed.iter().any(|root| path.starts_with(root))
+        })
+        .map(|row| row.id)
+        .collect();
+    let pruned = db.delete_tracks(&stale)?;
     if pruned > 0 {
         log::info!("scan pruned {} missing files", pruned);
     }
     Ok(outcome)
 }
 
-pub fn scan_directory<F>(
-    db: &Db,
-    dir: &Path,
-    content_type: &str,
+/// Tag-read every found file whose row is absent or out of date. Tag reads are
+/// I/O-bound, so the files fan out across a small pool; each worker claims the
+/// next index via `next`. The rows are returned for one batched upsert — a
+/// per-row autocommit is the other thing that makes a big scan slow.
+fn parse_changed(
+    found: &[Found],
+    existing: &HashMap<&str, &IndexRow>,
     cancel: &(impl Fn() -> bool + Sync),
-    on_progress: F,
-) -> Result<ScanRunResult>
-where
-    F: Fn(usize, usize) + Sync,
-{
-    let files = find_audio_files(dir);
-    let total = files.len();
-    // All discovered paths — used for prune bookkeeping regardless of how many
-    // we get through (a cancel just skips the prune step upstream).
-    let live: Vec<String> = files
-        .iter()
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect();
-
-    // One query for all existing rows under this directory instead of a SELECT
-    // per file.
-    let existing = db.track_meta_under(&dir.to_string_lossy())?;
-
-    // Tag reads are I/O-bound, so fan the files out across a small pool; each
-    // worker claims the next index via `next`. Parsed rows collect in `pending`
-    // and are upserted in a single transaction at the end — a per-row
-    // autocommit is the other thing that makes a big scan slow.
+    on_progress: &(impl Fn(usize, usize) + Sync),
+) -> Vec<TrackInsert> {
+    let total = found.len();
     let next = AtomicUsize::new(0);
     let processed = AtomicUsize::new(0);
     let pending: Mutex<Vec<TrackInsert>> = Mutex::new(Vec::new());
@@ -173,29 +202,28 @@ where
                     break;
                 }
                 let i = next.fetch_add(1, Ordering::Relaxed);
-                let Some(path) = files.get(i) else {
+                let Some(file) = found.get(i) else {
                     break;
                 };
-                let path_str = &live[i];
 
-                let mtime_ms = std::fs::metadata(path)
+                let mtime_ms = std::fs::metadata(&file.path)
                     .and_then(|m| m.modified())
                     .ok()
                     .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
                     .map(|d| d.as_millis() as i64)
                     .unwrap_or(0);
 
-                let prev = existing.get(path_str);
+                let prev = existing.get(file.path.as_str());
                 let need = should_rescan(
                     prev.map(|r| r.content_type.as_str()),
                     prev.and_then(|r| r.mtime),
                     mtime_ms,
-                    content_type,
+                    file.content_type,
                 );
                 if need {
-                    match parse_track(path_str, content_type, mtime_ms) {
+                    match parse_track(&file.path, file.content_type, mtime_ms) {
                         Ok(track) => pending.lock().push(track),
-                        Err(e) => log::error!("scan: failed to parse {}: {}", path_str, e),
+                        Err(e) => log::error!("scan: failed to parse {}: {}", file.path, e),
                     }
                 }
                 let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
@@ -203,16 +231,7 @@ where
             });
         }
     });
-
-    let pending = pending.into_inner();
-    let added = pending.len();
-    db.insert_tracks(&pending)?;
-
-    Ok(ScanRunResult {
-        total,
-        added,
-        live_files: live,
-    })
+    pending.into_inner()
 }
 
 fn parse_track(path: &str, content_type: &str, mtime_ms: i64) -> Result<TrackInsert> {
@@ -389,6 +408,59 @@ mod tests {
         scan(&db, &[music(&m)]);
 
         assert_eq!(titles(&db), ["song"]);
+    }
+
+    #[test]
+    fn an_unreachable_root_keeps_its_tracks() {
+        let (dir, db) = library();
+        let root = dir.path().join("share");
+        write_wav(&root.join("a.wav"), 1, 1);
+        scan(&db, &[music(&root)]);
+
+        std::fs::rename(&root, dir.path().join("unmounted")).unwrap();
+        let outcome = scan(&db, &[music(&root)]);
+
+        assert_eq!(outcome.total, 0);
+        assert_eq!(titles(&db), ["a"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_partially_readable_root_keeps_its_tracks() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, db) = library();
+        write_wav(&dir.path().join("a.wav"), 1, 1);
+        write_wav(&dir.path().join("locked/b.wav"), 2, 1);
+        scan(&db, &[music(dir.path())]);
+
+        let locked = dir.path().join("locked");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        std::fs::remove_file(dir.path().join("a.wav")).unwrap();
+        scan(&db, &[music(dir.path())]);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(titles(&db), ["a", "b"]);
+    }
+
+    #[test]
+    fn a_root_does_not_prune_a_sibling_sharing_its_prefix() {
+        let (dir, db) = library();
+        let (short, long) = (dir.path().join("Music"), dir.path().join("Music2"));
+        write_wav(&short.join("a.wav"), 1, 1);
+        write_wav(&long.join("b.wav"), 2, 1);
+
+        scan(&db, &[music(&short), music(&long)]);
+        scan(&db, &[music(&short), music(&long)]);
+
+        assert_eq!(titles(&db), ["a", "b"]);
+    }
+
+    #[test]
+    fn a_file_listed_as_a_root_is_not_scanned() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.wav");
+        write_wav(&file, 1, 1);
+        assert!(find_audio_files(&file).is_err());
     }
 
     #[test]
