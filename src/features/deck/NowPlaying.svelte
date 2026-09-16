@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { app, formatTime } from "../../shared/state.svelte";
+  import { app, formatSpan, formatTime } from "../../shared/state.svelte";
   import Waveform from "./Waveform.svelte";
   import defaultCover from "../../assets/radiodiodi_label.svg";
 
@@ -32,6 +32,15 @@
           >cell_tower</span
         >
         <span class="deck-label">Main Deck</span>
+        {#if app.airTimeRemaining !== null}
+          <span
+            class="deck-remaining"
+            title={app.autoAdvance
+              ? "On air until the queue runs out or reaches a stop marker"
+              : "On air until this track ends — Manual does not advance"}
+            >−{formatSpan(app.airTimeRemaining)}</span
+          >
+        {/if}
       </div>
       <div class="track-names">
         <span id="np-title"

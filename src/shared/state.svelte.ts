@@ -17,6 +17,7 @@ import {
   airedTrack,
   cuePointsEqual,
   NO_CUE_POINTS,
+  queueAirTime,
   resolveCuePoints,
 } from "./cuePoints";
 import {
@@ -101,6 +102,7 @@ export class AppState {
   // `program:playlist-state` snapshots. Assigning to these fields does not
   // change what goes to air — the `playlist*` commands do.
   playlist = $state<PlaylistItem[]>([]);
+  upcomingAirTime = $derived(queueAirTime(this.playlist));
   // The override the track on air is playing under, when it came off an item
   // that carried one. Mirrored from the snapshot like everything else here.
   currentCueOverride = $state<CuePoints | null>(null);
@@ -314,6 +316,17 @@ export class AppState {
 
   get progressPct(): number {
     return this.duration ? (this.currentTime / this.duration) * 100 : 0;
+  }
+
+  /**
+   * Seconds until the station goes quiet if nobody touches it: the rest of the
+   * track on air, plus the queue up to its first stop marker when Auto is
+   * advancing it. `null` with nothing on air.
+   */
+  get airTimeRemaining(): number | null {
+    if (!this.currentTrack) return null;
+    const rest = Math.max(0, this.duration - this.currentTime);
+    return this.autoAdvance ? rest + this.upcomingAirTime : rest;
   }
 
   // Drives the "Reconnecting…" banner: playback is blocked waiting for the
@@ -1033,6 +1046,13 @@ export class AppState {
 }
 
 export const app = new AppState();
+
+/** A span that can run past an hour — queue totals — as H:MM:SS or M:SS. */
+export function formatSpan(seconds: number): string {
+  if (!isFinite(seconds) || seconds < 3600) return formatTime(seconds);
+  const h = Math.floor(seconds / 3600);
+  return `${h}:${formatTime(seconds % 3600).padStart(5, "0")}`;
+}
 
 export function formatTime(seconds: number): string {
   if (!isFinite(seconds)) return "0:00";

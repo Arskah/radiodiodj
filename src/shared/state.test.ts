@@ -114,7 +114,7 @@ vi.mock("../features/deck/nativeBackend", () => ({
   },
 }));
 
-import { AppState, formatTime, type Track } from "./state.svelte";
+import { AppState, formatSpan, formatTime, type Track } from "./state.svelte";
 import type { ScanStatus } from "./api";
 import {
   isTrackItem,
@@ -299,6 +299,23 @@ describe("formatTime", () => {
   it("returns 0:00 for invalid input", () => {
     expect(formatTime(NaN)).toBe("0:00");
     expect(formatTime(Infinity)).toBe("0:00");
+  });
+});
+
+describe("formatSpan", () => {
+  it("reads as M:SS under an hour", () => {
+    expect(formatSpan(0)).toBe("0:00");
+    expect(formatSpan(3599)).toBe("59:59");
+  });
+
+  it("carries hours past an hour", () => {
+    expect(formatSpan(3600)).toBe("1:00:00");
+    expect(formatSpan(3661)).toBe("1:01:01");
+    expect(formatSpan(36_000 + 125)).toBe("10:02:05");
+  });
+
+  it("returns 0:00 for invalid input", () => {
+    expect(formatSpan(NaN)).toBe("0:00");
   });
 });
 
@@ -549,6 +566,25 @@ describe("AppState playback control", () => {
     expect(app.autoAdvance).toBe(false);
     app.toggleMode();
     expect(app.autoAdvance).toBe(true);
+  });
+
+  it("airTimeRemaining is null with nothing on air", () => {
+    app.addToPlaylist(t(1));
+    expect(app.upcomingAirTime).toBe(100);
+    expect(app.airTimeRemaining).toBeNull();
+  });
+
+  it("airTimeRemaining adds the queue up to a stop marker while Auto advances", () => {
+    app.playNow(t(99));
+    app.addToPlaylist(t(1, { duration: 60 }));
+    app.addStopMarker();
+    app.addToPlaylist(t(2));
+    app.duration = 100;
+    app.currentTime = 30;
+    expect(app.upcomingAirTime).toBe(60);
+    expect(app.airTimeRemaining).toBe(130);
+    app.toggleMode();
+    expect(app.airTimeRemaining).toBe(70);
   });
 
   it("toggleAutoPlaylist activates and starts playing first track when idle", async () => {

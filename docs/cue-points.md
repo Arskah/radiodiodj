@@ -197,6 +197,14 @@ deliberate rather than as a stale tag. The renderer's optimistic duration — se
 the moment a track is adopted, before the deck reports its decoded length — is
 air time too, so the seek bar does not jump when `<deck>:duration` arrives.
 
+Two totals are built from the same figure. The Upcoming tab sums the queue
+(`queueAirTime()`), each airing under its own override, and stops at the first
+stop marker — the queue below one does not play unattended. The main deck
+counts down `airTimeRemaining`: the rest of the track on air, plus that queue
+total while Auto is advancing. The toolbar's library _Playtime_ is the one
+deliberate exception: it describes library size, not anything scheduled, so it
+stays file time.
+
 Air time is also what the now-playing broadcast publishes as `durationSec`,
 since that is what downstream automation schedules against.
 

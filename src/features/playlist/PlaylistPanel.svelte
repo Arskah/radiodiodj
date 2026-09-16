@@ -1,5 +1,10 @@
 <script lang="ts">
-  import { app, formatTime, type Track } from "../../shared/state.svelte";
+  import {
+    app,
+    formatSpan,
+    formatTime,
+    type Track,
+  } from "../../shared/state.svelte";
   import { isStopMarker, type PlaylistItem } from "../../shared/types";
   import { airDuration, airedTrack, isTrimmed } from "../../shared/cuePoints";
 
@@ -70,6 +75,8 @@
     else app.clearHistory();
   }
 
+  const stopped = $derived(app.playlist.some(isStopMarker));
+
   function rowKey(item: PlaylistItem): string {
     return isStopMarker(item) ? "stop" : String(item.track.id);
   }
@@ -121,6 +128,14 @@
       onclick={() => (app.playlistTab = "playlist")}
     >
       Upcoming <span class="pl-tab-count">({app.playlist.length})</span>
+      {#if app.playlist.length > 0}
+        <span
+          class="pl-tab-total"
+          title={stopped
+            ? "Air time until the first stop marker"
+            : "Air time of the queue"}>· {formatSpan(app.upcomingAirTime)}</span
+        >
+      {/if}
     </button>
     <button
       class="pl-tab"
