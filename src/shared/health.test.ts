@@ -16,6 +16,7 @@ const empty: HealthReport = {
   unreadable: [],
   check: null,
   checkDismissed: false,
+  checking: false,
   tagWriteFailures: [],
 };
 

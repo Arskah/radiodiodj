@@ -81,6 +81,7 @@ export const EMPTY_HEALTH: HealthReport = {
   unreadable: [],
   check: null,
   checkDismissed: false,
+  checking: false,
   tagWriteFailures: [],
 };
 

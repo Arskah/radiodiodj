@@ -232,8 +232,10 @@ impl LibraryCheck {
         }
         self.cancel.store(false, Ordering::SeqCst);
         let generation = self.generation.load(Ordering::SeqCst);
+        self.health.set_checking(true);
         let roots = listing::configured_roots(&self.config);
         let outcome = check(&self.db, &roots, &|| self.cancel.load(Ordering::SeqCst));
+        let mut result = None;
         match outcome {
             Ok(Some(report)) if self.generation.load(Ordering::SeqCst) == generation => {
                 let level = if report.has_changes() || !report.unreachable.is_empty() {
@@ -250,11 +252,12 @@ impl LibraryCheck {
                     report.unrooted.len(),
                     report.unreachable.len()
                 );
-                self.health.set_check(Some(report));
+                result = Some(report);
             }
             Ok(_) => log::debug!("library check: superseded by a scan"),
             Err(e) => log::error!("library check failed: {e:#}"),
         }
+        self.health.finish_check(result);
     }
 }
 

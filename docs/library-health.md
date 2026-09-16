@@ -134,6 +134,10 @@ One worker thread runs checks, one at a time, and never alongside a scan:
 - A **canceled scan** leaves new files unapplied, so a check runs straight
   after it.
 
+While a check runs, the section says _Checking library paths…_ and _Check now_
+is disabled. When it finishes the summary flashes, even if the result is the same
+as before, and hovering it shows the exact time of the check.
+
 The report is held in memory only. The next launch checks again.
 
 The check never starts a scan. _Scan Library Now_, just above, is the operator's
@@ -312,6 +316,7 @@ HealthReport
   check            CheckReport?      checkedAt, new, changed, gone, unrooted,
                                      unreachable, partial
   checkDismissed   bool
+  checking         bool              a library check is running now
   tagWriteFailures [TagWriteFailure] id, title, artist, path, error, at
 ```
 
@@ -323,6 +328,8 @@ The renderer loads it with `library_health` and replaces it on every
 - after a metadata edit, since artist and title decide possible duplicates
 - after a library path is added or removed
 - after a purge, a dismissal, and every check
+- when a check starts, and when one ends without a report (canceled by a scan,
+  or failed); only the `checking` flag changes then
 - when the tag write failures change
 
 The renderer works out whether a missing track is queued from the playlist it

@@ -19,6 +19,19 @@
   const report = $derived(app.health);
   const check = $derived(report.check);
   const scanning = $derived(app.scanStatus.status === "running");
+  const checking = $derived(report.checking);
+
+  // Replays the summary's flash whenever a check finishes, even with an
+  // unchanged result. Not on mount: opening the tab is not a finished check.
+  let seenCheckedAt = app.health.check?.checkedAt;
+  let finished = $state(0);
+  $effect(() => {
+    const at = check?.checkedAt;
+    if (at !== undefined && at !== seenCheckedAt) {
+      seenCheckedAt = at;
+      finished += 1;
+    }
+  });
 
   const deleted = $derived(report.missing.filter((t) => !t.outsideRoots));
   const unrooted = $derived(report.missing.filter((t) => t.outsideRoots));
@@ -225,18 +238,33 @@
         Parts of {root} could not be read, so nothing under it is reported gone.
       </p>
     {/each}
-    <p class="health-summary">
-      {#if check === null}
-        Not checked since the last scan.
-      {:else if checkHasChanges(check)}
-        {check.new.length} new · {check.changed.length} changed · {check.gone
-          .length} gone{#if check.unrooted.length > 0}
-          · {check.unrooted.length} outside library paths{/if}
-        — checked {formatAgo(check.checkedAt)}
-      {:else}
-        No changes — checked {formatAgo(check.checkedAt)}
-      {/if}
-    </p>
+    {#if checking}
+      <p class="health-summary health-checking" role="status">
+        Checking library paths…
+      </p>
+    {:else}
+      {#key finished}
+        <p
+          class="health-summary"
+          class:health-flash={finished > 0}
+          role="status"
+          title={check
+            ? `Checked ${new Date(check.checkedAt).toLocaleString()}`
+            : undefined}
+        >
+          {#if check === null}
+            Not checked since the last scan.
+          {:else if checkHasChanges(check)}
+            {check.new.length} new · {check.changed.length} changed · {check
+              .gone.length} gone{#if check.unrooted.length > 0}
+              · {check.unrooted.length} outside library paths{/if}
+            — checked {formatAgo(check.checkedAt)}
+          {:else}
+            No changes — checked {formatAgo(check.checkedAt)}
+          {/if}
+        </p>
+      {/key}
+    {/if}
     {#if check}
       {@render pathList("New", check.new)}
       {@render pathList("Changed", check.changed)}
@@ -246,8 +274,9 @@
     <div class="health-buttons">
       <button
         class="btn-purge-cancel"
-        disabled={scanning}
-        onclick={() => app.checkLibraryNow()}>Check now</button
+        disabled={scanning || checking}
+        onclick={() => app.checkLibraryNow()}
+        >{checking ? "Checking…" : "Check now"}</button
       >
     </div>
   </section>
@@ -462,6 +491,27 @@
     margin: var(--sp-xs) 0;
     font-size: 12px;
     color: var(--on-surface-variant);
+  }
+
+  .health-checking {
+    animation: led-pulse 1.2s ease-in-out infinite;
+  }
+
+  .health-flash {
+    animation: health-flash 1.2s ease-out;
+  }
+
+  @keyframes health-flash {
+    from {
+      color: var(--primary);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .health-checking,
+    .health-flash {
+      animation: none;
+    }
   }
 
   .health-warning {
