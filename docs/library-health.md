@@ -257,8 +257,9 @@ read per folder and one stat per file.
 CheckReport
   checkedAt    unix ms
   new          [path]   listed, and no present row has the path
-  changed      [id]     present row, file listed, mtime or content type differs
-  gone         [id]     present row the next scan would mark missing
+  changed      [path]   present row, file listed, mtime or content type differs
+  gone         [path]   present row under a fully listed root, file not listed
+  unrooted     [path]   present row no library path contains any more
   unreachable  [root]   not a readable directory
   partial      [root]   listed with unreadable subfolders
 ```
@@ -272,8 +273,8 @@ scan would not do.
 - **Gone** applies the prune guard exactly: a root that was only partly listed
   contributes nothing to _gone_, and an unreachable root is reported under
   _unreachable_ with its rows untouched.
-- A row outside every root counts as gone, as it does for the scan. The view
-  says _No longer under a library path_ for those.
+- A row outside every root would be marked missing by the scan too. It is
+  reported as `unrooted`, and the view says _No longer under a library path_.
 
 ### When it runs
 

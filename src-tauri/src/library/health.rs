@@ -9,6 +9,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Listener};
 
+use super::check::CheckReport;
 use super::db::{Db, Dismissal, HealthRow, Track};
 use super::listing::{self, ScanRoot};
 use crate::persist::config::Config;
@@ -25,6 +26,9 @@ pub struct HealthReport {
     pub possible: Vec<DuplicateGroup>,
     /// Present tracks not fingerprinted yet, so not in any exact group.
     pub unhashed: i64,
+    /// The latest library check, until a scan makes it moot.
+    pub check: Option<CheckReport>,
+    pub check_dismissed: bool,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -65,6 +69,7 @@ pub enum FindingKind {
     Exact,
     Possible,
     Missing,
+    Check,
 }
 
 impl FindingKind {
@@ -73,6 +78,7 @@ impl FindingKind {
             Self::Exact => "exact",
             Self::Possible => "possible",
             Self::Missing => "missing",
+            Self::Check => "check",
         }
     }
 }
@@ -83,6 +89,10 @@ pub struct Health {
     config: Arc<Config>,
     app: AppHandle,
     report: Mutex<HealthReport>,
+    check: Mutex<Option<CheckReport>>,
+    /// Signature of the check report the operator dismissed. Not stored: the
+    /// next launch checks again anyway.
+    check_dismissed: Mutex<Option<u64>>,
 }
 
 impl Health {
@@ -92,6 +102,8 @@ impl Health {
             config,
             app,
             report: Mutex::new(HealthReport::default()),
+            check: Mutex::new(None),
+            check_dismissed: Mutex::new(None),
         });
         health.refresh();
         health
@@ -113,7 +125,12 @@ impl Health {
     pub fn refresh(&self) {
         let roots = listing::configured_roots(&self.config);
         match build(&self.db, &roots) {
-            Ok(report) => {
+            Ok(mut report) => {
+                let check = self.check.lock().clone();
+                report.check_dismissed = check
+                    .as_ref()
+                    .is_some_and(|c| *self.check_dismissed.lock() == Some(c.signature()));
+                report.check = check;
                 *self.report.lock() = report.clone();
                 let _ = self.app.emit(HEALTH_EVENT, &report);
             }
@@ -121,7 +138,22 @@ impl Health {
         }
     }
 
+    /// Replace the library check result. `None` once a scan has applied it.
+    pub fn set_check(&self, report: Option<CheckReport>) {
+        *self.check.lock() = report;
+        self.refresh();
+    }
+
     pub fn dismiss(&self, kind: FindingKind, key: &str) -> Result<()> {
+        if kind == FindingKind::Check {
+            let signature = match self.check.lock().as_ref() {
+                Some(check) => check.signature(),
+                None => bail!("there is no library check to dismiss"),
+            };
+            *self.check_dismissed.lock() = Some(signature);
+            self.refresh();
+            return Ok(());
+        }
         let value = {
             let report = self.report.lock();
             match kind {
@@ -129,6 +161,7 @@ impl Health {
                     Some(value) => value,
                     None => bail!("no missing tracks to dismiss"),
                 },
+                FindingKind::Check => unreachable!("handled above"),
                 FindingKind::Exact | FindingKind::Possible => {
                     let groups = match kind {
                         FindingKind::Exact => &report.exact,
@@ -151,6 +184,11 @@ impl Health {
     }
 
     pub fn undismiss(&self, kind: FindingKind, key: &str) -> Result<()> {
+        if kind == FindingKind::Check {
+            *self.check_dismissed.lock() = None;
+            self.refresh();
+            return Ok(());
+        }
         self.db
             .delete_dismissals(&[(kind.as_str().into(), dismissal_key(kind, key))])?;
         self.refresh();
@@ -227,6 +265,8 @@ pub fn build(db: &Db, roots: &[ScanRoot]) -> Result<HealthReport> {
         exact,
         possible,
         unhashed: db.unhashed_count()?,
+        check: None,
+        check_dismissed: false,
     })
 }
 

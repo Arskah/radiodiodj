@@ -1,3 +1,4 @@
+pub mod check;
 pub mod db;
 pub mod fingerprint;
 pub mod health;

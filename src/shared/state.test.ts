@@ -83,6 +83,7 @@ function defaultTuning() {
       openRetryIntervalMs: 2000,
       readRetryBackoffsMs: [500, 1000, 2000],
     },
+    library: { checkIntervalMin: 15 },
   };
 }
 

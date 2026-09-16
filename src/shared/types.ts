@@ -156,12 +156,19 @@ export interface PlayerConfig {
   readRetryBackoffsMs: number[];
 }
 
+/// Library health tuning.
+export interface LibraryConfig {
+  /** Minutes between library checks; 0 turns the timer off. */
+  checkIntervalMin: number;
+}
+
 /// User-tunable playback behaviour, persisted in `config.json`.
 export interface TuningConfig {
   interleave: InterleaveConfig;
   autoPlaylist: AutoPlaylistConfig;
   cache: CacheConfig;
   player: PlayerConfig;
+  library: LibraryConfig;
 }
 
 export interface DeviceInfo {

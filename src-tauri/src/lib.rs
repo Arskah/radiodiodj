@@ -20,6 +20,7 @@ use audio::cue::CueDeck;
 use audio::cue_points::CuePoints;
 use audio::player::{Cmd, PlayerTuning};
 use broadcast::{service::default_now_playing_dir, BroadcastService};
+use library::check::LibraryCheck;
 use library::db::{Db, LibraryStats, MissingSummary, OpenError, Track, TrackMetadataUpdate};
 use library::health::{FindingKind, Health, HealthReport};
 use library::scan_state::{ScanState, ScanStatus, StartResult};
@@ -72,6 +73,8 @@ pub struct AppState {
     waveform: Arc<WaveformJob>,
     /// Missing tracks and duplicates, kept current for the renderer.
     health: Arc<Health>,
+    /// Compares the disk with the library between scans.
+    check: Arc<LibraryCheck>,
     /// The mixer every on-air deck sums into, and the worker driving them.
     bus: Arc<ProgramBus>,
     /// Owner of the playlist and of everything that advances it.
@@ -618,6 +621,12 @@ fn library_health(state: State<'_, AppState>) -> HealthReport {
     state.health.report()
 }
 
+/// Compare the disk with the library now, outside the timer.
+#[tauri::command(rename_all = "camelCase")]
+fn library_check_now(state: State<'_, AppState>) {
+    state.check.request();
+}
+
 #[tauri::command(rename_all = "camelCase")]
 fn health_dismiss(
     state: State<'_, AppState>,
@@ -750,6 +759,13 @@ pub fn run() {
             let health = Health::new(app.handle().clone(), Arc::clone(&db), Arc::clone(&config));
             health.attach_to_app(app.handle());
             let scan = Arc::new(ScanState::default());
+            let check = LibraryCheck::new(
+                Arc::clone(&db),
+                Arc::clone(&config),
+                Arc::clone(&scan),
+                Arc::clone(&health),
+            );
+            check.start(app.handle());
             if library_reset {
                 Arc::clone(&scan).start(
                     app.handle().clone(),
@@ -765,6 +781,7 @@ pub fn run() {
                 scan,
                 waveform,
                 health,
+                check,
                 bus,
                 playlist,
                 cue: Arc::new(Mutex::new(None)),
@@ -811,6 +828,7 @@ pub fn run() {
             purge_missing_tracks,
             purge_tracks,
             library_health,
+            library_check_now,
             health_dismiss,
             health_undismiss,
             get_waveform_status,
