@@ -107,6 +107,7 @@ pub struct IndexRow {
     pub path: String,
     pub content_type: String,
     pub mtime: Option<i64>,
+    pub missing_since: Option<i64>,
 }
 
 pub struct MediaTrack {
@@ -202,14 +203,18 @@ impl Db {
             {
                 (
                     format!(
-                        "SELECT * FROM tracks WHERE content_type = ? ORDER BY {} LIMIT 200",
+                        "SELECT * FROM tracks WHERE missing_since IS NULL AND content_type = ? \
+                         ORDER BY {} LIMIT 200",
                         order_sql
                     ),
                     vec![t.to_owned().into()],
                 )
             } else {
                 (
-                    format!("SELECT * FROM tracks ORDER BY {} LIMIT 200", order_sql),
+                    format!(
+                        "SELECT * FROM tracks WHERE missing_since IS NULL ORDER BY {} LIMIT 200",
+                        order_sql
+                    ),
                     vec![],
                 )
             };
@@ -230,7 +235,8 @@ impl Db {
                 format!(
                     "SELECT tracks.* FROM tracks_fts \
                      JOIN tracks ON tracks.id = tracks_fts.rowid \
-                     WHERE tracks_fts MATCH ? AND tracks.content_type = ? \
+                     WHERE tracks_fts MATCH ? AND tracks.missing_since IS NULL \
+                       AND tracks.content_type = ? \
                      ORDER BY {} LIMIT 200",
                     order_sql
                 ),
@@ -241,7 +247,7 @@ impl Db {
                 format!(
                     "SELECT tracks.* FROM tracks_fts \
                      JOIN tracks ON tracks.id = tracks_fts.rowid \
-                     WHERE tracks_fts MATCH ? \
+                     WHERE tracks_fts MATCH ? AND tracks.missing_since IS NULL \
                      ORDER BY {} LIMIT 200",
                     order_sql
                 ),
@@ -336,7 +342,10 @@ impl Db {
         let placeholders = std::iter::repeat_n("?", ids.len())
             .collect::<Vec<_>>()
             .join(",");
-        let sql = format!("SELECT id, path FROM tracks WHERE id IN ({})", placeholders);
+        let sql = format!(
+            "SELECT id, path FROM tracks WHERE missing_since IS NULL AND id IN ({})",
+            placeholders
+        );
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(ids.iter()), |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
@@ -417,8 +426,10 @@ impl Db {
     /// decodes each file only once.
     pub fn tracks_missing_waveform(&self) -> Result<Vec<(i64, String, Option<f64>)>> {
         let conn = self.conn.lock();
-        let mut stmt = conn
-            .prepare("SELECT id, path, duration FROM tracks WHERE waveform IS NULL ORDER BY id")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, path, duration FROM tracks \
+             WHERE waveform IS NULL AND missing_since IS NULL ORDER BY id",
+        )?;
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
@@ -461,19 +472,43 @@ impl Db {
     /// rather than by a `LIKE` prefix.
     pub fn track_index(&self) -> Result<Vec<IndexRow>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT id, path, content_type, mtime FROM tracks")?;
+        let mut stmt =
+            conn.prepare("SELECT id, path, content_type, mtime, missing_since FROM tracks")?;
         let rows = stmt.query_map([], |r| {
             Ok(IndexRow {
                 id: r.get(0)?,
                 path: r.get(1)?,
                 content_type: r.get(2)?,
                 mtime: r.get(3)?,
+                missing_since: r.get(4)?,
             })
         })?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
 
-    pub fn delete_tracks(&self, ids: &[i64]) -> Result<usize> {
+    /// Mark rows whose file is gone. The row and everything keyed on its id
+    /// stay; it is only hidden. A row already missing keeps its first
+    /// timestamp.
+    pub fn mark_missing(&self, ids: &[i64], now_ms: i64) -> Result<usize> {
+        self.update_ids(
+            "UPDATE tracks SET missing_since = ?1 WHERE missing_since IS NULL AND id IN",
+            ids,
+            Some(now_ms),
+        )
+    }
+
+    /// Bring missing rows back, because their file was found again.
+    pub fn revive(&self, ids: &[i64]) -> Result<usize> {
+        self.update_ids(
+            "UPDATE tracks SET missing_since = NULL WHERE missing_since IS NOT NULL AND id IN",
+            ids,
+            None,
+        )
+    }
+
+    /// Run `sql` — ending in `id IN` — over `ids` in chunks, in one
+    /// transaction. `?1` binds `first` when given.
+    fn update_ids(&self, sql: &str, ids: &[i64], first: Option<i64>) -> Result<usize> {
         if ids.is_empty() {
             return Ok(0);
         }
@@ -481,11 +516,13 @@ impl Db {
         let tx = conn.transaction()?;
         let mut total = 0usize;
         for chunk in ids.chunks(500) {
-            let sql = format!(
-                "DELETE FROM tracks WHERE id IN ({})",
-                vec!["?"; chunk.len()].join(",")
-            );
-            total += tx.execute(&sql, params_from_iter(chunk.iter()))?;
+            let offset = usize::from(first.is_some()) + 1;
+            let placeholders: Vec<String> = (0..chunk.len())
+                .map(|i| format!("?{}", i + offset))
+                .collect();
+            let sql = format!("{sql} ({})", placeholders.join(","));
+            let params = first.iter().chain(chunk.iter());
+            total += tx.execute(&sql, params_from_iter(params))?;
         }
         tx.commit()?;
         Ok(total)
@@ -576,7 +613,7 @@ impl Db {
         // there is something to exclude.
         let exclude_clause = exclude_sql(exclude_ids);
         let sql = format!(
-            "SELECT * FROM tracks WHERE content_type = ?{exclude_clause} \
+            "SELECT * FROM tracks WHERE missing_since IS NULL AND content_type = ?{exclude_clause} \
              ORDER BY RANDOM() LIMIT ?"
         );
         let mut stmt = conn.prepare(&sql)?;
@@ -607,7 +644,8 @@ impl Db {
         let exclude_clause = exclude_sql(exclude_ids);
         let sql = format!(
             "WITH bucket AS ( \
-                SELECT * FROM tracks WHERE content_type = ?{exclude_clause} \
+                SELECT * FROM tracks \
+                WHERE missing_since IS NULL AND content_type = ?{exclude_clause} \
                 ORDER BY play_count ASC, RANDOM() LIMIT ? \
             ) SELECT * FROM bucket ORDER BY RANDOM() LIMIT ?"
         );
@@ -633,13 +671,14 @@ impl Db {
         let (total_tracks, total_artists, total_albums, total_hours): (i64, i64, i64, f64) = conn
             .query_row(
             "SELECT COUNT(*), COUNT(DISTINCT artist), COUNT(DISTINCT album), \
-                 COALESCE(ROUND(SUM(duration) / 3600.0, 1), 0) FROM tracks",
+                 COALESCE(ROUND(SUM(duration) / 3600.0, 1), 0) FROM tracks \
+                 WHERE missing_since IS NULL",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )?;
         let mut tracks_by_type = TracksByType::default();
         let mut stmt =
-            conn.prepare("SELECT content_type, COUNT(*) FROM tracks GROUP BY content_type")?;
+            conn.prepare("SELECT content_type, COUNT(*) FROM tracks WHERE missing_since IS NULL GROUP BY content_type")?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
         for row in rows {
             let (kind, n) = row?;
@@ -1191,6 +1230,57 @@ mod tests {
         let copy = Connection::open(dir.path().join("radiodiodj.v3.bak.db")).unwrap();
         let x: i64 = copy.query_row("SELECT x FROM t", [], |r| r.get(0)).unwrap();
         assert_eq!(x, 1);
+    }
+
+    #[test]
+    fn missing_rows_are_hidden_but_readable_by_id() {
+        let db = Db::open_in_memory().unwrap();
+        insert_with_play_count(&db, "/gone.mp3", "music", 0);
+        insert_with_play_count(&db, "/here.mp3", "music", 0);
+        let ids: Vec<i64> = db.track_index().unwrap().iter().map(|r| r.id).collect();
+        let (gone, here) = (ids[0], ids[1]);
+        assert_eq!(db.mark_missing(&[gone], 1_000).unwrap(), 1);
+        assert_eq!(
+            db.mark_missing(&[gone], 2_000).unwrap(),
+            0,
+            "first mark wins"
+        );
+
+        let only_here = |tracks: Vec<Track>| tracks.iter().map(|t| t.id).collect::<Vec<_>>();
+        assert_eq!(only_here(db.search("", None, None, None).unwrap()), [here]);
+        assert_eq!(only_here(db.search("t", None, None, None).unwrap()), [here]);
+        assert_eq!(
+            only_here(db.search("t", Some("music"), None, None).unwrap()),
+            [here]
+        );
+        assert_eq!(
+            only_here(db.get_random_tracks("music", 10, &[]).unwrap()),
+            [here]
+        );
+        assert_eq!(
+            only_here(db.pick_random_from_bottom("music", 10, 10, &[]).unwrap()),
+            [here]
+        );
+        assert_eq!(db.get_stats().unwrap().total_tracks, 1);
+        assert_eq!(db.get_stats().unwrap().tracks_by_type.music, 1);
+        assert_eq!(
+            db.get_paths_by_ids(&[gone, here]).unwrap(),
+            [(here, "/here.mp3".to_string())]
+        );
+        let unfilled: Vec<i64> = db
+            .tracks_missing_waveform()
+            .unwrap()
+            .iter()
+            .map(|r| r.0)
+            .collect();
+        assert_eq!(unfilled, [here]);
+
+        assert!(db.get_track(gone).unwrap().is_some());
+        assert!(db.get_track_load_info(gone).unwrap().is_some());
+        assert_eq!(db.get_tracks_by_ids(&[gone]).unwrap().len(), 1);
+
+        assert_eq!(db.revive(&[gone]).unwrap(), 1);
+        assert_eq!(db.get_stats().unwrap().total_tracks, 2);
     }
 
     /// Cue points are clamped on write and the clamped value comes back, so the

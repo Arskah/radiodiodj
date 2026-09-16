@@ -101,6 +101,8 @@ pub struct ScanOutcome {
     pub total: usize,
     pub added: usize,
     pub canceled: bool,
+    /// Rows newly marked missing by this scan.
+    pub missing: usize,
 }
 
 /// A file found on disk, with the content type of the root it was found under.
@@ -112,8 +114,9 @@ struct Found {
 /// Scan every root and bring the library in line with what is on disk.
 /// `on_progress` receives `(processed, total)` counted across all roots.
 ///
-/// A row is only pruned when a root that contains it was listed completely,
-/// or when no configured root contains it at all. Roots are matched by path
+/// A row whose file is gone is marked missing, never deleted — and only when a
+/// root that contains it was listed completely, or when no configured root
+/// contains it at all. Roots are matched by path
 /// component, so `/Music` does not contain `/Music2`.
 pub fn scan_all(
     db: &Db,
@@ -147,21 +150,40 @@ pub fn scan_all(
     }
 
     let index = db.track_index()?;
-    let existing: HashMap<&str, &IndexRow> = index.iter().map(|r| (r.path.as_str(), r)).collect();
-    let parsed = parse_changed(&found, &existing, cancel, &on_progress);
-    let outcome = ScanOutcome {
+    let mut known: HashMap<&str, &IndexRow> = index
+        .iter()
+        .filter(|r| r.missing_since.is_none())
+        .map(|r| (r.path.as_str(), r))
+        .collect();
+    // A missing row whose file is back at the same path is the same track —
+    // the remove-and-re-add case. The newest one wins if several share it.
+    let mut returned: HashMap<&str, &IndexRow> = HashMap::new();
+    for row in index.iter().filter(|r| r.missing_since.is_some()) {
+        if seen.contains(&row.path) && !known.contains_key(row.path.as_str()) {
+            let slot = returned.entry(row.path.as_str()).or_insert(row);
+            if (row.missing_since, row.id) > (slot.missing_since, slot.id) {
+                *slot = row;
+            }
+        }
+    }
+    db.revive(&returned.values().map(|r| r.id).collect::<Vec<_>>())?;
+    known.extend(returned);
+
+    let parsed = parse_changed(&found, &known, cancel, &on_progress);
+    let mut outcome = ScanOutcome {
         total: found.len(),
         added: parsed.len(),
         canceled: cancel(),
+        missing: 0,
     };
     db.insert_tracks(&parsed)?;
     if outcome.canceled {
         return Ok(outcome);
     }
 
-    let stale: Vec<i64> = index
+    let gone: Vec<i64> = index
         .iter()
-        .filter(|row| !seen.contains(&row.path))
+        .filter(|row| row.missing_since.is_none() && !seen.contains(&row.path))
         .filter(|row| {
             let path = Path::new(&row.path);
             let configured = roots.iter().any(|r| path.starts_with(&r.path));
@@ -169,11 +191,18 @@ pub fn scan_all(
         })
         .map(|row| row.id)
         .collect();
-    let pruned = db.delete_tracks(&stale)?;
-    if pruned > 0 {
-        log::info!("scan pruned {} missing files", pruned);
+    outcome.missing = db.mark_missing(&gone, now_ms())?;
+    if outcome.missing > 0 {
+        log::info!("scan marked {} tracks missing", outcome.missing);
     }
     Ok(outcome)
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Tag-read every found file whose row is absent or out of date. Tag reads are
@@ -313,6 +342,7 @@ pub fn read_cover_art(path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::cue_points::CuePoints;
     use crate::library::db::TrackMetadataUpdate;
     use crate::library::test_audio::write_wav;
     use tempfile::TempDir;
@@ -461,6 +491,120 @@ mod tests {
         let file = dir.path().join("a.wav");
         write_wav(&file, 1, 1);
         assert!(find_audio_files(&file).is_err());
+    }
+
+    fn id_of(db: &Db, title: &str) -> i64 {
+        db.search("", None, None, None)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.title == title)
+            .unwrap_or_else(|| panic!("{title} is not in the library"))
+            .id
+    }
+
+    fn missing_since(db: &Db, id: i64) -> Option<i64> {
+        db.track_index()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == id)
+            .expect("row kept")
+            .missing_since
+    }
+
+    /// Operator work that must outlive a file's absence.
+    fn prepare(db: &Db, id: i64) {
+        db.set_cue_points(
+            id,
+            CuePoints {
+                cue_in_ms: Some(100),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        db.increment_play_count(id).unwrap();
+    }
+
+    fn assert_prepared(db: &Db, id: i64) {
+        let track = db.get_track(id).unwrap().expect("row kept");
+        assert_eq!(track.cue_points.cue_in_ms, Some(100));
+        assert_eq!(track.play_count, 1);
+    }
+
+    #[test]
+    fn a_deleted_file_is_marked_missing_with_its_work_kept() {
+        let (dir, db) = library();
+        write_wav(&dir.path().join("a.wav"), 1, 1);
+        scan(&db, &[music(dir.path())]);
+        let id = id_of(&db, "a");
+        prepare(&db, id);
+
+        std::fs::remove_file(dir.path().join("a.wav")).unwrap();
+        let outcome = scan(&db, &[music(dir.path())]);
+
+        assert_eq!(outcome.missing, 1);
+        let since = missing_since(&db, id).expect("marked missing");
+        assert_prepared(&db, id);
+
+        scan(&db, &[music(dir.path())]);
+        assert_eq!(missing_since(&db, id), Some(since), "first timestamp kept");
+    }
+
+    #[test]
+    fn a_file_back_at_its_path_is_the_same_track() {
+        let (dir, db) = library();
+        let file = dir.path().join("a.wav");
+        write_wav(&file, 1, 1);
+        scan(&db, &[music(dir.path())]);
+        let id = id_of(&db, "a");
+        prepare(&db, id);
+        let aside = dir.path().join(".aside.wav");
+        std::fs::rename(&file, &aside).unwrap();
+        scan(&db, &[music(dir.path())]);
+
+        std::fs::rename(&aside, &file).unwrap();
+        let outcome = scan(&db, &[music(dir.path())]);
+
+        assert_eq!(outcome.added, 0, "unchanged file is not reparsed");
+        assert_eq!(id_of(&db, "a"), id);
+        assert_eq!(missing_since(&db, id), None);
+        assert_prepared(&db, id);
+    }
+
+    #[test]
+    fn removing_and_re_adding_a_root_keeps_its_tracks() {
+        let (dir, db) = library();
+        let (m, j) = (dir.path().join("music"), dir.path().join("jingles"));
+        write_wav(&m.join("song.wav"), 1, 1);
+        write_wav(&j.join("jingle.wav"), 2, 1);
+        let jingles = || ScanRoot {
+            content_type: "jingle",
+            path: j.to_string_lossy().into_owned(),
+        };
+        scan(&db, &[music(&m), jingles()]);
+        let id = id_of(&db, "jingle");
+        prepare(&db, id);
+
+        scan(&db, &[music(&m)]);
+        assert!(missing_since(&db, id).is_some());
+        assert_eq!(db.get_stats().unwrap().tracks_by_type.jingle, 0);
+
+        scan(&db, &[music(&m), jingles()]);
+        assert_eq!(id_of(&db, "jingle"), id);
+        assert_eq!(db.get_stats().unwrap().tracks_by_type.jingle, 1);
+        assert_prepared(&db, id);
+    }
+
+    #[test]
+    fn removing_every_root_hides_everything_and_deletes_nothing() {
+        let (dir, db) = library();
+        write_wav(&dir.path().join("a.wav"), 1, 1);
+        scan(&db, &[music(dir.path())]);
+        let id = id_of(&db, "a");
+
+        scan(&db, &[]);
+
+        assert!(titles(&db).is_empty());
+        assert!(missing_since(&db, id).is_some());
     }
 
     #[test]

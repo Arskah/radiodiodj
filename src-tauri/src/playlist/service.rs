@@ -318,6 +318,10 @@ impl Inner {
                     // bytes are decoded — but it reports "playing" immediately
                     // instead of after a read that may be crossing a network.
                     inner.bus.send_main(Cmd::Play);
+                } else {
+                    // A purged row can never load; treat it as a failed read
+                    // so advancement moves on.
+                    Inner::apply(inner, |p, r| p.on_load_failed(r));
                 }
             }
             Effect::Resume {
