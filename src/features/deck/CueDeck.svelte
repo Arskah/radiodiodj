@@ -4,6 +4,13 @@
   import Waveform from "./Waveform.svelte";
   import defaultCover from "../../assets/radiodiodi_label.svg";
 
+  // The mode toggle earns its place in the header only once there is something
+  // to toggle between. A track with no markers plays identically either way,
+  // and the cue deck sits in the narrow column where the row is tight.
+  const canPreview = $derived(
+    hasCuePoints(app.cueTrack?.cue_points) || app.cueMode === "preview",
+  );
+
   // Markers of whatever the deck is auditioning: the track's saved radio edit
   // in Absolute mode, the applied set — which may be an unsaved draft from the
   // editor — in Preview. Read-only here; the editor overlay is where they move.
@@ -124,23 +131,22 @@
              for; Preview reloads with the markers applied, so the operator
              hears exactly what airs. Switching reloads the deck — the player
              applies markers at load time. -->
-        <div class="segmented" role="group" aria-label="Cue audition mode">
-          <button
-            class:active={app.cueMode === "absolute"}
-            aria-pressed={app.cueMode === "absolute"}
-            disabled={!app.cueTrack}
-            onclick={() => app.setCueMode("absolute")}>Absolute</button
-          >
-          <button
-            class:active={app.cueMode === "preview"}
-            aria-pressed={app.cueMode === "preview"}
-            disabled={!app.cueTrack || !hasCuePoints(app.cueTrack?.cue_points)}
-            title={hasCuePoints(app.cueTrack?.cue_points)
-              ? "Play only what airs"
-              : "This track has no cue points yet"}
-            onclick={() => app.setCueMode("preview")}>Preview</button
-          >
-        </div>
+        {#if canPreview}
+          <div class="segmented" role="group" aria-label="Cue audition mode">
+            <button
+              class:active={app.cueMode === "absolute"}
+              aria-pressed={app.cueMode === "absolute"}
+              title="Audition the whole file"
+              onclick={() => app.setCueMode("absolute")}>Absolute</button
+            >
+            <button
+              class:active={app.cueMode === "preview"}
+              aria-pressed={app.cueMode === "preview"}
+              title="Play only what airs"
+              onclick={() => app.setCueMode("preview")}>Preview</button
+            >
+          </div>
+        {/if}
         <div class="cue-volume-wrap">
           <span class="material-symbols-outlined" aria-hidden="true"
             >volume_up</span

@@ -654,6 +654,35 @@ body {
 
 .cue-volume {
   accent-color: var(--secondary);
+  /* Elastic: the cue header carries four buttons plus an audition-mode toggle
+     (#279) in the narrow column, and the slider is the one control that stays
+     usable at any width — a monitoring trim, not a discrete target. */
+  width: 96px;
+  min-width: 48px;
+  flex: 0 1 96px;
+}
+
+/* Unlike the main deck's, this row can outgrow its column, so let it shrink
+   instead of pushing the volume off the edge. */
+#cue-deck .deck-header-controls {
+  gap: var(--sp-sm);
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+#cue-deck .cue-volume-wrap {
+  min-width: 0;
+  padding-left: var(--sp-sm);
+}
+
+/* Tighter than the main deck's AUTO/MANUAL: "ABSOLUTE" is twice the word. */
+#cue-deck .segmented {
+  flex-shrink: 0;
+}
+
+#cue-deck .segmented button {
+  padding: 4px 8px;
+  letter-spacing: 0.04em;
 }
 
 .cue-error {
