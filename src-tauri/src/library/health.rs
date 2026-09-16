@@ -34,6 +34,8 @@ pub struct HealthReport {
     /// The latest library check, until a scan makes it moot.
     pub check: Option<CheckReport>,
     pub check_dismissed: bool,
+    /// A library check is running now.
+    pub checking: bool,
     /// Edits that could not be written into their file.
     pub tag_write_failures: Vec<TagWriteFailure>,
 }
@@ -112,6 +114,7 @@ pub struct Health {
     /// Signature of the check report the operator dismissed. Not stored: the
     /// next launch checks again anyway.
     check_dismissed: Mutex<Option<u64>>,
+    checking: Mutex<bool>,
 }
 
 impl Health {
@@ -129,6 +132,7 @@ impl Health {
             report: Mutex::new(HealthReport::default()),
             check: Mutex::new(None),
             check_dismissed: Mutex::new(None),
+            checking: Mutex::new(false),
         });
         let weak = Arc::downgrade(&health);
         health.tag_writer.set_listener(move || {
@@ -163,7 +167,13 @@ impl Health {
                     .is_some_and(|c| *self.check_dismissed.lock() == Some(c.signature()));
                 report.check = check;
                 report.tag_write_failures = self.tag_writer.failures();
-                *self.report.lock() = report.clone();
+                {
+                    // Under the report lock, so a check starting or ending
+                    // meanwhile cannot be overwritten with a stale flag.
+                    let mut stored = self.report.lock();
+                    report.checking = *self.checking.lock();
+                    *stored = report.clone();
+                }
                 let _ = self.app.emit(HEALTH_EVENT, &report);
             }
             Err(e) => log::error!("library health: {e:#}"),
@@ -174,6 +184,31 @@ impl Health {
     pub fn set_check(&self, report: Option<CheckReport>) {
         *self.check.lock() = report;
         self.refresh();
+    }
+
+    /// Say whether a library check is running. Re-sends the current report
+    /// rather than rebuilding it.
+    pub fn set_checking(&self, checking: bool) {
+        let report = {
+            let mut report = self.report.lock();
+            *self.checking.lock() = checking;
+            if report.checking == checking {
+                return;
+            }
+            report.checking = checking;
+            report.clone()
+        };
+        let _ = self.app.emit(HEALTH_EVENT, &report);
+    }
+
+    /// Finish a check: store its result, if any, and clear `checking` in the
+    /// same report.
+    pub fn finish_check(&self, report: Option<CheckReport>) {
+        *self.checking.lock() = false;
+        match report {
+            Some(report) => self.set_check(Some(report)),
+            None => self.set_checking(false),
+        }
     }
 
     pub fn dismiss(&self, kind: FindingKind, key: &str) -> Result<()> {
@@ -310,6 +345,7 @@ pub fn build(db: &Db, roots: &[ScanRoot]) -> Result<HealthReport> {
             .collect(),
         check: None,
         check_dismissed: false,
+        checking: false,
         tag_write_failures: Vec::new(),
     })
 }

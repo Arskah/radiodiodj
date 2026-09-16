@@ -173,6 +173,8 @@ export interface HealthReport {
   unreadable: UnreadableTrack[];
   check: CheckReport | null;
   checkDismissed: boolean;
+  /** A library check is running now. */
+  checking: boolean;
   /** Edits that could not be written into their file. */
   tagWriteFailures: TagWriteFailure[];
 }
