@@ -6,7 +6,9 @@ const host = process.env["TAURI_DEV_HOST"];
 
 export default defineConfig({
   publicDir: false,
-  plugins: [svelte({ configFile: resolve(__dirname, "svelte.config.mjs") })],
+  plugins: [
+    svelte({ configFile: resolve(import.meta.dirname, "svelte.config.mjs") }),
+  ],
   clearScreen: false,
   server: {
     port: 5173,
@@ -16,7 +18,7 @@ export default defineConfig({
     watch: { ignored: ["**/src-tauri/**"] },
   },
   build: {
-    outDir: resolve(__dirname, "dist"),
+    outDir: resolve(import.meta.dirname, "dist"),
     emptyOutDir: true,
     sourcemap: true,
   },
