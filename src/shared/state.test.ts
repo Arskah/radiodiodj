@@ -37,8 +37,12 @@ const { api } = vi.hoisted(() => {
     getAllPaths: vi.fn(),
     addPath: vi.fn(),
     removePath: vi.fn(),
-    getMissingSummary: vi.fn(),
-    purgeMissingTracks: vi.fn(),
+    purgeTracks: vi.fn(),
+    libraryHealth: vi.fn(),
+    onLibraryHealth: vi.fn(),
+    libraryCheckNow: vi.fn(),
+    healthDismiss: vi.fn(),
+    healthUndismiss: vi.fn(),
     scanLibraries: vi.fn(),
     cancelScan: vi.fn(),
     getScanStatus: vi.fn(),
@@ -83,6 +87,7 @@ function defaultTuning() {
       openRetryIntervalMs: 2000,
       readRetryBackoffsMs: [500, 1000, 2000],
     },
+    library: { checkIntervalMin: 15 },
   };
 }
 
@@ -117,13 +122,20 @@ vi.mock("../features/deck/nativeBackend", () => ({
   },
 }));
 
-import { AppState, formatSpan, formatTime, type Track } from "./state.svelte";
+import {
+  AppState,
+  EMPTY_HEALTH,
+  formatSpan,
+  formatTime,
+  type Track,
+} from "./state.svelte";
 import type { ScanStatus } from "./api";
 import {
   isTrackItem,
   stopMarker,
   trackItem,
   type CuePoints,
+  type HealthReport,
   type PlaylistItem,
 } from "./types";
 
@@ -173,8 +185,8 @@ function resetApi(): void {
   });
   api.addPath.mockResolvedValue(null);
   api.removePath.mockResolvedValue(true);
-  api.getMissingSummary.mockResolvedValue({ tracks: 0, withCuePoints: 0 });
-  api.purgeMissingTracks.mockResolvedValue(0);
+  api.purgeTracks.mockResolvedValue(0);
+  api.libraryHealth.mockResolvedValue(structuredClone(EMPTY_HEALTH));
   api.scanLibraries.mockResolvedValue({ alreadyRunning: false });
   api.cancelScan.mockResolvedValue(undefined);
   api.getScanStatus.mockResolvedValue({ status: "idle", lastResult: null });
@@ -986,33 +998,24 @@ describe("AppState library + paths", () => {
     expect(api.getAllPaths).toHaveBeenCalled();
   });
 
-  it("purgeMissingTracks deletes, then refreshes the summary, stats and library", async () => {
-    api.getMissingSummary.mockResolvedValueOnce({
-      tracks: 0,
-      withCuePoints: 0,
-    });
-    app.missingSummary = { tracks: 3, withCuePoints: 1 };
+  it("purgeTracks deletes the chosen tracks, then refreshes stats and library", async () => {
     api.getStats.mockClear();
     api.search.mockClear();
 
-    await app.purgeMissingTracks();
+    await app.purgeTracks([3, 4]);
 
-    expect(api.purgeMissingTracks).toHaveBeenCalled();
-    expect(app.missingSummary).toEqual({ tracks: 0, withCuePoints: 0 });
+    expect(api.purgeTracks).toHaveBeenCalledWith([3, 4]);
     expect(api.getStats).toHaveBeenCalled();
     expect(api.search).toHaveBeenCalled();
   });
 
-  it("purgeMissingTracks still refreshes when the backend refuses", async () => {
-    api.purgeMissingTracks.mockRejectedValueOnce("a library scan is running");
-    api.getMissingSummary.mockResolvedValueOnce({
-      tracks: 2,
-      withCuePoints: 0,
-    });
+  it("purgeTracks still refreshes when the backend refuses", async () => {
+    api.purgeTracks.mockRejectedValueOnce("a library scan is running");
+    api.getStats.mockClear();
 
-    await app.purgeMissingTracks();
+    await app.purgeTracks([3]);
 
-    expect(app.missingSummary).toEqual({ tracks: 2, withCuePoints: 0 });
+    expect(api.getStats).toHaveBeenCalled();
   });
 
   it("scan invokes scanLibraries fire-and-forget without blocking on result", async () => {
@@ -1037,7 +1040,6 @@ describe("AppState library + paths", () => {
     await Promise.resolve();
     expect(api.search).toHaveBeenCalled();
     expect(api.getStats).toHaveBeenCalled();
-    expect(api.getMissingSummary).toHaveBeenCalled();
   });
 
   it("scan-progress patches running state", () => {
@@ -2088,5 +2090,78 @@ describe("AppState item cue overrides", () => {
     playlist.restore({ playlist: [trackItem(t(1), audition)] });
     await app.loadSession();
     expect(overrideAt(0)).toEqual(audition);
+  });
+});
+
+describe("AppState library health", () => {
+  const missing = (id: number, missingSince: number) => ({
+    id,
+    title: `t${id}`,
+    artist: `a${id}`,
+    path: `/m/${id}.mp3`,
+    missingSince,
+    playCount: 0,
+    hasCuePoints: false,
+    outsideRoots: false,
+  });
+  const report = (ids: [number, number][]) => ({
+    ...EMPTY_HEALTH,
+    missing: ids.map(([id, since]) => missing(id, since)),
+  });
+
+  beforeEach(() => {
+    resetApi();
+  });
+
+  it("loadHealth adopts the backend report and indexes missing tracks", async () => {
+    api.libraryHealth.mockResolvedValueOnce(report([[3, 100]]));
+    const { app } = makeApp();
+    await app.loadHealth();
+    expect(app.health.missing).toHaveLength(1);
+    expect(app.missingSince.get(3)).toBe(100);
+    expect(app.missingSince.has(1)).toBe(false);
+  });
+
+  it("a library-health event replaces the report", () => {
+    const { app } = makeApp();
+    const cb = api.onLibraryHealth.mock.calls[0]?.[0] as
+      ((r: HealthReport) => void) | undefined;
+    expect(cb).toBeDefined();
+    cb!(report([[1, 5]]));
+    expect(app.missingSince.get(1)).toBe(5);
+    cb!(report([]));
+    expect(app.missingSince.size).toBe(0);
+  });
+
+  it("counts findings for the Settings badge", () => {
+    const { app } = makeApp();
+    const cb = api.onLibraryHealth.mock.calls[0]?.[0] as (
+      r: HealthReport,
+    ) => void;
+    cb({
+      ...report([[1, 5]]),
+      exact: [{ key: "v1:a", dismissed: false, tracks: [] }],
+    });
+    expect(app.healthAttention).toBe(2);
+  });
+
+  it("dismiss, undo and check-now go to the backend", () => {
+    api.healthDismiss.mockResolvedValue(undefined);
+    api.healthUndismiss.mockResolvedValue(undefined);
+    api.libraryCheckNow.mockResolvedValue(undefined);
+    const { app } = makeApp();
+    app.dismissFinding("exact", "v1:a");
+    app.undismissFinding("missing");
+    app.checkLibraryNow();
+    expect(api.healthDismiss).toHaveBeenCalledWith("exact", "v1:a");
+    expect(api.healthUndismiss).toHaveBeenCalledWith("missing", "");
+    expect(api.libraryCheckNow).toHaveBeenCalled();
+  });
+
+  it("a failing lookup keeps the report it had", async () => {
+    api.libraryHealth.mockRejectedValueOnce("boom");
+    const { app } = makeApp();
+    await app.loadHealth();
+    expect(app.health).toEqual(EMPTY_HEALTH);
   });
 });

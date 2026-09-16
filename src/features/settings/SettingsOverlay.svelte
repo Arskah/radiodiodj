@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api } from "../../shared/api";
   import { app } from "../../shared/state.svelte";
+  import LibraryHealth from "../health/LibraryHealth.svelte";
   import type {
     ContentType,
     DeviceInfo,
@@ -15,8 +16,6 @@
     { type: "jingle", label: "Jingles" },
   ];
 
-  type ActiveTab = "library" | "audio" | "now-playing" | "advanced";
-  let activeTab = $state<ActiveTab>("library");
   const MIB = 1024 * 1024;
   // Editable draft of the tuning config. Synced from `app.tuning` whenever the
   // overlay opens; each edit persists via `app.saveTuning`, then re-syncs so the
@@ -30,8 +29,6 @@
     fileEnabled: true,
     webhookEnabled: true,
   });
-  let confirmingPurge = $state(false);
-  let purging = $state(false);
   let testResult = $state<string | null>(null);
   let testing = $state(false);
   let showSecret = $state(false);
@@ -42,21 +39,8 @@
       void loadNowPlayingConfig();
       tuning = $state.snapshot(app.tuning);
       mainDeviceChanged = false;
-      confirmingPurge = false;
-      void app.loadMissingSummary();
     }
   });
-
-  async function purge(): Promise<void> {
-    purging = true;
-    await app.purgeMissingTracks();
-    purging = false;
-    confirmingPurge = false;
-  }
-
-  function plural(n: number, one: string): string {
-    return `${n} ${one}${n === 1 ? "" : "s"}`;
-  }
 
   // Persist the current draft, then adopt the backend's clamped result so the
   // inputs snap to any coerced values.
@@ -181,40 +165,47 @@
       <div id="settings-sidebar" role="tablist" aria-label="Settings sections">
         <button
           class="settings-tab"
-          class:active={activeTab === "audio"}
+          class:active={app.settingsTab === "audio"}
           role="tab"
-          aria-selected={activeTab === "audio"}
-          onclick={() => (activeTab = "audio")}
+          aria-selected={app.settingsTab === "audio"}
+          onclick={() => (app.settingsTab = "audio")}
         >
           <span class="material-symbols-outlined">volume_up</span>
           Audio Output
         </button>
         <button
           class="settings-tab"
-          class:active={activeTab === "library"}
+          class:active={app.settingsTab === "library"}
           role="tab"
-          aria-selected={activeTab === "library"}
-          onclick={() => (activeTab = "library")}
+          aria-selected={app.settingsTab === "library"}
+          onclick={() => (app.settingsTab = "library")}
         >
-          <span class="material-symbols-outlined">sync</span>
-          Library Sync
+          <span class="material-symbols-outlined">library_music</span>
+          Library
+          {#if app.healthAttention > 0}
+            <span
+              class="attention-badge"
+              aria-label={`${app.healthAttention} need attention`}
+              >{app.healthAttention}</span
+            >
+          {/if}
         </button>
         <button
           class="settings-tab"
-          class:active={activeTab === "now-playing"}
+          class:active={app.settingsTab === "now-playing"}
           role="tab"
-          aria-selected={activeTab === "now-playing"}
-          onclick={() => (activeTab = "now-playing")}
+          aria-selected={app.settingsTab === "now-playing"}
+          onclick={() => (app.settingsTab = "now-playing")}
         >
           <span class="material-symbols-outlined">rss_feed</span>
           Now Playing
         </button>
         <button
           class="settings-tab"
-          class:active={activeTab === "advanced"}
+          class:active={app.settingsTab === "advanced"}
           role="tab"
-          aria-selected={activeTab === "advanced"}
-          onclick={() => (activeTab = "advanced")}
+          aria-selected={app.settingsTab === "advanced"}
+          onclick={() => (app.settingsTab = "advanced")}
         >
           <span class="material-symbols-outlined">tune</span>
           Advanced
@@ -222,7 +213,7 @@
       </div>
 
       <div id="settings-content">
-        {#if activeTab === "audio"}
+        {#if app.settingsTab === "audio"}
           <div class="settings-section">
             <h4>Audio Configuration</h4>
             <p class="settings-section-desc">
@@ -281,12 +272,14 @@
               </div>
             {/if}
           </div>
-        {:else if activeTab === "library"}
+        {:else if app.settingsTab === "library"}
           <div class="settings-section">
-            <h4>Library Synchronization</h4>
+            <h4>Library</h4>
             <p class="settings-section-desc">
-              Configure directory paths and automatic scanning for your media
-              assets.
+              Where your media lives, and what needs attention in it: tracks
+              whose files are gone, copies of the same recording, and changes on
+              disk that no scan has picked up yet. Nothing here changes an audio
+              file — delete an unwanted copy in the file manager, then scan.
             </p>
             <div id="paths-list">
               {#each sections as { type, label } (type)}
@@ -337,59 +330,9 @@
                 Scan Library Now
               </button>
             </div>
-            {#if app.missingSummary.tracks > 0}
-              <div class="missing-tracks" id="missing-tracks">
-                <span class="material-symbols-outlined" aria-hidden="true"
-                  >link_off</span
-                >
-                <p class="missing-tracks-text">
-                  {plural(app.missingSummary.tracks, "track")} missing{#if app.missingSummary.withCuePoints > 0}
-                    ({app.missingSummary.withCuePoints} with cue points){/if}.
-                  They are hidden, and come back with their cue points and play
-                  counts if the files reappear — even under a new name or
-                  folder.
-                </p>
-                {#if confirmingPurge}
-                  <div class="missing-tracks-confirm" role="alert">
-                    <span>
-                      Delete {plural(
-                        app.missingSummary.tracks,
-                        "track",
-                      )}{#if app.missingSummary.withCuePoints > 0}
-                        and the cue points of {app.missingSummary
-                          .withCuePoints}{/if} for good?
-                    </span>
-                    <button
-                      id="btn-purge-confirm"
-                      class="btn-purge-confirm"
-                      disabled={purging}
-                      onclick={purge}
-                    >
-                      Delete
-                    </button>
-                    <button
-                      class="btn-purge-cancel"
-                      disabled={purging}
-                      onclick={() => (confirmingPurge = false)}
-                    >
-                      Keep
-                    </button>
-                  </div>
-                {:else}
-                  <button
-                    id="btn-purge-missing"
-                    class="btn-purge"
-                    title="Permanently delete tracks whose files are gone"
-                    disabled={app.scanStatus.status === "running"}
-                    onclick={() => (confirmingPurge = true)}
-                  >
-                    Purge…
-                  </button>
-                {/if}
-              </div>
-            {/if}
+            <LibraryHealth />
           </div>
-        {:else if activeTab === "now-playing"}
+        {:else if app.settingsTab === "now-playing"}
           <div class="settings-section">
             <h4>Now Playing Metadata</h4>
             <p class="settings-section-desc">
@@ -535,6 +478,27 @@
               Fine-tune playlist rotation, buffering, and network resilience.
               Out-of-range values are clamped on save.
             </p>
+
+            <h5 class="tuning-group-title">Library</h5>
+            <div class="device-row">
+              <label for="tune-check-interval"
+                >Library check interval (minutes)</label
+              >
+              <input
+                id="tune-check-interval"
+                type="number"
+                min="0"
+                value={tuning.library.checkIntervalMin}
+                oninput={(e) =>
+                  numInput(e, (v) => (tuning.library.checkIntervalMin = v))}
+                onchange={saveTuning}
+              />
+              <div class="hint">
+                How often to look for files added, changed or removed since the
+                last scan. Reads no audio, and never changes the library. 0
+                turns it off.
+              </div>
+            </div>
 
             <h5 class="tuning-group-title">Interleave</h5>
             <div class="device-row">

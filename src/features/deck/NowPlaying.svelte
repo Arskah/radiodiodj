@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app, formatSpan, formatTime } from "../../shared/state.svelte";
   import Waveform from "./Waveform.svelte";
+  import MissingBadge from "../track/MissingBadge.svelte";
   import defaultCover from "../../assets/radiodiodi_label.svg";
 
   let progressBar: HTMLDivElement;
@@ -32,6 +33,9 @@
           >cell_tower</span
         >
         <span class="deck-label">Main Deck</span>
+        {#if app.currentTrack}
+          <MissingBadge trackId={app.currentTrack.id} />
+        {/if}
         {#if app.airTimeRemaining !== null}
           <span
             class="deck-remaining"

@@ -222,8 +222,8 @@
         >
         <span class="empty-title">Your Library is Empty</span>
         <span class="empty-body"
-          >Add music, jingles, and commercials from Settings → Library Sync,
-          then scan to build your station.</span
+          >Add music, jingles, and commercials from Settings → Library, then
+          scan to build your station.</span
         >
       </div>
     {:else}

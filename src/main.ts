@@ -27,6 +27,7 @@ void app.loadStats();
 void app.loadSession();
 void app.hydrateScanStatus();
 void app.hydrateWaveformStatus();
+void app.loadHealth();
 void app.loadAudioConfig();
 
 const win = getCurrentWindow();

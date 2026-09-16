@@ -1,8 +1,6 @@
 <script lang="ts">
   import { app } from "../../shared/state.svelte";
 
-  const AUTO_HIDE_MS = 5000;
-
   let dismissed = $state(false);
   let visible = $state(false);
 
@@ -17,16 +15,9 @@
       visible = false;
       return;
     }
-    if (dismissed) {
-      visible = false;
-      return;
-    }
-    visible = true;
-    const t = setTimeout(() => {
-      dismissed = true;
-      visible = false;
-    }, AUTO_HIDE_MS);
-    return () => clearTimeout(t);
+    // A finished scan's result stays until the operator dismisses it, so a
+    // scan that ends while nobody is looking still reports what it changed.
+    visible = !dismissed;
   });
 
   let pct = $derived.by(() => {

@@ -56,6 +56,8 @@ pub struct TuningConfig {
     pub cache: CacheConfig,
     #[serde(default)]
     pub player: PlayerConfig,
+    #[serde(default)]
+    pub library: LibraryConfig,
 }
 
 /// Playlist interleave cadence — how often jingles/commercials are woven into a
@@ -191,6 +193,27 @@ impl Default for PlayerConfig {
             read_watchdog_timeout_ms: default_read_watchdog_timeout_ms(),
             open_retry_interval_ms: default_open_retry_interval_ms(),
             read_retry_backoffs_ms: default_read_retry_backoffs_ms(),
+        }
+    }
+}
+
+/// Library health tuning.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryConfig {
+    /// Minutes between library checks; 0 turns the timer off.
+    #[serde(default = "default_check_interval_min")]
+    pub check_interval_min: u64,
+}
+
+fn default_check_interval_min() -> u64 {
+    15
+}
+
+impl Default for LibraryConfig {
+    fn default() -> Self {
+        Self {
+            check_interval_min: default_check_interval_min(),
         }
     }
 }

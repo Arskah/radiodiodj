@@ -1,101 +1,27 @@
-use anyhow::{bail, Context, Result};
+use anyhow::Result;
 use base64::Engine;
 use lofty::file::TaggedFileExt;
 use lofty::prelude::*;
 use lofty::probe::Probe;
 use lofty::tag::ItemKey;
 use parking_lot::Mutex;
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::UNIX_EPOCH;
-use walkdir::WalkDir;
 
 use super::db::{Db, IndexRow, Reconcile, TrackInsert};
 use super::fingerprint;
-use crate::audio::formats;
+pub use super::listing::ScanRoot;
+use super::listing::{self, Found};
+#[cfg(test)]
+use super::listing::{find_audio_files, should_rescan};
 
 /// Upper bound on parallel tag-read workers. A scan is dominated by per-file
 /// I/O (stat + header read), which on a networked share is latency-bound —
 /// reading several files at once hides that latency. Capped so a scan does not
 /// hammer the share.
 const SCAN_CONCURRENCY: usize = 4;
-
-/// The audio files found under one root. `complete` is false when part of the
-/// tree could not be read, so the listing cannot prove a file is gone.
-pub struct Enumeration {
-    pub files: Vec<PathBuf>,
-    pub complete: bool,
-}
-
-/// List the audio files under `dir`, skipping hidden entries. Fails when `dir`
-/// itself is not a readable directory — an unmounted share must never look
-/// like an empty one.
-pub fn find_audio_files(dir: &Path) -> Result<Enumeration> {
-    let meta = std::fs::metadata(dir)
-        .with_context(|| format!("library path {} is unreachable", dir.display()))?;
-    if !meta.is_dir() {
-        bail!("library path {} is not a directory", dir.display());
-    }
-    let mut files = Vec::new();
-    let mut complete = true;
-    let walk = WalkDir::new(dir)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| {
-            e.depth() == 0
-                || e.file_name()
-                    .to_string_lossy()
-                    .chars()
-                    .next()
-                    .map(|c| c != '.')
-                    .unwrap_or(true)
-        });
-    for entry in walk {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(e) => {
-                log::warn!("scan: cannot read under {}: {}", dir.display(), e);
-                complete = false;
-                continue;
-            }
-        };
-        let is_audio = entry
-            .path()
-            .extension()
-            .and_then(|x| x.to_str())
-            .map(formats::is_audio_extension)
-            .unwrap_or(false);
-        if entry.file_type().is_file() && is_audio {
-            files.push(entry.into_path());
-        }
-    }
-    Ok(Enumeration { files, complete })
-}
-
-pub fn should_rescan(
-    existing_content_type: Option<&str>,
-    existing_mtime: Option<i64>,
-    file_mtime_ms: i64,
-    content_type: &str,
-) -> bool {
-    let Some(prev_ct) = existing_content_type else {
-        return true;
-    };
-    let Some(prev_mtime) = existing_mtime else {
-        return true;
-    };
-    if prev_ct != content_type {
-        return true;
-    }
-    prev_mtime != file_mtime_ms
-}
-
-/// A configured library path and the content type it feeds.
-pub struct ScanRoot {
-    pub content_type: &'static str,
-    pub path: String,
-}
 
 #[derive(Debug, Default, PartialEq)]
 pub struct ScanOutcome {
@@ -106,12 +32,6 @@ pub struct ScanOutcome {
     pub missing: usize,
     /// Moved files matched back to their missing rows.
     pub reattached: usize,
-}
-
-/// A file found on disk, with the content type of the root it was found under.
-struct Found {
-    path: String,
-    content_type: &'static str,
 }
 
 /// Scan every root and bring the library in line with what is on disk.
@@ -127,30 +47,8 @@ pub fn scan_all(
     cancel: &(impl Fn() -> bool + Sync),
     on_progress: impl Fn(usize, usize) + Sync,
 ) -> Result<ScanOutcome> {
-    let mut found: Vec<Found> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut listed: Vec<&Path> = Vec::new();
-    for root in roots {
-        match find_audio_files(Path::new(&root.path)) {
-            Ok(listing) => {
-                if listing.complete {
-                    listed.push(Path::new(&root.path));
-                } else {
-                    log::warn!("scan: {} was listed partially; not pruning it", root.path);
-                }
-                for file in listing.files {
-                    let path = file.to_string_lossy().into_owned();
-                    if seen.insert(path.clone()) {
-                        found.push(Found {
-                            path,
-                            content_type: root.content_type,
-                        });
-                    }
-                }
-            }
-            Err(e) => log::warn!("scan: {e:#}; keeping its tracks"),
-        }
-    }
+    let listing = listing::list_roots(roots);
+    let seen = &listing.seen;
 
     let index = db.track_index()?;
     let present: HashMap<&str, &IndexRow> = index
@@ -176,7 +74,7 @@ pub fn scan_all(
         fingerprint_new: !index.is_empty(),
     };
 
-    let steps = inspect_all(&found, &known, cancel, &on_progress);
+    let steps = inspect_all(&listing.found, &known, cancel, &on_progress);
     let canceled = cancel();
     let mut change = Reconcile {
         now_ms: now_ms(),
@@ -197,16 +95,7 @@ pub fn scan_all(
         }
     }
     if !canceled {
-        change.gone = index
-            .iter()
-            .filter(|row| row.missing_since.is_none() && !seen.contains(&row.path))
-            .filter(|row| {
-                let path = Path::new(&row.path);
-                let configured = roots.iter().any(|r| path.starts_with(&r.path));
-                !configured || listed.iter().any(|root| path.starts_with(root))
-            })
-            .map(|row| row.id)
-            .collect();
+        change.gone = listing.gone(&index, roots).map(|row| row.id).collect();
     }
 
     let updated = change.upserts.len();
@@ -220,7 +109,7 @@ pub fn scan_all(
         );
     }
     Ok(ScanOutcome {
-        total: found.len(),
+        total: listing.found.len(),
         added: updated + done.inserted + done.duplicated,
         canceled,
         missing: done.missing,
@@ -297,20 +186,8 @@ fn inspect_all(
 }
 
 fn inspect(file: &Found, known: &Known) -> Option<Step> {
-    let mtime_ms = std::fs::metadata(&file.path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-    let changed = |row: &IndexRow| {
-        should_rescan(
-            Some(&row.content_type),
-            row.mtime,
-            mtime_ms,
-            file.content_type,
-        )
-    };
+    let mtime_ms = file.mtime_ms();
+    let changed = |row: &IndexRow| file.changed(row, mtime_ms);
     let parse = |fingerprint: Option<String>| match parse_track(
         &file.path,
         file.content_type,

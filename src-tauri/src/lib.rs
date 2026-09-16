@@ -20,7 +20,9 @@ use audio::cue::CueDeck;
 use audio::cue_points::CuePoints;
 use audio::player::{Cmd, PlayerTuning};
 use broadcast::{service::default_now_playing_dir, BroadcastService};
-use library::db::{Db, LibraryStats, MissingSummary, OpenError, Track, TrackMetadataUpdate};
+use library::check::LibraryCheck;
+use library::db::{Db, LibraryStats, OpenError, Track, TrackMetadataUpdate};
+use library::health::{FindingKind, Health, HealthReport};
 use library::scan_state::{ScanState, ScanStatus, StartResult};
 use library::waveform_scan::{WaveformJob, WaveformStatus};
 use persist::config::{Config, DeviceRef, NowPlayingConfig, TuningConfig};
@@ -69,6 +71,10 @@ pub struct AppState {
     scan: Arc<ScanState>,
     /// Background job that fills track waveforms after a metadata scan.
     waveform: Arc<WaveformJob>,
+    /// Missing tracks and duplicates, kept current for the renderer.
+    health: Arc<Health>,
+    /// Compares the disk with the library between scans.
+    check: Arc<LibraryCheck>,
     /// The mixer every on-air deck sums into, and the worker driving them.
     bus: Arc<ProgramBus>,
     /// Owner of the playlist and of everything that advances it.
@@ -162,7 +168,9 @@ fn get_all_paths(state: State<'_, AppState>) -> serde_json::Value {
 
 #[tauri::command(rename_all = "camelCase")]
 fn add_path(state: State<'_, AppState>, r#type: String, dir_path: String) -> Result<bool, String> {
-    state.config.add_path(&r#type, &dir_path).map_err(err)
+    let added = state.config.add_path(&r#type, &dir_path).map_err(err)?;
+    state.health.refresh();
+    Ok(added)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -171,7 +179,9 @@ fn remove_path(
     r#type: String,
     dir_path: String,
 ) -> Result<bool, String> {
-    state.config.remove_path(&r#type, &dir_path).map_err(err)
+    let removed = state.config.remove_path(&r#type, &dir_path).map_err(err)?;
+    state.health.refresh();
+    Ok(removed)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -275,8 +285,8 @@ fn playlist_clear(app: State<'_, AppState>) {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn playlist_play_index(app: State<'_, AppState>, index: usize) {
-    app.playlist.play_index(index);
+fn playlist_play_index(app: State<'_, AppState>, index: usize) -> Result<(), String> {
+    app.playlist.play_index(index)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -373,7 +383,10 @@ fn update_track_metadata(
     state: State<'_, AppState>,
     updates: TrackMetadataUpdate,
 ) -> Result<Track, String> {
-    state.db.update_track_metadata(&updates).map_err(err)
+    let track = state.db.update_track_metadata(&updates).map_err(err)?;
+    // Artist and title decide possible duplicates.
+    state.health.refresh();
+    Ok(track)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -570,19 +583,50 @@ fn cancel_scan(state: State<'_, AppState>) {
     state.waveform.cancel();
 }
 
+/// Permanently delete the chosen missing tracks. Ids of tracks that are not
+/// missing are ignored. Refused mid-scan: the scan may be about to reattach
+/// some of them. Returns how many were deleted.
 #[tauri::command(rename_all = "camelCase")]
-fn get_missing_summary(state: State<'_, AppState>) -> Result<MissingSummary, String> {
-    state.db.missing_summary().map_err(err)
-}
-
-/// Permanently delete the tracks whose files are gone. Refused mid-scan: the
-/// scan may be about to reattach some of them.
-#[tauri::command(rename_all = "camelCase")]
-fn purge_missing_tracks(state: State<'_, AppState>) -> Result<usize, String> {
+fn purge_tracks(state: State<'_, AppState>, ids: Vec<i64>) -> Result<usize, String> {
     if state.scan.is_running() {
         return Err("a library scan is running; purge when it finishes".into());
     }
-    state.db.purge_missing().map_err(err)
+    let deleted = state.db.purge_tracks(&ids).map_err(err)?;
+    // No queued item may point at a row that no longer exists.
+    state
+        .playlist
+        .remove_tracks(deleted.iter().copied().collect());
+    state.health.refresh();
+    Ok(deleted.len())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn library_health(state: State<'_, AppState>) -> HealthReport {
+    state.health.report()
+}
+
+/// Compare the disk with the library now, outside the timer.
+#[tauri::command(rename_all = "camelCase")]
+fn library_check_now(state: State<'_, AppState>) {
+    state.check.request();
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn health_dismiss(
+    state: State<'_, AppState>,
+    kind: FindingKind,
+    key: String,
+) -> Result<(), String> {
+    state.health.dismiss(kind, &key).map_err(err)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn health_undismiss(
+    state: State<'_, AppState>,
+    kind: FindingKind,
+    key: String,
+) -> Result<(), String> {
+    state.health.undismiss(kind, &key).map_err(err)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -696,7 +740,16 @@ pub fn run() {
             // Backfill waveforms for any already-indexed tracks that lack one,
             // without waiting for the next scan. No-op on an empty library.
             Arc::clone(&waveform).start(app.handle().clone(), Arc::clone(&db));
+            let health = Health::new(app.handle().clone(), Arc::clone(&db), Arc::clone(&config));
+            health.attach_to_app(app.handle());
             let scan = Arc::new(ScanState::default());
+            let check = LibraryCheck::new(
+                Arc::clone(&db),
+                Arc::clone(&config),
+                Arc::clone(&scan),
+                Arc::clone(&health),
+            );
+            check.start(app.handle());
             if library_reset {
                 Arc::clone(&scan).start(
                     app.handle().clone(),
@@ -711,6 +764,8 @@ pub fn run() {
                 session,
                 scan,
                 waveform,
+                health,
+                check,
                 bus,
                 playlist,
                 cue: Arc::new(Mutex::new(None)),
@@ -753,8 +808,11 @@ pub fn run() {
             scan_libraries,
             cancel_scan,
             get_scan_status,
-            get_missing_summary,
-            purge_missing_tracks,
+            purge_tracks,
+            library_health,
+            library_check_now,
+            health_dismiss,
+            health_undismiss,
             get_waveform_status,
             audio_list_devices,
             get_main_device,

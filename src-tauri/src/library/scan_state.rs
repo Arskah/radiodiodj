@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 use super::db::Db;
-use super::scanner::{self, ScanRoot};
+use super::listing;
+use super::scanner;
 use super::waveform_scan::WaveformJob;
 use crate::persist::config::Config;
 
@@ -143,15 +144,7 @@ fn run(
 ) {
     const PROGRESS_THROTTLE: Duration = Duration::from_millis(200);
     let last_emit = Mutex::new(Instant::now() - PROGRESS_THROTTLE);
-    let roots: Vec<ScanRoot> = ["music", "commercial", "jingle"]
-        .into_iter()
-        .flat_map(|content_type| {
-            config
-                .get_paths(content_type)
-                .into_iter()
-                .map(move |path| ScanRoot { content_type, path })
-        })
-        .collect();
+    let roots = listing::configured_roots(&config);
 
     let outcome = scanner::scan_all(
         &db,

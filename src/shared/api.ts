@@ -7,8 +7,9 @@ import type {
   PlaylistItem,
   DeviceInfo,
   DeviceRef,
+  FindingKind,
+  HealthReport,
   LibraryStats,
-  MissingSummary,
   NowPlayingConfig,
   ScanResult,
   SortColumn,
@@ -211,12 +212,30 @@ export const api = {
   removePath(type: ContentType, dirPath: string): Promise<boolean> {
     return invoke<boolean>("remove_path", { type, dirPath });
   },
-  getMissingSummary(): Promise<MissingSummary> {
-    return invoke<MissingSummary>("get_missing_summary");
+  /**
+   * Permanently delete the given missing tracks. Ids of tracks that are not
+   * missing are ignored; resolves to how many were deleted.
+   */
+  purgeTracks(ids: number[]): Promise<number> {
+    return invoke<number>("purge_tracks", { ids });
   },
-  /** Permanently delete missing tracks; resolves to how many were deleted. */
-  purgeMissingTracks(): Promise<number> {
-    return invoke<number>("purge_missing_tracks");
+  libraryHealth(): Promise<HealthReport> {
+    return invoke<HealthReport>("library_health");
+  },
+  onLibraryHealth(
+    callback: (report: HealthReport) => void,
+  ): Promise<UnlistenFn> {
+    return listen<HealthReport>("library-health", (e) => callback(e.payload));
+  },
+  /** Compare the disk with the library now, outside the timer. */
+  libraryCheckNow(): Promise<void> {
+    return invoke<void>("library_check_now");
+  },
+  healthDismiss(kind: FindingKind, key = ""): Promise<void> {
+    return invoke<void>("health_dismiss", { kind, key });
+  },
+  healthUndismiss(kind: FindingKind, key = ""): Promise<void> {
+    return invoke<void>("health_undismiss", { kind, key });
   },
   scanLibraries(): Promise<{ alreadyRunning: boolean }> {
     return invoke<{ alreadyRunning: boolean }>("scan_libraries");

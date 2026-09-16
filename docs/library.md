@@ -1,0 +1,228 @@
+# Library — how RadiodioDJ knows its audio
+
+The library is everything the station can put on air: every audio file under the
+configured library paths, indexed with its tags, its cue points and its play
+count. This page covers the whole feature and links to the detailed designs.
+
+| topic                                         | detail                                         |
+| --------------------------------------------- | ---------------------------------------------- |
+| identity, moves, missing tracks, fingerprints | [track-identity.md](./track-identity.md)       |
+| missing tracks, duplicates, the library check | [library-health.md](./library-health.md)       |
+| schema and migrations                         | [database.md](./database.md)                   |
+| cue points stored on a track                  | [cue-points.md](./cue-points.md)               |
+| automatic cue points (planned)                | [cue-auto-analysis.md](./cue-auto-analysis.md) |
+
+The app **reads** audio files and never writes, moves or deletes them. Everything
+the operator adds to a track (edited tags, cue points, play count) lives in the
+library database.
+
+## Library paths and content types
+
+Every track has one **content type**: `music`, `jingle` or `commercial`. The
+content type comes from the library path a file was found under, not from its
+tags.
+
+_Settings → Library_ holds three lists of folders, one per content type. Adding
+a folder stores its canonical path in `config.json`, and removing one only
+changes the list: its tracks go missing on the next scan, and come back intact if
+the folder is added again.
+
+A folder may hold subfolders; the scan recurses into them. If one file is under
+two library paths, it is indexed once, under the first path in the order music,
+commercials, jingles.
+
+The three content types make up three libraries: the **Music**, **Jingle** and
+**Commercial libraries**. They matter in two places. The library panel shows one
+at a time, and the auto-playlist draws music and interleaves jingles and
+commercials (see [Auto-playlist](#auto-playlist)).
+
+## Scanning
+
+_Settings → Library → Scan Library Now_ brings the library in line with the
+disk. The Settings window closes, and a bar at the bottom of the main window
+shows progress with a _Cancel_ button. Only one scan runs at a time.
+
+A scan:
+
+1. **Lists** every library path. Hidden files and folders (a leading `.`) are
+   skipped, and symbolic links are not followed. Only files with an audio
+   extension are kept: `mp3`, `flac`, `wav`, `ogg`, `oga`, `aac`, `m4a`, `wma`,
+   `opus`, `webm`, `aiff`, `aif`, `mka`, `mp2`.
+2. **Inspects** each file on up to four threads at once, which hides the latency
+   of a network share without flooding it.
+   - A known file whose modification time and content type are unchanged is
+     skipped without being opened. This is the **delta cache**, and it is what
+     keeps a rescan fast.
+   - Anything else has its tags read with `lofty`: title, artist, album, genre,
+     year, BPM, duration, sample rate, bitrate, format. A file without a title
+     is named after its file name; one without an artist or album gets
+     `Unknown`.
+   - A new file is also fingerprinted, except on the first scan into an empty
+     library.
+3. **Reconciles** everything in one database transaction: changed files are
+   re-tagged, moved files are **reattached** to their old track, copies become
+   **duplicates**, files that are gone make their track **missing**, and the rest
+   are inserted. A scan never deletes a track. The rules, and the guards that
+   stop an unreachable share from looking empty, are in
+   [track-identity.md](./track-identity.md#reconciling-a-scan).
+
+When the scan finishes, the bar reports what it did, for example _Scan complete
+— 2 986 tracks (12 new/updated, 3 moved, 1 missing)_. The result stays until the
+operator dismisses it or starts another scan. A canceled or failed scan reports
+that instead. A canceled scan keeps its updates but leaves new files for the
+next complete scan.
+
+Scans are started by the operator. Between scans, the **library check** notices
+new, changed and gone files without changing anything; see
+[library-health.md](./library-health.md#disk-changes).
+
+### The analysis pass
+
+Every launch and every completed scan starts the **analysis pass**
+(`library/waveform_scan.rs`). It works through present tracks that lack a
+waveform or a fingerprint, decoding on several threads (the core count less two,
+kept between 2 and 8) so playback and the UI stay responsive. A second bar under
+the scan bar shows its progress.
+
+- The **waveform** is the amplitude curve drawn behind the deck's seek bar and in
+  the cue editor. It needs a full decode, which is why it is not part of the
+  scan.
+- The **fingerprint** identifies the audio independently of path and tags. It is
+  computed from the bytes already read for the waveform, or from the first
+  megabyte of the file otherwise.
+
+A file that fails to decode is skipped for the rest of the run. Cancelling a scan
+cancels the pass too; the next one picks up where it stopped.
+
+## Tracks
+
+A track is one row in the library database. Its id never changes, so the
+playlist, the history and the saved session refer to it by id.
+
+| part                   | source            | survives a rescan             |
+| ---------------------- | ----------------- | ----------------------------- |
+| path, content type     | where the file is | follows the file              |
+| tags, duration, format | the file          | re-read when the file changes |
+| cue points             | the operator      | always                        |
+| play count             | airings           | always                        |
+| waveform, fingerprint  | the analysis pass | always                        |
+
+Tags edited in the app are overwritten when the file itself changes, because the
+scan re-reads it. Writing edits back into the file is
+[#313](https://github.com/Arskah/radiodiodj/issues/313).
+
+The **play count** goes up by one each time the track is put on air.
+
+A track whose file is gone is **missing**. It is hidden from the library panel,
+search, the statistics and the auto-playlist, but it keeps its id, cue points
+and play count until the operator purges it. The same track comes back if the
+file reappears, at the same path or, by fingerprint, at a new one. See
+[track-identity.md](./track-identity.md#missing-not-deleted) and
+[library-health.md](./library-health.md#missing-tracks).
+
+## The library panel
+
+The library panel shows one library at a time: _Music_,
+_Commercials_ or _Jingles_.
+
+- **Search** matches title, artist, album and genre. Each word is a prefix, so
+  `beat abb` finds _Abbey Road_ by _The Beatles_. The search runs a quarter of a
+  second after typing stops, and shows at most 200 tracks, best match first.
+- **Sort** by title, artist, album or plays by clicking a column header; click
+  again to reverse. Text sorts ignore case. With no sort and no search, the list
+  is ordered by artist, album and title.
+- **Time** is the track's [air time](./cue-points.md#air-time): what reaches air
+  once its cue points apply. A trimmed track shows its time in the cue colour.
+- **Hovering** a row shows album, genre, year, duration (the file length too
+  when cue points trim it), BPM, format, bitrate, sample rate and plays.
+
+On each row:
+
+| action                  | how                                                       |
+| ----------------------- | --------------------------------------------------------- |
+| add to the playlist     | double-click, or the `+` button                           |
+| preview on the cue deck | the headphones button (only with a cue device configured) |
+| edit metadata           | the pencil button                                         |
+| everything else         | right-click, the menu key, Shift+F10 or Ctrl+Enter        |
+
+The row menu offers _Add to playlist_, _Add as next_, _Preview on cue deck_,
+_Edit metadata…_, _Cue points…_, _Show in folder_ and, set apart and marked as
+dangerous, _Play now (on air)_. Play now is never the item under the cursor when
+the menu opens, so a stray click cannot reach air.
+
+_Show in folder_ opens the platform file manager at the file. It takes a track
+id rather than a path, so the renderer can only reveal files the library already
+knows.
+
+## Editing a track
+
+**Edit metadata…** opens a form for title, artist, album, genre and year. The
+title is required, and the year must be a whole number from 1900 to 2100. Saving
+updates the database only, and the change shows in the library, the playlist and
+the deck at once. Artist and title changes can also make or break a
+[possible duplicate](./library-health.md#possible-duplicates).
+
+**Cue points…** opens the cue editor, which stores the track's radio edit; see
+[cue-points.md](./cue-points.md).
+
+In this app, "edit" always means metadata. Playback markers are always cue
+points.
+
+## Statistics
+
+The toolbar shows the number of present tracks, distinct artists, and the total
+**playtime** in hours. Playtime alone is file time, not air time.
+
+## Cover art
+
+A track's embedded picture is read from the file when the track is loaded on a
+deck, and shown on the deck's disc. It is never stored in the database.
+
+## Auto-playlist
+
+When _Auto Mode_ is on, the playlist tops itself up from the library:
+
+- **music** is picked at random
+- **jingles** are picked at random, one every _N_ music tracks
+- **commercials** are picked at random from the least-played ones, one every _M_
+  music tracks, so every spot gets its airings
+
+Tracks already in the playlist, and missing tracks, are never picked. The cadences and
+buffer sizes are under _Settings → Advanced_. _+ Jingle_ and _+ Comm_ in the
+playlist add one filler by the same rules.
+
+## Library health
+
+_Settings → Library_ also reports what needs attention: missing tracks, exact and
+possible duplicates, and disk changes the library has not picked up. A count on
+the Settings button says when there is something to look at. See
+[library-health.md](./library-health.md).
+
+## Where it is stored
+
+| file            | holds                                                  |
+| --------------- | ------------------------------------------------------ |
+| `radiodiodj.db` | tracks, their operator work, and health dismissals     |
+| `config.json`   | library paths and tuning, including the check interval |
+| `session.json`  | the playlist and history, by track id                  |
+
+They sit in the app data directory listed in `AGENTS.md`. The database uses
+SQLite in WAL mode with an FTS5 index for search; its schema rules, backups and
+pre-1.0 resets are in [database.md](./database.md).
+
+## Code map
+
+| area                               | where                                                          |
+| ---------------------------------- | -------------------------------------------------------------- |
+| listing and the changed/gone rules | `src-tauri/src/library/listing.rs`                             |
+| scan and reconcile                 | `library/scanner.rs`, `library/scan_state.rs`, `Db::reconcile` |
+| fingerprint                        | `library/fingerprint.rs`                                       |
+| waveforms and fingerprints         | `library/waveform_scan.rs`                                     |
+| health report                      | `library/health.rs`                                            |
+| library check                      | `library/check.rs`                                             |
+| queries and schema                 | `library/db.rs`, `library/schema.sql`                          |
+| auto-playlist selection            | `playlist/generate.rs`                                         |
+| library panel                      | `src/features/library/LibraryPanel.svelte`                     |
+| hover card                         | `src/features/track/TrackTooltip.svelte`                       |
+| metadata editor                    | `src/features/track/MetadataOverlay.svelte`                    |
+| settings and health view           | `src/features/settings/`, `src/features/health/`               |
