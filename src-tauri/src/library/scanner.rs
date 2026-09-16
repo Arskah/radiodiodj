@@ -12,8 +12,8 @@ use std::time::UNIX_EPOCH;
 
 use super::db::{Db, IndexRow, Reconcile, TrackInsert};
 use super::fingerprint;
-use super::listing::{self, Found};
 pub use super::listing::ScanRoot;
+use super::listing::{self, Found};
 #[cfg(test)]
 use super::listing::{find_audio_files, should_rescan};
 

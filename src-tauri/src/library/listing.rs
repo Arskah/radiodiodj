@@ -10,11 +10,25 @@ use walkdir::WalkDir;
 
 use super::db::IndexRow;
 use crate::audio::formats;
+use crate::persist::config::Config;
 
 /// A configured library path and the content type it feeds.
 pub struct ScanRoot {
     pub content_type: &'static str,
     pub path: String,
+}
+
+/// Every configured library path, music first.
+pub fn configured_roots(config: &Config) -> Vec<ScanRoot> {
+    ["music", "commercial", "jingle"]
+        .into_iter()
+        .flat_map(|content_type| {
+            config
+                .get_paths(content_type)
+                .into_iter()
+                .map(move |path| ScanRoot { content_type, path })
+        })
+        .collect()
 }
 
 /// The audio files found under one root. `complete` is false when part of the

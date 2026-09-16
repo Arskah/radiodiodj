@@ -5,6 +5,7 @@
 //! transition ends with a [`Snapshot`] on `program:playlist-state`, which is the
 //! renderer's only source of playlist truth.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -192,6 +193,10 @@ impl PlaylistService {
 
     pub fn remove(&self, index: usize) {
         Inner::apply(&self.inner, move |p, _| p.remove(index));
+    }
+
+    pub fn remove_tracks(&self, ids: HashSet<i64>) {
+        Inner::apply(&self.inner, move |p, _| p.remove_tracks(&ids));
     }
 
     pub fn move_item(&self, from: usize, to: usize) {

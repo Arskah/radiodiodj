@@ -195,6 +195,13 @@ impl Playlist {
         Transition::default()
     }
 
+    /// Drop every queued item for these tracks: their rows were purged.
+    pub fn remove_tracks(&mut self, ids: &HashSet<i64>) -> Transition {
+        self.items
+            .retain(|item| item.as_track().is_none_or(|t| !ids.contains(&t.id)));
+        Transition::default()
+    }
+
     pub fn move_item(&mut self, from: usize, to: usize) -> Transition {
         if from == to || from >= self.items.len() || to >= self.items.len() {
             return Transition::default();
@@ -657,6 +664,13 @@ mod tests {
         p.remove(0);
         assert_eq!(queued(&p), vec![Some(3)]);
         assert_eq!(current_id(&p), Some(1));
+    }
+
+    #[test]
+    fn remove_tracks_drops_every_airing_of_them_and_keeps_stop_markers() {
+        let mut p = with(&[Some(1), Some(2), None, Some(1), Some(3)]);
+        p.remove_tracks(&HashSet::from([1, 3]));
+        assert_eq!(queued(&p), vec![Some(2), None]);
     }
 
     #[test]

@@ -89,15 +89,18 @@ which is cheap next to any of those triggers.
 Each `MissingTrack` carries what a purge would destroy, and what the operator
 needs to decide:
 
-| field          | from                                           |
-| -------------- | ---------------------------------------------- |
-| title, artist  | the row                                        |
-| path           | the row: the last path the file was seen at    |
-| `missingSince` | the row                                        |
-| `hasCuePoints` | any of the five markers is set                 |
-| `playCount`    | the row                                        |
-| `queued`       | the id is in the playlist, or on the main deck |
-| `outsideRoots` | no configured library path contains the path   |
+| field          | from                                                         |
+| -------------- | ------------------------------------------------------------ |
+| title, artist  | the row                                                      |
+| path           | the row: the last path the file was seen at                  |
+| `missingSince` | the row                                                      |
+| `hasCuePoints` | any of the five markers is set                               |
+| `playCount`    | the row                                                      |
+| `queued`       | added by the renderer, from the playlist snapshot it mirrors |
+| `outsideRoots` | no configured library path contains the path                 |
+
+`queued` is the renderer's, so the report does not depend on the playlist,
+which will itself depend on the report for missing ids.
 
 `outsideRoots` separates the two reasons a track goes missing. A file that was
 deleted is one row. A library path that was removed from _Settings_ is usually

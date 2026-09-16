@@ -46,6 +46,34 @@ pub struct MissingSummary {
     pub with_cue_points: i64,
 }
 
+/// A missing row, as the library health view lists it.
+pub struct MissingRow {
+    pub id: i64,
+    pub title: String,
+    pub artist: String,
+    pub path: String,
+    pub missing_since: i64,
+    pub play_count: i64,
+    pub has_cue_points: bool,
+}
+
+/// A present row with the identity columns `Track` leaves out.
+pub struct HealthRow {
+    pub track: Track,
+    pub path: String,
+    pub content_type: String,
+    pub fingerprint: Option<String>,
+}
+
+/// The operator's acknowledgement of one health finding. `value` is what the
+/// finding looked like when it was dismissed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Dismissal {
+    pub kind: String,
+    pub key: String,
+    pub value: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct TracksByType {
     pub music: i64,
@@ -631,10 +659,136 @@ impl Db {
         .map_err(Into::into)
     }
 
-    /// Delete every missing row for good. The only path that deletes tracks.
-    pub fn purge_missing(&self) -> Result<usize> {
+    /// Every missing row, newest first, with what a purge would destroy.
+    pub fn missing_tracks(&self) -> Result<Vec<MissingRow>> {
         let conn = self.conn.lock();
-        Ok(conn.execute("DELETE FROM tracks WHERE missing_since IS NOT NULL", [])?)
+        let mut stmt = conn.prepare(
+            "SELECT id, title, artist, path, missing_since, play_count, \
+                    COALESCE(cue_in_ms, fade_in_ms, fade_out_ms, cue_out_ms, \
+                             next_start_ms) IS NOT NULL \
+             FROM tracks WHERE missing_since IS NOT NULL \
+             ORDER BY missing_since DESC, id DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(MissingRow {
+                id: r.get(0)?,
+                title: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                artist: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                path: r.get(3)?,
+                missing_since: r.get(4)?,
+                play_count: r.get(5)?,
+                has_cue_points: r.get(6)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+    }
+
+    /// Present rows sharing a fingerprint with another present row, ordered so
+    /// each group is contiguous.
+    pub fn fingerprint_twins(&self) -> Result<Vec<HealthRow>> {
+        self.health_rows(
+            "missing_since IS NULL AND fingerprint IN ( \
+               SELECT fingerprint FROM tracks \
+               WHERE missing_since IS NULL AND fingerprint IS NOT NULL \
+               GROUP BY fingerprint HAVING COUNT(*) > 1) \
+             ORDER BY fingerprint, id",
+        )
+    }
+
+    /// Present music rows with both an artist and a title: the candidates for
+    /// possible duplicates, which are grouped in Rust.
+    pub fn tagged_music(&self) -> Result<Vec<HealthRow>> {
+        self.health_rows(
+            "missing_since IS NULL AND content_type = 'music' \
+             AND COALESCE(artist, '') <> '' AND COALESCE(title, '') <> '' \
+             ORDER BY id",
+        )
+    }
+
+    fn health_rows(&self, filter: &str) -> Result<Vec<HealthRow>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {TRACK_COLUMNS}, path, content_type, fingerprint FROM tracks WHERE {filter}"
+        ))?;
+        let rows = stmt.query_map([], |r| {
+            Ok(HealthRow {
+                track: row_to_track(r)?,
+                path: r.get("path")?,
+                content_type: r.get("content_type")?,
+                fingerprint: r.get("fingerprint")?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+    }
+
+    /// Present rows the analysis pass has not fingerprinted yet.
+    pub fn unhashed_count(&self) -> Result<i64> {
+        let conn = self.conn.lock();
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM tracks WHERE missing_since IS NULL AND fingerprint IS NULL",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
+    pub fn dismissals(&self) -> Result<Vec<Dismissal>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT kind, key, value FROM health_dismissals")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(Dismissal {
+                kind: r.get(0)?,
+                key: r.get(1)?,
+                value: r.get(2)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+    }
+
+    pub fn set_dismissal(&self, d: &Dismissal) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO health_dismissals (kind, key, value) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(kind, key) DO UPDATE SET value = excluded.value",
+            params![d.kind, d.key, d.value],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_dismissals(&self, which: &[(String, String)]) -> Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        {
+            let mut delete =
+                tx.prepare("DELETE FROM health_dismissals WHERE kind = ?1 AND key = ?2")?;
+            for (kind, key) in which {
+                delete.execute(params![kind, key])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Delete the given rows for good — the only path that deletes tracks —
+    /// skipping any that are not missing (a
+    /// scan may have revived one since the operator chose it). Returns the ids
+    /// actually deleted.
+    pub fn purge_tracks(&self, ids: &[i64]) -> Result<Vec<i64>> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let mut deleted = Vec::new();
+        for chunk in ids.chunks(500) {
+            let sql = format!(
+                "DELETE FROM tracks WHERE missing_since IS NOT NULL AND id IN ({}) RETURNING id",
+                vec!["?"; chunk.len()].join(",")
+            );
+            let mut stmt = tx.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(chunk), |r| r.get::<_, i64>(0))?;
+            for id in rows {
+                deleted.push(id?);
+            }
+        }
+        tx.commit()?;
+        Ok(deleted)
     }
 
     pub fn increment_play_count(&self, id: i64) -> Result<()> {
@@ -859,6 +1013,11 @@ fn order_clause(sort_by: Option<&str>, sort_dir: Option<&str>) -> Option<String>
     Some(format!("{} {}{}", col, collate, dir))
 }
 
+/// What [`row_to_track`] reads, for queries that must not drag the waveform
+/// blob along with `SELECT *`.
+const TRACK_COLUMNS: &str = "id, title, artist, album, duration, play_count, genre, year, bpm, \
+     sample_rate, bitrate, format, cue_in_ms, fade_in_ms, fade_out_ms, cue_out_ms, next_start_ms";
+
 fn row_to_track(row: &Row) -> rusqlite::Result<Track> {
     Ok(Track {
         id: row.get("id")?,
@@ -904,7 +1063,7 @@ const KEPT_BACKUPS: usize = 2;
 
 /// The schema, as an append-only list. Never edit a step that has shipped: add
 /// a new one and regenerate `schema.sql` (see `docs/database.md`).
-const MIGRATION_STEPS: &[M] = &[M::up(BASELINE)];
+const MIGRATION_STEPS: &[M] = &[M::up(BASELINE), M::up(HEALTH_DISMISSALS)];
 const MIGRATIONS: Migrations = Migrations::from_slice(MIGRATION_STEPS);
 
 fn schema_version() -> usize {
@@ -979,6 +1138,17 @@ CREATE TRIGGER tracks_au AFTER UPDATE OF title, artist, album, genre ON tracks B
   INSERT INTO tracks_fts(rowid, title, artist, album, genre)
   VALUES (new.id, new.title, new.artist, new.album, new.genre);
 END;
+"#;
+
+/// Step 2: the operator's dismissals of library health findings. Stored beside
+/// the tracks because they name track ids, so a reset replaces both at once.
+const HEALTH_DISMISSALS: &str = r#"
+CREATE TABLE health_dismissals (
+  kind  TEXT NOT NULL CHECK (kind IN ('exact', 'possible', 'missing')),
+  key   TEXT NOT NULL,
+  value TEXT NOT NULL,
+  PRIMARY KEY (kind, key)
+);
 "#;
 
 /// Upsert one present track's metadata by path. The operator-work columns are
@@ -1179,11 +1349,19 @@ mod tests {
 
     /// Seeds one representative row into a database at schema version `i + 1`.
     /// Append one whenever a migration step is appended.
-    const SEEDS: &[fn(&Connection)] = &[|conn| {
+    fn seed_track(conn: &Connection) {
         conn.execute_batch(
             "INSERT INTO tracks (path, content_type, title, artist, album, duration, \
                                  play_count, waveform, cue_in_ms, fingerprint) \
              VALUES ('/seed.mp3', 'music', 'Seed', 'A', 'B', 100.0, 3, x'00ff', 1000, 'v1:ab')",
+        )
+        .unwrap();
+    }
+
+    const SEEDS: &[fn(&Connection)] = &[seed_track, |conn| {
+        seed_track(conn);
+        conn.execute_batch(
+            "INSERT INTO health_dismissals (kind, key, value) VALUES ('exact', 'v1:ab', '1,2')",
         )
         .unwrap();
     }];
@@ -1507,7 +1685,7 @@ mod tests {
             }
         );
 
-        assert_eq!(db.purge_missing().unwrap(), 2);
+        assert_eq!(db.purge_tracks(&ids).unwrap().len(), 2);
 
         assert_eq!(db.missing_summary().unwrap(), MissingSummary::default());
         assert_eq!(db.track_index().unwrap().len(), 1);
