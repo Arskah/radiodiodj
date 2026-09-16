@@ -10,7 +10,12 @@
  * Deliberately absent: the clamp. One ordering rule in two languages drifts,
  * and the authoritative one runs against a duration the renderer never sees.
  */
-import type { CuePoints, Track } from "./types";
+import {
+  isStopMarker,
+  type CuePoints,
+  type PlaylistItem,
+  type Track,
+} from "./types";
 
 /** A track with no adjustments — what "clear all" saves. */
 export const NO_CUE_POINTS: CuePoints = {
@@ -149,6 +154,20 @@ export function airedTrack(
   override: CuePoints | undefined | null,
 ): Track {
   return override ? { ...track, cue_points: override } : track;
+}
+
+/**
+ * How long `items` keep the station on air unattended, in seconds: the air
+ * time of each airing up to the first stop marker. The queue below a stop
+ * marker does not play by itself, so counting it would overstate the cover.
+ */
+export function queueAirTime(items: PlaylistItem[]): number {
+  let total = 0;
+  for (const item of items) {
+    if (isStopMarker(item)) break;
+    total += airDuration(airedTrack(item.track, item.cue_override));
+  }
+  return total;
 }
 
 /**

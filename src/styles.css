@@ -412,6 +412,13 @@ body {
   color: var(--on-surface-variant);
 }
 
+.deck-remaining {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  font-variant-numeric: tabular-nums;
+}
+
 #now-playing .deck-head {
   color: var(--primary);
 }
@@ -1148,6 +1155,13 @@ body {
   font-weight: 400;
   color: var(--outline);
   font-variant-numeric: tabular-nums;
+}
+
+.pl-tab-total {
+  font-weight: 400;
+  color: var(--outline);
+  font-variant-numeric: tabular-nums;
+  text-transform: none;
 }
 
 /* ---- Playlist header actions ---- */

@@ -8,9 +8,10 @@ import {
   cuePointsEqual,
   hasCuePoints,
   isTrimmed,
+  queueAirTime,
   resolveCuePoints,
 } from "./cuePoints";
-import type { CuePoints, Track } from "./types";
+import { stopMarker, trackItem, type CuePoints, type Track } from "./types";
 
 const points = (p: Partial<CuePoints>): CuePoints => ({
   ...NO_CUE_POINTS,
@@ -186,5 +187,30 @@ describe("cuePointsEqual", () => {
         cuePointsEqual(points({ [key]: 1000 }), points({ [key]: 2000 })),
       ).toBe(false);
     }
+  });
+});
+
+describe("queueAirTime", () => {
+  const item = trackItem;
+  const stop = stopMarker();
+
+  it("is zero for an empty queue", () => {
+    expect(queueAirTime([])).toBe(0);
+  });
+
+  it("sums air time, not file time", () => {
+    expect(
+      queueAirTime([item(track(200)), item(track(180, { cue_in_ms: 30_000 }))]),
+    ).toBe(350);
+  });
+
+  it("counts an airing under its own override", () => {
+    const trimmed = track(200, { cue_out_ms: 100_000 });
+    expect(queueAirTime([item(trimmed, points({}))])).toBe(200);
+  });
+
+  it("stops at the first stop marker", () => {
+    expect(queueAirTime([item(track(60)), stop, item(track(90))])).toBe(60);
+    expect(queueAirTime([stop, item(track(90))])).toBe(0);
   });
 });

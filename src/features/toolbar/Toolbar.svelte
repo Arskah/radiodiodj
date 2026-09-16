@@ -47,7 +47,10 @@
           <span class="stat-label">Artists</span>
           <span class="stat-value">{app.stats.totalArtists}</span>
         </div>
-        <div class="stat">
+        <div
+          class="stat"
+          title="Library size, in file length before cue points"
+        >
           <span class="stat-label">Playtime</span>
           <span class="stat-value">{app.stats.totalHours}h</span>
         </div>
