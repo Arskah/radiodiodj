@@ -101,6 +101,10 @@ export interface TrackMetadataInput {
 export interface ScanResult {
   total: number;
   added: number;
+  /** Moved files matched back to their tracks. */
+  reattached?: number;
+  /** Tracks whose file the scan no longer found. */
+  missing?: number;
 }
 
 export interface NowPlayingConfig {

@@ -99,6 +99,8 @@ pub struct TrackInsert {
     pub bitrate: Option<i64>,
     pub format: Option<String>,
     pub mtime: Option<i64>,
+    /// Left as stored when `None`.
+    pub fingerprint: Option<String>,
 }
 
 /// A track the analysis worker still has to read.
@@ -116,6 +118,30 @@ pub struct IndexRow {
     pub content_type: String,
     pub mtime: Option<i64>,
     pub missing_since: Option<i64>,
+    pub fingerprint: Option<String>,
+}
+
+/// Everything one scan changes, applied in a single transaction.
+#[derive(Default)]
+pub struct Reconcile {
+    /// Missing rows whose file is back at the same path.
+    pub revive: Vec<i64>,
+    /// Rows for paths the library already holds.
+    pub upserts: Vec<TrackInsert>,
+    /// Present rows whose file is gone.
+    pub gone: Vec<i64>,
+    /// Files at paths the library does not hold. Matched by fingerprint
+    /// after `gone` is marked, so a file moved within one scan reattaches.
+    pub new_files: Vec<TrackInsert>,
+    pub now_ms: i64,
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub struct Reconciled {
+    pub missing: usize,
+    pub reattached: usize,
+    pub duplicated: usize,
+    pub inserted: usize,
 }
 
 pub struct MediaTrack {
@@ -457,30 +483,13 @@ impl Db {
         Ok(())
     }
 
-    /// Single-track upsert. Only the tests need this; the scanner batches via
-    /// [`Db::insert_tracks`].
+    /// Single-track upsert, for tests; the scanner goes through
+    /// [`Db::reconcile`].
     #[cfg(test)]
     pub fn insert_track(&self, t: &TrackInsert) -> Result<()> {
-        self.insert_tracks(std::slice::from_ref(t))
-    }
-
-    /// Upsert many tracks in a single transaction with one prepared statement.
-    /// Used by the scanner: a per-row autocommit costs a WAL commit each, which
-    /// dominates a large scan — one transaction turns thousands of commits into
-    /// one. A no-op for an empty slice.
-    pub fn insert_tracks(&self, tracks: &[TrackInsert]) -> Result<()> {
-        if tracks.is_empty() {
-            return Ok(());
-        }
-        let mut conn = self.conn.lock();
-        let tx = conn.transaction()?;
-        {
-            let mut stmt = tx.prepare(UPSERT_TRACK_SQL)?;
-            for t in tracks {
-                stmt.execute(upsert_params(t))?;
-            }
-        }
-        tx.commit()?;
+        self.conn
+            .lock()
+            .execute(UPSERT_TRACK_SQL, upsert_params(t))?;
         Ok(())
     }
 
@@ -489,8 +498,9 @@ impl Db {
     /// rather than by a `LIKE` prefix.
     pub fn track_index(&self) -> Result<Vec<IndexRow>> {
         let conn = self.conn.lock();
-        let mut stmt =
-            conn.prepare("SELECT id, path, content_type, mtime, missing_since FROM tracks")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, path, content_type, mtime, missing_since, fingerprint FROM tracks",
+        )?;
         let rows = stmt.query_map([], |r| {
             Ok(IndexRow {
                 id: r.get(0)?,
@@ -498,51 +508,100 @@ impl Db {
                 content_type: r.get(2)?,
                 mtime: r.get(3)?,
                 missing_since: r.get(4)?,
+                fingerprint: r.get(5)?,
             })
         })?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
 
-    /// Mark rows whose file is gone. The row and everything keyed on its id
-    /// stay; it is only hidden. A row already missing keeps its first
-    /// timestamp.
-    pub fn mark_missing(&self, ids: &[i64], now_ms: i64) -> Result<usize> {
-        self.update_ids(
-            "UPDATE tracks SET missing_since = ?1 WHERE missing_since IS NULL AND id IN",
-            ids,
-            Some(now_ms),
-        )
-    }
-
-    /// Bring missing rows back, because their file was found again.
-    pub fn revive(&self, ids: &[i64]) -> Result<usize> {
-        self.update_ids(
-            "UPDATE tracks SET missing_since = NULL WHERE missing_since IS NOT NULL AND id IN",
-            ids,
-            None,
-        )
-    }
-
-    /// Run `sql` — ending in `id IN` — over `ids` in chunks, in one
-    /// transaction. `?1` binds `first` when given.
-    fn update_ids(&self, sql: &str, ids: &[i64], first: Option<i64>) -> Result<usize> {
-        if ids.is_empty() {
-            return Ok(0);
-        }
+    /// Apply a scan's changes atomically. For each new file, in order:
+    ///
+    /// 1. **Reattach** to a missing row with the same fingerprint (newest
+    ///    first): only path, content type and mtime change, so everything the
+    ///    operator did to the track — tags edited in the app included — stays.
+    /// 2. **Duplicate** a present row with the same fingerprint (oldest
+    ///    first): a new row that starts with a copy of that row's operator
+    ///    state.
+    /// 3. Otherwise insert it as a new track.
+    pub fn reconcile(&self, change: &Reconcile) -> Result<Reconciled> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
-        let mut total = 0usize;
-        for chunk in ids.chunks(500) {
-            let offset = usize::from(first.is_some()) + 1;
-            let placeholders: Vec<String> = (0..chunk.len())
-                .map(|i| format!("?{}", i + offset))
-                .collect();
-            let sql = format!("{sql} ({})", placeholders.join(","));
-            let params = first.iter().chain(chunk.iter());
-            total += tx.execute(&sql, params_from_iter(params))?;
+        let mut done = Reconciled::default();
+        for chunk in change.revive.chunks(500) {
+            let sql = format!(
+                "UPDATE tracks SET missing_since = NULL WHERE id IN ({})",
+                vec!["?"; chunk.len()].join(",")
+            );
+            tx.execute(&sql, params_from_iter(chunk))?;
+        }
+        {
+            let mut upsert = tx.prepare(UPSERT_TRACK_SQL)?;
+            for t in &change.upserts {
+                upsert.execute(upsert_params(t))?;
+            }
+        }
+        for chunk in change.gone.chunks(500) {
+            let sql = format!(
+                "UPDATE tracks SET missing_since = ?1 \
+                 WHERE missing_since IS NULL AND id IN ({})",
+                (0..chunk.len())
+                    .map(|i| format!("?{}", i + 2))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            let params = std::iter::once(&change.now_ms).chain(chunk);
+            done.missing += tx.execute(&sql, params_from_iter(params))?;
+        }
+        {
+            let mut missing_twin = tx.prepare(
+                "SELECT id FROM tracks WHERE fingerprint = ?1 AND missing_since IS NOT NULL \
+                 ORDER BY missing_since DESC, id DESC LIMIT 1",
+            )?;
+            let mut reattach = tx.prepare(
+                "UPDATE tracks SET path = ?1, content_type = ?2, mtime = ?3, \
+                        missing_since = NULL \
+                 WHERE id = ?4",
+            )?;
+            let mut present_twin = tx.prepare(
+                "SELECT id FROM tracks WHERE fingerprint = ?1 AND missing_since IS NULL \
+                 ORDER BY id LIMIT 1",
+            )?;
+            let mut insert = tx.prepare(&format!("{UPSERT_TRACK_SQL} RETURNING id"))?;
+            let mut copy_state = tx.prepare(
+                "UPDATE tracks SET title = s.title, artist = s.artist, album = s.album, \
+                        genre = s.genre, year = s.year, bpm = s.bpm, \
+                        play_count = s.play_count, waveform = s.waveform, \
+                        cue_in_ms = s.cue_in_ms, fade_in_ms = s.fade_in_ms, \
+                        fade_out_ms = s.fade_out_ms, cue_out_ms = s.cue_out_ms, \
+                        next_start_ms = s.next_start_ms \
+                 FROM (SELECT * FROM tracks WHERE id = ?1) AS s \
+                 WHERE tracks.id = ?2",
+            )?;
+            for t in &change.new_files {
+                let Some(fp) = &t.fingerprint else {
+                    insert.query_row(upsert_params(t), |_| Ok(()))?;
+                    done.inserted += 1;
+                    continue;
+                };
+                let twin: Option<i64> = missing_twin.query_row([fp], |r| r.get(0)).optional()?;
+                if let Some(id) = twin {
+                    reattach.execute(params![t.path, t.content_type, t.mtime, id])?;
+                    done.reattached += 1;
+                    continue;
+                }
+                let source: Option<i64> = present_twin.query_row([fp], |r| r.get(0)).optional()?;
+                let id: i64 = insert.query_row(upsert_params(t), |r| r.get(0))?;
+                match source {
+                    Some(source) => {
+                        copy_state.execute(params![source, id])?;
+                        done.duplicated += 1;
+                    }
+                    None => done.inserted += 1,
+                }
+            }
         }
         tx.commit()?;
-        Ok(total)
+        Ok(done)
     }
 
     pub fn increment_play_count(&self, id: i64) -> Result<()> {
@@ -718,7 +777,7 @@ impl Db {
 
 /// Bind params for [`UPSERT_TRACK_SQL`], in column order. Shared by the single
 /// and batch insert paths so the two never drift.
-fn upsert_params(t: &TrackInsert) -> [&dyn rusqlite::ToSql; 13] {
+fn upsert_params(t: &TrackInsert) -> [&dyn rusqlite::ToSql; 14] {
     [
         &t.path,
         &t.content_type,
@@ -733,6 +792,7 @@ fn upsert_params(t: &TrackInsert) -> [&dyn rusqlite::ToSql; 13] {
         &t.bitrate,
         &t.format,
         &t.mtime,
+        &t.fingerprint,
     ]
 }
 
@@ -894,14 +954,15 @@ END;
 /// metadata rescan must never clobber.
 const UPSERT_TRACK_SQL: &str = "INSERT INTO tracks \
      (path, content_type, title, artist, album, genre, year, duration, bpm, \
-      sample_rate, bitrate, format, mtime) \
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) \
+      sample_rate, bitrate, format, mtime, fingerprint) \
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
      ON CONFLICT(path) WHERE missing_since IS NULL DO UPDATE SET \
         content_type=excluded.content_type, \
         title=excluded.title, artist=excluded.artist, album=excluded.album, \
         genre=excluded.genre, year=excluded.year, duration=excluded.duration, \
         bpm=excluded.bpm, sample_rate=excluded.sample_rate, \
-        bitrate=excluded.bitrate, format=excluded.format, mtime=excluded.mtime";
+        bitrate=excluded.bitrate, format=excluded.format, mtime=excluded.mtime, \
+        fingerprint=COALESCE(excluded.fingerprint, fingerprint)";
 
 /// A database this build must not touch.
 #[derive(Debug, PartialEq)]
@@ -1256,12 +1317,17 @@ mod tests {
         insert_with_play_count(&db, "/here.mp3", "music", 0);
         let ids: Vec<i64> = db.track_index().unwrap().iter().map(|r| r.id).collect();
         let (gone, here) = (ids[0], ids[1]);
-        assert_eq!(db.mark_missing(&[gone], 1_000).unwrap(), 1);
-        assert_eq!(
-            db.mark_missing(&[gone], 2_000).unwrap(),
-            0,
-            "first mark wins"
-        );
+        let mark = |now_ms| {
+            db.reconcile(&Reconcile {
+                gone: vec![gone],
+                now_ms,
+                ..Default::default()
+            })
+            .unwrap()
+            .missing
+        };
+        assert_eq!(mark(1_000), 1);
+        assert_eq!(mark(2_000), 0, "first mark wins");
 
         let only_here = |tracks: Vec<Track>| tracks.iter().map(|t| t.id).collect::<Vec<_>>();
         assert_eq!(only_here(db.search("", None, None, None).unwrap()), [here]);
@@ -1296,8 +1362,80 @@ mod tests {
         assert!(db.get_track_load_info(gone).unwrap().is_some());
         assert_eq!(db.get_tracks_by_ids(&[gone]).unwrap().len(), 1);
 
-        assert_eq!(db.revive(&[gone]).unwrap(), 1);
+        db.reconcile(&Reconcile {
+            revive: vec![gone],
+            ..Default::default()
+        })
+        .unwrap();
         assert_eq!(db.get_stats().unwrap().total_tracks, 2);
+    }
+
+    fn new_file(path: &str, fingerprint: &str) -> TrackInsert {
+        TrackInsert {
+            path: path.into(),
+            content_type: "music".into(),
+            title: Some(path.into()),
+            fingerprint: Some(fingerprint.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_most_recently_missing_twin_reattaches() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&new_file("/old.mp3", "v1:x")).unwrap();
+        db.insert_track(&new_file("/older.mp3", "v1:x")).unwrap();
+        let ids: Vec<i64> = db.track_index().unwrap().iter().map(|r| r.id).collect();
+        let (old, older) = (ids[0], ids[1]);
+        for (id, now_ms) in [(older, 1_000), (old, 2_000)] {
+            db.reconcile(&Reconcile {
+                gone: vec![id],
+                now_ms,
+                ..Default::default()
+            })
+            .unwrap();
+        }
+
+        let done = db
+            .reconcile(&Reconcile {
+                new_files: vec![new_file("/new.mp3", "v1:x")],
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(done.reattached, 1);
+        let index = db.track_index().unwrap();
+        let row = |id| index.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(row(old).path, "/new.mp3");
+        assert_eq!(row(old).missing_since, None);
+        assert_eq!(row(older).missing_since, Some(1_000));
+        assert_eq!(index.len(), 2, "nothing inserted");
+    }
+
+    #[test]
+    fn two_copies_of_one_missing_track_reattach_one_and_duplicate_it() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&new_file("/a.mp3", "v1:x")).unwrap();
+        let id = only_id(&db);
+        db.increment_play_count(id).unwrap();
+        db.reconcile(&Reconcile {
+            gone: vec![id],
+            now_ms: 1,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let done = db
+            .reconcile(&Reconcile {
+                new_files: vec![new_file("/b.mp3", "v1:x"), new_file("/c.mp3", "v1:x")],
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!((done.reattached, done.duplicated), (1, 1));
+        let tracks = db.search("", None, None, None).unwrap();
+        assert_eq!(tracks.len(), 2);
+        assert!(tracks.iter().all(|t| t.play_count == 1));
     }
 
     /// Cue points are clamped on write and the clamped value comes back, so the

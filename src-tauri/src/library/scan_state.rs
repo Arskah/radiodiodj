@@ -32,9 +32,14 @@ pub enum ScanStatus {
 }
 
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct ScanResult {
     pub total: usize,
     pub added: usize,
+    /// Files matched back to the track they were before moving.
+    pub reattached: usize,
+    /// Tracks whose file this scan no longer found.
+    pub missing: usize,
 }
 
 #[derive(Serialize, Clone)]
@@ -179,6 +184,8 @@ fn run(
                     last_result: Some(ScanResult {
                         total: o.total,
                         added: o.added,
+                        reattached: o.reattached,
+                        missing: o.missing,
                     }),
                 },
             );

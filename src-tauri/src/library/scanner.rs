@@ -11,7 +11,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
-use super::db::{Db, IndexRow, TrackInsert};
+use super::db::{Db, IndexRow, Reconcile, TrackInsert};
+use super::fingerprint;
 use crate::audio::formats;
 
 /// Upper bound on parallel tag-read workers. A scan is dominated by per-file
@@ -103,6 +104,8 @@ pub struct ScanOutcome {
     pub canceled: bool,
     /// Rows newly marked missing by this scan.
     pub missing: usize,
+    /// Moved files matched back to their missing rows.
+    pub reattached: usize,
 }
 
 /// A file found on disk, with the content type of the root it was found under.
@@ -150,52 +153,79 @@ pub fn scan_all(
     }
 
     let index = db.track_index()?;
-    let mut known: HashMap<&str, &IndexRow> = index
+    let present: HashMap<&str, &IndexRow> = index
         .iter()
         .filter(|r| r.missing_since.is_none())
         .map(|r| (r.path.as_str(), r))
         .collect();
-    // A missing row whose file is back at the same path is the same track —
-    // the remove-and-re-add case. The newest one wins if several share it.
-    let mut returned: HashMap<&str, &IndexRow> = HashMap::new();
+    // The newest missing row at each path that has a file again.
+    let mut missing_at: HashMap<&str, &IndexRow> = HashMap::new();
     for row in index.iter().filter(|r| r.missing_since.is_some()) {
-        if seen.contains(&row.path) && !known.contains_key(row.path.as_str()) {
-            let slot = returned.entry(row.path.as_str()).or_insert(row);
+        if seen.contains(&row.path) && !present.contains_key(row.path.as_str()) {
+            let slot = missing_at.entry(row.path.as_str()).or_insert(row);
             if (row.missing_since, row.id) > (slot.missing_since, slot.id) {
                 *slot = row;
             }
         }
     }
-    db.revive(&returned.values().map(|r| r.id).collect::<Vec<_>>())?;
-    known.extend(returned);
-
-    let parsed = parse_changed(&found, &known, cancel, &on_progress);
-    let mut outcome = ScanOutcome {
-        total: found.len(),
-        added: parsed.len(),
-        canceled: cancel(),
-        missing: 0,
+    let known = Known {
+        present,
+        missing_at,
+        // A first scan has nothing to match against; the background pass
+        // fingerprints it without slowing the scan down.
+        fingerprint_new: !index.is_empty(),
     };
-    db.insert_tracks(&parsed)?;
-    if outcome.canceled {
-        return Ok(outcome);
+
+    let steps = inspect_all(&found, &known, cancel, &on_progress);
+    let canceled = cancel();
+    let mut change = Reconcile {
+        now_ms: now_ms(),
+        ..Default::default()
+    };
+    for step in steps {
+        match step {
+            Step::Update(t) => change.upserts.push(t),
+            Step::Revive { id, update } => {
+                change.revive.push(id);
+                change.upserts.extend(update);
+            }
+            // Committing a new file without first marking what is gone could
+            // mint a duplicate of a file that merely moved, so a canceled scan
+            // leaves new files for the next one.
+            Step::New(t) if !canceled => change.new_files.push(t),
+            Step::New(_) => {}
+        }
+    }
+    if !canceled {
+        change.gone = index
+            .iter()
+            .filter(|row| row.missing_since.is_none() && !seen.contains(&row.path))
+            .filter(|row| {
+                let path = Path::new(&row.path);
+                let configured = roots.iter().any(|r| path.starts_with(&r.path));
+                !configured || listed.iter().any(|root| path.starts_with(root))
+            })
+            .map(|row| row.id)
+            .collect();
     }
 
-    let gone: Vec<i64> = index
-        .iter()
-        .filter(|row| row.missing_since.is_none() && !seen.contains(&row.path))
-        .filter(|row| {
-            let path = Path::new(&row.path);
-            let configured = roots.iter().any(|r| path.starts_with(&r.path));
-            !configured || listed.iter().any(|root| path.starts_with(root))
-        })
-        .map(|row| row.id)
-        .collect();
-    outcome.missing = db.mark_missing(&gone, now_ms())?;
-    if outcome.missing > 0 {
-        log::info!("scan marked {} tracks missing", outcome.missing);
+    let updated = change.upserts.len();
+    let done = db.reconcile(&change)?;
+    if done.missing + done.reattached + done.duplicated > 0 {
+        log::info!(
+            "scan: {} missing, {} reattached, {} duplicated",
+            done.missing,
+            done.reattached,
+            done.duplicated
+        );
     }
-    Ok(outcome)
+    Ok(ScanOutcome {
+        total: found.len(),
+        added: updated + done.inserted + done.duplicated,
+        canceled,
+        missing: done.missing,
+        reattached: done.reattached,
+    })
 }
 
 fn now_ms() -> i64 {
@@ -205,20 +235,41 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Tag-read every found file whose row is absent or out of date. Tag reads are
-/// I/O-bound, so the files fan out across a small pool; each worker claims the
-/// next index via `next`. The rows are returned for one batched upsert — a
-/// per-row autocommit is the other thing that makes a big scan slow.
-fn parse_changed(
+/// What the library holds, as the per-file workers need it.
+struct Known<'a> {
+    present: HashMap<&'a str, &'a IndexRow>,
+    missing_at: HashMap<&'a str, &'a IndexRow>,
+    fingerprint_new: bool,
+}
+
+/// What one found file asks of the library.
+enum Step {
+    /// A known path whose file changed.
+    Update(TrackInsert),
+    /// A missing row whose file is back at its path — the same audio, or audio
+    /// that cannot be compared. `update` carries new tags if the file changed.
+    Revive {
+        id: i64,
+        update: Option<TrackInsert>,
+    },
+    /// A path the library does not hold.
+    New(TrackInsert),
+}
+
+/// Inspect every found file. The work is I/O-bound, so the files fan out
+/// across a small pool; each worker claims the next index via `next`. The
+/// resulting rows are applied in one transaction — a per-row autocommit is the
+/// other thing that makes a big scan slow.
+fn inspect_all(
     found: &[Found],
-    existing: &HashMap<&str, &IndexRow>,
+    known: &Known,
     cancel: &(impl Fn() -> bool + Sync),
     on_progress: &(impl Fn(usize, usize) + Sync),
-) -> Vec<TrackInsert> {
+) -> Vec<Step> {
     let total = found.len();
     let next = AtomicUsize::new(0);
     let processed = AtomicUsize::new(0);
-    let pending: Mutex<Vec<TrackInsert>> = Mutex::new(Vec::new());
+    let steps: Mutex<Vec<Step>> = Mutex::new(Vec::new());
     let concurrency = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1)
@@ -234,36 +285,80 @@ fn parse_changed(
                 let Some(file) = found.get(i) else {
                     break;
                 };
-
-                let mtime_ms = std::fs::metadata(&file.path)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0);
-
-                let prev = existing.get(file.path.as_str());
-                let need = should_rescan(
-                    prev.map(|r| r.content_type.as_str()),
-                    prev.and_then(|r| r.mtime),
-                    mtime_ms,
-                    file.content_type,
-                );
-                if need {
-                    match parse_track(&file.path, file.content_type, mtime_ms) {
-                        Ok(track) => pending.lock().push(track),
-                        Err(e) => log::error!("scan: failed to parse {}: {}", file.path, e),
-                    }
+                if let Some(step) = inspect(file, known) {
+                    steps.lock().push(step);
                 }
                 let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
                 on_progress(done, total);
             });
         }
     });
-    pending.into_inner()
+    steps.into_inner()
 }
 
-fn parse_track(path: &str, content_type: &str, mtime_ms: i64) -> Result<TrackInsert> {
+fn inspect(file: &Found, known: &Known) -> Option<Step> {
+    let mtime_ms = std::fs::metadata(&file.path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let changed = |row: &IndexRow| {
+        should_rescan(
+            Some(&row.content_type),
+            row.mtime,
+            mtime_ms,
+            file.content_type,
+        )
+    };
+    let parse = |fingerprint: Option<String>| match parse_track(
+        &file.path,
+        file.content_type,
+        mtime_ms,
+        fingerprint,
+    ) {
+        Ok(track) => Some(track),
+        Err(e) => {
+            log::error!("scan: failed to parse {}: {}", file.path, e);
+            None
+        }
+    };
+
+    if let Some(row) = known.present.get(file.path.as_str()) {
+        return changed(row)
+            .then(|| parse(fingerprint_of(&file.path)))
+            .flatten()
+            .map(Step::Update);
+    }
+
+    let returning = known.missing_at.get(file.path.as_str());
+    let fingerprint = (known.fingerprint_new || returning.is_some())
+        .then(|| fingerprint_of(&file.path))
+        .flatten();
+    if let Some(row) = returning {
+        let comparable = row.fingerprint.is_some() && fingerprint.is_some();
+        if !comparable || row.fingerprint == fingerprint {
+            return Some(Step::Revive {
+                id: row.id,
+                update: changed(row).then(|| parse(fingerprint)).flatten(),
+            });
+        }
+    }
+    parse(fingerprint).map(Step::New)
+}
+
+fn fingerprint_of(path: &str) -> Option<String> {
+    fingerprint::of_file(Path::new(path))
+        .map_err(|e| log::warn!("scan: cannot fingerprint {path}: {e:#}"))
+        .ok()
+}
+
+fn parse_track(
+    path: &str,
+    content_type: &str,
+    mtime_ms: i64,
+    fingerprint: Option<String>,
+) -> Result<TrackInsert> {
     let p = Path::new(path);
     let basename = p
         .file_stem()
@@ -316,6 +411,7 @@ fn parse_track(path: &str, content_type: &str, mtime_ms: i64) -> Result<TrackIns
         bitrate,
         format,
         mtime: Some(mtime_ms),
+        fingerprint,
     })
 }
 
@@ -605,6 +701,161 @@ mod tests {
 
         assert!(titles(&db).is_empty());
         assert!(missing_since(&db, id).is_some());
+    }
+
+    /// What the background pass does after a first scan.
+    fn backfill(db: &Db) {
+        for job in db.tracks_needing_analysis().unwrap() {
+            let fp = fingerprint::of_file(Path::new(&job.path)).unwrap();
+            db.set_fingerprint(job.id, &fp).unwrap();
+        }
+    }
+
+    /// A prepared track with a waveform and an in-app title edit.
+    fn prepare_fully(db: &Db, id: i64) {
+        prepare(db, id);
+        db.set_waveform(id, &[1, 2, 3]).unwrap();
+        db.update_track_metadata(&TrackMetadataUpdate {
+            id,
+            title: Some("Edited".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    }
+
+    fn assert_fully_prepared(db: &Db, id: i64) {
+        assert_prepared(db, id);
+        assert_eq!(db.get_track(id).unwrap().unwrap().title, "Edited");
+        assert_eq!(db.get_waveform(id).unwrap(), Some(vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn a_first_scan_leaves_fingerprints_to_the_background_pass() {
+        let (dir, db) = library();
+        write_wav(&dir.path().join("a.wav"), 1, 1);
+        scan(&db, &[music(dir.path())]);
+        assert!(db.track_index().unwrap()[0].fingerprint.is_none());
+
+        write_wav(&dir.path().join("b.wav"), 2, 1);
+        scan(&db, &[music(dir.path())]);
+        let b = id_of(&db, "b");
+        let index = db.track_index().unwrap();
+        let row = index.iter().find(|r| r.id == b).unwrap();
+        assert!(row.fingerprint.is_some(), "later files are fingerprinted");
+    }
+
+    #[test]
+    fn a_renamed_file_keeps_its_track() {
+        let (dir, db) = library();
+        write_wav(&dir.path().join("a.wav"), 1, 1);
+        scan(&db, &[music(dir.path())]);
+        backfill(&db);
+        let id = id_of(&db, "a");
+        prepare_fully(&db, id);
+
+        std::fs::rename(dir.path().join("a.wav"), dir.path().join("sub-a.wav")).unwrap();
+        let outcome = scan(&db, &[music(dir.path())]);
+
+        assert_eq!(outcome.reattached, 1);
+        assert_eq!(outcome.missing, 1, "the old path went missing first");
+        assert_eq!(titles(&db), ["Edited"]);
+        assert_eq!(id_of(&db, "Edited"), id);
+        assert_fully_prepared(&db, id);
+        let (path, missing) = {
+            let index = db.track_index().unwrap();
+            let row = index.into_iter().find(|r| r.id == id).unwrap();
+            (row.path, row.missing_since)
+        };
+        assert!(path.ends_with("sub-a.wav"), "{path}");
+        assert_eq!(missing, None);
+    }
+
+    #[test]
+    fn a_file_moved_to_another_root_keeps_its_track_and_takes_the_roots_type() {
+        let (dir, db) = library();
+        let (m, j) = (dir.path().join("music"), dir.path().join("jingles"));
+        write_wav(&m.join("a.wav"), 1, 1);
+        std::fs::create_dir_all(&j).unwrap();
+        let roots = || {
+            [
+                music(&m),
+                ScanRoot {
+                    content_type: "jingle",
+                    path: j.to_string_lossy().into_owned(),
+                },
+            ]
+        };
+        scan(&db, &roots());
+        backfill(&db);
+        let id = id_of(&db, "a");
+        prepare_fully(&db, id);
+
+        std::fs::rename(m.join("a.wav"), j.join("a.wav")).unwrap();
+        scan(&db, &roots());
+
+        assert_eq!(id_of(&db, "Edited"), id);
+        assert_eq!(db.get_stats().unwrap().tracks_by_type.jingle, 1);
+        assert_eq!(db.get_stats().unwrap().tracks_by_type.music, 0);
+        assert_fully_prepared(&db, id);
+    }
+
+    #[test]
+    fn a_duplicate_copy_starts_with_the_originals_work() {
+        let (dir, db) = library();
+        write_wav(&dir.path().join("a.wav"), 1, 1);
+        scan(&db, &[music(dir.path())]);
+        backfill(&db);
+        let id = id_of(&db, "a");
+        prepare_fully(&db, id);
+
+        write_wav(&dir.path().join("copy/a.wav"), 1, 1);
+        scan(&db, &[music(dir.path())]);
+
+        let tracks = db.search("", None, None, None).unwrap();
+        assert_eq!(tracks.len(), 2);
+        let copy = tracks.iter().find(|t| t.id != id).unwrap().id;
+        assert_fully_prepared(&db, id);
+        assert_fully_prepared(&db, copy);
+    }
+
+    #[test]
+    fn a_moved_and_re_encoded_file_is_a_new_track() {
+        let (dir, db) = library();
+        write_wav(&dir.path().join("a.wav"), 1, 1);
+        scan(&db, &[music(dir.path())]);
+        backfill(&db);
+        let id = id_of(&db, "a");
+
+        std::fs::remove_file(dir.path().join("a.wav")).unwrap();
+        write_wav(&dir.path().join("b.wav"), 2, 1);
+        let outcome = scan(&db, &[music(dir.path())]);
+
+        assert_eq!(outcome.reattached, 0);
+        assert_ne!(id_of(&db, "b"), id);
+        assert!(missing_since(&db, id).is_some());
+    }
+
+    #[test]
+    fn different_audio_at_a_missing_tracks_path_is_a_new_track() {
+        let (dir, db) = library();
+        let file = dir.path().join("a.wav");
+        write_wav(&file, 1, 1);
+        scan(&db, &[music(dir.path())]);
+        backfill(&db);
+        let id = id_of(&db, "a");
+        prepare(&db, id);
+        std::fs::remove_file(&file).unwrap();
+        scan(&db, &[music(dir.path())]);
+
+        write_wav(&file, 2, 1);
+        scan(&db, &[music(dir.path())]);
+
+        let tracks = db.search("", None, None, None).unwrap();
+        assert_eq!(tracks.len(), 1);
+        assert_ne!(tracks[0].id, id);
+        assert_eq!(tracks[0].play_count, 0);
+        assert!(missing_since(&db, id).is_some());
+        assert_prepared(&db, id);
     }
 
     #[test]
