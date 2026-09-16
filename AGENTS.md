@@ -7,7 +7,7 @@ pnpm dev                                          # tauri dev (Vite HMR for rend
 pnpm build                                        # tauri build → src-tauri/target/release/bundle/<format>/
 pnpm typecheck                                    # svelte-check + tsc on tsconfig.node.json
 pnpm test                                         # vitest watch
-pnpm test -- run                                  # vitest single run (132 renderer tests)
+pnpm test -- run                                  # vitest single run (159 renderer tests)
 pnpm e2e                                          # tauri-driver + WebdriverIO (Linux only — see e2e/README.md)
 cargo test --manifest-path src-tauri/Cargo.toml   # 211 backend tests (db, scanner, session, playlist, audio, config)
 pnpm lint                                         # eslint
@@ -33,7 +33,7 @@ Tauri 2 app. Two process boundaries: a Rust backend and a Svelte 5 / Vite render
 - `main.ts` — app entry; mounts Svelte, hooks Tauri `onCloseRequested` to await `flushSave()` before `win.destroy()`
 - `App.svelte` — top-level UI tree
 - `shared/` — `types.ts`, `api.ts` (typed `invoke()` wrapper, folder picker via `@tauri-apps/plugin-dialog`), `state.svelte.ts` (Svelte 5 `$state` store; deck transport via `DeckTransport`, playlist state mirrored from backend snapshots), colocated `state.test.ts` + `mockBackend.ts` + `mockPlaylist.ts`
-- `features/<feature>/` — one folder per UI feature: `library/`, `playlist/`, `player/` (NowPlaying.svelte + CueDeck.svelte + backend.ts + nativeBackend.ts), `scan/`, `settings/` (SettingsOverlay.svelte — Library + Audio tabs), `toolbar/`, `track/`
+- `features/<feature>/` — one folder per UI feature: `library/`, `playlist/`, `deck/` (NowPlaying.svelte + CueDeck.svelte + Waveform.svelte + backend.ts + nativeBackend.ts), `scan/`, `settings/` (SettingsOverlay.svelte — Library + Audio tabs), `toolbar/`, `track/` (TrackTooltip.svelte + MetadataOverlay.svelte + CuePointOverlay.svelte)
 
 ## Key Patterns
 
@@ -41,7 +41,13 @@ Tauri 2 app. Two process boundaries: a Rust backend and a Svelte 5 / Vite render
 
 **Program bus:** every on-air deck is a `Sink` on one shared `OutputStream` mixer, driven by a single worker thread, so two decks can be audible at once (the precondition for handover). Deck events are **role-mapped**: whichever deck holds `main` emits `main-deck:*`, the armed one emits `arm-deck:*` — the renderer, broadcast service and now-playing webhook never learn which physical deck is on air. Roles are static today (slot A is `main`); handover is a later increment. The cue deck is deliberately off the bus with its own stream, thread and `cue:*` topics. See `docs/program-bus.md`.
 
-**Cue points:** five nullable per-track markers (`cue_in_ms`, `fade_in_ms`, `fade_out_ms`, `cue_out_ms`, `next_start_ms`) stored as columns on `tracks`, deliberately absent from `UPSERT_TRACK_SQL` so a rescan cannot destroy them. `Cmd::Load` carries concrete `CuePoints`; the worker resolves them against the _decoded_ duration (the tag one is wrong on VBR MP3) and plays `take_duration(cueOut − pos)`, so the existing `sink.empty()` → `:ended` path ends a trimmed track with no new termination rule. Everything crossing the Tauri boundary is **air time**, measured from `cue_in` — a trimmed track is simply a shorter track to the renderer. Stored fades are a **source-level** envelope (`audio/envelope.rs`), not a `sink.set_volume()` ramp: a live fade and a stored fade would otherwise fight over one value, whereas a source envelope times a sink gain composes by multiplication. A track with no ramps is handed to the sink unwrapped. Clamping is backend-owned: `set_cue_points` returns what it stored. The cue editor is a later increment. See `docs/cue-points.md`.
+**Cue points:** five nullable per-track markers (`cue_in_ms`, `fade_in_ms`, `fade_out_ms`, `cue_out_ms`, `next_start_ms`) stored as columns on `tracks`, deliberately absent from `UPSERT_TRACK_SQL` so a rescan cannot destroy them. `Cmd::Load` carries concrete `CuePoints`; the worker resolves them against the _decoded_ duration (the tag one is wrong on VBR MP3) and plays `take_duration(cueOut − pos)`, so the existing `sink.empty()` → `:ended` path ends a trimmed track with no new termination rule. Everything crossing the Tauri boundary is **air time**, measured from `cue_in` — a trimmed track is simply a shorter track to the renderer. Stored fades are a **source-level** envelope (`audio/envelope.rs`), not a `sink.set_volume()` ramp: a live fade and a stored fade would otherwise fight over one value, whereas a source envelope times a sink gain composes by multiplication. A track with no ramps is handed to the sink unwrapped. Clamping is backend-owned: `set_cue_points` returns what it stored, and `shared/cuePoints.ts` only ever applies the `null` fallbacks — there is no TypeScript clamp. Item overrides are a later increment. See `docs/cue-points.md`.
+
+**Durations mean air time.** Library rows, playlist rows, the history list, both decks and the now-playing webhook all report `cueOut − cueIn`, via `airDuration()`; `TrackTooltip` carries the file length too when the two differ. The renderer never optimistically shows file time, because the deck reports air time and the two would disagree mid-load.
+
+**Authoring cue points.** `CuePointOverlay.svelte` (library row → _Cue points…_, or the cue deck's marker button) is the editor: `Waveform.svelte` with draggable handles plus a millisecond field per marker. The cue deck auditions in two modes that never mix — _Absolute_ plays the whole file so an in-point can be scrubbed for, _Preview_ reloads with markers applied and crops the waveform to the aired region. Switching reloads the deck because markers are applied at load time. `cue_load` takes an optional `cuePoints`, so the editor can preview an unsaved draft. Saving a radio edit deliberately does **not** touch `currentTrack`: it applies from the next airing, so on-air audio never re-decodes under the operator.
+
+**Naming:** "edit" means metadata and nothing else (`MetadataOverlay.svelte`, `app.editingMetadata`); playback markers are always "cue points" (`CuePointOverlay.svelte`, `app.editingCuePoints`).
 
 **Search:** FTS5 virtual table on title/artist/album/genre. Triggers keep FTS in sync with tracks table. Query tokenized as prefix match: `foo bar` → `"foo"* "bar"*`.
 

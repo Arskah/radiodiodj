@@ -54,6 +54,15 @@
   /* Signal green — playback / LED only */
   --signal-green: #4ade80;
 
+  /* Cue point markers (#279). One colour per marker, shared by the waveform
+     lines and the editor's swatches so the two are read together. Deliberately
+     clear of --error, which is the playhead. */
+  --cue-in-color: #4ade80;
+  --fade-in-color: #7dd3fc;
+  --fade-out-color: #fbbf24;
+  --cue-out-color: #fb7185;
+  --next-start-color: #ddb7ff;
+
   /* Spacing (4px baseline) */
   --sp-xs: 4px;
   --sp-sm: 8px;
@@ -619,6 +628,17 @@ body {
   border-color: var(--secondary);
 }
 
+.btn-cue-points:not(:disabled):hover {
+  color: var(--cue-in-color);
+  border-color: var(--cue-in-color);
+}
+
+/* Durations everywhere mean air time (#279); a trimmed track marks its number
+   so the shorter figure reads as deliberate rather than as a stale tag. */
+.trimmed {
+  color: var(--cue-in-color);
+}
+
 /* Cue volume is a monitoring control, so it survived the master-volume removal
    (#354): icon + slider behind a left-edge divider, secondary accent to keep the
    cue-deck distinction. */
@@ -861,6 +881,39 @@ body {
   stroke: var(--outline-variant);
   stroke-width: 2;
   opacity: 0.4;
+}
+
+/* Cue point markers drawn over the curve (#279). The lines are non-scaling so
+   they stay 2px wide however far the viewBox is stretched. */
+.waveform .wf-marker {
+  stroke-width: 2;
+  opacity: 0.9;
+}
+
+.waveform .wf-marker.cue-in {
+  stroke: var(--cue-in-color);
+}
+.waveform .wf-marker.fade-in {
+  stroke: var(--fade-in-color);
+}
+.waveform .wf-marker.fade-out {
+  stroke: var(--fade-out-color);
+}
+.waveform .wf-marker.cue-out {
+  stroke: var(--cue-out-color);
+}
+.waveform .wf-marker.next-start {
+  stroke: var(--next-start-color);
+}
+
+/* Invisible grab area over each marker. The waveform itself is
+   pointer-transparent so the seek bar underneath keeps working; only these
+   opt back in. */
+.waveform .wf-grab {
+  stroke: transparent;
+  stroke-width: 14;
+  pointer-events: stroke;
+  cursor: ew-resize;
 }
 
 #progress-bar:hover .waveform .wf-base rect,

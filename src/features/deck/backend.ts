@@ -1,3 +1,5 @@
+import type { CuePoints } from "../../shared/types";
+
 export type DeckEvent =
   | { type: "time"; seconds: number }
   | { type: "duration"; seconds: number }
@@ -31,5 +33,10 @@ export interface DeckTransport {
 
 /** A deck the renderer also loads tracks onto — the cue deck. */
 export interface DeckBackend extends DeckTransport {
-  load(trackId: number): Promise<void>;
+  /**
+   * Put a track on the deck. `cuePoints` picks the audition mode: omitted
+   * loads the whole file (*Absolute*), given applies exactly those markers
+   * (*Preview*), including an unsaved draft from the cue editor.
+   */
+  load(trackId: number, cuePoints?: CuePoints | null): Promise<void>;
 }

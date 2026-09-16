@@ -1,7 +1,20 @@
 <script lang="ts">
   import { app, formatTime } from "../../shared/state.svelte";
+  import { cueMarkerPositions, hasCuePoints } from "../../shared/cuePoints";
   import Waveform from "./Waveform.svelte";
   import defaultCover from "../../assets/radiodiodi_label.svg";
+
+  // Markers of whatever the deck is auditioning: the track's saved radio edit
+  // in Absolute mode, the applied set — which may be an unsaved draft from the
+  // editor — in Preview. Read-only here; the editor overlay is where they move.
+  const markers = $derived(
+    cueMarkerPositions(
+      app.cueMode === "preview"
+        ? app.cueAppliedPoints
+        : app.cueTrack?.cue_points,
+      app.cueTrack?.duration ?? 0,
+    ),
+  );
 
   let progressBar: HTMLDivElement | undefined = $state();
   let scrubbing = false;
@@ -89,6 +102,15 @@
             <span class="material-symbols-outlined">stop</span>
           </button>
           <button
+            class="btn-cue-points"
+            title="Edit cue points"
+            aria-label="Edit cue points"
+            disabled={!app.cueTrack}
+            onclick={() => (app.editingCuePoints = app.cueTrack)}
+          >
+            <span class="material-symbols-outlined">line_start_diamond</span>
+          </button>
+          <button
             class="btn-cue-promote"
             title="Insert cue track as next-up in main playlist"
             aria-label="Promote cue track to main playlist"
@@ -97,6 +119,27 @@
           >
             <span class="material-symbols-outlined">add</span>
           </button>
+        </div>
+        <!-- Absolute auditions the whole file, so an in-point can be scrubbed
+             for; Preview reloads with the markers applied, so the operator
+             hears exactly what airs. Switching reloads the deck — the player
+             applies markers at load time. -->
+        <div class="segmented" role="group" aria-label="Cue audition mode">
+          <button
+            class:active={app.cueMode === "absolute"}
+            aria-pressed={app.cueMode === "absolute"}
+            disabled={!app.cueTrack}
+            onclick={() => app.setCueMode("absolute")}>Absolute</button
+          >
+          <button
+            class:active={app.cueMode === "preview"}
+            aria-pressed={app.cueMode === "preview"}
+            disabled={!app.cueTrack || !hasCuePoints(app.cueTrack?.cue_points)}
+            title={hasCuePoints(app.cueTrack?.cue_points)
+              ? "Play only what airs"
+              : "This track has no cue points yet"}
+            onclick={() => app.setCueMode("preview")}>Preview</button
+          >
         </div>
         <div class="cue-volume-wrap">
           <span class="material-symbols-outlined" aria-hidden="true"
@@ -148,6 +191,8 @@
           peaks={app.cueWaveform}
           progressPct={app.cueProgressPct}
           {hoverPct}
+          {markers}
+          crop={app.cueCrop}
           id="cue"
         />
         <div

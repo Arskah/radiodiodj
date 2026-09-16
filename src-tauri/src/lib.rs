@@ -366,8 +366,18 @@ where
     Ok(())
 }
 
+/// Load a track onto the cue deck.
+///
+/// `cuePoints` picks the audition mode. Absent (*Absolute*) plays the whole
+/// file with no markers applied, so an operator can scrub it to find an
+/// in-point. Present (*Preview*) applies exactly those markers — the editor
+/// sends its unsaved draft, so a ramp can be heard before it is committed.
 #[tauri::command(rename_all = "camelCase")]
-fn cue_load(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+fn cue_load(
+    state: State<'_, AppState>,
+    id: i64,
+    cue_points: Option<CuePoints>,
+) -> Result<(), String> {
     let track = state
         .db
         .get_media_track(id)
@@ -382,9 +392,7 @@ fn cue_load(state: State<'_, AppState>, id: i64) -> Result<(), String> {
             } else {
                 None
             },
-            // The cue deck auditions in *Absolute* mode: the whole file, no
-            // markers applied, so an operator can scrub it to find an in-point.
-            cue_points: CuePoints::default(),
+            cue_points: cue_points.unwrap_or_default(),
             start_at: 0.0,
             // Cueing a track starts auditioning it; the renderer's cue transport
             // takes over from there.

@@ -23,13 +23,19 @@ export const sel = {
   // Scope this from the menu element: WebdriverIO's `*=` text selectors accept
   // only a tag with one class/id/attribute, never a descendant combinator.
   contextMenuItem: (label: string) => `button[role="menuitem"]*=${label}`,
-  editorDialog: "#editor-dialog",
-  editorTitle: "#editor-title",
-  editorArtist: "#editor-artist",
-  editorAlbum: "#editor-album",
-  editorGenre: "#editor-genre",
-  editorYear: "#editor-year",
-  editorError: "#editor-error",
-  editorSave: "#btn-editor-save",
-  editorCancel: "#btn-editor-cancel",
+  // "Editor" in this codebase means metadata and nothing else; playback markers
+  // are cue points (#279), with their own dialog.
+  metadataDialog: "#metadata-dialog",
+  metadataTitle: "#metadata-title",
+  metadataArtist: "#metadata-artist",
+  metadataAlbum: "#metadata-album",
+  metadataGenre: "#metadata-genre",
+  metadataYear: "#metadata-year",
+  metadataError: "#metadata-error",
+  metadataSave: "#btn-metadata-save",
+  metadataCancel: "#btn-metadata-cancel",
+  cuePointDialog: "#cue-point-dialog",
+  cuePointField: (marker: string) => `#cue-field-${marker}`,
+  cuePointSave: "#btn-cue-points-save",
+  cuePointClose: "#btn-cue-points-close",
 } as const;

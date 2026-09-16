@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { DeckBackend, DeckEvent, DeckEventHandler } from "./backend";
+import type { CuePoints } from "../../shared/types";
 
 /**
  * Domain id of a deck. Main deck is on-air; Cue deck is off-air preview.
@@ -71,9 +72,12 @@ export class NativeBackend implements DeckBackend {
     return this.subscribed;
   }
 
-  async load(trackId: number): Promise<void> {
+  async load(trackId: number, cuePoints?: CuePoints | null): Promise<void> {
     await this.subscribed;
-    await invoke<void>(`${this.ipc.commandPrefix}_load`, { id: trackId });
+    await invoke<void>(`${this.ipc.commandPrefix}_load`, {
+      id: trackId,
+      cuePoints: cuePoints ?? null,
+    });
   }
 
   play(): Promise<void> {

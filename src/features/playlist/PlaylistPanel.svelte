@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app, formatTime, type Track } from "../../shared/state.svelte";
   import { isStopMarker, type PlaylistItem } from "../../shared/types";
+  import { airDuration, isTrimmed } from "../../shared/cuePoints";
 
   let dragFromIndex = $state(-1);
   let dropTarget = $state(-1);
@@ -228,8 +229,10 @@
                   {#if i === 0}
                     <span class="pl-status next-up">Next Up</span>
                   {/if}
-                  <span class="pl-duration"
-                    >{formatTime(item.track.duration)}</span
+                  <span
+                    class="pl-duration"
+                    class:trimmed={isTrimmed(item.track)}
+                    >{formatTime(airDuration(item.track))}</span
                   >
                 </div>
               </div>
@@ -290,7 +293,9 @@
                 <span class="pl-artist">{track.artist}</span>
               </div>
               <div class="pl-right">
-                <span class="pl-duration">{formatTime(track.duration)}</span>
+                <span class="pl-duration" class:trimmed={isTrimmed(track)}
+                  >{formatTime(airDuration(track))}</span
+                >
               </div>
             </div>
             <button

@@ -3,9 +3,12 @@ import type {
   DeckEvent,
   DeckEventHandler,
 } from "../features/deck/backend";
+import type { CuePoints } from "./types";
 
 export class MockBackend implements DeckBackend {
   loadedIds: number[] = [];
+  /** Cue points each `load` was given — `null` for an Absolute audition. */
+  loadedCuePoints: (CuePoints | null)[] = [];
   seekCalls: number[] = [];
   volume = 1;
   playCalls = 0;
@@ -22,8 +25,9 @@ export class MockBackend implements DeckBackend {
     return Promise.resolve();
   }
 
-  async load(trackId: number): Promise<void> {
+  async load(trackId: number, cuePoints?: CuePoints | null): Promise<void> {
     this.loadedIds.push(trackId);
+    this.loadedCuePoints.push(cuePoints ?? null);
     if (this.loadShouldReject) throw new Error("load failed");
   }
 

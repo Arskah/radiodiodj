@@ -133,13 +133,32 @@ describe("NativeBackend (deckId='cue')", () => {
   it("invokes cue_* commands", async () => {
     const b = new NativeBackend("cue");
     await b.load(42);
-    expect(invoke).toHaveBeenCalledWith("cue_load", { id: 42 });
+    expect(invoke).toHaveBeenCalledWith("cue_load", {
+      id: 42,
+      cuePoints: null,
+    });
     await b.play();
     expect(invoke).toHaveBeenCalledWith("cue_play");
     await b.seek(8);
     expect(invoke).toHaveBeenCalledWith("cue_seek", { seconds: 8 });
     await b.setVolume(0.3);
     expect(invoke).toHaveBeenCalledWith("cue_set_volume", { volume: 0.3 });
+  });
+
+  it("sends the cue points a Preview audition was given", async () => {
+    const b = new NativeBackend("cue");
+    const points = {
+      cue_in_ms: 10_000,
+      fade_in_ms: null,
+      fade_out_ms: null,
+      cue_out_ms: 30_000,
+      next_start_ms: null,
+    };
+    await b.load(42, points);
+    expect(invoke).toHaveBeenCalledWith("cue_load", {
+      id: 42,
+      cuePoints: points,
+    });
   });
 
   it("forwards cue:* events to handlers", async () => {

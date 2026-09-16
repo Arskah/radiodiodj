@@ -9,14 +9,17 @@ Implements [#279](https://github.com/Arskah/radiodiodj/issues/279). The segue
 marker (`next_start_ms`) is consumed by the program bus — see
 [program-bus.md](./program-bus.md).
 
-**Status: positions and fades on air.** Shipped as the first two of four slices
-— `MIGRATION_004` and the five columns, `audio/cue_points.rs` (clamp and
+**Status: authored and on air.** Shipped as the first three of four slices —
+`MIGRATION_004` and the five columns, `audio/cue_points.rs` (clamp and
 resolution), `Cmd::Load` carrying concrete `CuePoints`, the air timeline on
 `<deck>:time` / `:duration` / `Cmd::Seek`, the two-stage accurate seek,
-`take_duration` at the out-point, air time as the broadcast `durationSec`, and
-`audio/envelope.rs` applying the stored ramps. Clamping is backend-owned via
-`set_cue_points`. Still to come: the cue editor and air-time durations in the
-UI, and per-item overrides. No operator surface authors cue points yet.
+`take_duration` at the out-point, air time as the broadcast `durationSec`,
+`audio/envelope.rs` applying the stored ramps, and the operator surfaces:
+`CuePointOverlay.svelte`, the cue deck's _Absolute_ / _Preview_ modes, and
+air-time durations everywhere a duration is shown. Clamping is backend-owned via
+`set_cue_points`. Still to come: per-item overrides (the last slice) and the
+confirm dialog on library-path removal described under
+[Prune destroys cue points](#prune-destroys-cue-points--accepted).
 
 ## The model: five positions
 
@@ -285,8 +288,20 @@ over the peak curve.
 
 Auditioning on the cue deck never affects on-air output.
 
-**Cue editor overlay**, opened from the library row context menu, gives the same
-waveform full-width plus numeric millisecond fields for precise values.
+**Cue editor overlay** (`CuePointOverlay.svelte`), opened from the library row
+context menu or the cue deck's marker button, gives the same waveform
+full-width plus a millisecond field per marker for values a drag cannot hit.
+Its _Preview on cue_ button loads the **unsaved draft** onto the cue deck —
+`cue_load` takes an optional `cuePoints` precisely so a ramp can be heard
+before it is committed.
+
+Only markers that are actually set get a line on the waveform. An unset marker
+has no position of its own (it resolves onto a neighbour), so drawing all five
+would stack three grabbable handles on the cue-out; a _Set_ button beside the
+field places one at its resolved position instead.
+
+Dragging is a pointer convenience and the SVG stays `aria-hidden` — the
+millisecond fields are the accessible way to set a marker.
 
 Saving a radio edit while that track is on air applies from its **next** airing.
 There is deliberately no main-deck equivalent of `Cmd::SetCuePoints`, so on-air
@@ -316,10 +331,17 @@ track at launch. Clamping to the region end instead would drop the operator into
 the final second, which then ends and advances — the same outcome, less
 predictably.
 
-**Durations in the UI mean air time.** Library rows, playlist rows, playlist totals,
-and the decks all report what actually airs. `TrackTooltip.svelte` carries both
-("File 5:02 · Airs 3:34") when a track is trimmed. One meaning for the column,
-and an operator filling a three-minute slot reads the number that matters.
+**Durations in the UI mean air time.** Library rows, playlist rows, the history
+list, and the decks all report what actually airs, via `airDuration()` in
+`shared/cuePoints.ts`. `TrackTooltip.svelte` carries both ("Airs 3:34 · File
+5:02") when a track is trimmed, and a trimmed figure is tinted so the shorter
+number reads as deliberate rather than as a stale tag. One meaning for the
+column, and an operator filling a three-minute slot reads the number that
+matters.
+
+The renderer's optimistic duration — set the moment a track is adopted, before
+the deck reports its decoded length — is air time too. Showing file time there
+would make the seek bar jump the instant `<deck>:duration` arrived.
 
 **Ending detection is unchanged.** `take_duration(cueOut − pos)` runs the sink
 dry at the out-point, so the existing `sink.empty()` → `:ended` path fires
