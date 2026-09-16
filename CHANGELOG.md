@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.18.0](https://github.com/Arskah/radiodiodj/compare/v0.17.0...v0.18.0) (2026-09-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **library:** libraries from older versions are rebuilt on first launch. Play counts, metadata edits and waveforms are not carried over; the old database is kept as radiodiodj.legacy-v{N}.bak.db.
+
+### Features
+
+* **audio:** apply per-track cue points on air ([#362](https://github.com/Arskah/radiodiodj/issues/362)) ([f559f22](https://github.com/Arskah/radiodiodj/commit/f559f2212124462b05e288cd2537c2eb083accaa)), closes [#279](https://github.com/Arskah/radiodiodj/issues/279)
+* **audio:** apply stored fades as a source envelope ([#363](https://github.com/Arskah/radiodiodj/issues/363)) ([01ed7c5](https://github.com/Arskah/radiodiodj/commit/01ed7c5d8cb6c7c604a2ac4c16ba010b6830af6e)), closes [#279](https://github.com/Arskah/radiodiodj/issues/279)
+* **library:** add "Add as next" and "Show in folder" to row menu ([#378](https://github.com/Arskah/radiodiodj/issues/378)) ([392a1e4](https://github.com/Arskah/radiodiodj/commit/392a1e48b863530926faa7ca84b3619120f10890))
+* **library:** keep metadata edits across rescans, with opt-in file write-back ([#384](https://github.com/Arskah/radiodiodj/issues/384)) ([d7f835a](https://github.com/Arskah/radiodiodj/commit/d7f835a888315b95c12493a16297133b1dbff455)), closes [#313](https://github.com/Arskah/radiodiodj/issues/313)
+* **library:** keep track identity across moves and rescans ([#375](https://github.com/Arskah/radiodiodj/issues/375)) ([#375](https://github.com/Arskah/radiodiodj/issues/375)) ([1b32206](https://github.com/Arskah/radiodiodj/commit/1b322065e7860893cc91d161500ddf7e704d4416)), closes [#373](https://github.com/Arskah/radiodiodj/issues/373)
+* **library:** library health view — missing tracks, duplicates and disk changes ([#380](https://github.com/Arskah/radiodiodj/issues/380)) ([de906b3](https://github.com/Arskah/radiodiodj/commit/de906b3e8ab9fd3e041df6cdac186e920524025d))
+* **playlist:** give a queued airing cue points of its own ([#367](https://github.com/Arskah/radiodiodj/issues/367)) ([4dd578f](https://github.com/Arskah/radiodiodj/commit/4dd578f7d260039fb14fe52eb2e9a19e1a200bc6))
+* **playlist:** show queued air time and time left on air ([#374](https://github.com/Arskah/radiodiodj/issues/374)) ([55d0f0f](https://github.com/Arskah/radiodiodj/commit/55d0f0f37dc112e498cd082bc2eb2858a3628279)), closes [#366](https://github.com/Arskah/radiodiodj/issues/366)
+* **ui:** author cue points and report air time ([#365](https://github.com/Arskah/radiodiodj/issues/365)) ([4e0a93c](https://github.com/Arskah/radiodiodj/commit/4e0a93cae22899edf9dcad49fdfb8a71330d3dee))
+
+
+### Bug Fixes
+
+* **deps:** update rust crate lofty to v0.25.2 ([#382](https://github.com/Arskah/radiodiodj/issues/382)) ([a4aa910](https://github.com/Arskah/radiodiodj/commit/a4aa910e4040bbea69801b929ae84f4304e1962f))
+* **health:** show when a library check is runnin ([#391](https://github.com/Arskah/radiodiodj/issues/391)) ([293183f](https://github.com/Arskah/radiodiodj/commit/293183fc25fbf6913096f9baffe31a4ba740ac4d))
+* **library:** drop WMA support ([#389](https://github.com/Arskah/radiodiodj/issues/389)) ([378a9db](https://github.com/Arskah/radiodiodj/commit/378a9db464eae83ef2dd141ae51ef24875fc5f6a))
+* **library:** include album when grouping possible duplicates ([#393](https://github.com/Arskah/radiodiodj/issues/393)) ([b45697a](https://github.com/Arskah/radiodiodj/commit/b45697afe53e4cb520f33768721e08749eab5804)), closes [#385](https://github.com/Arskah/radiodiodj/issues/385)
+* **library:** record files the analysis pass cannot decode ([#390](https://github.com/Arskah/radiodiodj/issues/390)) ([28ede34](https://github.com/Arskah/radiodiodj/commit/28ede34a9f4be4efdb631d5f085166a2c237903d))
+
+
+### Miscellaneous Chores
+
+* **deps:** update webdriverio monorepo to v9.31.9 ([#392](https://github.com/Arskah/radiodiodj/issues/392)) ([e3041f4](https://github.com/Arskah/radiodiodj/commit/e3041f41f2698823dc1ab9d3df967ce0442623ed))
+
+
+### Documentation
+
+* **cue-points:** describe the shipped feature ([#369](https://github.com/Arskah/radiodiodj/issues/369)) ([80e8b33](https://github.com/Arskah/radiodiodj/commit/80e8b336fec851fc439153600e10bbf7de8b5810))
+* **library:** design the library health view ([#376](https://github.com/Arskah/radiodiodj/issues/376)) ([#379](https://github.com/Arskah/radiodiodj/issues/379)) ([a387ac9](https://github.com/Arskah/radiodiodj/commit/a387ac95192f21c36fee43a8beac31117d856566))
+
+
+### Build System
+
+* load Vite configs as ESM ([#394](https://github.com/Arskah/radiodiodj/issues/394)) ([35c8046](https://github.com/Arskah/radiodiodj/commit/35c80467808a1d9043d8806c2c9b940414dbe7b4))
+
 ## [0.17.0](https://github.com/Arskah/radiodiodj/compare/v0.16.0...v0.17.0) (2026-09-16)
 
 
