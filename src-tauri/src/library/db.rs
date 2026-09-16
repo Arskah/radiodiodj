@@ -25,6 +25,34 @@ pub struct Track {
     /// The track's radio edit. Arrives with every `SELECT *`, so nothing can
     /// reach air with stale markers.
     pub cue_points: CuePoints,
+    /// Which tag columns the operator edited, as [`EditedFields`] bits. A
+    /// rescan keeps those columns instead of taking the file's tags.
+    #[serde(default)]
+    pub edited_fields: i64,
+}
+
+/// Bits of `tracks.edited_fields`, one per tag column.
+pub struct EditedFields;
+
+impl EditedFields {
+    pub const TITLE: i64 = 1;
+    pub const ARTIST: i64 = 2;
+    pub const ALBUM: i64 = 4;
+    pub const GENRE: i64 = 8;
+    pub const YEAR: i64 = 16;
+}
+
+/// A track's tag columns, as a tag write-back reads and compares them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TagValues {
+    pub path: String,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub genre: Option<String>,
+    pub year: Option<i64>,
+    pub fingerprint: Option<String>,
+    pub edited_fields: i64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -601,7 +629,8 @@ impl Db {
                         play_count = s.play_count, waveform = s.waveform, \
                         cue_in_ms = s.cue_in_ms, fade_in_ms = s.fade_in_ms, \
                         fade_out_ms = s.fade_out_ms, cue_out_ms = s.cue_out_ms, \
-                        next_start_ms = s.next_start_ms \
+                        next_start_ms = s.next_start_ms, \
+                        edited_fields = s.edited_fields \
                  FROM (SELECT * FROM tracks WHERE id = ?1) AS s \
                  WHERE tracks.id = ?2",
             )?;
@@ -774,65 +803,169 @@ impl Db {
     }
 
     /// Update metadata fields for a track. Only non-None fields are included
-    /// in the UPDATE. Returns the updated [`Track`] so the caller can push it to
-    /// the renderer as a fast-forward replacement; the update path never touches
-    /// `play_count`, `waveform`, or `added_at`.
+    /// in the UPDATE. A tag field whose value actually changes is flagged in
+    /// `edited_fields`, so a rescan keeps it; the renderer sends every field, so
+    /// an unchanged one must not be flagged. Returns the updated [`Track`] so
+    /// the caller can push it to the renderer as a fast-forward replacement; the
+    /// update path never touches `play_count`, `waveform`, or `added_at`.
     pub fn update_track_metadata(&self, updates: &TrackMetadataUpdate) -> Result<Track> {
-        let mut setters = Vec::<String>::new();
-        let mut params: Vec<rusqlite::types::Value> = Vec::new();
+        use rusqlite::types::Value;
+
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let current = tx
+            .query_row(
+                &format!("SELECT {TRACK_COLUMNS} FROM tracks WHERE id = ?"),
+                [updates.id],
+                row_to_track,
+            )
+            .optional()?
+            .ok_or_else(|| anyhow::anyhow!("track not found"))?;
+
+        let mut setters = Vec::<&str>::new();
+        let mut params = Vec::<Value>::new();
+        let mut edited = 0;
+        let text = |v: &Option<String>| v.clone().map_or(Value::Null, Value::Text);
 
         if let Some(v) = &updates.title {
-            setters.push("title=?".to_string());
-            params.push(rusqlite::types::Value::Text(v.clone()));
+            setters.push("title=?");
+            params.push(Value::Text(v.clone()));
+            if *v != current.title {
+                edited |= EditedFields::TITLE;
+            }
         }
         if let Some(v) = &updates.artist {
-            setters.push("artist=?".to_string());
-            params.push(rusqlite::types::Value::Text(v.clone()));
+            setters.push("artist=?");
+            params.push(Value::Text(v.clone()));
+            if *v != current.artist {
+                edited |= EditedFields::ARTIST;
+            }
         }
         if let Some(v) = &updates.album {
-            setters.push("album=?".to_string());
-            params.push(rusqlite::types::Value::Text(v.clone()));
+            setters.push("album=?");
+            params.push(Value::Text(v.clone()));
+            if *v != current.album {
+                edited |= EditedFields::ALBUM;
+            }
         }
-        if updates.genre.is_some() {
-            setters.push("genre=?".to_string());
-            params.push(match &updates.genre {
-                Some(Some(s)) => rusqlite::types::Value::Text(s.clone()),
-                _ => rusqlite::types::Value::Null,
-            });
+        if let Some(v) = &updates.genre {
+            setters.push("genre=?");
+            params.push(text(v));
+            if *v != current.genre {
+                edited |= EditedFields::GENRE;
+            }
         }
-        if updates.year.is_some() {
-            setters.push("year=?".to_string());
-            params.push(match updates.year {
-                Some(Some(i)) => rusqlite::types::Value::Integer(i),
-                _ => rusqlite::types::Value::Null,
-            });
+        if let Some(v) = updates.year {
+            setters.push("year=?");
+            params.push(v.map_or(Value::Null, Value::Integer));
+            if v != current.year {
+                edited |= EditedFields::YEAR;
+            }
         }
         if let Some(v) = &updates.content_type {
-            setters.push("content_type=?".to_string());
-            params.push(rusqlite::types::Value::Text(v.clone()));
+            setters.push("content_type=?");
+            params.push(Value::Text(v.clone()));
         }
 
         if setters.is_empty() {
-            return self
-                .get_track(updates.id)?
-                .ok_or_else(|| anyhow::anyhow!("track not found"));
+            return Ok(current);
         }
 
-        let sql = format!("UPDATE tracks SET {} WHERE id = ?", setters.join(", "));
-        // Add the WHERE `id` parameter after the dynamic value params.
-        params.push(rusqlite::types::Value::Integer(updates.id));
-        let n = {
-            let conn = self.conn.lock();
-            let mut stmt = conn.prepare(&sql)?;
-            stmt.execute(params_from_iter(params.iter()))?
-        };
+        setters.push("edited_fields = edited_fields | ?");
+        params.push(Value::Integer(edited));
+        params.push(Value::Integer(updates.id));
+        tx.execute(
+            &format!("UPDATE tracks SET {} WHERE id = ?", setters.join(", ")),
+            params_from_iter(params.iter()),
+        )?;
+        let track = tx.query_row(
+            &format!("SELECT {TRACK_COLUMNS} FROM tracks WHERE id = ?"),
+            [updates.id],
+            row_to_track,
+        )?;
+        tx.commit()?;
+        Ok(track)
+    }
 
+    /// Replace the flagged tag columns with `parsed`, the file's own tags, and
+    /// clear the flags.
+    pub fn revert_track_tags(&self, id: i64, parsed: &TrackInsert) -> Result<Track> {
+        let conn = self.conn.lock();
+        let n = conn.execute(
+            "UPDATE tracks SET \
+                title = CASE WHEN edited_fields & 1 THEN ?1 ELSE title END, \
+                artist = CASE WHEN edited_fields & 2 THEN ?2 ELSE artist END, \
+                album = CASE WHEN edited_fields & 4 THEN ?3 ELSE album END, \
+                genre = CASE WHEN edited_fields & 8 THEN ?4 ELSE genre END, \
+                year = CASE WHEN edited_fields & 16 THEN ?5 ELSE year END, \
+                mtime = ?6, edited_fields = 0 \
+             WHERE id = ?7",
+            params![
+                parsed.title,
+                parsed.artist,
+                parsed.album,
+                parsed.genre,
+                parsed.year,
+                parsed.mtime,
+                id
+            ],
+        )?;
         if n == 0 {
-            return Err(anyhow::anyhow!("track not found"));
+            anyhow::bail!("track not found");
         }
+        Ok(conn.query_row(
+            &format!("SELECT {TRACK_COLUMNS} FROM tracks WHERE id = ?"),
+            [id],
+            row_to_track,
+        )?)
+    }
 
-        self.get_track(updates.id)?
-            .ok_or_else(|| anyhow::anyhow!("track not found"))
+    /// A present track's tag columns, as a write-back reads them.
+    pub fn tag_values(&self, id: i64) -> Result<Option<TagValues>> {
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT path, title, artist, album, genre, year, fingerprint, edited_fields \
+             FROM tracks WHERE id = ? AND missing_since IS NULL",
+            [id],
+            |r| {
+                Ok(TagValues {
+                    path: r.get(0)?,
+                    title: r.get(1)?,
+                    artist: r.get(2)?,
+                    album: r.get(3)?,
+                    genre: r.get(4)?,
+                    year: r.get(5)?,
+                    fingerprint: r.get(6)?,
+                    edited_fields: r.get(7)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
+    /// Record a finished write-back: `written` is now in the file, whose mtime
+    /// is `mtime`. The flags clear only while the row still holds exactly what
+    /// was written, so an edit made during the write keeps its flags. Returns
+    /// whether the row matched.
+    pub fn finish_tag_write(&self, id: i64, written: &TagValues, mtime: i64) -> Result<bool> {
+        let conn = self.conn.lock();
+        let n = conn.execute(
+            "UPDATE tracks SET edited_fields = 0, mtime = ?1 \
+             WHERE id = ?2 AND path = ?3 AND title IS ?4 AND artist IS ?5 \
+               AND album IS ?6 AND genre IS ?7 AND year IS ?8",
+            params![
+                mtime,
+                id,
+                written.path,
+                written.title,
+                written.artist,
+                written.album,
+                written.genre,
+                written.year
+            ],
+        )?;
+        Ok(n > 0)
     }
 
     pub fn get_random_tracks(
@@ -989,7 +1122,8 @@ fn order_clause(sort_by: Option<&str>, sort_dir: Option<&str>) -> Option<String>
 /// What [`row_to_track`] reads, for queries that must not drag the waveform
 /// blob along with `SELECT *`.
 const TRACK_COLUMNS: &str = "id, title, artist, album, duration, play_count, genre, year, bpm, \
-     sample_rate, bitrate, format, cue_in_ms, fade_in_ms, fade_out_ms, cue_out_ms, next_start_ms";
+     sample_rate, bitrate, format, cue_in_ms, fade_in_ms, fade_out_ms, cue_out_ms, next_start_ms, \
+     edited_fields";
 
 fn row_to_track(row: &Row) -> rusqlite::Result<Track> {
     Ok(Track {
@@ -1006,6 +1140,7 @@ fn row_to_track(row: &Row) -> rusqlite::Result<Track> {
         bitrate: row.get("bitrate")?,
         format: row.get("format")?,
         cue_points: row_to_cue_points(row)?,
+        edited_fields: row.get("edited_fields")?,
     })
 }
 
@@ -1036,7 +1171,11 @@ const KEPT_BACKUPS: usize = 2;
 
 /// The schema, as an append-only list. Never edit a step that has shipped: add
 /// a new one and regenerate `schema.sql` (see `docs/database.md`).
-const MIGRATION_STEPS: &[M] = &[M::up(BASELINE), M::up(HEALTH_DISMISSALS)];
+const MIGRATION_STEPS: &[M] = &[
+    M::up(BASELINE),
+    M::up(HEALTH_DISMISSALS),
+    M::up(EDITED_FIELDS),
+];
 const MIGRATIONS: Migrations = Migrations::from_slice(MIGRATION_STEPS);
 
 fn schema_version() -> usize {
@@ -1124,18 +1263,29 @@ CREATE TABLE health_dismissals (
 );
 "#;
 
+/// Step 3: which tag columns the operator edited in the app, as
+/// [`EditedFields`] bits. A rescan keeps an edited column.
+const EDITED_FIELDS: &str = r#"
+ALTER TABLE tracks ADD COLUMN edited_fields INTEGER NOT NULL DEFAULT 0;
+"#;
+
 /// Upsert one present track's metadata by path. The operator-work columns are
 /// deliberately absent: the waveform is filled asynchronously by the waveform
 /// worker (`set_waveform`), and cue points and play counts are operator work a
-/// metadata rescan must never clobber.
+/// metadata rescan must never clobber. A tag column flagged in
+/// `edited_fields` keeps its value.
 const UPSERT_TRACK_SQL: &str = "INSERT INTO tracks \
      (path, content_type, title, artist, album, genre, year, duration, bpm, \
       sample_rate, bitrate, format, mtime, fingerprint) \
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
      ON CONFLICT(path) WHERE missing_since IS NULL DO UPDATE SET \
         content_type=excluded.content_type, \
-        title=excluded.title, artist=excluded.artist, album=excluded.album, \
-        genre=excluded.genre, year=excluded.year, duration=excluded.duration, \
+        title=CASE WHEN edited_fields & 1 THEN title ELSE excluded.title END, \
+        artist=CASE WHEN edited_fields & 2 THEN artist ELSE excluded.artist END, \
+        album=CASE WHEN edited_fields & 4 THEN album ELSE excluded.album END, \
+        genre=CASE WHEN edited_fields & 8 THEN genre ELSE excluded.genre END, \
+        year=CASE WHEN edited_fields & 16 THEN year ELSE excluded.year END, \
+        duration=excluded.duration, \
         bpm=excluded.bpm, sample_rate=excluded.sample_rate, \
         bitrate=excluded.bitrate, format=excluded.format, mtime=excluded.mtime, \
         fingerprint=COALESCE(excluded.fingerprint, fingerprint)";
@@ -1331,13 +1481,26 @@ mod tests {
         .unwrap();
     }
 
-    const SEEDS: &[fn(&Connection)] = &[seed_track, |conn| {
-        seed_track(conn);
+    fn seed_dismissal(conn: &Connection) {
         conn.execute_batch(
             "INSERT INTO health_dismissals (kind, key, value) VALUES ('exact', 'v1:ab', '1,2')",
         )
         .unwrap();
-    }];
+    }
+
+    const SEEDS: &[fn(&Connection)] = &[
+        seed_track,
+        |conn| {
+            seed_track(conn);
+            seed_dismissal(conn);
+        },
+        |conn| {
+            seed_track(conn);
+            seed_dismissal(conn);
+            conn.execute_batch("UPDATE tracks SET edited_fields = 1")
+                .unwrap();
+        },
+    ];
 
     /// Operator work written at any schema version survives every later step.
     #[test]
@@ -1365,6 +1528,8 @@ mod tests {
                 "seeded at v{version}"
             );
             assert_eq!(db.get_waveform(id).unwrap(), Some(vec![0x00, 0xff]));
+            let edited = if version >= 3 { EditedFields::TITLE } else { 0 };
+            assert_eq!(track.edited_fields, edited, "seeded at v{version}");
         }
     }
 
@@ -1754,6 +1919,137 @@ mod tests {
         let track = db.get_track(id).unwrap().unwrap();
         assert_eq!(track.title, "After", "the rescan did land");
         assert_eq!(track.cue_points.cue_in_ms, Some(10_000));
+    }
+
+    fn tagged(path: &str, title: &str, artist: &str) -> TrackInsert {
+        TrackInsert {
+            path: path.into(),
+            content_type: "music".into(),
+            title: Some(title.into()),
+            artist: Some(artist.into()),
+            album: Some("Album".into()),
+            fingerprint: Some("v1:x".into()),
+            ..Default::default()
+        }
+    }
+
+    fn retitle(db: &Db, id: i64, title: &str) -> Track {
+        db.update_track_metadata(&TrackMetadataUpdate {
+            id,
+            title: Some(title.into()),
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn an_edited_field_survives_a_rescan_and_the_rest_follow_the_file() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&tagged("/a.mp3", "File", "Artist"))
+            .unwrap();
+        let id = only_id(&db);
+        let edited = retitle(&db, id, "Edited");
+        assert_eq!(edited.edited_fields, EditedFields::TITLE);
+
+        db.insert_track(&tagged("/a.mp3", "Retagged", "New Artist"))
+            .unwrap();
+
+        let track = db.get_track(id).unwrap().unwrap();
+        assert_eq!(track.title, "Edited");
+        assert_eq!(track.artist, "New Artist");
+    }
+
+    #[test]
+    fn a_field_saved_unchanged_is_not_flagged() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&tagged("/a.mp3", "Title", "Artist"))
+            .unwrap();
+        let id = only_id(&db);
+        let track = db
+            .update_track_metadata(&TrackMetadataUpdate {
+                id,
+                title: Some("Title".into()),
+                artist: Some("Other".into()),
+                album: Some("Album".into()),
+                genre: Some(None),
+                year: Some(None),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(track.edited_fields, EditedFields::ARTIST);
+    }
+
+    #[test]
+    fn a_duplicate_inherits_the_edited_fields() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&tagged("/a.mp3", "File", "Artist"))
+            .unwrap();
+        let id = only_id(&db);
+        retitle(&db, id, "Edited");
+
+        let done = db
+            .reconcile(&Reconcile {
+                new_files: vec![tagged("/b.mp3", "File", "Artist")],
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(done.duplicated, 1);
+        let copy = db
+            .search("", None, None, None)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id != id)
+            .unwrap();
+        assert_eq!(copy.title, "Edited");
+        assert_eq!(copy.edited_fields, EditedFields::TITLE);
+        db.insert_track(&tagged("/b.mp3", "Retagged", "Artist"))
+            .unwrap();
+        assert_eq!(db.get_track(copy.id).unwrap().unwrap().title, "Edited");
+    }
+
+    #[test]
+    fn revert_takes_the_file_tags_and_clears_the_flags() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&tagged("/a.mp3", "File", "Artist"))
+            .unwrap();
+        let id = only_id(&db);
+        retitle(&db, id, "Edited");
+        db.conn
+            .lock()
+            .execute("UPDATE tracks SET artist = 'Kept' WHERE id = ?", [id])
+            .unwrap();
+
+        let mut on_disk = tagged("/a.mp3", "On Disk", "Other");
+        on_disk.mtime = Some(42);
+        let track = db.revert_track_tags(id, &on_disk).unwrap();
+
+        assert_eq!(track.title, "On Disk");
+        assert_eq!(track.artist, "Kept", "an unedited field is left alone");
+        assert_eq!(track.edited_fields, 0);
+        assert_eq!(db.track_index().unwrap()[0].mtime, Some(42));
+    }
+
+    #[test]
+    fn a_finished_tag_write_clears_the_flags_only_for_what_it_wrote() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&tagged("/a.mp3", "File", "Artist"))
+            .unwrap();
+        let id = only_id(&db);
+        retitle(&db, id, "First");
+        let written = db.tag_values(id).unwrap().unwrap();
+
+        retitle(&db, id, "Second");
+        assert!(!db.finish_tag_write(id, &written, 7).unwrap());
+        assert_eq!(
+            db.get_track(id).unwrap().unwrap().edited_fields,
+            EditedFields::TITLE
+        );
+
+        let written = db.tag_values(id).unwrap().unwrap();
+        assert!(db.finish_tag_write(id, &written, 7).unwrap());
+        assert_eq!(db.get_track(id).unwrap().unwrap().edited_fields, 0);
+        assert_eq!(db.track_index().unwrap()[0].mtime, Some(7));
     }
 
     fn only_id(db: &Db) -> i64 {

@@ -292,6 +292,16 @@ fn parse_track(
     })
 }
 
+/// The tags `path` holds now, as a scan would store them.
+pub fn read_file_tags(path: &str) -> Result<TrackInsert> {
+    let mtime = listing::Found {
+        path: path.to_string(),
+        content_type: "music",
+    }
+    .mtime_ms();
+    parse_track(path, "music", mtime, None)
+}
+
 /// Read the first embedded cover-art picture from `path` and return it as a
 /// base64 `data:` URL (ready for an `<img src>`), or `None` when the file has
 /// no artwork or cannot be read. Read on demand for the deck's vinyl disc — the
@@ -317,7 +327,7 @@ mod tests {
     use super::*;
     use crate::audio::cue_points::CuePoints;
     use crate::library::db::TrackMetadataUpdate;
-    use crate::library::test_audio::write_wav;
+    use crate::library::test_audio::{retag_externally, write_wav};
     use tempfile::TempDir;
 
     fn music(dir: &Path) -> ScanRoot {
@@ -380,6 +390,48 @@ mod tests {
 
         assert_eq!(outcome.added, 0);
         assert_eq!(titles(&db), ["Edited"]);
+    }
+
+    #[test]
+    fn an_edited_field_survives_an_external_retag() {
+        let (dir, db) = library();
+        let path = dir.path().join("a.wav");
+        write_wav(&path, 1, 1);
+        scan(&db, &[music(dir.path())]);
+        let id = db.search("", None, None, None).unwrap()[0].id;
+        db.update_track_metadata(&TrackMetadataUpdate {
+            id,
+            title: Some("Edited".into()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        retag_externally(&path, "Retagged", "Tagger");
+        scan(&db, &[music(dir.path())]);
+
+        let track = db.get_track(id).unwrap().unwrap();
+        assert_eq!(track.title, "Edited");
+        assert_eq!(track.artist, "Tagger");
+    }
+
+    #[test]
+    fn reading_file_tags_sees_the_current_file() {
+        let (dir, _db) = library();
+        let path = dir.path().join("a.wav");
+        write_wav(&path, 1, 1);
+        retag_externally(&path, "On Disk", "Tagger");
+        let tags = read_file_tags(&path.to_string_lossy()).unwrap();
+        assert_eq!(tags.title.as_deref(), Some("On Disk"));
+        assert_eq!(
+            tags.mtime,
+            Some(
+                Found {
+                    path: path.to_string_lossy().into_owned(),
+                    content_type: "music",
+                }
+                .mtime_ms()
+            )
+        );
     }
 
     #[test]

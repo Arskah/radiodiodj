@@ -103,13 +103,14 @@ playlist, the history and the saved session refer to it by id.
 | ---------------------- | ----------------- | ----------------------------- |
 | path, content type     | where the file is | follows the file              |
 | tags, duration, format | the file          | re-read when the file changes |
+| tags edited in the app | the operator      | always                        |
 | cue points             | the operator      | always                        |
 | play count             | airings           | always                        |
 | waveform, fingerprint  | the analysis pass | always                        |
 
-Tags edited in the app are overwritten when the file itself changes, because the
-scan re-reads it. Writing edits back into the file is
-[#313](https://github.com/Arskah/radiodiodj/issues/313).
+A track remembers which tag fields the operator edited (`edited_fields`). When
+the file changes, the scan re-reads it but keeps those fields. The other fields
+still follow the file.
 
 The **play count** goes up by one each time the track is put on air.
 
@@ -158,9 +159,35 @@ knows.
 
 **Edit metadata…** opens a form for title, artist, album, genre and year. The
 title is required, and the year must be a whole number from 1900 to 2100. Saving
-updates the database only, and the change shows in the library, the playlist and
-the deck at once. Artist and title changes can also make or break a
+updates the database, and the change shows in the library, the playlist and the
+deck at once. Artist and title changes can also make or break a
 [possible duplicate](./library-health.md#possible-duplicates).
+
+Only a field whose value actually changes is marked as edited. The form marks
+those fields, and **Revert to file tags** discards them: it reads the file's tags
+again right away, because a rescan skips a file that has not changed.
+
+**Write edits to file tags** (_Settings → Library_, off by default) also writes
+the edit into the file, so it survives moving the file to another library and a
+database reset. The write runs on a background worker, never inside a scan or
+playback, and never edits the file in place:
+
+1. Read the whole file into memory and set the tags there with `lofty`.
+2. Fingerprint the tagged copy. If the fingerprint differs from the stored one,
+   stop, because the write would cost the track its identity.
+3. Write a sibling `<name>.rdj-tmp`, flush it, copy the file's permissions, and
+   rename it over the original.
+4. Store the file's new mtime and clear the edited flags, so the next scan sees
+   no change. An edit saved while the write was running keeps its flags and is
+   written next.
+
+In-place writes are avoided because lofty rewrites the whole file in place for
+Ogg, ID3v2 and WAV/AIFF, and a dropped share connection would leave it
+truncated. A read-only file is not written. A write that takes longer than
+`tuning.library.tagWriteTimeoutSec` (default 30 s) is reported as failed and
+left behind. A failure keeps the edit and its flags, and is listed under
+[Library health](./library-health.md#tag-writes) until a retry succeeds or it is
+dismissed. With the setting off, nothing is written to any file.
 
 **Cue points…** opens the cue editor, which stores the track's radio edit; see
 [cue-points.md](./cue-points.md).
@@ -225,4 +252,5 @@ pre-1.0 resets are in [database.md](./database.md).
 | library panel                      | `src/features/library/LibraryPanel.svelte`                     |
 | hover card                         | `src/features/track/TrackTooltip.svelte`                       |
 | metadata editor                    | `src/features/track/MetadataOverlay.svelte`                    |
+| tag write-back                     | `library/tag_write.rs`                                         |
 | settings and health view           | `src/features/settings/`, `src/features/health/`               |

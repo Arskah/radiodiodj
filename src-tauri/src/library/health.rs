@@ -12,6 +12,7 @@ use tauri::{AppHandle, Emitter, Listener};
 use super::check::CheckReport;
 use super::db::{Db, Dismissal, HealthRow, Track};
 use super::listing::{self, ScanRoot};
+use super::tag_write::{TagWriteFailure, TagWriter};
 use crate::persist::config::Config;
 
 pub const HEALTH_EVENT: &str = "library-health";
@@ -29,6 +30,8 @@ pub struct HealthReport {
     /// The latest library check, until a scan makes it moot.
     pub check: Option<CheckReport>,
     pub check_dismissed: bool,
+    /// Edits that could not be written into their file.
+    pub tag_write_failures: Vec<TagWriteFailure>,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -87,6 +90,7 @@ impl FindingKind {
 pub struct Health {
     db: Arc<Db>,
     config: Arc<Config>,
+    tag_writer: Arc<TagWriter>,
     app: AppHandle,
     report: Mutex<HealthReport>,
     check: Mutex<Option<CheckReport>>,
@@ -96,14 +100,26 @@ pub struct Health {
 }
 
 impl Health {
-    pub fn new(app: AppHandle, db: Arc<Db>, config: Arc<Config>) -> Arc<Self> {
+    pub fn new(
+        app: AppHandle,
+        db: Arc<Db>,
+        config: Arc<Config>,
+        tag_writer: Arc<TagWriter>,
+    ) -> Arc<Self> {
         let health = Arc::new(Self {
             db,
             config,
+            tag_writer,
             app,
             report: Mutex::new(HealthReport::default()),
             check: Mutex::new(None),
             check_dismissed: Mutex::new(None),
+        });
+        let weak = Arc::downgrade(&health);
+        health.tag_writer.set_listener(move || {
+            if let Some(health) = weak.upgrade() {
+                health.refresh();
+            }
         });
         health.refresh();
         health
@@ -131,6 +147,7 @@ impl Health {
                     .as_ref()
                     .is_some_and(|c| *self.check_dismissed.lock() == Some(c.signature()));
                 report.check = check;
+                report.tag_write_failures = self.tag_writer.failures();
                 *self.report.lock() = report.clone();
                 let _ = self.app.emit(HEALTH_EVENT, &report);
             }
@@ -267,6 +284,7 @@ pub fn build(db: &Db, roots: &[ScanRoot]) -> Result<HealthReport> {
         unhashed: db.unhashed_count()?,
         check: None,
         check_dismissed: false,
+        tag_write_failures: Vec::new(),
     })
 }
 

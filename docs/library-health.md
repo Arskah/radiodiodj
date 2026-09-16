@@ -69,6 +69,7 @@ The tab and the Settings button carry the same **attention count**:
 | possible duplicate groups, unless dismissed  | 1 each   |
 | a check that found changes, unless dismissed | 1        |
 | unreachable library paths                    | 1 each   |
+| failed tag writes                            | 1 each   |
 
 Missing tracks count once, however many there are, so removing a library path
 does not put _800_ on the button. An unreachable path cannot be dismissed. It
@@ -256,6 +257,16 @@ Group and missing-track dismissals are stored in the `health_dismissals` table,
 and deleted once their finding is gone. The disk-change dismissal is held in
 memory, since the next launch checks again anyway.
 
+## Tag writes
+
+When _Write edits to file tags_ is on, a write that fails (a read-only file, a
+share that is gone or too slow, or a copy whose fingerprint would change) is
+listed under **Tag writes failed** with the error. It shows only while there is
+a failure. The edit is still in the library. _Retry_ queues the write again,
+even if the setting has since been turned off. _Dismiss_ drops the entry and
+keeps the edit. The list lives in memory, so it is empty after a restart. See
+[library.md](./library.md#editing-a-track).
+
 ## Wire and storage
 
 `library/health.rs` keeps one `HealthReport`:
@@ -272,6 +283,7 @@ HealthReport
   check            CheckReport?      checkedAt, new, changed, gone, unrooted,
                                      unreachable, partial
   checkDismissed   bool
+  tagWriteFailures [TagWriteFailure] id, title, artist, path, error, at
 ```
 
 The renderer loads it with `library_health` and replaces it on every
@@ -282,6 +294,7 @@ The renderer loads it with `library_health` and replaces it on every
 - after a metadata edit, since artist and title decide possible duplicates
 - after a library path is added or removed
 - after a purge, a dismissal, and every check
+- when the tag write failures change
 
 The renderer works out whether a missing track is queued from the playlist it
 mirrors. That keeps the report independent of the playlist, which itself
@@ -294,6 +307,8 @@ depends on the report.
 | `health_dismiss(kind, key)`   | `kind` is `exact`, `possible`, `missing` or `check`; `key` is the group key, empty otherwise |
 | `health_undismiss(kind, key)` | undoes a dismissal                                                                           |
 | `library_check_now`           | asks the worker for a check                                                                  |
+| `retry_tag_write(id)`         | queues a failed tag write again                                                              |
+| `dismiss_tag_write(id)`       | drops a failed tag write from the list                                                       |
 
 Migration step 2 added the dismissals table:
 

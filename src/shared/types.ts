@@ -27,7 +27,21 @@ export interface Track {
    * out — the backend sends it on every track.
    */
   cue_points?: CuePoints;
+  /**
+   * Tag fields edited in the app, as {@link EditedField} bits. A rescan keeps
+   * them instead of taking the file's tags.
+   */
+  edited_fields?: number;
 }
+
+/** Bits of `Track.edited_fields`. */
+export const EditedField = {
+  title: 1,
+  artist: 2,
+  album: 4,
+  genre: 8,
+  year: 16,
+} as const;
 
 /**
  * Per-track playback markers. `null` means "no adjustment"; the backend
@@ -147,6 +161,19 @@ export interface HealthReport {
   unhashed: number;
   check: CheckReport | null;
   checkDismissed: boolean;
+  /** Edits that could not be written into their file. */
+  tagWriteFailures: TagWriteFailure[];
+}
+
+/** A metadata edit write-back could not put into the file. */
+export interface TagWriteFailure {
+  id: number;
+  title: string;
+  artist: string;
+  path: string;
+  error: string;
+  /** Unix ms. */
+  at: number;
 }
 
 export type FindingKind = "exact" | "possible" | "missing" | "check";
@@ -206,6 +233,10 @@ export interface PlayerConfig {
 export interface LibraryConfig {
   /** Minutes between library checks; 0 turns the timer off. */
   checkIntervalMin: number;
+  /** Write metadata edits into the file's tags as well. */
+  writeTags: boolean;
+  /** Seconds a tag write may take before it is reported as failed. */
+  tagWriteTimeoutSec: number;
 }
 
 /// User-tunable playback behaviour, persisted in `config.json`.

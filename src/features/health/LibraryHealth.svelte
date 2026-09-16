@@ -252,6 +252,43 @@
     </div>
   </section>
 
+  {#if report.tagWriteFailures.length > 0}
+    <section class="health-section" id="health-tag-writes">
+      <header>
+        <h5 class="tuning-group-title">
+          Tag writes failed ({report.tagWriteFailures.length})
+        </h5>
+      </header>
+      <p class="health-note">
+        These edits are kept in the library but are not in the file yet.
+      </p>
+      {#each report.tagWriteFailures as f (f.id)}
+        <div class="health-row">
+          <span class="health-name">
+            <span class="health-title">{f.title}</span>
+            <span class="health-sub">{f.artist}</span>
+          </span>
+          <span class="health-path" title={f.path}>{f.path}</span>
+          <span class="health-error" title={f.error}>{f.error}</span>
+          <span class="health-actions">
+            <button
+              title="Try writing the tags again"
+              aria-label="Retry"
+              onclick={() => app.retryTagWrite(f.id)}
+              ><span class="material-symbols-outlined">refresh</span></button
+            >
+            <button
+              title="Stop listing this; the edit stays in the library"
+              aria-label="Dismiss"
+              onclick={() => app.dismissTagWrite(f.id)}
+              ><span class="material-symbols-outlined">close</span></button
+            >
+          </span>
+        </div>
+      {/each}
+    </section>
+  {/if}
+
   <section class="health-section" id="health-missing">
     <header>
       <h5 class="tuning-group-title">
@@ -485,6 +522,15 @@
   }
 
   .health-icons,
+  .health-error {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--error);
+  }
+
   .health-actions {
     display: flex;
     align-items: center;

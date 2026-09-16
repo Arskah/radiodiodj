@@ -35,3 +35,27 @@ pub fn write_wav(path: &Path, seed: u32, secs: u32) {
     }
     std::fs::write(path, bytes).unwrap();
 }
+
+/// Tag `path` in place with `title` and `artist`, as an external tagger would,
+/// and move its mtime forward so a scan sees the change.
+pub fn retag_externally(path: &Path, title: &str, artist: &str) {
+    use lofty::config::WriteOptions;
+    use lofty::file::{AudioFile, TaggedFileExt};
+    use lofty::probe::Probe;
+    use lofty::tag::{ItemKey, Tag};
+
+    let mut tagged = Probe::open(path).unwrap().read().unwrap();
+    let mut tag = Tag::new(tagged.primary_tag_type());
+    tag.insert_text(ItemKey::TrackTitle, title.into());
+    tag.insert_text(ItemKey::TrackArtist, artist.into());
+    tagged.insert_tag(tag);
+    tagged.save_to_path(path, WriteOptions::default()).unwrap();
+    let later =
+        std::fs::metadata(path).unwrap().modified().unwrap() + std::time::Duration::from_secs(60);
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+}

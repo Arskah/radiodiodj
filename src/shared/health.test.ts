@@ -15,6 +15,7 @@ const empty: HealthReport = {
   unhashed: 0,
   check: null,
   checkDismissed: false,
+  tagWriteFailures: [],
 };
 
 const missing = (id: number): MissingTrack => ({
@@ -82,6 +83,20 @@ describe("healthAttention", () => {
       checkDismissed: true,
     };
     expect(healthAttention(report)).toBe(2);
+  });
+
+  it("counts every failed tag write", () => {
+    const failure = (id: number) => ({
+      id,
+      title: "t",
+      artist: "a",
+      path: `/m/${id}`,
+      error: "the file is read-only",
+      at: 1,
+    });
+    expect(
+      healthAttention({ ...empty, tagWriteFailures: [failure(1), failure(2)] }),
+    ).toBe(2);
   });
 });
 

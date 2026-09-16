@@ -69,7 +69,7 @@ const DEFAULT_TUNING: TuningConfig = {
     openRetryIntervalMs: 2000,
     readRetryBackoffsMs: [500, 1000, 2000],
   },
-  library: { checkIntervalMin: 15 },
+  library: { checkIntervalMin: 15, writeTags: false, tagWriteTimeoutSec: 30 },
 };
 
 export const EMPTY_HEALTH: HealthReport = {
@@ -80,6 +80,7 @@ export const EMPTY_HEALTH: HealthReport = {
   unhashed: 0,
   check: null,
   checkDismissed: false,
+  tagWriteFailures: [],
 };
 
 export type PlaylistTab = "playlist" | "history";
@@ -1097,18 +1098,52 @@ export class AppState {
       logger.error("updateTrackMetadata failed:", err);
       return null;
     }
+    this.adoptTrack(updatedTrack, index, oldTitle);
+    return updatedTrack;
+  }
+
+  /**
+   * Drop a track's metadata edits and take its tags from the file again.
+   * Rejects when the file cannot be read; the edits are then kept.
+   */
+  async revertTrackTags(id: number): Promise<Track> {
+    const index = this.tracks.findIndex((t) => t.id === id);
+    const oldTitle = index >= 0 ? this.tracks[index].title : "";
+    const updated = await api.revertTrackTags(id);
+    this.adoptTrack(updated, index >= 0 ? index : undefined, oldTitle);
+    if (this.editingMetadata?.id === id) this.editingMetadata = updated;
+    return updated;
+  }
+
+  retryTagWrite(id: number): void {
+    void api.retryTagWrite(id).catch((err) => {
+      logger.error("Tag write retry failed:", err);
+    });
+  }
+
+  dismissTagWrite(id: number): void {
+    void api.dismissTagWrite(id).catch((err) => {
+      logger.error("Dismiss failed:", err);
+    });
+  }
+
+  /** Put a track the backend changed in place of the local copies. */
+  private adoptTrack(
+    updated: Track,
+    index: number | undefined,
+    oldTitle: string,
+  ): void {
     if (index != null) {
-      this.tracks[index] = updatedTrack;
+      this.tracks[index] = updated;
     }
     // If the currently playing track was edited, keep its title for document.title.
-    if (this.currentTrack?.id === id) {
-      this.currentTrack = updatedTrack;
-      if (oldTitle && oldTitle !== updatedTrack.title) {
-        document.title = `${updatedTrack.title} - ${updatedTrack.artist} | ${APP_NAME}`;
+    if (this.currentTrack?.id === updated.id) {
+      this.currentTrack = updated;
+      if (oldTitle && oldTitle !== updated.title) {
+        document.title = `${updated.title} - ${updated.artist} | ${APP_NAME}`;
       }
     }
     this.scheduleSave();
-    return updatedTrack;
   }
 
   async scan(): Promise<void> {
