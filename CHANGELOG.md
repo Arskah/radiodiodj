@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.17.0](https://github.com/Arskah/radiodiodj/compare/v0.16.0...v0.17.0) (2026-09-16)
+
+
+### Features
+
+* **audio:** put every on-air deck on a program bus ([#361](https://github.com/Arskah/radiodiodj/issues/361)) ([20653ef](https://github.com/Arskah/radiodiodj/commit/20653efeaf10010a9eef25428b92afff889df479))
+* **playlist:** move the playlist into the backend ([#359](https://github.com/Arskah/radiodiodj/issues/359)) ([5532bc0](https://github.com/Arskah/radiodiodj/commit/5532bc09c056dfe3ef91e04d5a19b9a9efe972d2))
+
+
+### Bug Fixes
+
+* **deps:** update dependency @tauri-apps/plugin-dialog to v2.7.3 ([#342](https://github.com/Arskah/radiodiodj/issues/342)) ([7ebabb2](https://github.com/Arskah/radiodiodj/commit/7ebabb27eebd9c880e3d0bb74240d5fb7eca078f))
+* **deps:** update dependency @tauri-apps/plugin-log to v2.9.1 ([#228](https://github.com/Arskah/radiodiodj/issues/228)) ([88fc3aa](https://github.com/Arskah/radiodiodj/commit/88fc3aa11edd48d51c54070db50ebf0ece0607f8))
+* **deps:** update dependency material-symbols to v0.47.2 ([#336](https://github.com/Arskah/radiodiodj/issues/336)) ([9c88d13](https://github.com/Arskah/radiodiodj/commit/9c88d13802872de849afb7b70276ca2e3c94dcc9))
+* **deps:** update rust crate lofty to v0.25.1 ([#321](https://github.com/Arskah/radiodiodj/issues/321)) ([923a6ba](https://github.com/Arskah/radiodiodj/commit/923a6bad41df8781c7a0ccd032b6155d40b33da9))
+* **deps:** update rust crate log to v0.4.34 ([#328](https://github.com/Arskah/radiodiodj/issues/328)) ([6cd76c3](https://github.com/Arskah/radiodiodj/commit/6cd76c30a10fbf4c7e6838f9e4b94cc6bae6b185))
+* **deps:** update rust crate reqwest to v0.13.5 ([#351](https://github.com/Arskah/radiodiodj/issues/351)) ([ca706ad](https://github.com/Arskah/radiodiodj/commit/ca706adaabd3a23a35be4c72a3e528ed609516f8))
+* **deps:** update rust crate tauri-plugin-dialog to v2.7.3 ([#343](https://github.com/Arskah/radiodiodj/issues/343)) ([81b003e](https://github.com/Arskah/radiodiodj/commit/81b003ed768efe0dbea0138a2c43cff7a3af982c))
+* **deps:** update rust crate tauri-plugin-log to v2.9.1 ([#229](https://github.com/Arskah/radiodiodj/issues/229)) ([461cab4](https://github.com/Arskah/radiodiodj/commit/461cab486fcf25f0a310bb7c65970e8227b55d6a))
+
+
+### Miscellaneous Chores
+
+* **deps:** lock file maintenance ([#319](https://github.com/Arskah/radiodiodj/issues/319)) ([fdf0156](https://github.com/Arskah/radiodiodj/commit/fdf0156c9064eda20d44c981357364b7426ec774))
+* **deps:** update dependency @types/node to v25.9.6 ([#353](https://github.com/Arskah/radiodiodj/issues/353)) ([a7dcf18](https://github.com/Arskah/radiodiodj/commit/a7dcf18e38960fcb2c59812a9ecc8cdc5b30cec0))
+* **deps:** update dependency eslint to v10.10.0 ([#331](https://github.com/Arskah/radiodiodj/issues/331)) ([823324b](https://github.com/Arskah/radiodiodj/commit/823324b847666d83352bd89dacfec28715e9a3ed))
+* **deps:** update dependency lint-staged to v17.5.1 ([#337](https://github.com/Arskah/radiodiodj/issues/337)) ([4cc5ec4](https://github.com/Arskah/radiodiodj/commit/4cc5ec43a6803b3dad25b54e9b3e7f4b1ae15d0c))
+* **deps:** update dependency rust to v1.98.1 ([#326](https://github.com/Arskah/radiodiodj/issues/326)) ([9ce2d6e](https://github.com/Arskah/radiodiodj/commit/9ce2d6efb15f67488738e0e9012a7c5f810cda14))
+* **deps:** update dependency svelte to v5.57.0 ([#338](https://github.com/Arskah/radiodiodj/issues/338)) ([05b90f9](https://github.com/Arskah/radiodiodj/commit/05b90f995f6ca1fa21891b3f0eb9d9c218b7ab99))
+* **deps:** update dependency tsx to v4.23.13 ([#341](https://github.com/Arskah/radiodiodj/issues/341)) ([d00b90f](https://github.com/Arskah/radiodiodj/commit/d00b90ff4848c9c9267109084dd57c6295edb861))
+* **deps:** update dependency typescript-eslint to v8.70.0 ([#332](https://github.com/Arskah/radiodiodj/issues/332)) ([9f978f1](https://github.com/Arskah/radiodiodj/commit/9f978f1173383cf0441409f4a055cdb1a92f12c1))
+* **deps:** update dependency vite to v8.3.0 ([#327](https://github.com/Arskah/radiodiodj/issues/327)) ([8d7a1bd](https://github.com/Arskah/radiodiodj/commit/8d7a1bd85b643119434d04a4f137f4ccfa7da23b))
+* **deps:** update node.js to v24.21.0 ([#349](https://github.com/Arskah/radiodiodj/issues/349)) ([12e3a34](https://github.com/Arskah/radiodiodj/commit/12e3a341cb3561cd1a3080f55713b79ac9e18fdc))
+* **deps:** update pnpm to v12.4.1 ([#347](https://github.com/Arskah/radiodiodj/issues/347)) ([45cbb57](https://github.com/Arskah/radiodiodj/commit/45cbb573fe662d67dbeb42cbe617bd50aacce584))
+* **deps:** update pnpm/action-setup action to v6.1.0 ([#348](https://github.com/Arskah/radiodiodj/issues/348)) ([559c9ca](https://github.com/Arskah/radiodiodj/commit/559c9cace1a90447e13e433f7a30d8f07a2e0603))
+* **deps:** update webdriverio monorepo ([#333](https://github.com/Arskah/radiodiodj/issues/333)) ([d3ca415](https://github.com/Arskah/radiodiodj/commit/d3ca41588db52edd81d61038bbe7f05ec3064b10))
+
+
+### Documentation
+
+* **audio:** cue points, program bus, playlist ownership ([#358](https://github.com/Arskah/radiodiodj/issues/358)) ([24d5c4c](https://github.com/Arskah/radiodiodj/commit/24d5c4c8bb6e55a137f2c13cbb8f454556d91188))
+
 ## [0.16.0](https://github.com/Arskah/radiodiodj/compare/v0.15.0...v0.16.0) (2026-09-15)
 
 
