@@ -155,6 +155,10 @@ the confirm step names both counts. `purge_missing_tracks` refuses while a scan
 is running, since the scan may be about to reattach some of them. There is no
 automatic retention.
 
+Status (2026-09-16): [library-health.md](./library-health.md) replaces this
+panel with a per-track list and selective purge (`purge_tracks(ids)`), and
+drops purged tracks from the playlist. Purge stays explicit, with no retention.
+
 ## Accepted limits
 
 - **Moved and re-encoded or re-tagged in one step** — a new track. The old row

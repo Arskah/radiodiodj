@@ -58,6 +58,30 @@ _Avoid_: Relink, merge, re-import
 The operator's explicit, permanent deletion of **Missing tracks**. The only way a track row is deleted.
 _Avoid_: Prune, cleanup
 
+**Duplicate**:
+A present Track sharing its **Fingerprint** with another present Track. Starts as a copy of the original's operator state and is its own Track from then on. Removed only by the operator deleting its file.
+_Avoid_: Copy, clone, twin
+
+**Possible duplicate**:
+Present music Tracks with the same normalised artist and title but no shared **Fingerprint**. A notice for the operator, not a match.
+_Avoid_: Near-duplicate, fuzzy match
+
+**Library check**:
+A listing of every **Library path** compared with the library by path and mtime alone, reporting new, changed and gone files and unreachable paths. Reads no tags or audio and never changes the library.
+_Avoid_: Quick scan, watch, sync
+
+**Disk change**:
+A difference a **Library check** found that no **Scan** has applied yet.
+_Avoid_: Pending change, unscanned file
+
+**Library health**:
+The report of **Missing tracks**, **Duplicates**, **Possible duplicates** and **Disk changes**, and the Settings view that shows it.
+_Avoid_: Library status, diagnostics
+
+**Dismissal**:
+The operator's acknowledgement of one health finding. Silences the badge only while the finding stays exactly as it was dismissed.
+_Avoid_: Ignore, mute, snooze
+
 **Delta cache**:
 mtime + content-type cache letting the scanner skip unchanged files.
 _Avoid_: Cache, diff
@@ -178,6 +202,8 @@ _Avoid_: Persist, sync
 - Exactly one **Deck** holds the `main` **Deck role** at a time; **Handover** moves it
 - A **Track** may carry a **Radio edit**; a **Playlist** item may carry an **Item override** that wins for that airing
 - **Air time** derives from the **Cue points** that apply to an airing, not from the **Track**'s file duration
+- A **Library check** predicts what the next **Scan** would do; only the **Scan** applies it, and only **Purge** deletes
+- A **Dismissal** silences a **Library health** finding without hiding it
 - A **Track** is identified by its row, not its path: **Prune** makes it **Missing**, **Reattach** or a returning path restores it, and only **Purge** deletes it
 
 ## Example dialogue
@@ -225,4 +251,6 @@ _Avoid_: Persist, sync
 - "Cue point" is a position in a Track; "Cue deck" is the off-air deck; the "Cue editor" is where points are placed. The overlap is inherited from playout software convention.
 - Bare "edit" means **metadata/tag editing** and nothing else. The playback markers are **Cue points**; the stored set of them is a **Radio edit**. Tag-editing code says `metadata` explicitly for this reason.
 - "Segue" and "crossfade" are not domain terms → use **Handover**, which is triggered by a Cue point rather than a configured duration.
+- "Check" vs "Scan" → a **Library check** only reads the disk and reports; a **Scan** changes the library. Never call a check a "quick scan".
+- "Ignore" is not a domain term → a **Dismissal** silences a finding, and there is no ignored-track state. An unwanted **Duplicate** is removed by deleting its file.
 - "Content type" is a closed enum: `music | jingle | commercial`. New types require deliberate domain extension.
