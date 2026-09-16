@@ -1,428 +1,361 @@
 # Library health — missing tracks, duplicates and disk changes
 
-A single view under _Settings_ tells the operator when the library needs
-attention and lets them act on it. It reports three things:
+The _Library_ tab of _Settings_ tells the operator when the library needs
+attention, and lets them act on it. It reports three things:
 
-1. **Missing tracks** — listed one by one, not only counted.
-2. **Duplicates** — exact copies, and tracks that look like the same song.
-3. **Disk changes** — new, changed or gone files that no scan has picked up
-   yet.
+1. **Disk changes** — files added, changed or removed since the last scan.
+2. **Missing tracks** — tracks whose file a scan could not find, one by one.
+3. **Duplicates** — exact copies, and tracks that look like the same song.
 
-A badge on the Settings button shows while any of them needs attention.
+A count on the Settings button says when any of them needs attention.
 
 Implements [#376](https://github.com/Arskah/radiodiodj/issues/376). It builds on
-the identity model in [track-identity.md](./track-identity.md), and its one
-schema change follows [database.md](./database.md).
+the identity model in [track-identity.md](./track-identity.md). The library as a
+whole is described in [library.md](./library.md).
 
-Status (2026-09-16): increments 1 to 5 built. _Locate…_ (increment 6) is
-not. The increments are at the [end](#increments).
-
-## Problem
-
-[#373](https://github.com/Arskah/radiodiodj/issues/373) made track identity
-stable, but the operator sees little of it:
-
-- _Settings → Library Sync_ shows a **count** of missing tracks and one Purge
-  button. The operator cannot see which tracks are missing, or purge some and
-  keep others.
-- **Duplicates are invisible.** Exact copies share a fingerprint, but nothing
-  groups them. The same song in two encodings is not detected at all.
-- A missing track can still sit in the playlist or history with no marking.
-  While the cache is cold, advancement may even try to load it and wait out the
-  retry schedule.
-- The library only changes when the operator presses **Scan**. Files added to a
-  share go unnoticed until then, and so does a file that has gone.
-
-## Principles
+Three rules hold throughout:
 
 - **The app never touches audio files.** It does not delete, move or rename
-  them. Every fix to the disk is done by the operator, in the file manager.
-- **Nothing here changes the library by itself.** The check reports, a scan
+  them. Every fix to the disk is made by the operator, in the file manager.
+- **Nothing here changes the library by itself.** A check reports, a scan
   applies, and only the operator's _Purge_ deletes rows.
 - **An unreachable library path is reported as unreachable,** never as a folder
-  full of gone files. This is the same guard the scan has.
-- **The backend owns the report.** The renderer mirrors it and derives its
-  badges from it, the same way it mirrors the playlist.
+  full of gone files.
 
-## Decisions
+## Where it lives
 
-Settled on 2026-09-16, against the open questions in #376.
-
-| question                            | decision                                                                                                                                                                                              |
-| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| How is a present duplicate removed? | **The operator deletes the file.** The next scan marks the row missing and the operator purges it. There is no _ignored_ flag and no path exclusion list.                                             |
-| Merge duplicates?                   | **No.** The operator keeps one copy and removes the others. Queue and history entries are not rewritten, and play counts are not combined.                                                            |
-| Possible duplicates?                | **In v1.** Tracks sharing an artist and title are almost always the same recording, so the operator is told about them. The operator decides, by deleting a file or by correcting the metadata.       |
-| Auto-scan after a check?            | **No.** A check only reports. The library never changes mid-show without the operator knowing.                                                                                                        |
-| Filesystem watcher?                 | **Not in v1.** FSEvents and inotify miss changes made by other SMB or NFS clients, which is most of this library. The timer is the baseline, and a watcher would only make local roots report sooner. |
-| Missing track in the playlist?      | **Skipped at once,** even when the cache is cold, and dropped from the playlist as it is passed. The retry schedule exists for an unreachable share, and a missing track is known to be gone.         |
-
-## The health report
-
-`library/health.rs` builds one `HealthReport`:
+Library health sits in _Settings → Library_, under the library paths and _Scan
+Library Now_. The paths, the scan, and what the scan left behind are in one
+place.
 
 ```text
-HealthReport
-  missing:   [MissingTrack]      every row with missing_since set
-  exact:     [DuplicateGroup]    present rows sharing a fingerprint
-  possible:  [DuplicateGroup]    present music rows sharing artist + title
-  unhashed:  count               present rows the analysis pass has not fingerprinted
-  check:     CheckReport | null  the latest library check, see below
-  dismissed: Dismissals          what the operator has already seen
+┌ Library ─────────────────────────────────────────────────────┐
+│ Music / Commercials / Jingles paths                          │
+│                                           [Scan Library Now] │
+│ Disk changes                                      [Dismiss]  │
+│   ⚠ /Volumes/radio/music is unreachable. Its tracks are      │
+│     kept as they are.                                        │
+│   12 new · 3 changed · 1 gone — checked 4 min ago            │
+│   ▸ New (12)   ▸ Changed (3)   ▸ Gone (1)                    │
+│   [Check now]                                                │
+│                                                              │
+│ Missing tracks (5)                                [Dismiss]  │
+│   ☐ Title / Artist   …/old/path.mp3   2 d ago   ◇ ▶12  ≡     │
+│   ☐ ▸ No longer under a library path (812)                   │
+│   [Purge selected (1)…] [Purge all…]                         │
+│                                                              │
+│ Duplicates                                                   │
+│   Still checking 140 tracks for exact copies…                │
+│   Exact copies (2)                                           │
+│   ▾ Title — Artist   2 copies                     [Dismiss]  │
+│       Title / Artist  /a/Title.mp3  music  3:34  ▶12  F E C  │
+│       Title / Artist  /b/Title.mp3  music  3:34  ▶0   F E C  │
+│   Possible duplicates (1)                                    │
+│   ▸ Title — Artist   2 copies   Dismissed   [Undo dismiss]   │
+└──────────────────────────────────────────────────────────────┘
+◇ has cue points   ▶ play count   ≡ in the playlist
+F Show in folder   E Edit metadata…   C Cue points…
 ```
 
-The renderer reads it with `library_health` and receives it again as a
-`library-health` event whenever it changes. The backend rebuilds it:
+A section with nothing to report says _No issues_. Disk changes says _Not
+checked since the last scan_ or _No changes_ instead.
 
-- after a scan finishes, is canceled or fails
-- after a purge
-- after a metadata edit (artist or title can make or break a possible group)
-- when the analysis pass finishes, since the fingerprints it fills in create
-  exact groups
-- after each library check
+The tab and the Settings button carry the same **attention count**:
 
-A rebuild is two indexed queries over present rows plus one over missing rows,
-which is cheap next to any of those triggers.
+| counted                                      | weight   |
+| -------------------------------------------- | -------- |
+| missing tracks, unless dismissed             | 1 if any |
+| exact duplicate groups, unless dismissed     | 1 each   |
+| possible duplicate groups, unless dismissed  | 1 each   |
+| a check that found changes, unless dismissed | 1        |
+| unreachable library paths                    | 1 each   |
 
-### Missing tracks
+Missing tracks count once, however many there are, so removing a library path
+does not put _800_ on the button. An unreachable path cannot be dismissed. It
+clears itself when the share is back.
 
-Each `MissingTrack` carries what a purge would destroy, and what the operator
-needs to decide:
+A scan's result bar at the bottom of the window stays until the operator
+dismisses it, so a scan that ends unwatched still says what it moved and marked
+missing.
 
-| field          | from                                                         |
-| -------------- | ------------------------------------------------------------ |
-| title, artist  | the row                                                      |
-| path           | the row: the last path the file was seen at                  |
-| `missingSince` | the row                                                      |
-| `hasCuePoints` | any of the five markers is set                               |
-| `playCount`    | the row                                                      |
-| `queued`       | added by the renderer, from the playlist snapshot it mirrors |
-| `outsideRoots` | no configured library path contains the path                 |
+## Disk changes
 
-`queued` is the renderer's, so the report does not depend on the playlist,
-which will itself depend on the report for missing ids.
+The **library check** (`library/check.rs`) notices, without a scan, that the
+disk and the library disagree. It lists every library path, reads each file's
+modification time, and compares the result with the library. It reads **no tags
+and no audio**, and **never writes**. On a network share it costs what the
+listing phase of a scan costs: one directory read per folder and one stat per
+file.
 
-`outsideRoots` separates the two reasons a track goes missing. A file that was
-deleted is one row. A library path that was removed from _Settings_ is usually
-hundreds, and the list shows those as one collapsed group per former root, so a
-long list stays readable.
+| reported      | meaning                                                           |
+| ------------- | ----------------------------------------------------------------- |
+| `new`         | a listed file no present track has                                |
+| `changed`     | a present track whose file's mtime, or whose root's type, changed |
+| `gone`        | a present track under a fully listed path whose file is not there |
+| `unrooted`    | a present track no library path contains any more                 |
+| `unreachable` | a library path that is not a readable directory                   |
+| `partial`     | a library path listed with unreadable subfolders                  |
 
-The list is sorted newest `missingSince` first.
+**The check predicts exactly what the next scan will do.** The listing, the
+_changed_ test and the _gone_ rule live in `library/listing.rs`, and the scan and
+the check both call them.
 
-### Exact duplicates
+- A file back at a **missing** track's path counts as new. The scan will revive
+  that track.
+- A partly readable path contributes nothing to _gone_. An unreachable one is
+  listed under _unreachable_, and its tracks are left alone.
+- A track outside every library path is what the scan marks missing after a
+  path is removed. The view calls it _No longer under a library path_.
 
-```sql
-SELECT fingerprint FROM tracks
-WHERE missing_since IS NULL AND fingerprint IS NOT NULL
-GROUP BY fingerprint HAVING COUNT(*) > 1
-```
+Each count expands into its paths. The first 200 of each are drawn.
 
-The group key is the fingerprint. The existing partial index
-`tracks_fingerprint` serves it.
+### When it runs
 
-A row without a fingerprint cannot be in an exact group yet. Right after a first
-scan the analysis pass is still filling them in, so exact groups appear over
-several minutes rather than all at once. The report's `unhashed` count says how
-many present rows still lack one, and the view shows _Still checking N tracks_ while that is
-non-zero.
+- **At launch,** five seconds in, unless a scan is already running (as after a
+  [pre-1.0 reset](./database.md#pre-10-resets)). That scan answers the same
+  question.
+- **On a timer:** _Settings → Advanced → Library check interval (minutes)_,
+  stored as `tuning.library.checkIntervalMin`. The default is 15, and `0` turns
+  the timer off. A changed interval takes effect within a minute.
+- **On demand,** from _Check now_.
+
+One worker thread runs checks, one at a time, and never alongside a scan:
+
+- A **scan that starts** cancels a running check. A check that overlapped a scan
+  is thrown away rather than reported.
+- A **completed scan** clears the report, since the library now matches the disk
+  it listed, and restarts the timer.
+- A **canceled scan** leaves new files unapplied, so a check runs straight
+  after it.
+
+The report is held in memory only. The next launch checks again.
+
+The check never starts a scan. _Scan Library Now_, just above, is the operator's
+button.
+
+## Missing tracks
+
+Every track whose file a scan could not find is listed, newest first, with:
+
+- title, artist, and the path the file was last seen at
+- how long ago it went missing, with the exact time on hover
+- a marker when it has cue points, which a purge would delete
+- its play count
+- a marker when it is in the playlist or on air
+
+Tracks that went missing because their **library path was removed** are folded
+into one _No longer under a library path_ group with a select-all box. A removed
+path is usually hundreds of tracks, while a deleted file is usually one.
+
+### Purge
+
+_Purge selected_ and _Purge all_ both ask first. The confirm step names how many
+tracks will be deleted, how many of them have cue points, and how many will be
+taken off the playlist. Both are disabled while a scan runs, since the scan may
+be about to reattach some of them.
+
+`purge_tracks(ids)`:
+
+- is refused while a scan is running
+- deletes only tracks that are still missing. A track a scan revived since the
+  list was drawn is kept.
+- removes the deleted tracks from the playlist, so nothing queued points at a
+  row that no longer exists
+- returns how many it deleted
+
+History keeps a purged track, without a marker. It is a display log, and there
+is no row left to describe.
+
+### In the playlist, history and deck
+
+Every playlist row, history row and main-deck header whose track is missing
+carries a red `link_off` marker, with _File missing since …_ on hover. The deck
+holds the whole file in memory, so a track that goes missing while it airs
+finishes normally.
+
+The marker comes from the report's list of missing ids, not from a field on the
+track. Queued tracks are copies taken when they were queued, and would go stale
+after the next scan.
+
+Advancement treats a missing track as **never playable**:
+
+- It skips it, even on a cold start before anything is cached. It does not load
+  it and wait out the retry schedule.
+- It **drops** the missing tracks it passes, up to the next stop marker. Missing
+  tracks past a stop marker stay queued, marked, until advancement reaches them.
+- An outage wait that only missing tracks were holding ends as soon as they are
+  known to be missing.
+- _Next_ skips them too.
+- Playing a missing track from the playlist is refused, and the track stays
+  where it is.
+
+## Duplicates
+
+### Exact copies
+
+Present tracks that share a [fingerprint](./track-identity.md#fingerprint): the
+same audio at more than one path, of any content type.
+
+Tracks are fingerprinted by the analysis pass that follows a first scan, so on a
+new library exact copies appear over several minutes. Until the pass is done the
+section says _Still checking N tracks for exact copies…_.
 
 ### Possible duplicates
 
-Present `music` rows whose **normalised artist and title** are equal, but which
-are not already one exact group. Normalising:
+Present **music** tracks with the same artist and title but different audio,
+usually the same song in another encoding or edit. In practice they almost
+always are the same recording, so the operator is told and decides.
 
-- lower-cases (`str::to_lowercase`)
-- turns every run of whitespace and punctuation into one space, and trims
-- leaves words alone. `(Remix)`, `feat. X` and `Radio Edit` still tell tracks
-  apart.
+Artist and title are compared after:
 
-Rows with an empty artist or an empty title are left out. Otherwise every
-untagged file would be one group.
+- lower-casing
+- turning every run of anything but letters and digits into one space
 
-There is **no duration gate.** The operator asked for the notice, and a radio
-edit next to the album version is exactly the case worth looking at. Each row in
-the group shows its air time, so the difference is visible.
+Words are kept, so `Song (Remix)` and `Song` stay apart, while `Don't Stop!!`
+and `DON'T STOP` match.
 
-Jingles and commercials are left out on purpose. Station material reuses titles
-(_Station ID_, _Weather_) for recordings that are genuinely different. Exact
-duplicates still cover them.
+Left out:
 
-The normalisation is done in Rust, not SQL. The query selects present music rows
-with an artist and a title, and groups them in memory. The group key is the
-normalised `artist\u{1f}title`.
+- tracks without an artist or a title, and tracks whose artist is `Unknown`
+  (what the scanner fills in for an untagged file). Otherwise every untagged
+  file would land in one group.
+- jingles and commercials, which reuse titles like _Station ID_ for recordings
+  that really are different. Their exact copies are still found.
 
-A possible group whose members all share one fingerprint is an exact group, and
-is shown only there. A group that mixes both kinds is shown under _possible_,
-since the operator has to look at it anyway.
+There is no duration limit. A radio edit next to the album version is worth
+looking at, and each row shows its air time.
 
-### Dismissals
+A group whose tracks all share one fingerprint is shown under exact copies only.
 
-A deliberate duplicate must not keep the badge lit forever. Each finding can be
-dismissed, and a dismissal is kept **only for the exact state that was
-dismissed**:
+### Resolving them
 
-| kind       | key                       | remembered                  | lights again when                     |
-| ---------- | ------------------------- | --------------------------- | ------------------------------------- |
-| `exact`    | fingerprint               | sorted member ids           | a member is added or leaves           |
-| `possible` | normalised artist + title | sorted member ids           | a member is added or leaves           |
-| `missing`  | —                         | newest `missing_since` seen | another track goes missing            |
-| `check`    | —                         | nothing; held in memory     | the next check finds a different diff |
+Each row has _Show in folder_, _Edit metadata…_ and _Cue points…_.
 
-A dismissed finding stays **listed**, greyed and marked _Dismissed_, with an
-_Undo_. Dismissing only turns the badge off.
+- **An unwanted copy:** _Show in folder_, delete the file, then _Scan Library
+  Now_. The copy becomes a missing track, which you purge. The kept copy loses
+  nothing. The deleted copy's play count goes with it, because duplicates are
+  never merged.
+- **Two different songs grouped as possible duplicates:** _Edit metadata…_ to
+  tell them apart, or _Dismiss_.
+- **A deliberate copy:** _Dismiss_.
 
-`exact`, `possible` and `missing` dismissals are stored in the database, in a
-table added by migration step 2:
+## Dismissing
+
+Every finding has _Dismiss_. It takes the finding out of the attention count for
+as long as the finding stays exactly as it was. A dismissed duplicate group
+stays listed, greyed, folded and marked _Dismissed_, with _Undo dismiss_.
+
+| finding        | remembered                 | counts again when                 |
+| -------------- | -------------------------- | --------------------------------- |
+| exact group    | its track ids              | a copy is added or leaves         |
+| possible group | its track ids              | a copy is added or leaves         |
+| missing tracks | the newest `missing_since` | another track goes missing        |
+| disk changes   | what the check found       | a check finds something different |
+
+Group and missing-track dismissals are stored in the `health_dismissals` table,
+and deleted once their finding is gone. The disk-change dismissal is held in
+memory, since the next launch checks again anyway.
+
+## Wire and storage
+
+`library/health.rs` keeps one `HealthReport`:
+
+```text
+HealthReport
+  missing          [MissingTrack]    id, title, artist, path, missingSince,
+                                     playCount, hasCuePoints, outsideRoots
+  missingDismissed bool
+  exact            [DuplicateGroup]  key, dismissed,
+                                     tracks[{track, path, contentType}]
+  possible         [DuplicateGroup]
+  unhashed         count             present tracks not fingerprinted yet
+  check            CheckReport?      checkedAt, new, changed, gone, unrooted,
+                                     unreachable, partial
+  checkDismissed   bool
+```
+
+The renderer loads it with `library_health` and replaces it on every
+`library-health` event. The backend rebuilds it:
+
+- when a scan starts, finishes, is canceled or fails
+- when the analysis pass starts or finishes
+- after a metadata edit, since artist and title decide possible duplicates
+- after a library path is added or removed
+- after a purge, a dismissal, and every check
+
+The renderer works out whether a missing track is queued from the playlist it
+mirrors. That keeps the report independent of the playlist, which itself
+depends on the report.
+
+| command                       | does                                                                                         |
+| ----------------------------- | -------------------------------------------------------------------------------------------- |
+| `library_health`              | returns the current report                                                                   |
+| `purge_tracks(ids)`           | see [Purge](#purge)                                                                          |
+| `health_dismiss(kind, key)`   | `kind` is `exact`, `possible`, `missing` or `check`; `key` is the group key, empty otherwise |
+| `health_undismiss(kind, key)` | undoes a dismissal                                                                           |
+| `library_check_now`           | asks the worker for a check                                                                  |
+
+Migration step 2 added the dismissals table:
 
 ```sql
 CREATE TABLE health_dismissals (
   kind  TEXT NOT NULL CHECK (kind IN ('exact', 'possible', 'missing')),
-  key   TEXT NOT NULL,
-  value TEXT NOT NULL,
+  key   TEXT NOT NULL,   -- fingerprint, normalised "artist\x1ftitle", or ''
+  value TEXT NOT NULL,   -- sorted ids, or the newest missing_since
   PRIMARY KEY (kind, key)
 );
 ```
 
-They belong in the database, not in `session.json`, because they name track
-ids. A pre-1.0 reset replaces the database and its ids together, whereas a
-session file would need scrubbing, as `setup` already does for the playlist. A
-dismissal whose group no longer exists is deleted when the report is rebuilt.
+## Not built
 
-`check` dismissals are not stored. The launch check runs again anyway.
+**Locate…** would reattach a missing track to a file the operator picks, for
+audio that changed so that no fingerprint can match. It would refuse unless the
+track is missing, refuse a file that is already a present track, refuse a file
+outside every library path, and refuse during a scan. It would set the path,
+mtime, content type and a fresh fingerprint without re-reading tags. Until then,
+purge the old track and keep the new one.
 
-## Resolving findings
-
-Nothing here deletes or edits a file. Each finding has a path back to a clean
-report:
-
-- **A missing track that is really gone** — select it and _Purge selected_, or
-  _Purge all_.
-- **A missing track that was moved and re-encoded** — _Locate…_ (a later
-  increment, see below), or purge it and keep the new track.
-- **An exact duplicate** — _Show in folder_ on the copy to drop, delete it in
-  the file manager, then _Scan Library Now_. The copy becomes a missing track, which the
-  operator purges. The kept copy loses nothing. The dropped copy's play count is
-  lost with it, which is the cost of not merging.
-- **A possible duplicate that is the same song** — the same as an exact one.
-- **A possible duplicate that is a different song** — _Edit metadata…_ to tell
-  them apart, or _Dismiss_.
-- **Disk changes** — _Scan Library Now_.
-
-_Show in folder_ is the row action added in
-[#378](https://github.com/Arskah/radiodiodj/pull/378). The health view reuses it,
-along with _Edit metadata…_ and _Cue points…_ from the library row menu.
-
-### Purge
-
-`purge_tracks(ids)` replaced `purge_missing_tracks` and `get_missing_summary`.
-_Purge all_ passes every missing id. It:
-
-- refuses while a scan is running, as today, because the scan may be about to
-  reattach some of them
-- deletes only rows that are still missing, and ignores any other id. A row
-  revived by a scan since the list was drawn is kept.
-- removes the purged ids from the playlist, so no queued item points at a row
-  that no longer exists
-- returns the number deleted
-
-The confirm step names the number of tracks, how many carry cue points, and how
-many are queued.
-
-History is a renderer-side display log. A purged track stays in it, without a
-badge, since there is no row left to describe.
-
-### Locate… (later increment)
-
-For a missing track whose audio changed, so that no fingerprint can match. The
-operator picks a file, and `relocate_track(id, path)`:
-
-- refuses unless the row is missing
-- refuses a path that is already a present track's
-- refuses a path outside every library path, since the next scan would mark it
-  missing again
-- sets `path`, `mtime`, the content type of the root containing it, and a fresh
-  fingerprint, and clears `missing_since`. Tags are not re-read, which matches
-  a scan's reattach.
-- refuses while a scan is running
-
-## Library check
-
-`library/check.rs` notices, without a full scan, that the disk and the library
-disagree. It lists every library path, reads each file's mtime, and compares the
-result with `Db::track_index()`. It reads **no tags and no audio**, so on a
-network share it costs what the listing phase of a scan costs: one directory
-read per folder and one stat per file.
-
-```text
-CheckReport
-  checkedAt    unix ms
-  new          [path]   listed, and no present row has the path
-  changed      [path]   present row, file listed, mtime or content type differs
-  gone         [path]   present row under a fully listed root, file not listed
-  unrooted     [path]   present row no library path contains any more
-  unreachable  [root]   not a readable directory
-  partial      [root]   listed with unreadable subfolders
-```
-
-**The rules are the scan's rules, shared rather than copied.** The listing, the
-_changed_ test (`should_rescan`) and the _gone_ test live in one module that
-both `scan_all` and the check call. So a check never predicts something the
-scan would not do.
-
-- A file at a **missing** row's path counts as new. The scan will revive it.
-- **Gone** applies the prune guard exactly: a root that was only partly listed
-  contributes nothing to _gone_, and an unreachable root is reported under
-  _unreachable_ with its rows untouched.
-- A row outside every root would be marked missing by the scan too. It is
-  reported as `unrooted`, and the view says _No longer under a library path_.
-
-### When it runs
-
-- **At launch,** once the window is up. It is skipped when the launch starts a
-  scan, as after a pre-1.0 reset, since that scan answers the same question.
-- **On a timer:** _Settings → Advanced → Library check interval_, stored as
-  `tuning.library.checkIntervalMin`. The default is 15 minutes, and `0` turns
-  the timer off.
-- **On demand,** from _Check now_ in the view.
-
-One worker thread runs checks, and at most one check at a time.
-
-- A check does not start while a **scan** is running. A scan that starts cancels
-  a running check.
-- A **completed** scan clears the report, since the library now matches the disk
-  as it was listed. The timer resets from that moment.
-- A **canceled** scan leaves new files unapplied, so a check runs straight
-  after it.
-
-The report is held in memory only. It describes the disk at `checkedAt`, and
-the next launch checks again.
-
-### Showing it
-
-The view shows, for example: _12 new · 3 changed · 1 gone — checked 4 min ago_,
-with _Check now_ beside it; _Scan Library Now_ sits just above, with the
-library paths. Each count expands into its paths. An
-unreachable root is shown above the counts, in the warning style the toolbar
-uses for an unreachable output device.
-
-## Missing tracks in the playlist
-
-### Marking
-
-The renderer takes the set of missing ids from the health report and marks every
-row whose track is in it with a `link_off` badge and a tooltip _File missing
-since …_. That covers:
-
-- playlist rows
-- history rows
-- the main deck, when the track on air went missing while it played. The deck
-  keeps the whole file in memory, so the airing finishes.
-
-No `missing` field is added to `Track` or to the playlist snapshot. The queued
-`Track` values are copies taken when they were queued, and would go stale after
-the next scan. One set that is rebuilt with the report cannot.
-
-### Advancement
-
-The engine receives the missing ids from the service, as it already receives
-cache membership (`on_missing_state(ids)`, next to `on_cache_state`). Then:
-
-- `plan()` treats a missing item as **never playable**, including in
-  `Plan::Fallback` during a cold start. Today the fallback plays the head of the
-  playlist blindly.
-- An item that advancement **passes** over because it is missing is dropped
-  from the playlist, not left queued the way an uncached one is. An uncached
-  item waits for the share to come back. A missing one has nothing to wait for.
-- An explicit _Play_ on a missing item is refused with an error toast, and the
-  item stays where it is.
-- The prefetch window already leaves missing rows out.
-
-A purged item is removed from the playlist by the purge itself (see above), so
-the existing _purged row means load failed_ path remains only as a guard.
-
-## Notification
-
-- The **Settings button** in the toolbar shows a dot with a count while anything
-  needs attention.
-- The **Library** tab in _Settings_ shows the same count.
-
-The count is:
-
-| counted                                                    | weight   |
-| ---------------------------------------------------------- | -------- |
-| missing tracks, unless the `missing` dismissal covers them | 1 if any |
-| exact groups not dismissed                                 | 1 each   |
-| possible groups not dismissed                              | 1 each   |
-| a check with any change, not dismissed                     | 1        |
-| unreachable library paths                                  | 1 each   |
-
-Missing tracks count once, not per track: removing a library path should not
-put _800_ on the button. An unreachable library path cannot be dismissed,
-because it clears itself once the share is back.
-
-## View layout
-
-Library health lives in the _Library_ tab of _Settings_, under the library
-paths and _Scan Library Now_, so the paths, the scan and what the scan left
-behind are in one place. The tab carries the attention count.
-
-```text
-┌ Library ────────────────────────────────────────────────────┐
-│ Music / Commercials / Jingles paths          [Scan Library Now] │
-│                                                             │
-│ Disk changes                                                │
-│   ⚠ /Volumes/radio/music is unreachable                     │
-│   12 new · 3 changed · 1 gone — checked 4 min ago           │
-│   [Check now] [Dismiss]                                     │
-│                                                             │
-│ Missing tracks (5)                         [Dismiss]        │
-│   ☐ Title — Artist   /old/path.mp3   2 d ago   ✂ ▶12  ≡     │
-│   ☐ ▸ No longer under a library path (812)                  │
-│   [Purge selected] [Purge all]                              │
-│                                                             │
-│ Duplicates                                                  │
-│   Exact (2)                                                 │
-│   ▾ Title — Artist                          [Dismiss]       │
-│       /a/Title.mp3   music   3:34   ✂ ▶12   [⋯]             │
-│       /b/Title.mp3   music   3:34   ✂ ▶12   [⋯]             │
-│   Possible (1) — same artist and title, may differ          │
-│   ▸ Title — Artist                          [Dismiss]       │
-│   Still checking 140 tracks…                                │
-└─────────────────────────────────────────────────────────────┘
-✂ has cue points   ▶ play count   ≡ queued   [⋯] row menu
-```
-
-Sections with nothing to report collapse to one _No issues_ line.
+A **filesystem watcher** is not built either. The timer covers every share, and
+a watcher would only make local paths report sooner.
 
 ## Accepted limits
 
-- **Deleting a duplicate loses its play count.** Merging was declined.
-- **A possible group can be wrong.** Two different songs with the same artist
-  and title get grouped. _Dismiss_ is the answer.
-- **Changes land up to one interval late** on every root, local ones included.
-- **A check costs a stat per file.** On a slow share with a very large library,
-  the operator can lengthen the interval or set it to `0`.
-- **The check does not see a changed file whose mtime was preserved.** Neither
-  does the scan. See _Swapped by rename_ in
-  [track-identity.md](./track-identity.md#accepted-limits).
+- **Deleting a duplicate loses its play count.**
+- **A possible group can be wrong.** _Dismiss_ it.
+- **Changes are reported up to one interval late,** local paths included.
+- **A check costs one stat per file.** On a slow share with a large library,
+  lengthen the interval or set it to `0`.
+- **A changed file whose mtime was preserved is not seen,** by the check or by
+  the scan. See [track-identity.md](./track-identity.md#accepted-limits).
 - **History is not rewritten** when a track is purged.
 
-## Increments
+## Why it is built this way
 
-Each increment is one PR and leaves the app shippable.
+**No _ignored_ state.** Flagging an unwanted duplicate would have needed a
+hidden-but-present kind of track that every query and every scan respects.
+Deleting the file reuses what already exists: the scan marks it missing, and the
+operator purges it. A path exclusion list would be simpler still, but breaks the
+moment a file moves.
 
-| #   | increment                                                                                                                                                                                                                                                                            | depends on |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------- |
-| 1   | **Shared listing rules** (refactor). Move the root listing, `should_rescan` and the gone rule out of `scan_all` into `library/listing.rs`. `scanner.rs` tests pass **unmodified**.                                                                                                   | —          |
-| 2   | **Health report.** `health.rs` with missing, exact and possible groups; `library_health` command and `library-health` event and their rebuild triggers; `purge_tracks(ids)`; migration step 2 with `health_dismissals`. Rust tests for grouping, normalisation and dismissal expiry. | —          |
-| 3   | **Library check.** `check.rs` worker, launch and timer runs, `tuning.library.checkIntervalMin`, the scan interlock. Rust tests for new, changed, gone, unreachable and partial against the index.                                                                                    | 1, 2       |
-| 4   | **Missing tracks in the playlist.** `on_missing_state`, skip-and-drop in `plan()` including the fallback, purge removing items; `link_off` badges in playlist, history and deck. Engine tests plus Vitest.                                                                           | 2          |
-| 5   | **Library health view.** Health sections in the _Library_ tab (which absorbs _Library Sync_), lists, selective purge, dismiss and undo, the badges on the button and the tab. Vitest for the badge count and the list actions.                                                       | 2, 3, 4    |
-| 6   | **Locate…** `relocate_track` and its row action.                                                                                                                                                                                                                                     | 5          |
+**No merging.** Folding one track into another means rewriting queued items,
+history and play counts. Keeping one copy covers the real case.
 
-Increments 1 to 5 deliver #376. Increment 6 is its optional item, and a watcher
-stays out unless the timer proves too slow in use.
+**Possible duplicates from the start.** Tracks that share an artist and title
+are nearly always the same recording. The notice is worth more than the
+occasional wrong group, which _Dismiss_ handles.
 
-Increment 1 goes first, per the rule of landing refactors before the features
-that need them: the scanner suite pins the prune guard, and the check must
-inherit that guard rather than restate it.
+**A timer, not a watcher.** FSEvents and inotify do not report changes made by
+other SMB or NFS clients, which is where this library lives.
+
+**Report, never auto-scan.** A scan changes what the auto-playlist can pick. It
+should not happen mid-show without the operator asking.
+
+**Missing tracks are dropped, not retried.** The outage retry schedule waits for
+a share to come back. A track that a completed scan could not find is not coming
+back on its own.
+
+**Shared rules, not copied ones.** The check calls the scan's listing and prune
+rules, so the scanner's tests for the unreachable-share guard cover it too.
+
+**Dismissals in the database.** They name track ids. A pre-1.0 reset replaces
+the database and its ids together, whereas `session.json` would need scrubbing.
