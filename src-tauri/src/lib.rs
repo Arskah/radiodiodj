@@ -701,7 +701,7 @@ pub fn run() {
                 .level(log_level)
                 .level_for("symphonia", log::LevelFilter::Warn)
                 .level_for("symphonia_core", log::LevelFilter::Warn)
-                .level_for("symphonia_bundle_mp3", log::LevelFilter::Warn)
+                .level_for("symphonia_bundle_mp3", log::LevelFilter::Error)
                 .max_file_size(1024 * 1024)
                 .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
                 .build(),

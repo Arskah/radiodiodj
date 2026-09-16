@@ -13,9 +13,14 @@
 //! both are estimated from the file length, which includes the tags. The
 //! accepted cost is that two masters sharing their first megabyte of audio
 //! collide.
+//!
+//! Reads are capped at [`READ_LIMIT`]: a file symphonia has no reader for
+//! (say an ASF file named `.mp3`) would otherwise be scanned for a sync word
+//! to its end.
 
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::FormatOptions;
@@ -25,6 +30,10 @@ use symphonia::core::probe::Hint;
 
 /// Packet payload hashed per track.
 const HEAD_BYTES: usize = 1 << 20;
+
+/// Bytes read from a source before fingerprinting gives up. Leaves room for
+/// embedded cover art ahead of the audio.
+const READ_LIMIT: u64 = 16 << 20;
 
 /// Bumped whenever the hashed input changes, so values from two algorithms
 /// never compare equal.
@@ -42,7 +51,11 @@ pub fn of_source(source: Box<dyn MediaSource>, extension: Option<&str>) -> Resul
     if let Some(ext) = extension {
         hint.with_extension(ext);
     }
-    let stream = MediaSourceStream::new(source, Default::default());
+    let source = Capped {
+        inner: source,
+        left: READ_LIMIT,
+    };
+    let stream = MediaSourceStream::new(Box::new(source), Default::default());
     let probed = symphonia::default::get_probe()
         .format(
             &hint,
@@ -87,6 +100,42 @@ pub fn of_source(source: Box<dyn MediaSource>, extension: Option<&str>) -> Resul
         .map(|b| format!("{b:02x}"))
         .collect();
     Ok(format!("{VERSION}:{digest}"))
+}
+
+/// A source that fails once [`READ_LIMIT`] bytes have been read from it.
+struct Capped {
+    inner: Box<dyn MediaSource>,
+    left: u64,
+}
+
+impl Read for Capped {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.left == 0 && !buf.is_empty() {
+            return Err(std::io::Error::other("read limit reached"));
+        }
+        let want = buf
+            .len()
+            .min(usize::try_from(self.left).unwrap_or(usize::MAX));
+        let n = self.inner.read(&mut buf[..want])?;
+        self.left -= n as u64;
+        Ok(n)
+    }
+}
+
+impl Seek for Capped {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
+impl MediaSource for Capped {
+    fn is_seekable(&self) -> bool {
+        self.inner.is_seekable()
+    }
+
+    fn byte_len(&self) -> Option<u64> {
+        self.inner.byte_len()
+    }
 }
 
 #[cfg(test)]
@@ -157,5 +206,45 @@ mod tests {
         let path = dir.path().join("a.mp3");
         std::fs::write(&path, b"not audio at all").unwrap();
         assert!(of_file(&path).is_err());
+    }
+
+    #[test]
+    fn a_file_with_no_reader_is_not_read_to_its_end() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Arc;
+
+        struct Counting(std::io::Cursor<Vec<u8>>, Arc<AtomicU64>);
+        impl Read for Counting {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.0.read(buf)?;
+                self.1.fetch_add(n as u64, Ordering::Relaxed);
+                Ok(n)
+            }
+        }
+        impl Seek for Counting {
+            fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+                self.0.seek(pos)
+            }
+        }
+        impl MediaSource for Counting {
+            fn is_seekable(&self) -> bool {
+                true
+            }
+            fn byte_len(&self) -> Option<u64> {
+                Some(self.0.get_ref().len() as u64)
+            }
+        }
+
+        let read = Arc::new(AtomicU64::new(0));
+        let mut seed = 1u32;
+        let junk: Vec<u8> = (0..4 * READ_LIMIT)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 24) as u8
+            })
+            .collect();
+        let source = Counting(std::io::Cursor::new(junk), read.clone());
+        assert!(of_source(Box::new(source), Some("mp3")).is_err());
+        assert!(read.load(Ordering::Relaxed) <= READ_LIMIT);
     }
 }

@@ -78,6 +78,23 @@ Set `RUST_LOG=debug` (or `trace`) before launching to raise verbosity. Default i
 5. Toggle **Auto Playlist** for continuous random playback
 6. Switch between **AUTO** and **MANUAL** playback modes
 
+## Unsupported formats
+
+WMA (Windows Media Audio) files are not supported, and a scan skips them.
+Convert them with [ffmpeg](https://ffmpeg.org/) first, e.g. to MP3:
+
+```bash
+ffmpeg -i track.wma -c:a libmp3lame -q:a 2 track.mp3
+```
+
+or a whole folder at once:
+
+```bash
+for f in *.wma; do ffmpeg -i "$f" -c:a libmp3lame -q:a 2 "${f%.wma}.mp3"; done
+```
+
+Tags are carried over. Delete or move the `.wma` originals afterwards.
+
 ## Moving and reorganising files
 
 A track is more than its file path. RadiodioDJ fingerprints each track's audio

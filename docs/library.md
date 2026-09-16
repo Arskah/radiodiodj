@@ -46,8 +46,9 @@ A scan:
 
 1. **Lists** every library path. Hidden files and folders (a leading `.`) are
    skipped, and symbolic links are not followed. Only files with an audio
-   extension are kept: `mp3`, `flac`, `wav`, `ogg`, `oga`, `aac`, `m4a`, `wma`,
-   `opus`, `webm`, `aiff`, `aif`, `mka`, `mp2`.
+   extension are kept: `mp3`, `flac`, `wav`, `ogg`, `oga`, `aac`, `m4a`,
+   `opus`, `webm`, `aiff`, `aif`, `mka`, `mp2`. WMA is not supported; convert
+   such files first (see the README).
 2. **Inspects** each file on up to four threads at once, which hides the latency
    of a network share without flooding it.
    - A known file whose modification time and content type are unchanged is
