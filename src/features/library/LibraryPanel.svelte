@@ -121,6 +121,11 @@
         icon: "add",
         onselect: () => app.addToPlaylist(track),
       },
+      {
+        label: "Add as next",
+        icon: "playlist_play",
+        onselect: () => app.addNextToPlaylist(track),
+      },
     ];
     if (app.cueDevice !== null) {
       items.push({
@@ -138,6 +143,12 @@
       label: "Cue points…",
       icon: "line_start_diamond",
       onselect: () => (app.editingCuePoints = track),
+    });
+    items.push({
+      label: "Show in folder",
+      icon: "folder_open",
+      onselect: () => app.revealTrack(track),
+      separated: true,
     });
     items.push({
       label: "Play now (on air)",

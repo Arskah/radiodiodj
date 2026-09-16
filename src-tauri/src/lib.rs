@@ -123,6 +123,23 @@ fn get_tracks_by_ids(state: State<'_, AppState>, ids: Vec<i64>) -> Result<Vec<Tr
     state.db.get_tracks_by_ids(&ids).map_err(err)
 }
 
+/// Show a track's file in the platform file manager (Finder, Explorer, or
+/// whatever answers `org.freedesktop.FileManager1`). Takes an id, not a path,
+/// so the renderer can only reveal files the library already knows.
+#[tauri::command(rename_all = "camelCase")]
+fn reveal_track(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    let info = state
+        .db
+        .get_track_load_info(id)
+        .map_err(err)?
+        .ok_or_else(|| format!("track {id} not found"))?;
+    let path = std::path::Path::new(&info.path);
+    if !path.exists() {
+        return Err(format!("file not found: {}", info.path));
+    }
+    tauri_plugin_opener::reveal_item_in_dir(path).map_err(err)
+}
+
 #[tauri::command(rename_all = "camelCase")]
 fn get_stats(state: State<'_, AppState>) -> Result<LibraryStats, String> {
     state.db.get_stats().map_err(err)
@@ -708,6 +725,7 @@ pub fn run() {
             search,
             get_track,
             get_tracks_by_ids,
+            reveal_track,
             load_session,
             save_session,
             track_played,

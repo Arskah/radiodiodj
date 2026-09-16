@@ -140,6 +140,35 @@ describe("library", () => {
     );
   });
 
+  it("queues a track next-up through the row context menu", async () => {
+    await bootAndScan();
+
+    const rows = browser.$$(sel.trackRow);
+    await rows[0].$(sel.trackRowAdd).click();
+    const nextTitle = (await rowTitles())[1];
+
+    await rows[1].click({ button: "right" });
+    const menu = browser.$(sel.contextMenu);
+    await menu.waitForDisplayed({ timeout: 5_000 });
+    await menu.$(sel.contextMenuItem("Add as next")).click();
+    await menu.waitForExist({ timeout: 5_000, reverse: true });
+
+    await browser.waitUntil(
+      async () => {
+        const queued = await browser.execute(() =>
+          Array.from(document.querySelectorAll("#playlist .pl-title")).map(
+            (el) => (el.textContent ?? "").trim(),
+          ),
+        );
+        return queued.length === 2 && queued[0] === nextTitle;
+      },
+      {
+        timeout: 5_000,
+        timeoutMsg: "add-as-next did not land at the head of the playlist",
+      },
+    );
+  });
+
   it("opens the context menu from the keyboard", async () => {
     await bootAndScan();
 
