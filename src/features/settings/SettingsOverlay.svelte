@@ -2,7 +2,6 @@
   import { api } from "../../shared/api";
   import { app } from "../../shared/state.svelte";
   import LibraryHealth from "../health/LibraryHealth.svelte";
-  import { plural } from "../../shared/health";
   import type {
     ContentType,
     DeviceInfo,
@@ -181,19 +180,8 @@
           aria-selected={app.settingsTab === "library"}
           onclick={() => (app.settingsTab = "library")}
         >
-          <span class="material-symbols-outlined">sync</span>
-          Library Sync
-        </button>
-        <button
-          id="settings-tab-health"
-          class="settings-tab"
-          class:active={app.settingsTab === "health"}
-          role="tab"
-          aria-selected={app.settingsTab === "health"}
-          onclick={() => (app.settingsTab = "health")}
-        >
-          <span class="material-symbols-outlined">health_and_safety</span>
-          Library Health
+          <span class="material-symbols-outlined">library_music</span>
+          Library
           {#if app.healthAttention > 0}
             <span
               class="attention-badge"
@@ -286,10 +274,12 @@
           </div>
         {:else if app.settingsTab === "library"}
           <div class="settings-section">
-            <h4>Library Synchronization</h4>
+            <h4>Library</h4>
             <p class="settings-section-desc">
-              Configure directory paths and automatic scanning for your media
-              assets.
+              Where your media lives, and what needs attention in it: tracks
+              whose files are gone, copies of the same recording, and changes on
+              disk that no scan has picked up yet. Nothing here changes an audio
+              file — delete an unwanted copy in the file manager, then scan.
             </p>
             <div id="paths-list">
               {#each sections as { type, label } (type)}
@@ -340,24 +330,8 @@
                 Scan Library Now
               </button>
             </div>
-            {#if app.health.missing.length > 0}
-              <div class="missing-tracks" id="missing-tracks">
-                <span class="material-symbols-outlined" aria-hidden="true"
-                  >link_off</span
-                >
-                <p class="missing-tracks-text">
-                  {plural(app.health.missing.length, "track")} missing.
-                </p>
-                <button
-                  class="btn-purge-cancel"
-                  onclick={() => (app.settingsTab = "health")}
-                  >Library Health…</button
-                >
-              </div>
-            {/if}
+            <LibraryHealth />
           </div>
-        {:else if app.settingsTab === "health"}
-          <LibraryHealth />
         {:else if app.settingsTab === "now-playing"}
           <div class="settings-section">
             <h4>Now Playing Metadata</h4>

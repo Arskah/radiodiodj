@@ -81,10 +81,6 @@
     const t = group.tracks[0]?.track;
     return t ? `${t.title} — ${t.artist}` : group.key;
   }
-
-  async function scanNow(): Promise<void> {
-    await app.scan();
-  }
 </script>
 
 {#snippet dismissButton(kind: FindingKind, dismissed: boolean, key: string)}
@@ -209,14 +205,7 @@
   </details>
 {/snippet}
 
-<div class="settings-section" id="library-health">
-  <h4>Library Health</h4>
-  <p class="settings-section-desc">
-    Tracks whose files are gone, copies of the same recording, and changes on
-    disk that no scan has picked up yet. Nothing here changes an audio file:
-    delete an unwanted copy in the file manager, then scan.
-  </p>
-
+<div id="library-health">
   <section class="health-section" id="health-disk">
     <header>
       <h5 class="tuning-group-title">Disk changes</h5>
@@ -255,10 +244,6 @@
       {@render pathList("No longer under a library path", check.unrooted)}
     {/if}
     <div class="health-buttons">
-      <button class="btn-scan-now" disabled={scanning} onclick={scanNow}>
-        <span class="material-symbols-outlined">sync</span>
-        {scanning ? "Scanning…" : "Scan now"}
-      </button>
       <button
         class="btn-purge-cancel"
         disabled={scanning}

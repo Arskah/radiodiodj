@@ -83,8 +83,7 @@ export const EMPTY_HEALTH: HealthReport = {
 };
 
 export type PlaylistTab = "playlist" | "history";
-export type SettingsTab =
-  "audio" | "library" | "health" | "now-playing" | "advanced";
+export type SettingsTab = "audio" | "library" | "now-playing" | "advanced";
 
 /**
  * What the cue deck was showing when a surface borrowed it. `previewing` rather
@@ -1067,11 +1066,6 @@ export class AppState {
     void api.libraryCheckNow().catch((err) => {
       logger.error("Library check request failed:", err);
     });
-  }
-
-  openLibraryHealth(): void {
-    this.settingsTab = "health";
-    this.settingsOpen = true;
   }
 
   /** Update a track's embedded metadata fields and reflect the change in the local tracks array. */

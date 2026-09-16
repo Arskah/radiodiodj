@@ -2158,13 +2158,6 @@ describe("AppState library health", () => {
     expect(api.libraryCheckNow).toHaveBeenCalled();
   });
 
-  it("openLibraryHealth opens Settings on the health tab", () => {
-    const { app } = makeApp();
-    app.openLibraryHealth();
-    expect(app.settingsOpen).toBe(true);
-    expect(app.settingsTab).toBe("health");
-  });
-
   it("a failing lookup keeps the report it had", async () => {
     api.libraryHealth.mockRejectedValueOnce("boom");
     const { app } = makeApp();

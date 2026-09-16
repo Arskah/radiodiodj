@@ -200,13 +200,13 @@ report:
 - **A missing track that was moved and re-encoded** — _Locate…_ (a later
   increment, see below), or purge it and keep the new track.
 - **An exact duplicate** — _Show in folder_ on the copy to drop, delete it in
-  the file manager, then _Scan now_. The copy becomes a missing track, which the
+  the file manager, then _Scan Library Now_. The copy becomes a missing track, which the
   operator purges. The kept copy loses nothing. The dropped copy's play count is
   lost with it, which is the cost of not merging.
 - **A possible duplicate that is the same song** — the same as an exact one.
 - **A possible duplicate that is a different song** — _Edit metadata…_ to tell
   them apart, or _Dismiss_.
-- **Disk changes** — _Scan now_.
+- **Disk changes** — _Scan Library Now_.
 
 _Show in folder_ is the row action added in
 [#378](https://github.com/Arskah/radiodiodj/pull/378). The health view reuses it,
@@ -300,7 +300,8 @@ the next launch checks again.
 ### Showing it
 
 The view shows, for example: _12 new · 3 changed · 1 gone — checked 4 min ago_,
-with _Scan now_ and _Check now_. Each count expands into its paths. An
+with _Check now_ beside it; _Scan Library Now_ sits just above, with the
+library paths. Each count expands into its paths. An
 unreachable root is shown above the counts, in the warning style the toolbar
 uses for an unreachable output device.
 
@@ -343,7 +344,7 @@ the existing _purged row means load failed_ path remains only as a guard.
 
 - The **Settings button** in the toolbar shows a dot with a count while anything
   needs attention.
-- The **Library health** tab in _Settings_ shows the same count.
+- The **Library** tab in _Settings_ shows the same count.
 
 The count is:
 
@@ -361,16 +362,18 @@ because it clears itself once the share is back.
 
 ## View layout
 
-A new _Library health_ tab in _Settings_, between _Library Sync_ and _Now
-Playing_. The missing-tracks block in _Library Sync_ is replaced by one line
-linking to it.
+Library health lives in the _Library_ tab of _Settings_, under the library
+paths and _Scan Library Now_, so the paths, the scan and what the scan left
+behind are in one place. The tab carries the attention count.
 
 ```text
-┌ Library health ─────────────────────────────────────────────┐
+┌ Library ────────────────────────────────────────────────────┐
+│ Music / Commercials / Jingles paths          [Scan Library Now] │
+│                                                             │
 │ Disk changes                                                │
 │   ⚠ /Volumes/radio/music is unreachable                     │
 │   12 new · 3 changed · 1 gone — checked 4 min ago           │
-│   [Scan now] [Check now] [Dismiss]                          │
+│   [Check now] [Dismiss]                                     │
 │                                                             │
 │ Missing tracks (5)                         [Dismiss]        │
 │   ☐ Title — Artist   /old/path.mp3   2 d ago   ✂ ▶12  ≡     │
@@ -414,7 +417,7 @@ Each increment is one PR and leaves the app shippable.
 | 2   | **Health report.** `health.rs` with missing, exact and possible groups; `library_health` command and `library-health` event and their rebuild triggers; `purge_tracks(ids)`; migration step 2 with `health_dismissals`. Rust tests for grouping, normalisation and dismissal expiry. | —          |
 | 3   | **Library check.** `check.rs` worker, launch and timer runs, `tuning.library.checkIntervalMin`, the scan interlock. Rust tests for new, changed, gone, unreachable and partial against the index.                                                                                    | 1, 2       |
 | 4   | **Missing tracks in the playlist.** `on_missing_state`, skip-and-drop in `plan()` including the fallback, purge removing items; `link_off` badges in playlist, history and deck. Engine tests plus Vitest.                                                                           | 2          |
-| 5   | **Library health view.** The Settings tab, lists, selective purge, dismiss and undo, the badges on the button and the tab; _Library Sync_ loses its missing block. Vitest for the badge count and the list actions.                                                                  | 2, 3, 4    |
+| 5   | **Library health view.** Health sections in the _Library_ tab (which absorbs _Library Sync_), lists, selective purge, dismiss and undo, the badges on the button and the tab. Vitest for the badge count and the list actions.                                                       | 2, 3, 4    |
 | 6   | **Locate…** `relocate_track` and its row action.                                                                                                                                                                                                                                     | 5          |
 
 Increments 1 to 5 deliver #376. Increment 6 is its optional item, and a watcher
