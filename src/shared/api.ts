@@ -8,6 +8,7 @@ import type {
   DeviceInfo,
   DeviceRef,
   LibraryStats,
+  MissingSummary,
   NowPlayingConfig,
   ScanResult,
   SortColumn,
@@ -205,6 +206,13 @@ export const api = {
   },
   removePath(type: ContentType, dirPath: string): Promise<boolean> {
     return invoke<boolean>("remove_path", { type, dirPath });
+  },
+  getMissingSummary(): Promise<MissingSummary> {
+    return invoke<MissingSummary>("get_missing_summary");
+  },
+  /** Permanently delete missing tracks; resolves to how many were deleted. */
+  purgeMissingTracks(): Promise<number> {
+    return invoke<number>("purge_missing_tracks");
   },
   scanLibraries(): Promise<{ alreadyRunning: boolean }> {
     return invoke<{ alreadyRunning: boolean }>("scan_libraries");

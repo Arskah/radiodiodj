@@ -2196,6 +2196,71 @@ body {
   transform: translateY(1px);
 }
 
+.missing-tracks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-sm) var(--sp-md);
+  margin-top: var(--sp-md);
+  padding: var(--sp-sm) var(--sp-md);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--r-lg);
+  font-size: 12px;
+  color: var(--on-surface-variant);
+}
+
+.missing-tracks > .material-symbols-outlined {
+  font-size: 18px;
+}
+
+.missing-tracks-text {
+  flex: 1 1 16rem;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.missing-tracks-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-sm);
+  color: var(--error);
+}
+
+.btn-purge,
+.btn-purge-confirm,
+.btn-purge-cancel {
+  padding: var(--sp-xs) var(--sp-md);
+  border-radius: var(--r-lg);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.btn-purge,
+.btn-purge-confirm {
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--error) 50%, transparent);
+  color: var(--error);
+}
+
+.btn-purge:hover:not(:disabled),
+.btn-purge-confirm:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--error) 20%, transparent);
+}
+
+.btn-purge-cancel {
+  background: none;
+  border: 1px solid var(--outline);
+  color: var(--on-surface-variant);
+}
+
+.btn-purge:disabled,
+.btn-purge-confirm:disabled,
+.btn-purge-cancel:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* ---- Now playing pane ---- */
 .np-intro {
   font-size: 12px;

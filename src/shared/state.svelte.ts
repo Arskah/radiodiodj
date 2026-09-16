@@ -4,6 +4,7 @@ import type {
   DeviceInfo,
   DeviceRef,
   LibraryStats,
+  MissingSummary,
   PlaylistItem,
   SortColumn,
   SortDir,
@@ -140,6 +141,7 @@ export class AppState {
   // True from a launch that replaced an older library database until the scan
   // that repopulates it finishes.
   libraryReset = $state(false);
+  missingSummary = $state<MissingSummary>({ tracks: 0, withCuePoints: 0 });
 
   // Cue deck (independent transport on a separate audio device)
   cueTrack = $state<Track | null>(null);
@@ -297,6 +299,7 @@ export class AppState {
         this.libraryReset = false;
         void this.search();
         void this.loadStats();
+        void this.loadMissingSummary();
       }
     });
 
@@ -988,6 +991,24 @@ export class AppState {
   async removePath(type: ContentType, p: string): Promise<void> {
     await api.removePath(type, p);
     await this.loadLibraryPaths();
+  }
+
+  async loadMissingSummary(): Promise<void> {
+    this.missingSummary = await api.getMissingSummary();
+  }
+
+  /** Permanently delete the tracks whose files are gone. */
+  async purgeMissingTracks(): Promise<void> {
+    try {
+      await api.purgeMissingTracks();
+    } catch (err) {
+      logger.error("Purge failed:", err);
+    }
+    await Promise.all([
+      this.loadMissingSummary(),
+      this.loadStats(),
+      this.search(),
+    ]);
   }
 
   /** Update a track's embedded metadata fields and reflect the change in the local tracks array. */

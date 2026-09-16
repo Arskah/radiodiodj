@@ -37,6 +37,15 @@ pub struct LibraryStats {
     pub tracks_by_type: TracksByType,
 }
 
+/// Tracks whose file is gone, as the purge confirmation names them.
+#[derive(Serialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MissingSummary {
+    pub tracks: i64,
+    /// Of those, how many carry a radio edit the purge would destroy.
+    pub with_cue_points: i64,
+}
+
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct TracksByType {
     pub music: i64,
@@ -602,6 +611,30 @@ impl Db {
         }
         tx.commit()?;
         Ok(done)
+    }
+
+    pub fn missing_summary(&self) -> Result<MissingSummary> {
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT COUNT(*), \
+                    COUNT(*) FILTER (WHERE COALESCE(cue_in_ms, fade_in_ms, fade_out_ms, \
+                                                    cue_out_ms, next_start_ms) IS NOT NULL) \
+             FROM tracks WHERE missing_since IS NOT NULL",
+            [],
+            |r| {
+                Ok(MissingSummary {
+                    tracks: r.get(0)?,
+                    with_cue_points: r.get(1)?,
+                })
+            },
+        )
+        .map_err(Into::into)
+    }
+
+    /// Delete every missing row for good. The only path that deletes tracks.
+    pub fn purge_missing(&self) -> Result<usize> {
+        let conn = self.conn.lock();
+        Ok(conn.execute("DELETE FROM tracks WHERE missing_since IS NOT NULL", [])?)
     }
 
     pub fn increment_play_count(&self, id: i64) -> Result<()> {
@@ -1436,6 +1469,51 @@ mod tests {
         let tracks = db.search("", None, None, None).unwrap();
         assert_eq!(tracks.len(), 2);
         assert!(tracks.iter().all(|t| t.play_count == 1));
+    }
+
+    #[test]
+    fn purge_deletes_only_missing_rows() {
+        let db = Db::open_in_memory().unwrap();
+        for path in ["/a.mp3", "/b.mp3", "/c.mp3"] {
+            db.insert_track(&TrackInsert {
+                path: path.into(),
+                content_type: "music".into(),
+                title: Some(path.into()),
+                duration: Some(100.0),
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        let ids: Vec<i64> = db.track_index().unwrap().iter().map(|r| r.id).collect();
+        db.set_cue_points(
+            ids[0],
+            CuePoints {
+                cue_out_ms: Some(50_000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        db.reconcile(&Reconcile {
+            gone: vec![ids[0], ids[1]],
+            now_ms: 1,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(
+            db.missing_summary().unwrap(),
+            MissingSummary {
+                tracks: 2,
+                with_cue_points: 1
+            }
+        );
+
+        assert_eq!(db.purge_missing().unwrap(), 2);
+
+        assert_eq!(db.missing_summary().unwrap(), MissingSummary::default());
+        assert_eq!(db.track_index().unwrap().len(), 1);
+        assert!(db.get_track(ids[0]).unwrap().is_none());
+        assert_eq!(db.search("c", None, None, None).unwrap().len(), 1);
+        assert!(db.search("a", None, None, None).unwrap().is_empty());
     }
 
     /// Cue points are clamped on write and the clamped value comes back, so the

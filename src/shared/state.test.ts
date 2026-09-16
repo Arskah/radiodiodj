@@ -36,6 +36,8 @@ const { api } = vi.hoisted(() => {
     getAllPaths: vi.fn(),
     addPath: vi.fn(),
     removePath: vi.fn(),
+    getMissingSummary: vi.fn(),
+    purgeMissingTracks: vi.fn(),
     scanLibraries: vi.fn(),
     cancelScan: vi.fn(),
     getScanStatus: vi.fn(),
@@ -170,6 +172,8 @@ function resetApi(): void {
   });
   api.addPath.mockResolvedValue(null);
   api.removePath.mockResolvedValue(true);
+  api.getMissingSummary.mockResolvedValue({ tracks: 0, withCuePoints: 0 });
+  api.purgeMissingTracks.mockResolvedValue(0);
   api.scanLibraries.mockResolvedValue({ alreadyRunning: false });
   api.cancelScan.mockResolvedValue(undefined);
   api.getScanStatus.mockResolvedValue({ status: "idle", lastResult: null });
@@ -967,6 +971,35 @@ describe("AppState library + paths", () => {
     expect(api.getAllPaths).toHaveBeenCalled();
   });
 
+  it("purgeMissingTracks deletes, then refreshes the summary, stats and library", async () => {
+    api.getMissingSummary.mockResolvedValueOnce({
+      tracks: 0,
+      withCuePoints: 0,
+    });
+    app.missingSummary = { tracks: 3, withCuePoints: 1 };
+    api.getStats.mockClear();
+    api.search.mockClear();
+
+    await app.purgeMissingTracks();
+
+    expect(api.purgeMissingTracks).toHaveBeenCalled();
+    expect(app.missingSummary).toEqual({ tracks: 0, withCuePoints: 0 });
+    expect(api.getStats).toHaveBeenCalled();
+    expect(api.search).toHaveBeenCalled();
+  });
+
+  it("purgeMissingTracks still refreshes when the backend refuses", async () => {
+    api.purgeMissingTracks.mockRejectedValueOnce("a library scan is running");
+    api.getMissingSummary.mockResolvedValueOnce({
+      tracks: 2,
+      withCuePoints: 0,
+    });
+
+    await app.purgeMissingTracks();
+
+    expect(app.missingSummary).toEqual({ tracks: 2, withCuePoints: 0 });
+  });
+
   it("scan invokes scanLibraries fire-and-forget without blocking on result", async () => {
     await app.scan();
     expect(api.scanLibraries).toHaveBeenCalled();
@@ -989,6 +1022,7 @@ describe("AppState library + paths", () => {
     await Promise.resolve();
     expect(api.search).toHaveBeenCalled();
     expect(api.getStats).toHaveBeenCalled();
+    expect(api.getMissingSummary).toHaveBeenCalled();
   });
 
   it("scan-progress patches running state", () => {

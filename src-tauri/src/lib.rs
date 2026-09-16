@@ -20,7 +20,7 @@ use audio::cue::CueDeck;
 use audio::cue_points::CuePoints;
 use audio::player::{Cmd, PlayerTuning};
 use broadcast::{service::default_now_playing_dir, BroadcastService};
-use library::db::{Db, LibraryStats, OpenError, Track, TrackMetadataUpdate};
+use library::db::{Db, LibraryStats, MissingSummary, OpenError, Track, TrackMetadataUpdate};
 use library::scan_state::{ScanState, ScanStatus, StartResult};
 use library::waveform_scan::{WaveformJob, WaveformStatus};
 use persist::config::{Config, DeviceRef, NowPlayingConfig, TuningConfig};
@@ -554,6 +554,21 @@ fn cancel_scan(state: State<'_, AppState>) {
 }
 
 #[tauri::command(rename_all = "camelCase")]
+fn get_missing_summary(state: State<'_, AppState>) -> Result<MissingSummary, String> {
+    state.db.missing_summary().map_err(err)
+}
+
+/// Permanently delete the tracks whose files are gone. Refused mid-scan: the
+/// scan may be about to reattach some of them.
+#[tauri::command(rename_all = "camelCase")]
+fn purge_missing_tracks(state: State<'_, AppState>) -> Result<usize, String> {
+    if state.scan.is_running() {
+        return Err("a library scan is running; purge when it finishes".into());
+    }
+    state.db.purge_missing().map_err(err)
+}
+
+#[tauri::command(rename_all = "camelCase")]
 fn get_scan_status(state: State<'_, AppState>) -> ScanStatus {
     state.scan.status()
 }
@@ -720,6 +735,8 @@ pub fn run() {
             scan_libraries,
             cancel_scan,
             get_scan_status,
+            get_missing_summary,
+            purge_missing_tracks,
             get_waveform_status,
             audio_list_devices,
             get_main_device,
