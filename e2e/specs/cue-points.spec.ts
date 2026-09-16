@@ -45,6 +45,14 @@ describe("cue points", () => {
   // return "" for an element Svelte has bound but not yet laid out, and
   // clearValue()/setValue() skip the `input` event `bind:value` listens for.
 
+  /** `aria-label` of one element — how a button's state is read here. */
+  async function label(selector: string): Promise<string> {
+    return browser.execute(
+      (s) => document.querySelector(s)?.getAttribute("aria-label") ?? "",
+      selector,
+    );
+  }
+
   async function text(selector: string): Promise<string> {
     return browser.execute(
       (s) => (document.querySelector(s)?.textContent ?? "").trim(),
@@ -196,12 +204,19 @@ describe("cue points", () => {
     });
   }
 
-  it("edits, previews, promotes and airs a trimmed track", async () => {
+  it("edits, auditions, promotes and airs a trimmed track", async () => {
     // 1 — a 30 s file, untouched.
     await bootAndScan();
     await enableCueDeck();
     const edited = await rowIndexByTitle("cue-fixture");
     expect(await rowDuration(edited)).toBe(30);
+
+    // 1b — cue it first, the way an operator reaches the editor. The dialog
+    // borrows the cue deck and hands it back on exit, so what is cued here is
+    // what is still cued in step 6.
+    const libraryRow = await browser.$$(sel.trackRow);
+    await libraryRow[edited].$(sel.trackRowCue).click();
+    await browser.$(sel.cuePromote).waitForEnabled({ timeout: 5_000 });
 
     // 2 — set all five markers.
     await openCuePoints(edited);
@@ -212,14 +227,24 @@ describe("cue points", () => {
     // neighbour and is deliberately not drawn.
     expect(await count(sel.cuePointMarker)).toBe(5);
 
-    // 3 — audition the draft before it is saved. This is what `cue_load`'s
-    // optional `cuePoints` exists for.
-    await browser.$(sel.cuePointPreview).click();
+    // 3 — audition the draft before it is saved, without leaving the dialog.
+    // This is what `cue_load`'s optional `cuePoints` and its `autoplay` exist
+    // for: the deck reports the draft's air time and actually plays it.
+    await browser.$(sel.cuePointAudition).click();
     await browser.waitUntil(
       async () => (await pill(sel.cueTimeDisplay)).total === AIR_SECONDS,
       { timeout: 10_000, timeoutMsg: "cue deck did not report air time" },
     );
     expect(await text(sel.cueModeActive)).toBe("Preview");
+    await browser.waitUntil(
+      async () => (await label(sel.cuePlay)) === "Pause cue",
+      {
+        timeout: 10_000,
+        timeoutMsg: "auditioning did not start playback — it only staged it",
+      },
+    );
+    // Still open: the whole point of the audition living in the dialog.
+    expect(await browser.$(sel.cuePointDialog).isExisting()).toBe(true);
 
     // 4 — save, and the library column switches to air time.
     await closeCuePoints(sel.cuePointSave);
@@ -255,7 +280,7 @@ describe("cue points", () => {
 
     const next = await rowIndexByTitle("next-fixture");
     const libraryRows = await browser.$$(sel.trackRow);
-    await libraryRows[next].$(".btn-add").click();
+    await libraryRows[next].$(sel.trackRowAdd).click();
     await browser.waitUntil(
       async () =>
         (await browser.$$(`${sel.playlist} ${sel.playlistRow}`).length) >= 2,

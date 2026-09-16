@@ -4,17 +4,25 @@
    * the precise surface: the waveform full-width with draggable handles, plus a
    * millisecond field per marker for values a drag cannot hit.
    *
+   * Auditioning happens **in here**. The dialog borrows the cue deck — loading
+   * the draft with autoplay, driving its transport, drawing its playhead over
+   * the curve — and hands it back on every exit. Nothing an operator hears
+   * requires closing the dialog, and no draft is left armed behind a closed
+   * one.
+   *
    * Saving is a radio edit — it applies from the track's *next* airing, never
    * to the deck currently playing it, so on-air audio cannot re-decode under
    * the operator mid-broadcast. Clamping is the backend's: `saveCuePoints`
    * adopts whatever comes back rather than second-guessing it here.
    */
-  import { app, formatTime } from "../../shared/state.svelte";
+  import { untrack } from "svelte";
+  import { app, formatTime, type CueSnapshot } from "../../shared/state.svelte";
   import { api } from "../../shared/api";
   import {
     CUE_MARKERS,
     NO_CUE_POINTS,
     cueMarkerPositions,
+    cuePointsEqual,
     resolveCuePoints,
     type CueMarker,
   } from "../../shared/cuePoints";
@@ -26,16 +34,39 @@
   let peaks = $state<number[] | null>(null);
   let saving = $state(false);
   let error = $state<string | null>(null);
+  /** What the cue deck held when the dialog opened, to give back on exit. */
+  let deckBefore = $state<CueSnapshot | null>(null);
+  let confirmingDiscard = $state(false);
 
   const track = $derived(app.editingCuePoints);
   const fileDuration = $derived(track?.duration ?? 0);
   const resolved = $derived(resolveCuePoints(draft, fileDuration));
   const airSeconds = $derived(Math.max(0, resolved.cueOut - resolved.cueIn));
   const dirty = $derived(
-    track ? !sameCuePoints(draft, track.cue_points ?? NO_CUE_POINTS) : false,
+    track ? !cuePointsEqual(draft, track.cue_points) : false,
   );
 
   const markers = $derived(cueMarkerPositions(draft, fileDuration));
+
+  /**
+   * True when the cue deck is playing *this* draft. Editing a marker makes it
+   * false, so the button returns to _Audition_ rather than resuming audio that
+   * no longer matches what the dialog shows — reloading on every keystroke in a
+   * millisecond field would be worse.
+   */
+  const auditioning = $derived(
+    !!track &&
+      app.cueTrack?.id === track.id &&
+      cuePointsEqual(app.cueAppliedPoints, draft),
+  );
+
+  // The editor draws the whole file while the deck reports air time, so the
+  // playhead has to be put back where cue-in moved it from.
+  const auditionPct = $derived(
+    auditioning && fileDuration > 0
+      ? ((resolved.cueIn + app.cueCurrentTime) / fileDuration) * 100
+      : 0,
+  );
 
   $effect(() => {
     const t = app.editingCuePoints;
@@ -43,10 +74,16 @@
       draft = { ...NO_CUE_POINTS };
       peaks = null;
       error = null;
+      confirmingDiscard = false;
+      deckBefore = null;
       return;
     }
     draft = { ...NO_CUE_POINTS, ...(t.cue_points ?? {}) };
     error = null;
+    confirmingDiscard = false;
+    // Untracked: reading the deck's state reactively would re-run this effect
+    // the moment an audition changes it, wiping the draft mid-edit.
+    deckBefore = untrack(() => app.cueSnapshot());
     loadPeaks(t.id);
   });
 
@@ -62,12 +99,6 @@
         // authoritative control and work without one.
         peaks = null;
       });
-  }
-
-  function sameCuePoints(a: CuePoints, b: CuePoints): boolean {
-    return CUE_MARKERS.every(
-      ({ key }) => (a[key] ?? null) === (b[key] ?? null),
-    );
   }
 
   /** A drag reports a fraction of the file; store it as whole milliseconds. */
@@ -107,8 +138,34 @@
     draft = { ...NO_CUE_POINTS };
   }
 
-  function preview(): void {
-    if (track) app.cueLoad(track, draft);
+  /**
+   * Play the draft on the cue deck. Every press reloads it: markers are applied
+   * at load time, so there is no way to change them on a running source.
+   */
+  function audition(): void {
+    if (track) app.cueLoad(track, draft, true);
+  }
+
+  function toggleAudition(): void {
+    if (!auditioning) {
+      audition();
+      return;
+    }
+    app.cueTogglePlay();
+  }
+
+  /** Park the audition at its start — not `cueStop`, which empties the deck. */
+  function stopAudition(): void {
+    if (!auditioning) return;
+    if (app.cueIsPlaying) app.cueTogglePlay();
+    app.cueSeekToPct(0);
+  }
+
+  /** A click on the curve seeks there, converting file time to air time. */
+  function seekTo(at: number): void {
+    if (!auditioning || !app.cueDuration) return;
+    const airSeconds = at * fileDuration - resolved.cueIn;
+    app.cueSeekToPct(airSeconds / app.cueDuration);
   }
 
   async function save(): Promise<void> {
@@ -117,7 +174,7 @@
     error = null;
     try {
       await app.saveCuePoints(track.id, draft);
-      close();
+      leave();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -125,14 +182,29 @@
     }
   }
 
-  function close(): void {
+  /** Hand the cue deck back and close. Every exit goes through here. */
+  function leave(): void {
+    if (deckBefore) app.cueRestore(deckBefore);
     app.editingCuePoints = null;
+  }
+
+  /**
+   * Escape, the ×, the backdrop and _Cancel_ all land here. With changes
+   * pending it asks first — the one thing an operator could not tell before was
+   * whether closing kept them.
+   */
+  function requestClose(): void {
+    if (dirty && !confirmingDiscard) {
+      confirmingDiscard = true;
+      return;
+    }
+    leave();
   }
 
   function onKeyDown(e: KeyboardEvent): void {
     if (e.key !== "Escape") return;
     e.preventDefault();
-    close();
+    requestClose();
   }
 
   $effect(() => {
@@ -158,7 +230,7 @@
     bind:this={overlay}
     onmousedown={(e) => {
       if (!overlay || e.target !== e.currentTarget) return;
-      close();
+      requestClose();
     }}
   >
     <div
@@ -177,7 +249,7 @@
         <button
           id="btn-cue-points-close"
           class="btn-close"
-          onclick={close}
+          onclick={requestClose}
           title="Close (Escape)"
           aria-label="Close"
         >
@@ -189,16 +261,24 @@
         <div class="cue-canvas">
           <Waveform
             {peaks}
-            progressPct={0}
+            progressPct={auditionPct}
             {markers}
             onmarkermove={onMarkerMove}
+            onseek={app.cueDevice !== null ? seekTo : null}
             id="cue-editor"
           />
         </div>
         <p class="cue-summary">
           Airs <strong>{formatTime(airSeconds)}</strong> of
-          {formatTime(fileDuration)}. Saved cue points apply from this track's
-          next airing.
+          {formatTime(fileDuration)}.
+          {#if dirty}
+            <span class="cue-dirty"
+              >Unsaved. These changes are discarded unless you save them to the
+              track.</span
+            >
+          {:else}
+            Saving applies these to every airing, from this track's next one.
+          {/if}
         </p>
 
         <div class="cue-fields">
@@ -243,25 +323,63 @@
           >Clear all</button
         >
         {#if app.cueDevice !== null}
-          <button
-            id="btn-cue-points-preview"
-            class="btn"
-            onclick={preview}
-            title="Audition this edit on the cue deck"
-          >
-            Preview on cue
-          </button>
+          <div class="cue-audition" role="group" aria-label="Audition">
+            <button
+              id="btn-cue-points-audition"
+              class="btn btn-icon"
+              onclick={toggleAudition}
+              title="Hear this edit on the cue deck"
+            >
+              <span class="material-symbols-outlined" aria-hidden="true"
+                >{auditioning && app.cueIsPlaying
+                  ? "pause"
+                  : "play_arrow"}</span
+              >
+              {auditioning ? (app.cueIsPlaying ? "Pause" : "Play") : "Audition"}
+            </button>
+            <button
+              id="btn-cue-points-stop"
+              class="btn btn-icon"
+              onclick={stopAudition}
+              disabled={!auditioning}
+              title="Back to the start of the audition"
+              aria-label="Stop the audition"
+            >
+              <span class="material-symbols-outlined" aria-hidden="true"
+                >stop</span
+              >
+            </button>
+            <span class="cue-audition-clock"
+              >{auditioning ? formatTime(app.cueCurrentTime) : "—:—"}</span
+            >
+          </div>
         {/if}
         <span class="cue-footer-gap"></span>
-        <button
-          id="btn-cue-points-save"
-          class="btn btn-primary"
-          onclick={save}
-          disabled={saving || !dirty}
-        >
-          {saving ? "Saving…" : "Save"}
-        </button>
-        <button class="btn" onclick={close} disabled={saving}>Cancel</button>
+        {#if confirmingDiscard}
+          <span class="cue-confirm">Discard these changes?</span>
+          <button id="btn-cue-points-discard" class="btn" onclick={leave}
+            >Discard</button
+          >
+          <button class="btn" onclick={() => (confirmingDiscard = false)}
+            >Keep editing</button
+          >
+        {:else}
+          <button
+            id="btn-cue-points-cancel"
+            class="btn"
+            onclick={requestClose}
+            disabled={saving}>Cancel</button
+          >
+          <button
+            id="btn-cue-points-save"
+            class="btn btn-primary"
+            onclick={save}
+            disabled={saving || !dirty}
+            title="Every airing of this track uses these cue points"
+          >
+            {saving ? "Saving…" : "Save to track"}
+          </button>
+        {/if}
       </div>
     </div>
   </div>
@@ -432,6 +550,28 @@
     flex: 1;
   }
 
+  .cue-audition {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .cue-audition-clock {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--on-surface-variant);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .cue-confirm {
+    font-size: 13px;
+    color: var(--on-surface);
+  }
+
+  .cue-dirty {
+    color: var(--cue-out-color);
+  }
+
   .btn,
   .btn-mini {
     background: transparent;
@@ -447,6 +587,17 @@
   .btn-mini {
     padding: 4px 8px;
     font-size: 11px;
+  }
+
+  .btn-icon {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+  }
+
+  .btn-icon .material-symbols-outlined {
+    font-size: 18px;
   }
 
   .btn:hover:not(:disabled),

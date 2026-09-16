@@ -296,9 +296,30 @@ two.
 **Cue editor overlay** (`CuePointOverlay.svelte`), opened from the library row
 context menu or the cue deck's marker button, gives the same waveform
 full-width plus a millisecond field per marker for values a drag cannot hit.
-Its _Preview on cue_ button loads the **unsaved draft** onto the cue deck —
-`cue_load` takes an optional `cuePoints` precisely so a ramp can be heard
-before it is committed.
+
+Auditioning happens **inside the dialog**. _Audition_ loads the unsaved draft
+onto the cue deck and plays it — `cue_load` takes an optional `cuePoints`
+precisely so a ramp can be heard before it is committed, and an `autoplay` flag
+because the deck parks its sink when the background read lands, so a `Play` sent
+alongside the load would be undone by it. Play/pause and stop drive the deck
+from the dialog's footer, the editor's curve carries the playhead (converted
+back from air time, since the editor draws the whole file), and clicking the
+curve seeks. Every press of _Audition_ reloads: markers are applied at load
+time, so a draft edited mid-audition is not heard until it does.
+
+The dialog **borrows the cue deck and gives it back**. It snapshots what the
+deck was showing when it opened and restores that, parked, on every exit — a
+_Preview_ re-resolved against the track's markers as they are then, so closing
+after a save shows the edit that was just stored. Nothing is left armed behind a
+closed dialog.
+
+That leaves two ways out, and they are labelled by scope:
+
+- **Save to track** writes the radio edit: every airing of the track, from its
+  next one.
+- **Cancel** (and ×, Escape, and the backdrop) discards. With changes pending it
+  asks first, because the one thing an operator could not tell before was
+  whether closing kept them.
 
 Only markers that are actually set get a line on the waveform. An unset marker
 has no position of its own (it resolves onto a neighbour), so drawing all five

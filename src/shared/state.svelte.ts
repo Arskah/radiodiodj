@@ -63,6 +63,16 @@ const DEFAULT_TUNING: TuningConfig = {
 
 export type PlaylistTab = "playlist" | "history";
 
+/**
+ * What the cue deck was showing when a surface borrowed it. `previewing` rather
+ * than the marker set itself: the deck's *Preview* means "the track's own
+ * markers", and those may have been saved over in between.
+ */
+export interface CueSnapshot {
+  track: Track | null;
+  previewing: boolean;
+}
+
 export class AppState {
   searchQuery = $state("");
   activeTab = $state<ContentType>("music");
@@ -597,8 +607,16 @@ export class AppState {
    * applied, which is what an operator scrubs to find an in-point. Anything
    * else is *Preview*, including an unsaved draft from the cue editor, so a
    * ramp can be heard before it is committed.
+   *
+   * `autoplay` is the one exception to parking, and travels with the load
+   * because the deck parks the sink when the background read lands. The cue
+   * editor's Audition button sets it; nothing else does.
    */
-  cueLoad(track: Track, cuePoints: CuePoints | null = null): void {
+  cueLoad(
+    track: Track,
+    cuePoints: CuePoints | null = null,
+    autoplay = false,
+  ): void {
     this.cueError = null;
     this.cueTrack = track;
     this.cueAppliedPoints = cuePoints;
@@ -608,7 +626,7 @@ export class AppState {
     this.cueCurrentTime = 0;
     this.loadCueWaveform(track.id);
     this.loadCueCoverArt(track.id);
-    void this.cueBackend.load(track.id, cuePoints).catch((err) => {
+    void this.cueBackend.load(track.id, cuePoints, autoplay).catch((err) => {
       logger.error("Cue load failed:", err);
       this.cueError = err instanceof Error ? err.message : String(err);
     });
@@ -631,6 +649,34 @@ export class AppState {
     this.cueLoad(
       track,
       mode === "preview" ? (track.cue_points ?? NO_CUE_POINTS) : null,
+    );
+  }
+
+  /**
+   * What the cue deck is showing right now, so a surface that borrows the deck
+   * can hand it back. The cue editor takes one when it opens and restores it on
+   * every exit, which is what keeps an unsaved draft from being left armed
+   * behind a closed dialog.
+   */
+  cueSnapshot(): CueSnapshot {
+    return { track: this.cueTrack, previewing: this.cueAppliedPoints !== null };
+  }
+
+  /**
+   * Put the cue deck back the way `cueSnapshot` found it, parked. A *Preview*
+   * is re-resolved against the track's current markers rather than the ones
+   * captured: after a save, "what it was showing" means the edit just stored.
+   */
+  cueRestore(snapshot: CueSnapshot): void {
+    const track = snapshot.track;
+    if (!track) {
+      if (this.cueTrack) this.cueStop();
+      return;
+    }
+    const fresh = this.tracks.find((t) => t.id === track.id) ?? track;
+    this.cueLoad(
+      fresh,
+      snapshot.previewing ? (fresh.cue_points ?? NO_CUE_POINTS) : null,
     );
   }
 

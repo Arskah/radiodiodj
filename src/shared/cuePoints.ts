@@ -138,6 +138,20 @@ export function airDuration(track: Track): number {
   return Math.max(0, cue.cueOut - cue.cueIn);
 }
 
+/**
+ * True when two marker sets say the same thing, an absent set counting as all
+ * `null`. The editor asks it to know whether a draft is dirty, and whether the
+ * cue deck is auditioning that draft or something else.
+ */
+export function cuePointsEqual(
+  a: CuePoints | undefined | null,
+  b: CuePoints | undefined | null,
+): boolean {
+  return CUE_MARKERS.every(
+    ({ key }) => (a?.[key] ?? null) === (b?.[key] ?? null),
+  );
+}
+
 /** True when the track airs shorter than the file, to within a frame or so. */
 export function isTrimmed(track: Track): boolean {
   if (!hasCuePoints(track.cue_points)) return false;

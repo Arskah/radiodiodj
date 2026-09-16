@@ -9,6 +9,8 @@ export class MockBackend implements DeckBackend {
   loadedIds: number[] = [];
   /** Cue points each `load` was given — `null` for an Absolute audition. */
   loadedCuePoints: (CuePoints | null)[] = [];
+  /** Whether each `load` was asked to play on arrival. */
+  loadedAutoplay: boolean[] = [];
   seekCalls: number[] = [];
   volume = 1;
   playCalls = 0;
@@ -25,10 +27,16 @@ export class MockBackend implements DeckBackend {
     return Promise.resolve();
   }
 
-  async load(trackId: number, cuePoints?: CuePoints | null): Promise<void> {
+  async load(
+    trackId: number,
+    cuePoints?: CuePoints | null,
+    autoplay = false,
+  ): Promise<void> {
     this.loadedIds.push(trackId);
     this.loadedCuePoints.push(cuePoints ?? null);
+    this.loadedAutoplay.push(autoplay);
     if (this.loadShouldReject) throw new Error("load failed");
+    if (autoplay) this.emit({ type: "pause-state", paused: false });
   }
 
   async play(): Promise<void> {

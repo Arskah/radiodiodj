@@ -1716,6 +1716,61 @@ describe("AppState cue points", () => {
     await app.saveCuePoints(1, trimmed);
     expect(app.currentTrack?.cue_points).toBeUndefined();
   });
+
+  // ----- auditioning from the editor -----
+
+  it("cueing stages a track without playing it", async () => {
+    app.cueLoad(t(1));
+    await flushAsync();
+    expect(cueMock.loadedAutoplay).toEqual([false]);
+  });
+
+  it("an audition loads the draft and plays it", async () => {
+    // What the editor's Audition button does: markers are applied at load
+    // time, so playing them means reloading with autoplay set.
+    app.cueLoad(t(1, { cue_points: trimmed }), trimmed, true);
+    await flushAsync();
+    expect(cueMock.loadedCuePoints).toEqual([trimmed]);
+    expect(cueMock.loadedAutoplay).toEqual([true]);
+    expect(app.cueIsPlaying).toBe(true);
+  });
+
+  it("restoring an empty deck clears whatever the editor left on it", async () => {
+    const before = app.cueSnapshot();
+    app.cueLoad(t(1), trimmed, true);
+    await flushAsync();
+    app.cueRestore(before);
+    expect(app.cueTrack).toBeNull();
+    expect(cueMock.stopCalls).toBe(1);
+  });
+
+  it("restoring an Absolute audition puts the same track back, parked", async () => {
+    app.cueLoad(t(1));
+    await flushAsync();
+    const before = app.cueSnapshot();
+    app.cueLoad(t(2), trimmed, true);
+    await flushAsync();
+    app.cueRestore(before);
+    await flushAsync();
+    expect(app.cueTrack?.id).toBe(1);
+    expect(app.cueMode).toBe("absolute");
+    expect(cueMock.loadedAutoplay.at(-1)).toBe(false);
+  });
+
+  // A Preview restores to the track's markers as they are *now*, so closing
+  /// the editor after a save shows the edit that was just stored.
+  it("restoring a Preview re-reads the track's current markers", async () => {
+    const track = t(1, { cue_points: trimmed });
+    app.cueLoad(track, trimmed);
+    await flushAsync();
+    const before = app.cueSnapshot();
+    const saved = { ...trimmed, cue_out_ms: 20_000 };
+    app.tracks = [{ ...track, cue_points: saved }];
+    app.cueRestore(before);
+    await flushAsync();
+    expect(cueMock.loadedCuePoints.at(-1)).toEqual(saved);
+    expect(app.cueDuration).toBe(10);
+  });
 });
 
 describe("AppState air-time durations", () => {

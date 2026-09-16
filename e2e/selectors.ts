@@ -2,6 +2,8 @@ export const sel = {
   trackList: "#track-list",
   trackRow: ".track-row",
   trackRowById: (id: number) => `[data-track-id="${id}"]`,
+  trackRowCue: ".btn-cue",
+  trackRowAdd: ".btn-add",
   searchInput: "#search-input",
   libraryTab: (label: string) => `[role="tab"][aria-selected]*=${label}`,
   sortHeader: (label: string) => `button[role="columnheader"]*=${label}`,
@@ -43,13 +45,18 @@ export const sel = {
   cuePointMarker: "#cue-point-dialog .wf-marker",
   cuePointSave: "#btn-cue-points-save",
   cuePointClose: "#btn-cue-points-close",
-  cuePointPreview: "#btn-cue-points-preview",
+  cuePointCancel: "#btn-cue-points-cancel",
+  cuePointDiscard: "#btn-cue-points-discard",
+  /** Plays the draft on the cue deck without leaving the dialog. */
+  cuePointAudition: "#btn-cue-points-audition",
+  cuePointStop: "#btn-cue-points-stop",
   cuePointClearAll: "#btn-cue-points-clear",
 
   // Cue deck. Hidden entirely until an output device is picked in Settings, so
   // a spec that touches any of these has to enable it first.
   cueDeck: "#cue-deck",
   cueTimeDisplay: "#cue-deck .time-pill",
+  cuePlay: "#cue-deck .btn-cue-play",
   cueStop: "#cue-deck .btn-cue-stop",
   cueEditPoints: "#cue-deck .btn-cue-points",
   cuePromote: "#cue-deck .btn-cue-promote",

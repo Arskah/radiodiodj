@@ -47,6 +47,12 @@
     markers?: WaveformMarker[] | null;
     /** Makes the markers draggable. Reports a fraction of the whole file. */
     onmarkermove?: ((id: string, at: number) => void) | null;
+    /**
+     * Click-to-seek on the curve itself, reported as a fraction of the whole
+     * file. Only the cue editor uses it — the decks have a seek bar of their
+     * own underneath, and a click there already scrubs.
+     */
+    onseek?: ((at: number) => void) | null;
   }
 
   const {
@@ -57,6 +63,7 @@
     crop = null,
     markers = null,
     onmarkermove = null,
+    onseek = null,
   }: Props = $props();
 
   // viewBox units: one x-unit per bucket, 0..100 vertical (bars grow up from the
@@ -130,14 +137,22 @@
     (e.currentTarget as Element).releasePointerCapture(e.pointerId);
     dragging = null;
   }
+
+  /** A click on the curve, away from any handle, seeks there. */
+  function onSurfaceDown(e: PointerEvent): void {
+    if (!onseek || dragging) return;
+    onseek(atFromClientX(e.clientX));
+  }
 </script>
 
 <svg
   class="waveform"
   class:editable={onmarkermove != null}
+  class:seekable={onseek != null}
   bind:this={svg}
   viewBox="{originX} 0 {spanX} {HEIGHT}"
   preserveAspectRatio="none"
+  onpointerdown={onSurfaceDown}
   aria-hidden="true"
 >
   {#if count > 0}

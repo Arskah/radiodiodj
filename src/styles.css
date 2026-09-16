@@ -881,6 +881,13 @@ body {
   pointer-events: none;
 }
 
+/* The cue editor's curve is the only one that takes clicks itself: the decks
+   have a seek bar underneath theirs, which is what a click there is for. */
+.waveform.seekable {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
 .waveform .wf-base rect {
   fill: var(--on-surface);
   opacity: 0.2;
