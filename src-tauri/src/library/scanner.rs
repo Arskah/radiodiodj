@@ -5,6 +5,7 @@ use lofty::prelude::*;
 use lofty::probe::Probe;
 use lofty::tag::ItemKey;
 use parking_lot::Mutex;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::UNIX_EPOCH;
@@ -67,6 +68,67 @@ pub fn should_rescan(
         return true;
     }
     prev_mtime != file_mtime_ms
+}
+
+/// A configured library path and the content type it feeds.
+pub struct ScanRoot {
+    pub content_type: &'static str,
+    pub path: String,
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub struct ScanOutcome {
+    pub total: usize,
+    pub added: usize,
+    pub canceled: bool,
+}
+
+/// Scan every root and bring the library in line with what is on disk.
+/// `on_progress` receives `(processed, total)` counted across all roots.
+pub fn scan_all(
+    db: &Db,
+    roots: &[ScanRoot],
+    cancel: &(impl Fn() -> bool + Sync),
+    on_progress: impl Fn(usize, usize) + Sync,
+) -> Result<ScanOutcome> {
+    let all_paths: Vec<String> = roots.iter().map(|r| r.path.clone()).collect();
+    db.remove_tracks_not_in_paths(&all_paths)?;
+
+    let mut outcome = ScanOutcome::default();
+    let mut live_by_root: Vec<(&str, HashSet<String>)> = Vec::new();
+    for root in roots {
+        let (done_before, total_before) = (outcome.total, outcome.total);
+        let r = scan_directory(
+            db,
+            Path::new(&root.path),
+            root.content_type,
+            cancel,
+            |processed, total| on_progress(done_before + processed, total_before + total),
+        )?;
+        outcome.total += r.total;
+        outcome.added += r.added;
+        live_by_root.push((&root.path, r.live_files.into_iter().collect()));
+        if cancel() {
+            outcome.canceled = true;
+            return Ok(outcome);
+        }
+    }
+
+    let mut pruned = 0usize;
+    for (root, live) in live_by_root {
+        let stale: Vec<String> = db
+            .get_paths_under(root)?
+            .into_iter()
+            .filter(|p| !live.contains(p))
+            .collect();
+        if !stale.is_empty() {
+            pruned += db.delete_by_paths(&stale)?;
+        }
+    }
+    if pruned > 0 {
+        log::info!("scan pruned {} missing files", pruned);
+    }
+    Ok(outcome)
 }
 
 pub fn scan_directory<F>(
@@ -232,6 +294,115 @@ pub fn read_cover_art(path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::library::db::TrackMetadataUpdate;
+    use crate::library::test_audio::write_wav;
+    use tempfile::TempDir;
+
+    fn music(dir: &Path) -> ScanRoot {
+        ScanRoot {
+            content_type: "music",
+            path: dir.to_string_lossy().into_owned(),
+        }
+    }
+
+    fn scan(db: &Db, roots: &[ScanRoot]) -> ScanOutcome {
+        scan_all(db, roots, &|| false, |_, _| {}).unwrap()
+    }
+
+    /// Titles of the tracks the library shows, sorted. Untagged files take
+    /// their file stem as the title.
+    fn titles(db: &Db) -> Vec<String> {
+        let mut t: Vec<String> = db
+            .search("", None, None, None)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.title)
+            .collect();
+        t.sort();
+        t
+    }
+
+    fn library() -> (TempDir, Db) {
+        (tempfile::tempdir().unwrap(), Db::open_in_memory().unwrap())
+    }
+
+    #[test]
+    fn scan_adds_every_audio_file_under_a_root() {
+        let (dir, db) = library();
+        write_wav(&dir.path().join("a.wav"), 1, 1);
+        write_wav(&dir.path().join("sub/b.wav"), 2, 1);
+        std::fs::write(dir.path().join("notes.txt"), "x").unwrap();
+
+        let outcome = scan(&db, &[music(dir.path())]);
+
+        assert_eq!(outcome.total, 2);
+        assert_eq!(outcome.added, 2);
+        assert!(!outcome.canceled);
+        assert_eq!(titles(&db), ["a", "b"]);
+    }
+
+    #[test]
+    fn an_unchanged_file_is_not_reparsed() {
+        let (dir, db) = library();
+        write_wav(&dir.path().join("a.wav"), 1, 1);
+        scan(&db, &[music(dir.path())]);
+        let id = db.search("", None, None, None).unwrap()[0].id;
+        db.update_track_metadata(&TrackMetadataUpdate {
+            id,
+            title: Some("Edited".into()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let outcome = scan(&db, &[music(dir.path())]);
+
+        assert_eq!(outcome.added, 0);
+        assert_eq!(titles(&db), ["Edited"]);
+    }
+
+    #[test]
+    fn a_deleted_file_leaves_the_library() {
+        let (dir, db) = library();
+        write_wav(&dir.path().join("a.wav"), 1, 1);
+        write_wav(&dir.path().join("b.wav"), 2, 1);
+        scan(&db, &[music(dir.path())]);
+
+        std::fs::remove_file(dir.path().join("a.wav")).unwrap();
+        scan(&db, &[music(dir.path())]);
+
+        assert_eq!(titles(&db), ["b"]);
+    }
+
+    #[test]
+    fn a_removed_root_leaves_the_library() {
+        let (dir, db) = library();
+        let (m, j) = (dir.path().join("music"), dir.path().join("jingles"));
+        write_wav(&m.join("song.wav"), 1, 1);
+        write_wav(&j.join("jingle.wav"), 2, 1);
+        let jingles = ScanRoot {
+            content_type: "jingle",
+            path: j.to_string_lossy().into_owned(),
+        };
+        scan(&db, &[music(&m), jingles]);
+        assert_eq!(db.get_stats().unwrap().tracks_by_type.jingle, 1);
+
+        scan(&db, &[music(&m)]);
+
+        assert_eq!(titles(&db), ["song"]);
+    }
+
+    #[test]
+    fn a_canceled_scan_removes_nothing() {
+        let (dir, db) = library();
+        write_wav(&dir.path().join("a.wav"), 1, 1);
+        scan(&db, &[music(dir.path())]);
+        std::fs::remove_file(dir.path().join("a.wav")).unwrap();
+
+        let outcome = scan_all(&db, &[music(dir.path())], &|| true, |_, _| {}).unwrap();
+
+        assert!(outcome.canceled);
+        assert_eq!(titles(&db), ["a"]);
+    }
 
     #[test]
     fn should_rescan_when_no_existing_row() {
