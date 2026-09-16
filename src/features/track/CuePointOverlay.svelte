@@ -239,9 +239,12 @@
       </div>
 
       <div class="cue-dialog-footer">
-        <button class="btn" onclick={clearAll}>Clear all</button>
+        <button id="btn-cue-points-clear" class="btn" onclick={clearAll}
+          >Clear all</button
+        >
         {#if app.cueDevice !== null}
           <button
+            id="btn-cue-points-preview"
             class="btn"
             onclick={preview}
             title="Audition this edit on the cue deck"
