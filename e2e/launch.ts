@@ -16,16 +16,16 @@ export interface LaunchedApp {
 export async function launchApp(
   seeded: SeededConfig = {},
 ): Promise<LaunchedApp> {
-  // Drop any state from a previous test: library.db (FTS index + tracks),
-  // session.json (playlist/history), then write a fresh config.json so the
-  // Rust backend reads the seeded paths at startup.
-  for (const name of [
-    "library.db",
-    "library.db-wal",
-    "library.db-shm",
-    "session.json",
-  ]) {
-    await fs.rm(path.join(E2E_APP_DATA_DIR, name), { force: true });
+  // Drop any state from a previous test: radiodiodj.db (tracks, FTS index,
+  // WAL/SHM and migration backups), session.json (playlist/history), then
+  // write a fresh config.json so the Rust backend reads the seeded paths at
+  // startup. Fixture files are byte-identical across tests, so a surviving DB
+  // would reattach them to the previous test's tracks by fingerprint.
+  const entries = await fs.readdir(E2E_APP_DATA_DIR).catch(() => []);
+  for (const name of entries) {
+    if (name.startsWith("radiodiodj.") || name === "session.json") {
+      await fs.rm(path.join(E2E_APP_DATA_DIR, name), { force: true });
+    }
   }
 
   const config = {
