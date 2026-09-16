@@ -91,8 +91,11 @@ the scan bar shows its progress.
   computed from the bytes already read for the waveform, or from the first
   megabyte of the file otherwise.
 
-A file that fails to decode is skipped for the rest of the run. Cancelling a scan
-cancels the pass too; the next one picks up where it stopped.
+A file that fails to decode is recorded on its track and skipped until a scan
+sees the file change; it is listed under [Unreadable
+tracks](./library-health.md#unreadable-tracks). A file that could not be read is
+skipped for the rest of the run only. Cancelling a scan cancels the pass too; the
+next one picks up where it stopped.
 
 ## Tracks
 

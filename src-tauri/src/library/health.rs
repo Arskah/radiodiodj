@@ -1,5 +1,5 @@
-//! The library health report: missing tracks, duplicates, and what the
-//! operator has already dismissed. See `docs/library-health.md`.
+//! The library health report: missing tracks, duplicates, files that cannot be
+//! decoded, and what the operator has already dismissed. See `docs/library-health.md`.
 
 use anyhow::{bail, Result};
 use parking_lot::Mutex;
@@ -25,8 +25,12 @@ pub struct HealthReport {
     pub missing_dismissed: bool,
     pub exact: Vec<DuplicateGroup>,
     pub possible: Vec<DuplicateGroup>,
-    /// Present tracks not fingerprinted yet, so not in any exact group.
+    /// Present tracks still waiting to be fingerprinted, so not in any exact
+    /// group yet.
     pub unhashed: i64,
+    /// Present tracks the analysis pass could not decode. Never in an exact
+    /// group unless their fingerprint was taken before the failure.
+    pub unreadable: Vec<UnreadableTrack>,
     /// The latest library check, until a scan makes it moot.
     pub check: Option<CheckReport>,
     pub check_dismissed: bool,
@@ -64,6 +68,17 @@ pub struct DuplicateMember {
     pub track: Track,
     pub path: String,
     pub content_type: String,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UnreadableTrack {
+    pub track: Track,
+    pub path: String,
+    pub content_type: String,
+    pub error: String,
+    /// Unix ms.
+    pub failed_at: i64,
 }
 
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
@@ -282,6 +297,17 @@ pub fn build(db: &Db, roots: &[ScanRoot]) -> Result<HealthReport> {
         exact,
         possible,
         unhashed: db.unhashed_count()?,
+        unreadable: db
+            .unreadable_tracks()?
+            .into_iter()
+            .map(|u| UnreadableTrack {
+                track: u.row.track,
+                path: u.row.path,
+                content_type: u.row.content_type,
+                error: u.error,
+                failed_at: u.failed_at,
+            })
+            .collect(),
         check: None,
         check_dismissed: false,
         tag_write_failures: Vec::new(),
@@ -452,6 +478,24 @@ mod tests {
         assert_eq!(report.exact[0].key, "v1:1");
         assert_eq!(ids(&report.exact[0]), vec![a, b]);
         assert_eq!(report.unhashed, 1);
+    }
+
+    #[test]
+    fn a_track_that_cannot_be_decoded_is_unreadable_not_waiting() {
+        let db = Db::open_in_memory().unwrap();
+        let a = insert(&db, "/music/a.mp3", "music", "X", "One", None);
+        insert(&db, "/music/b.mp3", "music", "Y", "Two", None);
+        db.set_analysis_failed(a, "fingerprint: probe: unsupported", 7)
+            .unwrap();
+        let report = build(&db, &music_root()).unwrap();
+        assert_eq!(report.unhashed, 1);
+        assert_eq!(report.unreadable.len(), 1);
+        let u = &report.unreadable[0];
+        assert_eq!(u.track.id, a);
+        assert_eq!(u.path, "/music/a.mp3");
+        assert_eq!(u.content_type, "music");
+        assert_eq!(u.error, "fingerprint: probe: unsupported");
+        assert_eq!(u.failed_at, 7);
     }
 
     #[test]

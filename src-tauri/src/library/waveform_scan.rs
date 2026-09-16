@@ -17,8 +17,10 @@
 //!
 //! The job is single-flight (only one worker at a time) and cancelable. It
 //! drains [`Db::tracks_needing_analysis`] in a loop so tracks added while it runs
-//! are still picked up; ids that fail to decode are remembered for the run so a
-//! permanently-undecodable file never causes an infinite retry loop.
+//! are still picked up. A file that cannot be decoded is recorded in the DB and
+//! left alone until a scan sees it change; one that merely could not be read
+//! (a share dropping out) is skipped for the rest of the run and tried again on
+//! the next.
 
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -32,6 +34,7 @@ use tauri::{AppHandle, Emitter};
 
 use super::db::{AnalysisJob, Db};
 use super::fingerprint;
+use super::scanner::now_ms;
 use crate::audio::waveform;
 
 type Bytes = Arc<[u8]>;
@@ -110,9 +113,9 @@ impl WaveformJob {
 }
 
 fn run(job: &WaveformJob, app: &AppHandle, db: &Db) {
-    // Ids that failed to decode this run — skipped on subsequent passes so a
-    // permanently-broken file cannot wedge the drain loop. Shared across the
-    // decode threads.
+    // Ids that could not be read or stored this run — skipped on subsequent
+    // passes so the drain loop cannot spin on them. Shared across the decode
+    // threads.
     let failed: Mutex<HashSet<i64>> = Mutex::new(HashSet::new());
     // Total files processed across all passes; drives the progress numerator.
     let processed = AtomicUsize::new(0);
@@ -181,8 +184,17 @@ fn run(job: &WaveformJob, app: &AppHandle, db: &Db) {
                     let Some(track) = pending.get(i) else {
                         break;
                     };
-                    if !analyse(track, db, app) {
-                        failed.lock().insert(track.id);
+                    match analyse(track, db, app) {
+                        Outcome::Done => {}
+                        Outcome::Retry => {
+                            failed.lock().insert(track.id);
+                        }
+                        Outcome::Unreadable(error) => {
+                            if let Err(e) = db.set_analysis_failed(track.id, &error, now_ms()) {
+                                log::error!("analysis: store failure {} failed: {}", track.id, e);
+                                failed.lock().insert(track.id);
+                            }
+                        }
                     }
                     let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
                     *job.status.lock() = WaveformStatus::Running {
@@ -211,18 +223,28 @@ fn run(job: &WaveformJob, app: &AppHandle, db: &Db) {
     }
 }
 
-/// Fill whatever `job` is missing and store it. Returns false when anything
-/// failed, so the drain loop does not retry the track this run.
-fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle) -> bool {
+/// What analysing one track came to.
+enum Outcome {
+    Done,
+    /// The file could not be read, or a result could not be stored. Worth
+    /// another try on the next run.
+    Retry,
+    /// The file was read but cannot be decoded.
+    Unreadable(String),
+}
+
+/// Fill whatever `job` is missing and store it.
+fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle) -> Outcome {
     let path = Path::new(&job.path);
-    let mut ok = true;
+    let mut retry = false;
+    let mut errors: Vec<String> = Vec::new();
     let fingerprint = if job.needs_waveform {
         let start = Instant::now();
         let bytes: Bytes = match std::fs::read(path) {
             Ok(v) => Arc::from(v.into_boxed_slice()),
             Err(e) => {
                 log::warn!("waveform: read {} failed: {}", job.path, e);
-                return false;
+                return Outcome::Retry;
             }
         };
         match waveform::compute_peaks(Arc::clone(&bytes)) {
@@ -231,7 +253,7 @@ fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle) -> bool {
                 let store_start = Instant::now();
                 if let Err(e) = db.set_waveform(job.id, &peaks) {
                     log::error!("waveform: store {} failed: {}", job.id, e);
-                    ok = false;
+                    retry = true;
                 } else {
                     log::debug!(
                         "waveform: {} decode {}ms write {}ms",
@@ -243,8 +265,8 @@ fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle) -> bool {
                 }
             }
             Err(e) => {
-                log::warn!("waveform: decode {} failed: {}", job.path, e);
-                ok = false;
+                log::warn!("waveform: decode {} failed: {:#}", job.path, e);
+                errors.push(format!("waveform: {e:#}"));
             }
         }
         job.needs_fingerprint.then(|| {
@@ -258,14 +280,24 @@ fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle) -> bool {
         Some(Ok(fp)) => {
             if let Err(e) = db.set_fingerprint(job.id, &fp) {
                 log::error!("fingerprint: store {} failed: {}", job.id, e);
-                ok = false;
+                retry = true;
             }
         }
         Some(Err(e)) => {
             log::warn!("fingerprint: {} failed: {:#}", job.path, e);
-            ok = false;
+            if fingerprint::is_read_error(&e) {
+                retry = true;
+            } else {
+                errors.push(format!("fingerprint: {e:#}"));
+            }
         }
         None => {}
     }
-    ok
+    if retry {
+        Outcome::Retry
+    } else if errors.is_empty() {
+        Outcome::Done
+    } else {
+        Outcome::Unreadable(errors.join("; "))
+    }
 }

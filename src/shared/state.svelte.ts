@@ -78,6 +78,7 @@ export const EMPTY_HEALTH: HealthReport = {
   exact: [],
   possible: [],
   unhashed: 0,
+  unreadable: [],
   check: null,
   checkDismissed: false,
   tagWriteFailures: [],
