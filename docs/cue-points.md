@@ -9,19 +9,7 @@ Implements [#279](https://github.com/Arskah/radiodiodj/issues/279). The segue
 marker (`next_start_ms`) is consumed by the program bus — see
 [program-bus.md](./program-bus.md).
 
-**Status: complete.** Shipped in four slices —
-`MIGRATION_004` and the five columns, `audio/cue_points.rs` (clamp and
-resolution), `Cmd::Load` carrying concrete `CuePoints`, the air timeline on
-`<deck>:time` / `:duration` / `Cmd::Seek`, the two-stage accurate seek,
-`take_duration` at the out-point, air time as the broadcast `durationSec`,
-`audio/envelope.rs` applying the stored ramps, and the operator surfaces:
-`CuePointOverlay.svelte`, the cue deck's _Absolute_ / _Preview_ modes, and
-air-time durations everywhere a duration is shown, and per-item overrides on the
-backend playlist. Clamping is backend-owned via `set_cue_points`. Still open: the
-confirm dialog on library-path removal described under
-[Prune destroys cue points](#prune-destroys-cue-points--accepted).
-
-## The model: five positions
+## The five markers
 
 ```
 cueIn   ≤   fadeIn   ……   fadeOut   ≤   cueOut
@@ -33,65 +21,161 @@ cueIn   ≤   fadeIn   ……   fadeOut   ≤   cueOut
 ```
 
 Every cue point is a **position** — a millisecond offset into the file — not a
-duration. The fade-in is expressed as the span `cueIn → fadeIn`, the fade-out as
-`fadeOut → cueOut`.
+duration. A fade is the span between two of them: the fade-in is
+`cueIn → fadeIn`, the fade-out is `fadeOut → cueOut`.
 
-### Superseded: fades as durations
+All five are nullable, and `NULL` means "no adjustment":
 
-The original #279 body specified `fade_in_ms` as "ramp up from silence over this
-many ms at track start" — a duration. That is **superseded**. Two independent
-sources agree on positions:
-
-- [sakuvirtanen on #278](https://github.com/Arskah/radiodiodj/issues/278#issuecomment-5682029460):
-  "assume tracks will have `cue_in_ms` and `fade_in_ms`, both representing
-  full-file offset … gain gets interpolated from 0 to 1 between the two markers."
-- [mAirList](https://wiki.mairlist.com/tutorials:general:getting-started:v6_3:v6_3_playlist)
-  defines Fade In as "the point where full volume is reached, so you get a fade
-  from Cue In to Fade In," and classifies it as a cue point alongside Cue In,
-  Ramp, Fade Out, Fade End, and Cue Out. Every cue point in the product is a
-  position.
-
-Positions win on three counts. Clamping collapses to "sorted and bounded" with
-no fade-sum arithmetic. Every drag handle is directly an x-coordinate on the
-waveform, with no conversion on each pointer event. And an operator arriving
-from mAirList, PlayIt, or RadioDJ already knows the model.
-
-### Null semantics
-
-All five columns are nullable. `NULL` means "no adjustment", resolved at load:
-
-| stored          | `NULL` resolves to | meaning            |
-| --------------- | ------------------ | ------------------ |
-| `cue_in_ms`     | `0`                | start of file      |
-| `fade_in_ms`    | `cueIn`            | no ramp up         |
-| `fade_out_ms`   | `cueOut`           | no ramp down       |
-| `cue_out_ms`    | file end           | play to the end    |
-| `next_start_ms` | `cueOut`           | hard cut, no segue |
+| marker          | what it means                  | `NULL` resolves to | effect of `NULL`   |
+| --------------- | ------------------------------ | ------------------ | ------------------ |
+| `cue_in_ms`     | first audible sample           | `0`                | start of file      |
+| `fade_in_ms`    | where the ramp up reaches full | `cueIn`            | no ramp up         |
+| `fade_out_ms`   | where the ramp down begins     | `cueOut`           | no ramp down       |
+| `cue_out_ms`    | where playback stops           | file end           | play to the end    |
+| `next_start_ms` | where the next track begins    | `cueOut`           | hard cut, no segue |
 
 A resolved fade whose two positions coincide has zero width and is skipped
 entirely, so "no ramp" costs nothing at playback time.
 
-### Ordering
+**Ordering.** `cueIn ≤ fadeIn ≤ fadeOut ≤ cueOut`, all within `[0, fileEnd]`.
+`nextStart` is constrained to `[cueIn, cueOut]` **independently of the fades** —
+a segue may legitimately begin before the outgoing track starts fading, which is
+a normal tight transition rather than an error. Clamping is therefore a sort
+plus a bound, and it runs [in one place](#clamping-is-backend-owned).
 
-`cueIn ≤ fadeIn ≤ fadeOut ≤ cueOut`, all within `[0, fileEnd]`.
+**Cue out means playback stops.** The term is ambiguous across playout products:
+in mAirList a cue-out is the end of audio, in PlayIt Live it is where the track
+_starts_ fading. This codebase uses mAirList's sense. The point where a fade
+begins is `fadeOut`, and the point where the next track begins is `nextStart` —
+three distinct markers, no overloading.
 
-`nextStart` is constrained to `[cueIn, cueOut]` **independently of the fades**. A
-segue may legitimately begin before the outgoing track starts fading — that is a
-normal tight transition, not an error.
+## Authoring
 
-Clamping is therefore a sort plus a bound. There is exactly one implementation,
-in Rust; see [Clamping is backend-owned](#clamping-is-backend-owned).
+Two surfaces share one interactive `Waveform.svelte` with draggable handles over
+the peak curve.
 
-### Cue Out means playback stops
+### Cue deck
 
-The term is genuinely ambiguous across playout products: in mAirList a cue-out
-is the end of audio, while in PlayIt Live it is where the track _starts_ fading.
+The audition surface, with two modes that never mix:
 
-**This codebase uses mAirList's sense.** `cueOut` is where playback stops. The
-point where a fade begins is `fadeOut`, and the point where the next track
-begins is `nextStart`. Three distinct markers, no overloading.
+- _Absolute_ (default) — no cue points applied, so the waveform, seek bar and
+  time pill are all absolute and the whole file can be scrubbed for an in-point.
+- _Preview_ — the markers applied, switching the deck to the
+  [air timeline](#air-time) and cropping the waveform to the aired region, so
+  the operator hears exactly what airs.
 
-## Air timeline
+Auditioning on the cue deck never affects on-air output, and both modes load
+**parked**. Cueing a track stages it; the operator decides when it makes noise.
+That also keeps the mode toggle quiet, since switching reloads the deck.
+
+Markers are read-only here. The deck is where a track is heard; the editor is
+where its markers move.
+
+### Cue editor
+
+`CuePointOverlay.svelte`, opened from a library row's context menu or the cue
+deck's marker button. The same waveform full-width, plus a millisecond field per
+marker for values a drag cannot hit.
+
+Only markers that are actually set get a line. An unset marker has no position
+of its own — it resolves onto a neighbour — so drawing all five would stack
+three grabbable handles on the cue-out; a _Set_ button beside each field places
+one at its resolved position instead. Dragging is a pointer convenience and the
+SVG stays `aria-hidden`: the millisecond fields are the accessible way to set a
+marker.
+
+**Auditioning happens inside the dialog.** _Audition_ loads the unsaved draft
+onto the cue deck and plays it. Play/pause and stop are in the dialog's footer,
+the editor's own curve carries the playhead, and clicking the curve seeks — so
+an out-point can be checked without waiting out the track. Every press of
+_Audition_ reloads, because markers are applied at load time; a draft edited
+mid-audition is not heard until it does.
+
+**The dialog borrows the cue deck and gives it back.** It snapshots what the
+deck was showing when it opened and restores that, parked, on every exit — a
+_Preview_ re-resolved against the track's markers as they are then, so closing
+after a save shows the edit that was just stored. Nothing is left armed behind a
+closed dialog.
+
+That leaves three ways out, labelled by scope, and a draft leaves the dialog
+through exactly two of them:
+
+| exit              | what it does                                                                                             |
+| ----------------- | -------------------------------------------------------------------------------------------------------- |
+| **Save to track** | writes the radio edit: every airing of the track, from its next one                                      |
+| **Use once**      | queues the track next-up carrying the draft as an [item override](#radio-edit-vs-item-override)          |
+| **Cancel**        | discards — and asks first when there are changes to lose. ×, Escape and the backdrop take the same route |
+
+Saving a radio edit while that track is on air applies from its **next** airing.
+There is deliberately no main-deck equivalent of `Cmd::SetCuePoints`, so on-air
+audio can never re-decode under the operator mid-broadcast.
+
+## Radio edit vs item override
+
+Two levels, both non-destructive:
+
+**Radio edit** — the cue points stored on the track. Apply to every airing,
+everywhere.
+
+**Item override** — cue points carried by a single playlist item. Override the
+radio edit for that one airing and never write back to the track.
+
+Playlist items **reference** rather than snapshot: an item carries no cue points
+unless explicitly overridden, so correcting a track's radio edit corrects every
+queued airing of it. An item that should deliberately play the whole file
+carries an all-`NULL` override, which is representable and distinct from "no
+override".
+
+### Where an override comes from, and how it goes away
+
+**The editor's _Use once_** is the ordinary route: it queues the track next-up
+carrying the draft, and never writes to the track. A draft identical to the
+radio edit deliberately carries nothing, so a later correction to the track
+still reaches the queued airing.
+
+**Promoting from the cue deck** attaches one under the same rule, for the case
+where what the deck has applied differs from the radio edit. Promoting from
+_Absolute_ carries nothing: auditioning the whole file is how an in-point gets
+found, not a statement about how the track should air.
+
+**Clearing** is the marker badge on the playlist row, which hands the item back
+to the track's radio edit.
+
+**Stepping back** keeps it. `prev` returns the outgoing track to the head of the
+queue as an _item_, carrying whatever override it was airing under. The track
+being stepped back _to_ comes off history, which stores tracks, so it replays
+under the radio edit.
+
+**Saving a radio edit** does not disturb one. Queued items hold a copy of the
+track for display, so `set_cue_points` refreshes those copies; the copy under an
+override is refreshed too, while what that item _airs_ is still its own markers.
+The track on air is left alone, matching the rule that a radio edit applies from
+the next airing.
+
+Both the queued overrides and the one the track on air is playing under live in
+`session.json`, so a custom airing survives a restart. The items themselves live
+on the backend playlist — see
+[backend-owned-playlist.md](./backend-owned-playlist.md).
+
+## What airs
+
+### Resolution
+
+`NULL` cue-out and `NULL` fade-out both anchor to the end of the file, so
+resolution needs a trustworthy duration. The tag-derived `tracks.duration` is
+nullable and wrong on VBR MP3, so resolution runs in the player worker, against
+`msg.duration.or(decoded_duration)` — the decoded length once the bytes are in.
+
+An item override resolves earlier, on the thread that starts the load:
+`load_deck` reads the radio edit off the track row when an item carries no
+override, and uses the override verbatim when it does. Nothing on the playback
+path consults renderer state, so no staleness can put an unedited track on air.
+
+If no duration can be established at all, markers anchored to the file end are
+dropped with a `log::warn!` and the track plays uncut. Audio never fails because
+a marker could not be resolved.
+
+### Air time
 
 Everything crossing the Tauri boundary is measured **from `cueIn`**, so `0` is
 the first audible sample:
@@ -100,103 +184,51 @@ the first audible sample:
 - `<deck>:duration` emits air time (`cueOut − cueIn`)
 - `<deck>_seek(seconds)` takes air seconds; the worker adds `cueIn`
 
-Only the player worker knows source-absolute positions; `seek_offset` stays
-absolute internally.
+Only the player worker knows source-absolute positions. The payoff is that cue
+points are invisible to the renderer's transport code — a trimmed track is
+simply a shorter track. The one renderer-side adjustment is cropping the stored
+waveform (400 buckets over the whole file) to the edit region for display.
 
-The payoff is that cue points are invisible to the renderer's transport code.
-`progressPct`, `NowPlaying.svelte`, `CueDeck.svelte`, and both seek bars keep
-working unchanged — a trimmed track is simply a shorter track as far as they are
-concerned. The only renderer-side adjustment is cropping the stored waveform
-(400 buckets over the whole file) to the edit region for display.
+**Every duration an operator reads is air time**: library rows, playlist rows,
+the history list and both decks, via `airDuration()` in `shared/cuePoints.ts`.
+`TrackTooltip.svelte` carries both ("Airs 3:34 · File 5:02") when a track is
+trimmed, and a trimmed figure is tinted so the shorter number reads as
+deliberate rather than as a stale tag. The renderer's optimistic duration — set
+the moment a track is adopted, before the deck reports its decoded length — is
+air time too, so the seek bar does not jump when `<deck>:duration` arrives.
 
-"Air time" is also what the now-playing broadcast publishes as `durationSec`,
+Air time is also what the now-playing broadcast publishes as `durationSec`,
 since that is what downstream automation schedules against.
 
-## Resolution happens at load, in the worker
+### Fades are source-level
 
-`NULL` cue-out and `NULL` fade-out both anchor to the end of the file, so
-resolution needs a trustworthy file duration. The tag-derived `tracks.duration`
-is nullable and wrong on VBR MP3.
+Stored fades are baked into the decoded source as a gain envelope keyed on
+absolute file position (`audio/envelope.rs`), not driven from `sink.set_volume`.
+They are therefore sample-accurate rather than stepped at the worker's tick
+interval, and they compose by multiplication with deck-level volume: a live
+fade-out fired while a track is inside its own stored fade-out attenuates it
+instead of fighting it. See
+[why](#why-an-envelope-and-not-sink-volume).
 
-The worker already computes the real value: `apply_load` does
-`msg.duration.or(decoded_duration)`, falling back to `Decoder::total_duration()`
-once the bytes are decoded. Resolution runs there, against that value.
+### Ending and handover
 
-If neither source yields a duration, markers anchored to the file end are
-dropped with a `log::warn!` and the track plays uncut. Audio never fails because
-a marker could not be resolved.
+`take_duration(cueOut − pos)` runs the sink dry at the out-point, so the
+existing `sink.empty()` → `:ended` path ends a trimmed track with no new
+termination logic. `next_start_ms` is what triggers handover on the program bus.
 
-`set_cue_points` additionally clamps on write, against whatever duration the DB
-holds, so the UI gets immediate feedback. The load-time resolution is
-authoritative.
-
-## Fades are source-level
-
-Per-track fades are baked into the decoded source as a gain envelope keyed on
-absolute file position. They are **deliberately not** built on the deck-level
-ramp engine proposed in [#278](https://github.com/Arskah/radiodiodj/issues/278),
-despite #279's body saying they would be.
-
-That engine drives `sink.set_volume()` from the worker tick loop — a
-deck-level control, correct for the live fade-out button
-([#280](https://github.com/Arskah/radiodiodj/issues/280)) and for segue ramps,
-because both are "from now, over N ms" operations.
-
-Per-track fades are "at position X through position Y" operations. Routing both
-through `sink.set_volume` makes them fight over one value: a live fade-out fired
-while a track is inside its own stored fade-out would clobber it, and the last
-writer each tick wins. As a source envelope multiplied by a sink gain, they
-compose correctly at different stages — no priority rule needed.
-
-Two further benefits: the envelope is sample-accurate rather than stepped at the
-50 ms tick interval, and cue points ship without waiting for #278.
-
-### rodio cannot express an outro ramp
-
-Checked against rodio 0.21.1 before writing a custom source:
-
-- `Source::fade_out(d)` is `linear_gain_ramp(input, d, 1.0, 0.0, true)` — it
-  ramps from the **source's start**, not toward its end.
-- `Source::linear_gain_ramp` has the same property.
-- `TakeDuration::set_filter_fadeout()` is documented as "the fadeout covers the
-  entire length of the take source", and the implementation confirms it:
-  `sample * remaining_duration / requested_duration`. On a four-minute track
-  that is a four-minute fade.
-
-None of the three can express "ramp down over the last three seconds". Hence
-`audio/envelope.rs` — an `Enveloped<I>` source of roughly sixty lines that
-mirrors `TakeDuration`'s own structure: it holds `duration_per_sample`,
-re-derives it when `current_span_len` is exhausted (so a mid-file sample-rate or
-channel change is handled exactly as rodio handles it), tracks absolute position
-from a `start_pos` offset, and multiplies each sample by `gain_at`.
-
-`gain_at(pos, resolved) -> f32` is a pure function with five branches — before
-`cueIn`, in the up-ramp, body, in the down-ramp, past `cueOut` — and is where
-the envelope is unit-tested.
-
-The alternatives were considered and rejected: splicing two stock sources with
-`from_iter` decodes the file twice and puts a seek-accuracy-dependent join in the
-middle of the audio; `periodic_access` stepping an `Amplify` factor produces
-audible zipper noise on a slow ramp unless smoothed, at which point it is the
-custom source again.
-
-## Accurate seek
+### Accurate seek
 
 A cue point placed on a transient must sound identical on every airing.
 Symphonia's MP3 seek estimates by bitrate when the file has no Xing TOC and can
-land well off — tolerable for manual scrubbing, not for a stored marker.
-
-The load path therefore does a two-stage seek: `try_seek` to roughly 200 ms
-before the target, then `skip_duration` for the remainder. The landing is
-sample-exact and only ~200 ms of pre-roll is decoded, rather than the whole
-intro. When `try_seek` errors outright it falls back to `skip_duration` from
-zero, which is what the code already did.
-
-The same helper serves `Cmd::Seek`, so manual scrubbing gets more accurate too.
+land well off — tolerable for manual scrubbing, not for a stored marker. The
+load path therefore seeks in two stages: `try_seek` to roughly 200 ms before the
+target, then `skip_duration` for the remainder. The landing is sample-exact and
+only ~200 ms of pre-roll is decoded. The same helper serves `Cmd::Seek`, so
+manual scrubbing is more accurate too.
 
 ## Storage
 
-Five nullable columns on `tracks` (migration 004), not a side table:
+Five nullable columns on `tracks` (migration 004):
 
 ```sql
 ALTER TABLE tracks ADD COLUMN cue_in_ms     INTEGER;
@@ -206,211 +238,95 @@ ALTER TABLE tracks ADD COLUMN cue_out_ms    INTEGER;
 ALTER TABLE tracks ADD COLUMN next_start_ms INTEGER;
 ```
 
-`next_start_ms` lands here despite not being consumed until the segue work, so
-the program bus needs no migration of its own.
-
-### Why columns and not a side table
-
-A rescan must not destroy operator work. `UPSERT_TRACK_SQL`'s `ON CONFLICT … DO
-UPDATE SET` clause names every column it writes, which is precisely why the
-`waveform` column survives rescans — its own comment in `db.rs` says so. Cue
-point columns are absent from that list and inherit the same protection.
-
-Columns also mean cue points arrive with every `SELECT *` and land on the
-existing `Track` struct. There is no second query, no renderer-side cache to
-hydrate, and therefore no window in which a track could reach air with stale or
-missing markers.
-
-### Prune destroys cue points — accepted
-
-`tracks.id` is `AUTOINCREMENT` and **Prune** hard-`DELETE`s rows whose path no
-longer falls under a configured library path. Removing a library path destroys
-the cue points of every track under it, and a re-scan mints new ids that cannot
-reconnect.
-
-Keying by `path` instead was considered and rejected: path is equally fragile
-from the other direction, since renaming or moving a file already drops the
-track from the library. That would swap one broken identity for another and
-leave two to fix.
-
-Cue points key on the track row so they inherit the eventual stable-track-identity
-work for free. Until then the mitigation is a confirm dialog on the Settings
-path-removal button, naming how many tracks and cue points will be lost.
+They are deliberately absent from `UPSERT_TRACK_SQL`'s `ON CONFLICT … DO UPDATE
+SET` list, which is what makes them survive a rescan — the same protection the
+`waveform` column relies on. Being columns also means cue points arrive with
+every `SELECT *` and land on the existing `Track` struct: no second query, no
+renderer-side cache, and no window in which a track could reach air with stale
+markers.
 
 ### Clamping is backend-owned
 
-`set_cue_points` clamps and **returns the clamped value**, mirroring the
-established `set_tuning_config` pattern. The renderer adopts what comes back.
+`set_cue_points` clamps on write and **returns the clamped value**, mirroring
+the `set_tuning_config` pattern; the renderer adopts what comes back. There is
+deliberately no TypeScript reimplementation — one rule in two languages drifts,
+and the authoritative clamp runs at load time against the decoded duration,
+which the renderer never sees. `shared/cuePoints.ts` only ever applies the
+documented `NULL` fallbacks.
 
-There is deliberately no TypeScript reimplementation of the clamp — one rule in
-two languages drifts, and the authoritative clamp runs at load time against the
-decoded duration, which the renderer can never see. The drag UI enforces the
-only constraints it needs geometrically, since handles that cannot cross and
-fades bounded by their region fall out of the pixel math anyway.
+## Edge cases
 
-## Radio edit vs item override
+**Prune destroys cue points.** `tracks.id` is `AUTOINCREMENT` and **Prune**
+hard-`DELETE`s rows whose path no longer falls under a configured library path,
+so removing a library path destroys the cue points of every track under it, and
+a rescan mints new ids that cannot reconnect. Keying by `path` instead was
+rejected: a rename or move already drops the track from the library, so that
+swaps one broken identity for another. Cue points key on the track row and will
+inherit any future stable-track-identity work; the outstanding mitigation is a
+confirm dialog on the Settings path-removal button, naming how many tracks and
+cue points will be lost.
 
-Two levels, both non-destructive:
+**Stale resume.** `session.json` stores the playback position in air time. If a
+track's cue-out moved earlier between sessions, the stored position can fall
+outside the new region, so an air seek at or past the air duration clamps to `0`
+with a `log::warn!` and restarts the track. Without the clamp the seek lands
+past the end, `take_duration` yields nothing, and auto-advance silently skips
+the resumed track at launch.
 
-**Radio edit** — the cue points stored on the track. Apply to every airing,
-everywhere.
+**No duration.** Covered under [resolution](#resolution): end-anchored markers
+are dropped and the track plays uncut.
 
-**Item override** — cue points carried by a single playlist item, authored on the
-cue deck and promoted with the track. Override the radio edit for that one
-airing and never write back to the track.
+## Why it is built this way
 
-Playlist items **reference** rather than snapshot: an item carries no cue points
-unless explicitly overridden, so correcting a track's radio edit corrects every
-queued airing of it. An item that should deliberately play the whole file
-carries an all-`NULL` override, which is representable and distinct from "no
-override".
+### Positions, not durations
 
-Resolution is backend-side. `PlaylistItem::Track` carries
-`cue_override: Option<CuePoints>`, and `load_deck` resolves it: `None` reads the
-radio edit off the track row, on the same thread that starts the load; `Some` is
-used verbatim, and is written back onto the load info so the now-playing
-webhook's `durationSec` reports the airing rather than the radio edit. Nothing on
-the playback path consults renderer state, so no staleness can put an unedited
-track on air.
+The original #279 body specified `fade_in_ms` as a duration ("ramp up over this
+many ms at track start"). Positions replaced it, backed by two independent
+sources:
+[sakuvirtanen on #278](https://github.com/Arskah/radiodiodj/issues/278#issuecomment-5682029460)
+("both representing full-file offset … gain gets interpolated from 0 to 1
+between the two markers") and
+[mAirList](https://wiki.mairlist.com/tutorials:general:getting-started:v6_3:v6_3_playlist),
+which defines Fade In as "the point where full volume is reached" and classifies
+every marker as a cue point.
 
-`Effect::Play` and `Effect::Resume` carry the override rather than only an id.
-The item they came from has already been spliced out of the queue by the time
-the service runs the effect, so there is nothing left to look it up on.
+Positions win on three counts: clamping collapses to a sort plus a bound with no
+fade-sum arithmetic; every drag handle is directly an x-coordinate on the
+waveform; and an operator arriving from mAirList, PlayIt or RadioDJ already
+knows the model.
 
-### Where an override comes from, and how it goes away
+### Why an envelope and not sink volume
 
-**The editor's _Use once_** is the ordinary route: it queues the track next-up
-carrying the draft, and never writes to the track. A draft identical to the
-radio edit deliberately carries nothing (`cuePointsEqual` decides), so a later
-correction to the track still reaches the queued airing.
+The deck-level ramp engine of
+[#278](https://github.com/Arskah/radiodiodj/issues/278) drives
+`sink.set_volume()` from the worker tick loop, which is right for "from now,
+over N ms" operations — the live fade-out button
+([#280](https://github.com/Arskah/radiodiodj/issues/280)) and segue ramps.
+Stored fades are "at position X through position Y" operations, and routing both
+through one value makes them fight: the last writer each tick wins. As a source
+envelope multiplied by a sink gain they compose at different stages, needing no
+priority rule.
 
-**Promoting from the cue deck** attaches one under the same rule, for the case
-where what the deck has applied differs from the radio edit. Promoting from
-_Absolute_ carries nothing: auditioning the whole file is how an in-point gets
-found, not a statement about how the track should air.
-
-**Clearing** is the marker badge on the playlist row, which hands the item back
-to the track's radio edit (`playlist_set_item_cue_points` with `null`).
-
-**Stepping back** keeps it. `prev` returns the outgoing track to the head of the
-queue as an _item_, carrying whatever override it was airing under. The
-renderer-owned playlist could not do this — its `currentTrack` was a `Track`, not
-an item, so pressing prev mid-show silently returned an unedited track to the
-queue. The track being stepped back _to_ comes off the renderer's history, which
-stores tracks, so it replays under the radio edit.
-
-**Saving a radio edit** does not disturb one. Queued items hold a copy of the
-track for display, so `set_cue_points` refreshes those copies through
-`Playlist::on_cue_points_saved` — otherwise the next snapshot would put the
-pre-edit duration back on the row. The copy under an override is refreshed too;
-what that item _airs_ is still its own markers. The track on air is left alone,
-matching the rule that a radio edit applies from the next airing.
-
-Both the queued overrides and the one the track on air is playing under live in
-`session.json`, so a custom airing survives a restart. Item overrides live on
-backend playlist items — see
-[backend-owned-playlist.md](./backend-owned-playlist.md).
-
-## Editing
-
-Two surfaces, sharing an interactive `Waveform.svelte` with draggable handles
-over the peak curve.
-
-**Cue deck** is the audition surface, with two modes that never mix:
-
-- _Absolute_ (default) — loads with no cue points applied, so the waveform,
-  seek bar, and time pill are all absolute and the operator can scrub the whole
-  file to find an in-point.
-- _Preview_ — reloads with cue points applied, switching the deck to air
-  timeline and a cropped waveform, so they hear exactly what airs.
-
-Auditioning on the cue deck never affects on-air output.
-
-Both modes load **parked**. Cueing a track stages it; the operator decides when
-it makes noise. This also keeps the mode toggle quiet — switching reloads the
-deck, so autoplay would restart the audio every time an operator compared the
-two.
-
-**Cue editor overlay** (`CuePointOverlay.svelte`), opened from the library row
-context menu or the cue deck's marker button, gives the same waveform
-full-width plus a millisecond field per marker for values a drag cannot hit.
-
-Auditioning happens **inside the dialog**. _Audition_ loads the unsaved draft
-onto the cue deck and plays it — `cue_load` takes an optional `cuePoints`
-precisely so a ramp can be heard before it is committed, and an `autoplay` flag
-because the deck parks its sink when the background read lands, so a `Play` sent
-alongside the load would be undone by it. Play/pause and stop drive the deck
-from the dialog's footer, the editor's curve carries the playhead (converted
-back from air time, since the editor draws the whole file), and clicking the
-curve seeks. Every press of _Audition_ reloads: markers are applied at load
-time, so a draft edited mid-audition is not heard until it does.
-
-The dialog **borrows the cue deck and gives it back**. It snapshots what the
-deck was showing when it opened and restores that, parked, on every exit — a
-_Preview_ re-resolved against the track's markers as they are then, so closing
-after a save shows the edit that was just stored. Nothing is left armed behind a
-closed dialog.
-
-That leaves three ways out, labelled by scope, and a draft leaves the dialog
-through exactly two of them:
-
-- **Save to track** writes the radio edit: every airing of the track, from its
-  next one.
-- **Use once** queues the track next-up carrying the draft as an
-  [item override](#radio-edit-vs-item-override), and writes nothing to the
-  track.
-- **Cancel** (and ×, Escape, and the backdrop) discards. With changes pending it
-  asks first, because the one thing an operator could not tell before was
-  whether closing kept them.
-
-Only markers that are actually set get a line on the waveform. An unset marker
-has no position of its own (it resolves onto a neighbour), so drawing all five
-would stack three grabbable handles on the cue-out; a _Set_ button beside the
-field places one at its resolved position instead.
-
-Dragging is a pointer convenience and the SVG stays `aria-hidden` — the
-millisecond fields are the accessible way to set a marker.
-
-Saving a radio edit while that track is on air applies from its **next** airing.
-There is deliberately no main-deck equivalent of `Cmd::SetCuePoints`, so on-air
-audio can never re-decode under the operator mid-broadcast.
+rodio cannot express an outro ramp on its own — checked against 0.21.1.
+`Source::fade_out` and `linear_gain_ramp` both ramp from the source's _start_,
+and `TakeDuration::set_filter_fadeout` fades across the entire take (a
+four-minute fade on a four-minute track). Hence `Enveloped<I>`, ~60 lines
+mirroring `TakeDuration`'s own structure: it re-derives `duration_per_sample`
+when `current_span_len` is exhausted, so a mid-file sample-rate or channel
+change is handled exactly as rodio handles it, and multiplies each sample by
+`gain_at(pos, resolved)` — a pure five-branch function, which is where the
+envelope is unit-tested. Splicing two stock sources with `from_iter` would
+decode the file twice and put a seek-dependent join mid-audio; `periodic_access`
+stepping an `Amplify` factor zippers audibly on a slow ramp.
 
 ### Naming
 
 "Edit" in this codebase means metadata/tag editing and nothing else. The
-playback markers are **cue points**, matching every playout product surveyed.
-The tag-editing surfaces are renamed to say so explicitly — `MetadataOverlay`,
-`editingMetadata` — so the two concepts stay unconfusable in every grep.
+playback markers are **cue points**, matching every playout product surveyed,
+and the stored set of them is a **radio edit**. The tag-editing surfaces say so
+explicitly — `MetadataOverlay`, `editingMetadata` — so the two stay unconfusable
+in every grep.
 
 Note the mild overlap with the **cue deck**: a cue point is a position in a
 track, the cue deck is the off-air monitoring deck. Real playout software lives
 with exactly this overlap, and the cue deck is where cue points get placed.
-
-## Edge cases
-
-**Stale resume.** `session.json` stores the playback position in air time. If a
-track's cue-out moved earlier between sessions, the stored position can fall
-outside the new region. An air seek at or past the air duration **clamps to 0**
-with a `log::warn!`, restarting the track.
-
-Without the clamp the seek lands past the end, `take_duration` yields nothing,
-`sink.empty()` fires immediately, and auto-advance silently skips the resumed
-track at launch. Clamping to the region end instead would drop the operator into
-the final second, which then ends and advances — the same outcome, less
-predictably.
-
-**Durations in the UI mean air time.** Library rows, playlist rows, the history
-list, and the decks all report what actually airs, via `airDuration()` in
-`shared/cuePoints.ts`. `TrackTooltip.svelte` carries both ("Airs 3:34 · File
-5:02") when a track is trimmed, and a trimmed figure is tinted so the shorter
-number reads as deliberate rather than as a stale tag. One meaning for the
-column, and an operator filling a three-minute slot reads the number that
-matters.
-
-The renderer's optimistic duration — set the moment a track is adopted, before
-the deck reports its decoded length — is air time too. Showing file time there
-would make the seek bar jump the instant `<deck>:duration` arrived.
-
-**Ending detection is unchanged.** `take_duration(cueOut − pos)` runs the sink
-dry at the out-point, so the existing `sink.empty()` → `:ended` path fires
-naturally. No new termination logic.

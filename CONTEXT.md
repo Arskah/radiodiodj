@@ -69,8 +69,12 @@ The Deck currently holding the `main` role. Its output is what listeners hear. A
 _Avoid_: Program deck, A deck
 
 **Cue deck**:
-Off-air deck on a separate output device, used to audition a track and place its Cue points. Never on the Program bus.
+Off-air deck on a separate output device, used to audition a track and its Cue points. Never on the Program bus.
 _Avoid_: Preview, monitor, B deck
+
+**Cue editor**:
+The dialog where Cue points are placed, over a waveform with draggable handles. Auditions through the Cue deck, and is the only surface that moves a marker.
+_Avoid_: Cue dialog, marker editor, trim editor
 
 **Handover**:
 The moment the arm Deck begins playing and takes the `main` role, triggered by the outgoing track's Next start cue point.
@@ -175,11 +179,11 @@ _Avoid_: Persist, sync
 >
 > **Dev:** "This song has eight seconds of intro. Do I have to edit the file?"
 >
-> **Domain expert:** "No — set its **Cue in** on the **Cue deck**. That is a **Cue point**, stored on the **Track** as its **Radio edit**, and it applies to every airing from then on. The file is never touched."
+> **Domain expert:** "No — set its **Cue in** in the **Cue editor** and save it to the track. That is a **Cue point**, stored on the **Track** as its **Radio edit**, and it applies to every airing from then on. The file is never touched."
 >
 > **Dev:** "What if I want it shortened just this once, for tonight's show?"
 >
-> **Domain expert:** "Set it on the **Cue deck** and promote — the **Playlist** item carries an **Item override**. That wins for that one airing and never writes back to the **Track**."
+> **Domain expert:** "Same editor, but press _Use once_ instead of saving — the **Playlist** item carries an **Item override**. That wins for that one airing and never writes back to the **Track**."
 >
 > **Dev:** "The library says 5:02 but the playlist says 3:34. Which is right?"
 >
@@ -201,7 +205,7 @@ _Avoid_: Persist, sync
 - "Playlist" vs "Queue" → **Playlist** is canonical. Avoid "queue" to prevent confusion with **Lookahead buffer**.
 - "Auto-playlist" is a mode of **Playlist**, not a separate concept.
 - "Cue deck" is a Deck (not a UI label), modeled on real-DJ rigs. It is **not** a peer of **Main deck**: Main deck is a **Deck role** that moves between decks on the **Program bus**, while the Cue deck is a fixed off-air deck on its own output device.
-- "Cue point" is a position in a Track; "Cue deck" is the off-air deck. The overlap is inherited from playout software convention, and the Cue deck is where Cue points get placed.
+- "Cue point" is a position in a Track; "Cue deck" is the off-air deck; the "Cue editor" is where points are placed. The overlap is inherited from playout software convention.
 - Bare "edit" means **metadata/tag editing** and nothing else. The playback markers are **Cue points**; the stored set of them is a **Radio edit**. Tag-editing code says `metadata` explicitly for this reason.
 - "Segue" and "crossfade" are not domain terms → use **Handover**, which is triggered by a Cue point rather than a configured duration.
 - "Content type" is a closed enum: `music | jingle | commercial`. New types require deliberate domain extension.

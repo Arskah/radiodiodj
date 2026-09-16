@@ -7,9 +7,9 @@ pnpm dev                                          # tauri dev (Vite HMR for rend
 pnpm build                                        # tauri build → src-tauri/target/release/bundle/<format>/
 pnpm typecheck                                    # svelte-check + tsc on tsconfig.node.json
 pnpm test                                         # vitest watch
-pnpm test -- run                                  # vitest single run (180 renderer tests)
+pnpm test -- run                                  # vitest single run
 pnpm e2e                                          # tauri-driver + WebdriverIO (Linux only — see e2e/README.md)
-cargo test --manifest-path src-tauri/Cargo.toml   # 226 backend tests (db, scanner, session, playlist, audio, config)
+cargo test --manifest-path src-tauri/Cargo.toml   # backend tests (db, scanner, session, playlist, audio, config)
 pnpm lint                                         # eslint
 pnpm format                                       # prettier --write .
 pnpm format:check                                 # prettier --check .
