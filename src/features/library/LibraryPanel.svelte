@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app, formatTime, type Track } from "../../shared/state.svelte";
   import type { ContentType, SortColumn } from "../../shared/types";
+  import { airDuration, isTrimmed } from "../../shared/cuePoints";
   import ContextMenu from "../ui/ContextMenu.svelte";
   import type { MenuItem } from "../ui/contextMenu";
 
@@ -41,12 +42,12 @@
 
   function cue(track: Track, e: MouseEvent): void {
     e.stopPropagation();
-    app.cueLoadAndPlay(track);
+    app.cueLoad(track);
   }
 
   function startEdit(track: Track, e: MouseEvent): void {
     e.stopPropagation();
-    app.editingTrack = track;
+    app.editingMetadata = track;
   }
 
   function onEnter(track: Track, e: MouseEvent): void {
@@ -125,13 +126,18 @@
       items.push({
         label: "Preview on cue deck",
         icon: "headphones",
-        onselect: () => app.cueLoadAndPlay(track),
+        onselect: () => app.cueLoad(track),
       });
     }
     items.push({
       label: "Edit metadata…",
       icon: "edit",
-      onselect: () => (app.editingTrack = track),
+      onselect: () => (app.editingMetadata = track),
+    });
+    items.push({
+      label: "Cue points…",
+      icon: "line_start_diamond",
+      onselect: () => (app.editingCuePoints = track),
     });
     items.push({
       label: "Play now (on air)",
@@ -232,7 +238,9 @@
           <span class="track-artist">{track.artist}</span>
           <span class="track-album">{track.album}</span>
           <span class="track-plays">{track.play_count || 0}</span>
-          <span class="track-duration">{formatTime(track.duration)}</span>
+          <span class="track-duration" class:trimmed={isTrimmed(track)}
+            >{formatTime(airDuration(track))}</span
+          >
           {#if app.cueDevice !== null}
             <button
               class="btn-cue"

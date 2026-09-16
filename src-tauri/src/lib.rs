@@ -366,8 +366,23 @@ where
     Ok(())
 }
 
+/// Load a track onto the cue deck.
+///
+/// `cuePoints` picks the audition mode. Absent (*Absolute*) plays the whole
+/// file with no markers applied, so an operator can scrub it to find an
+/// in-point. Present (*Preview*) applies exactly those markers — the editor
+/// sends its unsaved draft, so a ramp can be heard before it is committed.
+///
+/// `autoplay` travels with the load rather than arriving as a later `Play`,
+/// because the load completes on a background thread and parks the sink when
+/// it lands — a `Play` sent in between would be undone by it.
 #[tauri::command(rename_all = "camelCase")]
-fn cue_load(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+fn cue_load(
+    state: State<'_, AppState>,
+    id: i64,
+    cue_points: Option<CuePoints>,
+    autoplay: Option<bool>,
+) -> Result<(), String> {
     let track = state
         .db
         .get_media_track(id)
@@ -382,13 +397,14 @@ fn cue_load(state: State<'_, AppState>, id: i64) -> Result<(), String> {
             } else {
                 None
             },
-            // The cue deck auditions in *Absolute* mode: the whole file, no
-            // markers applied, so an operator can scrub it to find an in-point.
-            cue_points: CuePoints::default(),
+            cue_points: cue_points.unwrap_or_default(),
             start_at: 0.0,
-            // Cueing a track starts auditioning it; the renderer's cue transport
-            // takes over from there.
-            autoplay: true,
+            // Parked by default. Cueing a track is a staging action — the
+            // operator decides when it makes noise, and switching audition
+            // mode reloads the deck, so autoplay would restart the audio on
+            // every Absolute/Preview toggle. The cue editor's Audition button
+            // is the explicit ask, and sets this.
+            autoplay: autoplay.unwrap_or(false),
         });
     })
 }

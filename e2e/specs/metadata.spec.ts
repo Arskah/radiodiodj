@@ -60,9 +60,9 @@ describe("metadata editing", () => {
 
   async function openEditor(): Promise<void> {
     await browser.$(sel.editButton).click();
-    await browser.$(sel.editorDialog).waitForExist({ timeout: 5_000 });
+    await browser.$(sel.metadataDialog).waitForExist({ timeout: 5_000 });
     // The overlay animates in; wait until the title field is interactable.
-    await browser.$(sel.editorTitle).waitForClickable({ timeout: 5_000 });
+    await browser.$(sel.metadataTitle).waitForClickable({ timeout: 5_000 });
   }
 
   it("edits title/genre/year and persists after reopening", async () => {
@@ -70,15 +70,15 @@ describe("metadata editing", () => {
 
     await openEditor();
     // Untagged WAV → title defaults to the file basename, genre/year empty.
-    expect(await inputValue(sel.editorTitle)).toBe("edit-fixture");
+    expect(await inputValue(sel.metadataTitle)).toBe("edit-fixture");
 
-    await browser.$(sel.editorTitle).setValue("Edited Title");
-    await browser.$(sel.editorGenre).setValue("Techno");
-    await browser.$(sel.editorYear).setValue("1998");
-    await browser.$(sel.editorSave).click();
+    await browser.$(sel.metadataTitle).setValue("Edited Title");
+    await browser.$(sel.metadataGenre).setValue("Techno");
+    await browser.$(sel.metadataYear).setValue("1998");
+    await browser.$(sel.metadataSave).click();
 
     // Save closes the dialog and the row reflects the new title.
-    await browser.$(sel.editorDialog).waitForExist({
+    await browser.$(sel.metadataDialog).waitForExist({
       reverse: true,
       timeout: 5_000,
     });
@@ -95,11 +95,11 @@ describe("metadata editing", () => {
     // local row patch. Genre/year aren't shown in the row, so this is the only
     // check that covers them.
     await openEditor();
-    expect(await inputValue(sel.editorTitle)).toBe("Edited Title");
-    expect(await inputValue(sel.editorGenre)).toBe("Techno");
-    expect(await inputValue(sel.editorYear)).toBe("1998");
-    await browser.$(sel.editorCancel).click();
-    await browser.$(sel.editorDialog).waitForExist({
+    expect(await inputValue(sel.metadataTitle)).toBe("Edited Title");
+    expect(await inputValue(sel.metadataGenre)).toBe("Techno");
+    expect(await inputValue(sel.metadataYear)).toBe("1998");
+    await browser.$(sel.metadataCancel).click();
+    await browser.$(sel.metadataDialog).waitForExist({
       reverse: true,
       timeout: 5_000,
     });
@@ -110,42 +110,42 @@ describe("metadata editing", () => {
 
     // Seed a genre first.
     await openEditor();
-    await browser.$(sel.editorGenre).setValue("Ambient");
-    await browser.$(sel.editorSave).click();
-    await browser.$(sel.editorDialog).waitForExist({
+    await browser.$(sel.metadataGenre).setValue("Ambient");
+    await browser.$(sel.metadataSave).click();
+    await browser.$(sel.metadataDialog).waitForExist({
       reverse: true,
       timeout: 5_000,
     });
 
     // Reopen, clear it, save.
     await openEditor();
-    expect(await inputValue(sel.editorGenre)).toBe("Ambient");
-    await clearInput(sel.editorGenre);
-    await browser.$(sel.editorSave).click();
-    await browser.$(sel.editorDialog).waitForExist({
+    expect(await inputValue(sel.metadataGenre)).toBe("Ambient");
+    await clearInput(sel.metadataGenre);
+    await browser.$(sel.metadataSave).click();
+    await browser.$(sel.metadataDialog).waitForExist({
       reverse: true,
       timeout: 5_000,
     });
 
     // Reopen — genre is now empty (cleared to NULL and reloaded as "").
     await openEditor();
-    expect(await inputValue(sel.editorGenre)).toBe("");
-    await browser.$(sel.editorCancel).click();
+    expect(await inputValue(sel.metadataGenre)).toBe("");
+    await browser.$(sel.metadataCancel).click();
   });
 
   it("rejects an empty title and keeps the dialog open", async () => {
     await bootAndScan();
 
     await openEditor();
-    await clearInput(sel.editorTitle);
-    await browser.$(sel.editorSave).click();
+    await clearInput(sel.metadataTitle);
+    await browser.$(sel.metadataSave).click();
 
     // Validation blocks the save: the dialog stays open and an error shows.
-    await browser.$(sel.editorError).waitForExist({ timeout: 5_000 });
-    await expect(browser.$(sel.editorError)).toHaveText(
+    await browser.$(sel.metadataError).waitForExist({ timeout: 5_000 });
+    await expect(browser.$(sel.metadataError)).toHaveText(
       expect.stringContaining("Title"),
     );
-    await expect(browser.$(sel.editorDialog)).toExist();
+    await expect(browser.$(sel.metadataDialog)).toExist();
 
     // The row title is untouched.
     const titles = await rowTitles();

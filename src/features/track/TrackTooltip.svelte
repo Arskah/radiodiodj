@@ -1,5 +1,7 @@
 <script lang="ts">
   import { app, formatTime } from "../../shared/state.svelte";
+  import { airDuration, isTrimmed } from "../../shared/cuePoints";
+  import type { Track } from "../../shared/types";
 
   const TOOLTIP_WIDTH = 280;
   const GAP = 8;
@@ -46,6 +48,17 @@
   function isUnknown(v: string): boolean {
     return v === UNKNOWN;
   }
+
+  /**
+   * What the track airs, and — when cue points trim it — the file length too,
+   * so the shorter number in the library column is explained rather than
+   * mysterious.
+   */
+  function formatDuration(t: Track): string {
+    if (!t.duration) return UNKNOWN;
+    const air = formatTime(airDuration(t));
+    return isTrimmed(t) ? `Airs ${air} · File ${formatTime(t.duration)}` : air;
+  }
 </script>
 
 {#if app.hoveredTrack}
@@ -54,7 +67,7 @@
     { label: "Album", value: strOr(t.album) },
     { label: "Genre", value: strOr(t.genre) },
     { label: "Year", value: numOr(t.year) },
-    { label: "Duration", value: t.duration ? formatTime(t.duration) : UNKNOWN },
+    { label: "Duration", value: formatDuration(t) },
     { label: "BPM", value: numOr(t.bpm) },
     { label: "Format", value: t.format ? t.format.toUpperCase() : UNKNOWN },
     { label: "Bitrate", value: formatBitrate(t.bitrate) },

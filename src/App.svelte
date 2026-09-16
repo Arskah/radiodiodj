@@ -7,7 +7,8 @@
   import SettingsOverlay from "./features/settings/SettingsOverlay.svelte";
   import ScanStatusBar from "./features/scan/ScanStatusBar.svelte";
   import TrackTooltip from "./features/track/TrackTooltip.svelte";
-  import EditorOverlay from "./features/track/EditorOverlay.svelte";
+  import MetadataOverlay from "./features/track/MetadataOverlay.svelte";
+  import CuePointOverlay from "./features/track/CuePointOverlay.svelte";
   import { app } from "./shared/state.svelte";
 </script>
 
@@ -21,4 +22,5 @@
 <SettingsOverlay />
 <ScanStatusBar />
 <TrackTooltip />
-<EditorOverlay />
+<MetadataOverlay />
+<CuePointOverlay />

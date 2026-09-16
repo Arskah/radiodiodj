@@ -17,12 +17,12 @@
   let error = $state<string | null>(null);
 
   $effect(() => {
-    if (app.editingTrack) {
-      title = app.editingTrack.title;
-      artist = app.editingTrack.artist;
-      album = app.editingTrack.album;
-      genre = app.editingTrack.genre ?? "";
-      year = app.editingTrack.year ? String(app.editingTrack.year) : "";
+    if (app.editingMetadata) {
+      title = app.editingMetadata.title;
+      artist = app.editingMetadata.artist;
+      album = app.editingMetadata.album;
+      genre = app.editingMetadata.genre ?? "";
+      year = app.editingMetadata.year ? String(app.editingMetadata.year) : "";
       error = null;
     } else {
       title = "";
@@ -35,7 +35,7 @@
   });
 
   async function handleSave(): Promise<void> {
-    const track = app.editingTrack;
+    const track = app.editingMetadata;
     if (!track) return;
 
     // The editor sends every field, so an empty box now writes an empty value
@@ -85,7 +85,7 @@
   }
 
   function handleKeyDown(e: KeyboardEvent): void {
-    if (!app.editingTrack) return;
+    if (!app.editingMetadata) return;
     if (e.key === "Escape") {
       e.preventDefault();
       close();
@@ -100,11 +100,11 @@
   }
 
   function close(): void {
-    app.editingTrack = null;
+    app.editingMetadata = null;
   }
 
   $effect(() => {
-    if (app.editingTrack) {
+    if (app.editingMetadata) {
       document.addEventListener("keydown", handleKeyDown);
       // Focus the first field so the dialog is keyboard-usable on open.
       titleInput?.focus();
@@ -114,7 +114,7 @@
   });
 </script>
 
-{#if app.editingTrack}
+{#if app.editingMetadata}
   <div
     class="editor-overlay"
     role="presentation"
@@ -125,7 +125,7 @@
     }}
   >
     <div
-      id="editor-dialog"
+      id="metadata-dialog"
       class="editor-content"
       role="dialog"
       aria-modal="true"
@@ -135,7 +135,7 @@
       <div class="editor-header">
         <h2 class="editor-title">Edit Metadata</h2>
         <button
-          id="btn-editor-close"
+          id="btn-metadata-close"
           class="btn-close"
           onclick={close}
           title="Close (Escape)"
@@ -147,7 +147,7 @@
         <label class="field">
           <span>Title</span>
           <input
-            id="editor-title"
+            id="metadata-title"
             type="text"
             bind:this={titleInput}
             bind:value={title}
@@ -157,7 +157,7 @@
         <label class="field">
           <span>Artist</span>
           <input
-            id="editor-artist"
+            id="metadata-artist"
             type="text"
             bind:value={artist}
             autocomplete="off"
@@ -166,7 +166,7 @@
         <label class="field">
           <span>Album</span>
           <input
-            id="editor-album"
+            id="metadata-album"
             type="text"
             bind:value={album}
             autocomplete="off"
@@ -175,7 +175,7 @@
         <label class="field">
           <span>Genre</span>
           <input
-            id="editor-genre"
+            id="metadata-genre"
             type="text"
             bind:value={genre}
             autocomplete="off"
@@ -185,7 +185,7 @@
         <label class="field">
           <span>Year</span>
           <input
-            id="editor-year"
+            id="metadata-year"
             type="number"
             bind:value={year}
             min="1900"
@@ -194,12 +194,12 @@
           />
         </label>
         {#if error}
-          <div id="editor-error" class="editor-error">{error}</div>
+          <div id="metadata-error" class="editor-error">{error}</div>
         {/if}
       </div>
       <div class="editor-footer">
         <button
-          id="btn-editor-save"
+          id="btn-metadata-save"
           class="btn btn-primary"
           onclick={handleSave}
           disabled={saving}
@@ -207,7 +207,7 @@
           {saving ? "Saving…" : "Save"}
         </button>
         <button
-          id="btn-editor-cancel"
+          id="btn-metadata-cancel"
           class="btn"
           onclick={close}
           disabled={saving}

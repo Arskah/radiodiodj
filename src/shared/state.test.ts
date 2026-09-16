@@ -52,6 +52,7 @@ const { api } = vi.hoisted(() => {
     updateTrackMetadata: vi.fn(),
     getTuningConfig: vi.fn(),
     setTuningConfig: vi.fn(),
+    setCuePoints: vi.fn(),
   };
   return { api };
 });
@@ -653,7 +654,7 @@ describe("AppState waveform", () => {
 
   it("loads the cue waveform independently", async () => {
     api.getWaveform.mockResolvedValue([5, 6, 7]);
-    app.cueLoadAndPlay(t(3));
+    app.cueLoad(t(3));
     expect(api.getWaveform).toHaveBeenCalledWith(3);
     await flushAsync();
     expect(app.cueWaveform).toEqual([5, 6, 7]);
@@ -1159,21 +1160,25 @@ describe("AppState cue deck", () => {
     ({ app, mock, cueMock } = makeApp());
   });
 
-  it("cueLoadAndPlay loads + plays on cue backend, leaves main untouched", async () => {
-    app.cueLoadAndPlay(t(7, { title: "Cue", artist: "Band" }));
+  it("cueLoad parks the track on the cue backend, leaving main untouched", async () => {
+    app.cueLoad(t(7, { title: "Cue", artist: "Band" }));
     await flushAsync();
     expect(cueMock.lastLoadedId).toBe(7);
-    expect(cueMock.playCalls).toBeGreaterThan(0);
+    // Cueing stages a track; it does not start it.
+    expect(cueMock.playCalls).toBe(0);
+    expect(app.cueIsPlaying).toBe(false);
     expect(mock.lastLoadedId).toBeUndefined();
     expect(app.cueTrack?.id).toBe(7);
     expect(app.cueDuration).toBe(100);
     expect(app.cueCurrentTime).toBe(0);
   });
 
-  it("cueTogglePlay pauses then resumes via cue backend", async () => {
-    app.cueLoadAndPlay(t(1));
+  it("cueTogglePlay starts a parked track, then pauses and resumes it", async () => {
+    app.cueLoad(t(1));
     await flushAsync();
-    expect(cueMock.playCalls).toBe(1); // initial load+play
+    expect(cueMock.playCalls).toBe(0);
+    app.cueTogglePlay();
+    expect(cueMock.playCalls).toBe(1);
     cueMock.emitPauseState(false);
     expect(app.cueIsPlaying).toBe(true);
     app.cueTogglePlay();
@@ -1191,7 +1196,7 @@ describe("AppState cue deck", () => {
   });
 
   it("cueStop clears cue state and stops backend", () => {
-    app.cueLoadAndPlay(t(1));
+    app.cueLoad(t(1));
     app.cueDuration = 200;
     app.cueCurrentTime = 30;
     app.cueIsPlaying = true;
@@ -1204,7 +1209,7 @@ describe("AppState cue deck", () => {
   });
 
   it("cueSeekToPct clamps + applies via cue backend", () => {
-    app.cueLoadAndPlay(t(1));
+    app.cueLoad(t(1));
     app.cueDuration = 100;
     app.cueSeekToPct(0.25);
     expect(app.cueCurrentTime).toBe(25);
@@ -1231,10 +1236,10 @@ describe("AppState cue deck", () => {
     expect(cueMock.volume).toBe(0.4);
   });
 
-  it("promoteCueToMain inserts cue track at playlist head; cue keeps playing", () => {
+  it("promoteCueToMain inserts cue track at playlist head; cue keeps its track", () => {
     app.addToPlaylist(t(1));
     app.addToPlaylist(t(2));
-    app.cueLoadAndPlay(t(99, { title: "promoted" }));
+    app.cueLoad(t(99, { title: "promoted" }));
     app.promoteCueToMain();
     expect(app.playlist.map(pid)).toEqual([99, 1, 2]);
     expect(app.cueTrack?.id).toBe(99);
@@ -1259,7 +1264,7 @@ describe("AppState cue deck", () => {
   });
 
   it("cue backend ended event resets cue playing/time without touching main", () => {
-    app.cueLoadAndPlay(t(1));
+    app.cueLoad(t(1));
     app.cueIsPlaying = true;
     app.cueCurrentTime = 50;
     app.currentTrack = t(2);
@@ -1313,7 +1318,7 @@ describe("AppState audio device config", () => {
 
   it("setCueDeviceConfig with null disables cue + clears cue state", async () => {
     await app.loadAudioConfig();
-    app.cueLoadAndPlay(t(1));
+    app.cueLoad(t(1));
     app.cueDuration = 100;
 
     await app.setCueDeviceConfig(null);
@@ -1601,5 +1606,201 @@ describe("AppState updateTrackMetadata", () => {
     app.currentTrack = before;
     await app.updateTrackMetadata(5, { title: "Remixed" });
     expect(app.currentTrack?.title).toBe("Remixed");
+  });
+});
+
+describe("AppState cue points", () => {
+  let app: AppState;
+  let cueMock: MockBackend;
+
+  const trimmed = {
+    cue_in_ms: 10_000,
+    fade_in_ms: null,
+    fade_out_ms: null,
+    cue_out_ms: 30_000,
+    next_start_ms: null,
+  };
+
+  beforeEach(() => {
+    resetApi();
+    ({ app, cueMock } = makeApp());
+  });
+
+  it("auditions the whole file by default", async () => {
+    app.cueLoad(t(1, { cue_points: trimmed }));
+    await flushAsync();
+    expect(app.cueMode).toBe("absolute");
+    expect(cueMock.loadedCuePoints).toEqual([null]);
+    expect(app.cueDuration).toBe(100);
+    expect(app.cueCrop).toBeNull();
+  });
+
+  it("Preview reloads the deck with the track's markers applied", async () => {
+    app.cueLoad(t(1, { cue_points: trimmed }));
+    await flushAsync();
+    app.setCueMode("preview");
+    await flushAsync();
+    expect(app.cueMode).toBe("preview");
+    expect(cueMock.loadedCuePoints).toEqual([null, trimmed]);
+    // Air time, not file time: the deck reports the same.
+    expect(app.cueDuration).toBe(20);
+  });
+
+  it("Preview crops the waveform to the aired region", async () => {
+    app.cueLoad(t(1, { cue_points: trimmed }), trimmed);
+    await flushAsync();
+    expect(app.cueCrop).toEqual({ from: 0.1, to: 0.3 });
+  });
+
+  it("previewing a track with no markers still plays the whole file", async () => {
+    app.cueLoad(t(2));
+    await flushAsync();
+    app.setCueMode("preview");
+    await flushAsync();
+    // An all-null override is representable and means "play it all".
+    expect(cueMock.loadedCuePoints[1]).toEqual({
+      cue_in_ms: null,
+      fade_in_ms: null,
+      fade_out_ms: null,
+      cue_out_ms: null,
+      next_start_ms: null,
+    });
+    expect(app.cueDuration).toBe(100);
+  });
+
+  it("switching to the mode already in effect does not reload", async () => {
+    app.cueLoad(t(1));
+    await flushAsync();
+    app.setCueMode("absolute");
+    await flushAsync();
+    expect(cueMock.loadedIds).toEqual([1]);
+  });
+
+  it("stopping the cue deck drops back to Absolute", async () => {
+    app.cueLoad(t(1, { cue_points: trimmed }), trimmed);
+    await flushAsync();
+    app.cueStop();
+    expect(app.cueMode).toBe("absolute");
+    expect(app.cueCrop).toBeNull();
+  });
+
+  it("saveCuePoints adopts the clamped value the backend returns", async () => {
+    // The backend sorted the markers; the UI takes what it is given rather
+    // than reimplementing the rule.
+    const clamped = { ...trimmed, fade_in_ms: 12_000 };
+    api.setCuePoints.mockResolvedValue(clamped);
+    app.tracks = [t(1), t(2)];
+    const stored = await app.saveCuePoints(1, trimmed);
+    expect(stored).toEqual(clamped);
+    expect(app.tracks[0].cue_points).toEqual(clamped);
+    expect(app.tracks[1].cue_points).toBeUndefined();
+  });
+
+  it("saveCuePoints refreshes every queued and cued copy of the track", async () => {
+    const clamped = { ...trimmed };
+    api.setCuePoints.mockResolvedValue(clamped);
+    app.playlist = [trackItem(t(1)), trackItem(t(2))];
+    app.history = [t(1)];
+    app.cueTrack = t(1);
+    await app.saveCuePoints(1, trimmed);
+    expect(
+      app.playlist.filter(isTrackItem).map((i) => i.track.cue_points),
+    ).toEqual([clamped, undefined]);
+    expect(app.history[0].cue_points).toEqual(clamped);
+    expect(app.cueTrack?.cue_points).toEqual(clamped);
+  });
+
+  it("saveCuePoints leaves the on-air track alone — edits apply next airing", async () => {
+    api.setCuePoints.mockResolvedValue(trimmed);
+    app.currentTrack = t(1);
+    await app.saveCuePoints(1, trimmed);
+    expect(app.currentTrack?.cue_points).toBeUndefined();
+  });
+
+  // ----- auditioning from the editor -----
+
+  it("cueing stages a track without playing it", async () => {
+    app.cueLoad(t(1));
+    await flushAsync();
+    expect(cueMock.loadedAutoplay).toEqual([false]);
+  });
+
+  it("an audition loads the draft and plays it", async () => {
+    // What the editor's Audition button does: markers are applied at load
+    // time, so playing them means reloading with autoplay set.
+    app.cueLoad(t(1, { cue_points: trimmed }), trimmed, true);
+    await flushAsync();
+    expect(cueMock.loadedCuePoints).toEqual([trimmed]);
+    expect(cueMock.loadedAutoplay).toEqual([true]);
+    expect(app.cueIsPlaying).toBe(true);
+  });
+
+  it("restoring an empty deck clears whatever the editor left on it", async () => {
+    const before = app.cueSnapshot();
+    app.cueLoad(t(1), trimmed, true);
+    await flushAsync();
+    app.cueRestore(before);
+    expect(app.cueTrack).toBeNull();
+    expect(cueMock.stopCalls).toBe(1);
+  });
+
+  it("restoring an Absolute audition puts the same track back, parked", async () => {
+    app.cueLoad(t(1));
+    await flushAsync();
+    const before = app.cueSnapshot();
+    app.cueLoad(t(2), trimmed, true);
+    await flushAsync();
+    app.cueRestore(before);
+    await flushAsync();
+    expect(app.cueTrack?.id).toBe(1);
+    expect(app.cueMode).toBe("absolute");
+    expect(cueMock.loadedAutoplay.at(-1)).toBe(false);
+  });
+
+  // A Preview restores to the track's markers as they are *now*, so closing
+  /// the editor after a save shows the edit that was just stored.
+  it("restoring a Preview re-reads the track's current markers", async () => {
+    const track = t(1, { cue_points: trimmed });
+    app.cueLoad(track, trimmed);
+    await flushAsync();
+    const before = app.cueSnapshot();
+    const saved = { ...trimmed, cue_out_ms: 20_000 };
+    app.tracks = [{ ...track, cue_points: saved }];
+    app.cueRestore(before);
+    await flushAsync();
+    expect(cueMock.loadedCuePoints.at(-1)).toEqual(saved);
+    expect(app.cueDuration).toBe(10);
+  });
+});
+
+describe("AppState air-time durations", () => {
+  let app: AppState;
+
+  beforeEach(() => {
+    resetApi();
+    ({ app } = makeApp());
+  });
+
+  it("the main deck's optimistic duration is what airs, not the file length", async () => {
+    api.playlistSync.mockResolvedValue({
+      playlist: [],
+      current: t(1, {
+        duration: 100,
+        cue_points: {
+          cue_in_ms: 10_000,
+          fade_in_ms: null,
+          fade_out_ms: null,
+          cue_out_ms: 30_000,
+          next_start_ms: null,
+        },
+      }),
+      displaced: null,
+      autoPlaylistActive: false,
+      autoAdvance: true,
+      awaitingNetwork: false,
+    });
+    await app.loadSession();
+    await flushAsync();
+    expect(app.duration).toBe(20);
   });
 });

@@ -1,5 +1,6 @@
 import type {
   ContentType,
+  CuePoints,
   DeviceInfo,
   DeviceRef,
   LibraryStats,
@@ -11,6 +12,7 @@ import type {
   TuningConfig,
 } from "./types";
 import { isStopMarker, isTrackItem } from "./types";
+import { airDuration, NO_CUE_POINTS, resolveCuePoints } from "./cuePoints";
 import {
   api,
   type PlaylistSnapshot,
@@ -60,6 +62,16 @@ const DEFAULT_TUNING: TuningConfig = {
 };
 
 export type PlaylistTab = "playlist" | "history";
+
+/**
+ * What the cue deck was showing when a surface borrowed it. `previewing` rather
+ * than the marker set itself: the deck's *Preview* means "the track's own
+ * markers", and those may have been saved over in between.
+ */
+export interface CueSnapshot {
+  track: Track | null;
+  previewing: boolean;
+}
 
 export class AppState {
   searchQuery = $state("");
@@ -130,6 +142,9 @@ export class AppState {
   cueWaveform = $state<number[] | null>(null);
   // Cover-art data URL for the current cue-deck track (see `coverArt`).
   cueCoverArt = $state<string | null>(null);
+  // Cue points the cue deck was last loaded with, or `null` for an *Absolute*
+  // audition of the whole file. Drives `cueMode` and the cropped waveform.
+  cueAppliedPoints = $state<CuePoints | null>(null);
 
   // Audio device config
   audioDevices = $state<DeviceInfo[]>([]);
@@ -145,8 +160,11 @@ export class AppState {
   hoverX = $state(0);
   hoverY = $state(0);
 
-  // Track currently being edited via the MetadataEditor overlay.
-  editingTrack = $state<Track | null>(null);
+  // Track whose tags are open in the metadata overlay. "Edit" in this codebase
+  // means metadata and nothing else; playback markers are cue points (#279).
+  editingMetadata = $state<Track | null>(null);
+  // Track whose cue points are open in the cue-point editor.
+  editingCuePoints = $state<Track | null>(null);
 
   backend: DeckTransport;
   cueBackend: DeckBackend;
@@ -443,8 +461,10 @@ export class AppState {
       return;
     }
     // Optimistic until the deck reports the decoded duration, which is the one
-    // that counts on a VBR file with a wrong tag.
-    this.duration = track.duration ?? 0;
+    // that counts on a VBR file with a wrong tag. Air time, not file time: the
+    // deck reports air time too, so the two never disagree about what a
+    // trimmed track's bar means.
+    this.duration = airDuration(track);
     this.loadWaveform(track.id);
     this.loadCoverArt(track.id);
     document.title = `${track.title} - ${track.artist} | ${APP_NAME}`;
@@ -577,20 +597,127 @@ export class AppState {
 
   // ----- Cue deck transport -----
 
-  cueLoadAndPlay(track: Track): void {
+  /**
+   * Put a track on the cue deck, **parked**. Cueing is a staging action: the
+   * operator decides when it makes noise. Loading on play would also restart
+   * the audio on every Absolute/Preview toggle, since switching mode reloads
+   * the deck.
+   *
+   * `cuePoints` picks the mode: `null` is *Absolute* — the whole file, nothing
+   * applied, which is what an operator scrubs to find an in-point. Anything
+   * else is *Preview*, including an unsaved draft from the cue editor, so a
+   * ramp can be heard before it is committed.
+   *
+   * `autoplay` is the one exception to parking, and travels with the load
+   * because the deck parks the sink when the background read lands. The cue
+   * editor's Audition button sets it; nothing else does.
+   */
+  cueLoad(
+    track: Track,
+    cuePoints: CuePoints | null = null,
+    autoplay = false,
+  ): void {
     this.cueError = null;
     this.cueTrack = track;
-    this.cueDuration = track.duration ?? 0;
+    this.cueAppliedPoints = cuePoints;
+    this.cueDuration = cuePoints
+      ? airDuration({ ...track, cue_points: cuePoints })
+      : (track.duration ?? 0);
     this.cueCurrentTime = 0;
     this.loadCueWaveform(track.id);
     this.loadCueCoverArt(track.id);
-    void this.cueBackend
-      .load(track.id)
-      .then(() => this.cueBackend.play())
-      .catch((err) => {
-        logger.error("Cue load/play failed:", err);
-        this.cueError = err instanceof Error ? err.message : String(err);
-      });
+    void this.cueBackend.load(track.id, cuePoints, autoplay).catch((err) => {
+      logger.error("Cue load failed:", err);
+      this.cueError = err instanceof Error ? err.message : String(err);
+    });
+  }
+
+  /** Which audition mode the cue deck is in. */
+  get cueMode(): "absolute" | "preview" {
+    return this.cueAppliedPoints ? "preview" : "absolute";
+  }
+
+  /**
+   * Switch audition mode, which reloads the deck: the markers are applied by
+   * the player at load time, so there is no way to toggle them on a running
+   * source. The reload parks at the top — an operator comparing the two modes
+   * should not be made to duck a burst of audio on each toggle.
+   */
+  setCueMode(mode: "absolute" | "preview"): void {
+    const track = this.cueTrack;
+    if (!track || this.cueMode === mode) return;
+    this.cueLoad(
+      track,
+      mode === "preview" ? (track.cue_points ?? NO_CUE_POINTS) : null,
+    );
+  }
+
+  /**
+   * What the cue deck is showing right now, so a surface that borrows the deck
+   * can hand it back. The cue editor takes one when it opens and restores it on
+   * every exit, which is what keeps an unsaved draft from being left armed
+   * behind a closed dialog.
+   */
+  cueSnapshot(): CueSnapshot {
+    return { track: this.cueTrack, previewing: this.cueAppliedPoints !== null };
+  }
+
+  /**
+   * Put the cue deck back the way `cueSnapshot` found it, parked. A *Preview*
+   * is re-resolved against the track's current markers rather than the ones
+   * captured: after a save, "what it was showing" means the edit just stored.
+   */
+  cueRestore(snapshot: CueSnapshot): void {
+    const track = snapshot.track;
+    if (!track) {
+      if (this.cueTrack) this.cueStop();
+      return;
+    }
+    const fresh = this.tracks.find((t) => t.id === track.id) ?? track;
+    this.cueLoad(
+      fresh,
+      snapshot.previewing ? (fresh.cue_points ?? NO_CUE_POINTS) : null,
+    );
+  }
+
+  /**
+   * The sub-range of the file the cue deck is showing, as fractions — the whole
+   * file in *Absolute* mode, the aired region in *Preview*. `null` when there
+   * is nothing to crop against.
+   */
+  get cueCrop(): { from: number; to: number } | null {
+    const track = this.cueTrack;
+    if (!track || !this.cueAppliedPoints || !track.duration) return null;
+    const cue = resolveCuePoints(this.cueAppliedPoints, track.duration);
+    return {
+      from: cue.cueIn / track.duration,
+      to: cue.cueOut / track.duration,
+    };
+  }
+
+  /**
+   * Persist a track's cue points and adopt the clamped value the backend
+   * returns — the one rule lives there, so whatever comes back is the truth.
+   * Every copy of the track the UI holds is refreshed, since durations
+   * everywhere are derived from these markers.
+   */
+  async saveCuePoints(id: number, points: CuePoints): Promise<CuePoints> {
+    const stored = await api.setCuePoints(id, points);
+    const apply = (t: Track | null): Track | null =>
+      t && t.id === id ? { ...t, cue_points: stored } : t;
+    this.tracks = this.tracks.map((t) => apply(t) as Track);
+    this.history = this.history.map((t) => apply(t) as Track);
+    this.playlist = this.playlist.map((i) =>
+      isTrackItem(i) && i.track.id === id
+        ? { ...i, track: { ...i.track, cue_points: stored } }
+        : i,
+    );
+    // Not `currentTrack`: a saved radio edit applies from the track's next
+    // airing, and rewriting it here would make the on-air deck's bar disagree
+    // with the audio still coming out of it.
+    this.cueTrack = apply(this.cueTrack);
+    this.editingCuePoints = apply(this.editingCuePoints);
+    return stored;
   }
 
   cueTogglePlay(): void {
@@ -612,6 +739,7 @@ export class AppState {
     this.cueDuration = 0;
     this.cueWaveform = null;
     this.cueCoverArt = null;
+    this.cueAppliedPoints = null;
   }
 
   cueSeekToPct(pct: number): void {
