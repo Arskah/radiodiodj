@@ -109,6 +109,12 @@
     menuRow = null;
   }
 
+  const revealLabel = navigator.userAgent.includes("Mac")
+    ? "Show in Finder"
+    : navigator.userAgent.includes("Windows")
+      ? "Show in Explorer"
+      : "Show in file manager";
+
   // Play-now sits last, behind a divider: #354 took it off the row because a
   // stray click must never reach air, so it is never the item under the cursor
   // when the menu opens.
@@ -120,6 +126,11 @@
         label: "Add to playlist",
         icon: "add",
         onselect: () => app.addToPlaylist(track),
+      },
+      {
+        label: "Add as next",
+        icon: "playlist_play",
+        onselect: () => app.addNextToPlaylist(track),
       },
     ];
     if (app.cueDevice !== null) {
@@ -138,6 +149,12 @@
       label: "Cue points…",
       icon: "line_start_diamond",
       onselect: () => (app.editingCuePoints = track),
+    });
+    items.push({
+      label: revealLabel,
+      icon: "folder_open",
+      onselect: () => app.revealTrack(track),
+      separated: true,
     });
     items.push({
       label: "Play now (on air)",

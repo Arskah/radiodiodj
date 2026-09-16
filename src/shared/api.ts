@@ -132,6 +132,10 @@ export const api = {
       callback(e.payload),
     );
   },
+  /** Show the track's file in Finder / Explorer / the file manager. */
+  revealTrack(id: number): Promise<void> {
+    return invoke<void>("reveal_track", { id });
+  },
   playlistAdd(id: number): Promise<void> {
     return invoke<void>("playlist_add", { id });
   },

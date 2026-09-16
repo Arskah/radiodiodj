@@ -13,6 +13,7 @@ const { api } = vi.hoisted(() => {
     loadSession: vi.fn(),
     saveSession: vi.fn(),
     trackPlayed: vi.fn(),
+    revealTrack: vi.fn(),
     mainDeckIsPlaying: vi.fn(),
     playlistSync: vi.fn(),
     onPlaylistState: vi.fn(),
@@ -341,6 +342,20 @@ describe("AppState playlist mutations", () => {
   it("addToPlaylist forwards the track id, not the track", () => {
     app.addToPlaylist(t(1));
     expect(api.playlistAdd).toHaveBeenCalledWith(1);
+  });
+
+  it("addNextToPlaylist queues the track ahead of everything queued", () => {
+    app.addToPlaylist(t(1));
+    app.addToPlaylist(t(2));
+    app.addNextToPlaylist(t(3));
+    expect(app.playlist.map(pid)).toEqual([3, 1, 2]);
+    expect(api.playlistAddFront).toHaveBeenCalledWith(3);
+  });
+
+  it("revealTrack forwards the track id", () => {
+    api.revealTrack.mockResolvedValue(undefined);
+    app.revealTrack(t(7));
+    expect(api.revealTrack).toHaveBeenCalledWith(7);
   });
 
   it("removeFromPlaylist splices the entry without touching the track on air", () => {

@@ -382,6 +382,17 @@ export class AppState {
     this.send(api.playlistAdd(track.id));
   }
 
+  /** Queue a track as next-up, ahead of everything already queued. */
+  addNextToPlaylist(track: Track): void {
+    this.send(api.playlistAddFront(track.id));
+  }
+
+  revealTrack(track: Track): void {
+    void api.revealTrack(track.id).catch((err) => {
+      logger.error("Reveal track failed:", err);
+    });
+  }
+
   addStopMarker(): void {
     this.send(api.playlistAddStopMarker());
   }
