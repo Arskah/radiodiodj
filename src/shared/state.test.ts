@@ -18,6 +18,7 @@ const { api } = vi.hoisted(() => {
     onPlaylistState: vi.fn(),
     playlistAdd: vi.fn(),
     playlistAddFront: vi.fn(),
+    playlistSetItemCuePoints: vi.fn(),
     playlistAddStopMarker: vi.fn(),
     playlistAddFiller: vi.fn(),
     playlistRemove: vi.fn(),
@@ -115,7 +116,13 @@ vi.mock("../features/deck/nativeBackend", () => ({
 
 import { AppState, formatTime, type Track } from "./state.svelte";
 import type { ScanStatus } from "./api";
-import { isTrackItem, stopMarker, trackItem, type PlaylistItem } from "./types";
+import {
+  isTrackItem,
+  stopMarker,
+  trackItem,
+  type CuePoints,
+  type PlaylistItem,
+} from "./types";
 
 const pid = (i: PlaylistItem): number | "STOP" =>
   isTrackItem(i) ? i.track.id : "STOP";
@@ -228,8 +235,13 @@ function wirePlaylist(playlist: MockPlaylistBackend): void {
   api.playlistAdd.mockImplementation((id: number) =>
     ok(() => playlist.add(known(id))),
   );
-  api.playlistAddFront.mockImplementation((id: number) =>
-    ok(() => playlist.addFront(known(id))),
+  api.playlistAddFront.mockImplementation(
+    (id: number, cuePoints: CuePoints | null = null) =>
+      ok(() => playlist.addFront(known(id), cuePoints)),
+  );
+  api.playlistSetItemCuePoints.mockImplementation(
+    (index: number, cuePoints: CuePoints | null) =>
+      ok(() => playlist.setItemCuePoints(index, cuePoints)),
   );
   api.playlistAddStopMarker.mockImplementation(() =>
     ok(() => playlist.addStopMarker()),
@@ -1455,9 +1467,9 @@ describe("AppState session persistence (stop markers)", () => {
     vi.runAllTimers();
     const arg = api.saveSession.mock.calls[0][0];
     expect(arg.playlistItems).toEqual([
-      { kind: "track", id: 1 },
+      { kind: "track", id: 1, cue_override: null },
       { kind: "stop" },
-      { kind: "track", id: 2 },
+      { kind: "track", id: 2, cue_override: null },
     ]);
     expect(arg.playlistIds).toEqual([1, 2]);
   });
@@ -1802,5 +1814,135 @@ describe("AppState air-time durations", () => {
     await app.loadSession();
     await flushAsync();
     expect(app.duration).toBe(20);
+  });
+});
+
+describe("AppState item cue overrides", () => {
+  let app: AppState;
+  let playlist: MockPlaylistBackend;
+
+  /** A radio edit that trims a 100 s track to 20 s. */
+  const radioEdit: CuePoints = {
+    cue_in_ms: 10_000,
+    fade_in_ms: null,
+    fade_out_ms: null,
+    cue_out_ms: 30_000,
+    next_start_ms: null,
+  };
+
+  /** An audition that trims the same track to 5 s instead. */
+  const audition: CuePoints = {
+    cue_in_ms: 0,
+    fade_in_ms: null,
+    fade_out_ms: null,
+    cue_out_ms: 5_000,
+    next_start_ms: null,
+  };
+
+  const overrideAt = (index: number): CuePoints | null | undefined => {
+    const item = app.playlist[index];
+    return isTrackItem(item) ? item.cue_override : null;
+  };
+
+  beforeEach(() => {
+    resetApi();
+    ({ app, playlist } = makeApp());
+  });
+
+  it("promotes an audition that differs from the radio edit as an override", async () => {
+    app.cueLoad(t(1, { cue_points: radioEdit }), audition);
+    await flushAsync();
+    expect(app.cuePromoteCarriesOverride).toBe(true);
+    app.promoteCueToMain();
+    expect(overrideAt(0)).toEqual(audition);
+  });
+
+  // Freezing an item to markers it would have inherited anyway would stop a
+  /// later correction to the track from reaching the queued airing.
+  it("promotes an audition matching the radio edit without an override", async () => {
+    app.cueLoad(t(1, { cue_points: radioEdit }), radioEdit);
+    await flushAsync();
+    expect(app.cuePromoteCarriesOverride).toBe(false);
+    app.promoteCueToMain();
+    expect(overrideAt(0)).toBeNull();
+  });
+
+  it("promotes from Absolute without an override", async () => {
+    app.cueLoad(t(1, { cue_points: radioEdit }));
+    await flushAsync();
+    app.promoteCueToMain();
+    expect(overrideAt(0)).toBeNull();
+  });
+
+  it("Use once queues the draft without touching the track", async () => {
+    const track = t(1, { cue_points: radioEdit });
+    app.queueCueDraft(track, audition);
+    await flushAsync();
+    expect(overrideAt(0)).toEqual(audition);
+    expect(app.playlist.length).toBe(1);
+  });
+
+  // Freezing an item to markers it would have inherited anyway would stop a
+  // later correction to the track from reaching the queued airing.
+  it("Use once carries nothing when the draft matches the radio edit", async () => {
+    const track = t(1, { cue_points: radioEdit });
+    app.queueCueDraft(track, radioEdit);
+    await flushAsync();
+    expect(overrideAt(0)).toBeNull();
+  });
+
+  it("an override drives the row's duration and the optimistic clock", async () => {
+    await app.loadSession();
+    app.cueLoad(t(1, { cue_points: radioEdit }), audition);
+    await flushAsync();
+    app.promoteCueToMain();
+    app.playIndex(0);
+    await flushAsync();
+    // 5 s of audition, not the radio edit's 20 or the file's 100.
+    expect(app.currentCueOverride).toEqual(audition);
+    expect(app.duration).toBe(5);
+  });
+
+  it("setItemCuePoints hands an item back to the track's radio edit", async () => {
+    app.cueLoad(t(1, { cue_points: radioEdit }), audition);
+    await flushAsync();
+    app.promoteCueToMain();
+    app.setItemCuePoints(0, null);
+    expect(overrideAt(0)).toBeNull();
+  });
+
+  it("setItemCuePoints ignores an index the playlist does not have", () => {
+    app.addToPlaylist(t(1));
+    app.setItemCuePoints(7, audition);
+    expect(api.playlistSetItemCuePoints).not.toHaveBeenCalled();
+  });
+
+  it("persists both the queued overrides and the one on air", async () => {
+    vi.useFakeTimers();
+    try {
+      await app.loadSession();
+      app.cueLoad(t(1, { cue_points: radioEdit }), audition);
+      await flushAsync();
+      // Two airings of the same audition: one goes on air, one stays queued.
+      app.promoteCueToMain();
+      app.promoteCueToMain();
+      app.playIndex(0);
+      await flushAsync();
+      vi.runAllTimers();
+      const calls = api.saveSession.mock.calls;
+      const arg = calls[calls.length - 1][0];
+      expect(arg.currentCueOverride).toEqual(audition);
+      expect(arg.playlistItems).toEqual([
+        { kind: "track", id: 1, cue_override: audition },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a queued override survives a restore", async () => {
+    playlist.restore({ playlist: [trackItem(t(1), audition)] });
+    await app.loadSession();
+    expect(overrideAt(0)).toEqual(audition);
   });
 });

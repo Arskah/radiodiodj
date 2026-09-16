@@ -4,10 +4,19 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::audio::cue_points::CuePoints;
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum SessionPlaylistItem {
-    Track { id: i64 },
+    Track {
+        id: i64,
+        /// The item's cue-point override, so a custom airing survives a
+        /// restart. Additive and defaulted: a session file written before
+        /// overrides existed loads with none, as does a stop marker.
+        #[serde(default)]
+        cue_override: Option<CuePoints>,
+    },
     Stop,
 }
 
@@ -24,6 +33,9 @@ pub struct SessionState {
     pub current_track_id: Option<i64>,
     #[serde(default)]
     pub current_time: f64,
+    /// The override the restored track was airing under, if any.
+    #[serde(default)]
+    pub current_cue_override: Option<CuePoints>,
     #[serde(default)]
     pub auto_playlist_active: bool,
     #[serde(default = "default_auto_advance")]
@@ -50,6 +62,7 @@ impl Default for SessionState {
             history_ids: vec![],
             current_track_id: None,
             current_time: 0.0,
+            current_cue_override: None,
             auto_playlist_active: false,
             auto_advance: true,
             volume: 1.0,
@@ -145,9 +158,15 @@ mod tests {
         let s1 = Session::open(dir.path());
         let state = SessionState {
             playlist_items: vec![
-                SessionPlaylistItem::Track { id: 7 },
+                SessionPlaylistItem::Track {
+                    id: 7,
+                    cue_override: None,
+                },
                 SessionPlaylistItem::Stop,
-                SessionPlaylistItem::Track { id: 9 },
+                SessionPlaylistItem::Track {
+                    id: 9,
+                    cue_override: None,
+                },
             ],
             ..Default::default()
         };
@@ -158,9 +177,15 @@ mod tests {
         assert_eq!(
             loaded.playlist_items,
             vec![
-                SessionPlaylistItem::Track { id: 7 },
+                SessionPlaylistItem::Track {
+                    id: 7,
+                    cue_override: None,
+                },
                 SessionPlaylistItem::Stop,
-                SessionPlaylistItem::Track { id: 9 },
+                SessionPlaylistItem::Track {
+                    id: 9,
+                    cue_override: None,
+                },
             ]
         );
     }
@@ -183,10 +208,45 @@ mod tests {
         assert_eq!(
             s.playlist_items,
             vec![
-                SessionPlaylistItem::Track { id: 7 },
+                SessionPlaylistItem::Track {
+                    id: 7,
+                    cue_override: None,
+                },
                 SessionPlaylistItem::Stop
             ]
         );
+    }
+
+    /// A custom airing has to survive a restart: both the override on a queued
+    /// item and the one the track on air is playing under.
+    #[test]
+    fn cue_overrides_round_trip() {
+        let dir = tempdir().unwrap();
+        let s1 = Session::open(dir.path());
+        let override_points = CuePoints {
+            cue_in_ms: Some(2_000),
+            ..Default::default()
+        };
+        let state = SessionState {
+            playlist_items: vec![SessionPlaylistItem::Track {
+                id: 7,
+                cue_override: Some(override_points),
+            }],
+            current_track_id: Some(9),
+            current_cue_override: Some(override_points),
+            ..Default::default()
+        };
+        s1.save(state).unwrap();
+
+        let loaded = Session::open(dir.path()).load();
+        assert_eq!(
+            loaded.playlist_items,
+            vec![SessionPlaylistItem::Track {
+                id: 7,
+                cue_override: Some(override_points),
+            }]
+        );
+        assert_eq!(loaded.current_cue_override, Some(override_points));
     }
 
     #[test]

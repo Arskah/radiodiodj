@@ -1,7 +1,7 @@
 <script lang="ts">
   import { app, formatTime, type Track } from "../../shared/state.svelte";
   import { isStopMarker, type PlaylistItem } from "../../shared/types";
-  import { airDuration, isTrimmed } from "../../shared/cuePoints";
+  import { airDuration, airedTrack, isTrimmed } from "../../shared/cuePoints";
 
   let dragFromIndex = $state(-1);
   let dropTarget = $state(-1);
@@ -194,6 +194,7 @@
               </button>
             </div>
           {:else}
+            {@const aired = airedTrack(item.track, item.cue_override)}
             <div
               class="playlist-row"
               class:dragging={i === dragFromIndex}
@@ -213,7 +214,7 @@
               <div
                 class="pl-hover-area"
                 role="presentation"
-                onmouseenter={(e) => onEnter(item.track, e)}
+                onmouseenter={(e) => onEnter(aired, e)}
                 onmouseleave={() => app.clearHover()}
               >
                 <span class="pl-drag"
@@ -229,10 +230,25 @@
                   {#if i === 0}
                     <span class="pl-status next-up">Next Up</span>
                   {/if}
-                  <span
-                    class="pl-duration"
-                    class:trimmed={isTrimmed(item.track)}
-                    >{formatTime(airDuration(item.track))}</span
+                  {#if item.cue_override}
+                    <!-- This airing plays under cue points of its own, not the
+                         track's. Clicking hands it back to the radio edit. -->
+                    <button
+                      class="pl-override"
+                      title="Custom cue points for this airing — click to play the track's own instead"
+                      aria-label="Clear this airing's cue points"
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        app.setItemCuePoints(i, null);
+                      }}
+                    >
+                      <span class="material-symbols-outlined"
+                        >line_start_diamond</span
+                      >
+                    </button>
+                  {/if}
+                  <span class="pl-duration" class:trimmed={isTrimmed(aired)}
+                    >{formatTime(airDuration(aired))}</span
                   >
                 </div>
               </div>

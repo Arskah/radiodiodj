@@ -18,7 +18,8 @@ import type {
 } from "./types";
 
 export type PersistedPlaylistItem =
-  { kind: "track"; id: number } | { kind: "stop" };
+  | { kind: "track"; id: number; cue_override: CuePoints | null }
+  | { kind: "stop" };
 
 export interface SessionPersistState {
   playlistIds: number[];
@@ -26,6 +27,8 @@ export interface SessionPersistState {
   historyIds: number[];
   currentTrackId: number | null;
   currentTime: number;
+  /** The override the track on air is playing under, if any. */
+  currentCueOverride: CuePoints | null;
   autoPlaylistActive: boolean;
   autoAdvance: boolean;
   volume: number;
@@ -49,6 +52,8 @@ export interface PlaylistSnapshot {
   displaced: Track | null;
   autoPlaylistActive: boolean;
   autoAdvance: boolean;
+  /** The override the track on air came on air under, if it came off an item that carried one. */
+  currentOverride: CuePoints | null;
   /** Playback is blocked waiting for the media share. Drives the reconnecting banner. */
   awaitingNetwork: boolean;
 }
@@ -127,9 +132,22 @@ export const api = {
   playlistAdd(id: number): Promise<void> {
     return invoke<void>("playlist_add", { id });
   },
-  /** Insert at the head as next-up — cue promotion. */
-  playlistAddFront(id: number): Promise<void> {
-    return invoke<void>("playlist_add_front", { id });
+  /**
+   * Insert at the head as next-up — cue promotion. `cuePoints` overrides the
+   * track's radio edit for that one airing; `null` references the track.
+   */
+  playlistAddFront(
+    id: number,
+    cuePoints: CuePoints | null = null,
+  ): Promise<void> {
+    return invoke<void>("playlist_add_front", { id, cuePoints });
+  },
+  /** Set (or, with `null`, clear) one queued item's cue-point override. */
+  playlistSetItemCuePoints(
+    index: number,
+    cuePoints: CuePoints | null,
+  ): Promise<void> {
+    return invoke<void>("playlist_set_item_cue_points", { index, cuePoints });
   },
   playlistAddStopMarker(): Promise<void> {
     return invoke<void>("playlist_add_stop_marker");

@@ -139,9 +139,24 @@ export function airDuration(track: Track): number {
 }
 
 /**
+ * The track as one airing will actually play it: under `override` when the
+ * item carries one, under the track's own radio edit otherwise. Everything
+ * that reads cue points off a playlist item — its duration, its trimmed tint —
+ * goes through this rather than the raw track.
+ */
+export function airedTrack(
+  track: Track,
+  override: CuePoints | undefined | null,
+): Track {
+  return override ? { ...track, cue_points: override } : track;
+}
+
+/**
  * True when two marker sets say the same thing, an absent set counting as all
- * `null`. The editor asks it to know whether a draft is dirty, and whether the
- * cue deck is auditioning that draft or something else.
+ * `null`. The editor asks it to know whether a draft is dirty and whether the
+ * cue deck is auditioning that draft; promotion asks it to know whether an
+ * override is worth carrying at all, since one identical to the radio edit is
+ * better left off — a later correction then still reaches the queued airing.
  */
 export function cuePointsEqual(
   a: CuePoints | undefined | null,

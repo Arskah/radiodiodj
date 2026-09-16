@@ -19,6 +19,7 @@ use super::generate;
 use super::model::{PlaylistItem, Snapshot};
 use crate::audio::bus::ProgramBus;
 use crate::audio::cache::Cache;
+use crate::audio::cue_points::CuePoints;
 use crate::audio::player::Cmd;
 use crate::broadcast::BroadcastService;
 use crate::library::db::{Db, Track};
@@ -135,11 +136,19 @@ impl PlaylistService {
         let current = state
             .current_track_id
             .and_then(|id| self.inner.lookup(id).ok().flatten());
+        let current_override = state.current_cue_override;
         let seconds = state.current_time;
         let auto_playlist = state.auto_playlist_active;
         let auto_advance = state.auto_advance;
         Inner::apply(&self.inner, move |p, _| {
-            p.hydrate(items, current, seconds, auto_playlist, auto_advance)
+            p.hydrate(
+                items,
+                current,
+                current_override,
+                seconds,
+                auto_playlist,
+                auto_advance,
+            )
         });
     }
 
@@ -147,8 +156,22 @@ impl PlaylistService {
         self.with_track(id, |p, _, track| p.add(track))
     }
 
-    pub fn add_front(&self, id: i64) -> Result<(), String> {
-        self.with_track(id, |p, _, track| p.add_front(track))
+    /// Queue a track as next-up, optionally under an override the operator
+    /// auditioned on the cue deck.
+    pub fn add_front(&self, id: i64, cue_override: Option<CuePoints>) -> Result<(), String> {
+        self.with_track(id, move |p, _, track| p.add_front(track, cue_override))
+    }
+
+    /// A radio edit was stored for `id`; refresh the queued copies of it so the
+    /// operator's next snapshot shows what was just saved.
+    pub fn on_cue_points_saved(&self, id: i64, points: CuePoints) {
+        Inner::apply(&self.inner, move |p, _| p.on_cue_points_saved(id, points));
+    }
+
+    pub fn set_item_cue_points(&self, index: usize, cue_override: Option<CuePoints>) {
+        Inner::apply(&self.inner, move |p, _| {
+            p.set_item_cue_points(index, cue_override)
+        });
     }
 
     pub fn add_stop(&self) {
@@ -289,16 +312,20 @@ impl Inner {
 
     fn run(inner: &Arc<Inner>, effect: &Effect) {
         match effect {
-            Effect::Play(id) => {
-                if inner.load_deck(*id, 0.0, true) {
+            Effect::Play { id, cue_override } => {
+                if inner.load_deck(*id, *cue_override, 0.0, true) {
                     // Redundant for the audio — the load plays itself once the
                     // bytes are decoded — but it reports "playing" immediately
                     // instead of after a read that may be crossing a network.
                     inner.bus.send_main(Cmd::Play);
                 }
             }
-            Effect::Resume { id, seconds } => {
-                inner.load_deck(*id, *seconds, false);
+            Effect::Resume {
+                id,
+                seconds,
+                cue_override,
+            } => {
+                inner.load_deck(*id, *cue_override, *seconds, false);
             }
             Effect::Stop => inner.bus.send_main(Cmd::Stop),
             Effect::TrackPlayed(id) => {
@@ -322,35 +349,46 @@ impl Inner {
     /// a Seek sent straight after a Load arrives before there is anything to
     /// seek in, and a Play would override a restore that is meant to stay
     /// parked.
-    fn load_deck(&self, id: i64, start_at: f64, autoplay: bool) -> bool {
-        match self.db.get_track_load_info(id) {
-            Ok(Some(track)) => {
-                let path = PathBuf::from(track.path.clone());
-                let duration = track.duration;
-                // The track's radio edit. Item overrides resolve here too, on
-                // the thread that starts the load — the worker is handed the
-                // markers to apply and never consults the library itself.
-                let cue_points = track.cue_points;
-                self.broadcast.set_pending_track(track.into());
-                self.bus.send_main(Cmd::Load {
-                    id,
-                    path,
-                    duration: (duration > 0.0).then_some(duration),
-                    cue_points,
-                    start_at,
-                    autoplay,
-                });
-                true
-            }
+    fn load_deck(
+        &self,
+        id: i64,
+        cue_override: Option<CuePoints>,
+        start_at: f64,
+        autoplay: bool,
+    ) -> bool {
+        let mut info = match self.db.get_track_load_info(id) {
+            Ok(Some(info)) => info,
             Ok(None) => {
                 log::error!("playlist: track {} is no longer in the library", id);
-                false
+                return false;
             }
             Err(e) => {
                 log::error!("playlist: track {} lookup failed: {}", id, e);
-                false
+                return false;
             }
+        };
+        // The item's override if it carries one, the track's radio edit
+        // otherwise. Resolution happens here, on the thread that starts the
+        // load — the worker is handed the markers to apply and never consults
+        // the library itself. Writing the effective points back onto the load
+        // info is also what keeps the broadcast's `durationSec` reporting the
+        // airing rather than the radio edit.
+        if let Some(points) = cue_override {
+            info.cue_points = points;
         }
+        let path = PathBuf::from(info.path.clone());
+        let duration = info.duration;
+        let cue_points = info.cue_points;
+        self.broadcast.set_pending_track(info.into());
+        self.bus.send_main(Cmd::Load {
+            id,
+            path,
+            duration: (duration > 0.0).then_some(duration),
+            cue_points,
+            start_at,
+            autoplay,
+        });
+        true
     }
 
     fn set_window(&self, ids: Vec<i64>) {

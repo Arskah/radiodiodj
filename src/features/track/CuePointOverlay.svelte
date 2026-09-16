@@ -182,6 +182,16 @@
     }
   }
 
+  /**
+   * Queue this draft as a single airing and leave the track untouched — the
+   * other way out of the dialog, and the one that produces an item override.
+   */
+  function useOnce(): void {
+    if (!track) return;
+    app.queueCueDraft(track, draft);
+    leave();
+  }
+
   /** Hand the cue deck back and close. Every exit goes through here. */
   function leave(): void {
     if (deckBefore) app.cueRestore(deckBefore);
@@ -274,7 +284,7 @@
           {#if dirty}
             <span class="cue-dirty"
               >Unsaved. These changes are discarded unless you save them to the
-              track.</span
+              track or use them for one airing.</span
             >
           {:else}
             Saving applies these to every airing, from this track's next one.
@@ -364,6 +374,14 @@
             >Keep editing</button
           >
         {:else}
+          <button
+            id="btn-cue-points-use-once"
+            class="btn"
+            onclick={useOnce}
+            disabled={saving}
+            title="Queue this track next-up with these cue points, leaving the track itself untouched"
+            >Use once</button
+          >
           <button
             id="btn-cue-points-cancel"
             class="btn"

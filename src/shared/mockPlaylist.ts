@@ -1,4 +1,4 @@
-import type { PlaylistItem, Track } from "./types";
+import type { CuePoints, PlaylistItem, Track } from "./types";
 import { isStopMarker, stopMarker, trackItem } from "./types";
 import type { PlaylistSnapshot } from "./api";
 
@@ -16,6 +16,7 @@ import type { PlaylistSnapshot } from "./api";
 export class MockPlaylistBackend {
   playlist: PlaylistItem[] = [];
   current: Track | null = null;
+  currentOverride: CuePoints | null = null;
   autoPlaylistActive = false;
   autoAdvance = true;
   awaitingNetwork = false;
@@ -36,6 +37,7 @@ export class MockPlaylistBackend {
       displaced,
       autoPlaylistActive: this.autoPlaylistActive,
       autoAdvance: this.autoAdvance,
+      currentOverride: this.currentOverride,
       awaitingNetwork: this.awaitingNetwork,
     };
   }
@@ -50,8 +52,16 @@ export class MockPlaylistBackend {
     this.emit();
   }
 
-  addFront(track: Track): void {
-    this.playlist.unshift(trackItem(track));
+  addFront(track: Track, cueOverride: CuePoints | null = null): void {
+    this.playlist.unshift(trackItem(track, cueOverride));
+    this.emit();
+  }
+
+  setItemCuePoints(index: number, cueOverride: CuePoints | null): void {
+    const item = this.playlist[index];
+    if (item && !isStopMarker(item)) {
+      this.playlist[index] = trackItem(item.track, cueOverride);
+    }
     this.emit();
   }
 
@@ -87,7 +97,7 @@ export class MockPlaylistBackend {
       this.stop();
       return;
     }
-    this.playTrack(item.track);
+    this.playTrack(item.track, item.cue_override ?? null);
   }
 
   playNow(track: Track): void {
@@ -104,14 +114,20 @@ export class MockPlaylistBackend {
 
   /** Steps back without displacing: the caller is walking its own history. */
   prev(track: Track): void {
-    if (this.current) this.playlist.unshift(trackItem(this.current));
+    if (this.current) {
+      this.playlist.unshift(trackItem(this.current, this.currentOverride));
+    }
     this.current = track;
+    // History stores tracks, not items, so a custom airing replays under the
+    // radio edit — the same rule the engine follows.
+    this.currentOverride = null;
     this.emit();
   }
 
   stop(): void {
     const displaced = this.current;
     this.current = null;
+    this.currentOverride = null;
     this.autoPlaylistActive = false;
     this.emit(displaced);
   }
@@ -136,9 +152,10 @@ export class MockPlaylistBackend {
     this.emit();
   }
 
-  private playTrack(track: Track): void {
+  private playTrack(track: Track, cueOverride: CuePoints | null = null): void {
     const displaced = this.current;
     this.current = track;
+    this.currentOverride = cueOverride;
     this.emit(displaced);
   }
 
