@@ -84,6 +84,14 @@ pub struct HealthRow {
     pub fingerprint: Option<String>,
 }
 
+/// A present track the analysis pass could not decode.
+pub struct UnreadableRow {
+    pub row: HealthRow,
+    pub error: String,
+    /// Unix ms.
+    pub failed_at: i64,
+}
+
 /// The operator's acknowledgement of one health finding. `value` is what the
 /// finding looked like when it was dismissed.
 #[derive(Clone, Debug, PartialEq)]
@@ -511,12 +519,14 @@ impl Db {
     }
 
     /// Every present track still missing a waveform or a fingerprint, ordered
-    /// by id. Drives the background analysis worker (backfill included).
+    /// by id. Drives the background analysis worker (backfill included). A
+    /// track whose analysis failed is left out until its file changes.
     pub fn tracks_needing_analysis(&self) -> Result<Vec<AnalysisJob>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id, path, waveform IS NULL, fingerprint IS NULL FROM tracks \
-             WHERE missing_since IS NULL AND (waveform IS NULL OR fingerprint IS NULL) \
+             WHERE missing_since IS NULL AND analysis_failed_at IS NULL \
+               AND (waveform IS NULL OR fingerprint IS NULL) \
              ORDER BY id",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -537,6 +547,44 @@ impl Db {
             params![fingerprint, id],
         )?;
         Ok(())
+    }
+
+    /// Record that the file could not be decoded. The analysis pass skips the
+    /// track until a scan sees the file change.
+    pub fn set_analysis_failed(&self, id: i64, error: &str, at_ms: i64) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE tracks SET analysis_error = ?, analysis_failed_at = ? WHERE id = ?",
+            params![error, at_ms, id],
+        )?;
+        Ok(())
+    }
+
+    /// Present tracks the analysis pass could not decode, oldest failure first.
+    pub fn unreadable_tracks(&self) -> Result<Vec<UnreadableRow>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {TRACK_COLUMNS}, path, content_type, fingerprint, \
+                    analysis_error, analysis_failed_at \
+             FROM tracks \
+             WHERE missing_since IS NULL AND analysis_failed_at IS NOT NULL \
+             ORDER BY analysis_failed_at, id"
+        ))?;
+        let rows = stmt.query_map([], |r| {
+            Ok(UnreadableRow {
+                row: HealthRow {
+                    track: row_to_track(r)?,
+                    path: r.get("path")?,
+                    content_type: r.get("content_type")?,
+                    fingerprint: r.get("fingerprint")?,
+                },
+                error: r
+                    .get::<_, Option<String>>("analysis_error")?
+                    .unwrap_or_default(),
+                failed_at: r.get("analysis_failed_at")?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
 
     /// Single-track upsert, for tests; the scanner goes through
@@ -615,7 +663,8 @@ impl Db {
             )?;
             let mut reattach = tx.prepare(
                 "UPDATE tracks SET path = ?1, content_type = ?2, mtime = ?3, \
-                        missing_since = NULL \
+                        missing_since = NULL, \
+                        analysis_error = NULL, analysis_failed_at = NULL \
                  WHERE id = ?4",
             )?;
             let mut present_twin = tx.prepare(
@@ -723,11 +772,14 @@ impl Db {
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
 
-    /// Present rows the analysis pass has not fingerprinted yet.
+    /// Present rows still waiting for the analysis pass to fingerprint them.
+    /// A row whose analysis failed is not waiting.
     pub fn unhashed_count(&self) -> Result<i64> {
         let conn = self.conn.lock();
         Ok(conn.query_row(
-            "SELECT COUNT(*) FROM tracks WHERE missing_since IS NULL AND fingerprint IS NULL",
+            "SELECT COUNT(*) FROM tracks \
+             WHERE missing_since IS NULL AND fingerprint IS NULL \
+               AND analysis_failed_at IS NULL",
             [],
             |r| r.get(0),
         )?)
@@ -1175,6 +1227,7 @@ const MIGRATION_STEPS: &[M] = &[
     M::up(BASELINE),
     M::up(HEALTH_DISMISSALS),
     M::up(EDITED_FIELDS),
+    M::up(ANALYSIS_FAILURES),
 ];
 const MIGRATIONS: Migrations = Migrations::from_slice(MIGRATION_STEPS);
 
@@ -1269,11 +1322,19 @@ const EDITED_FIELDS: &str = r#"
 ALTER TABLE tracks ADD COLUMN edited_fields INTEGER NOT NULL DEFAULT 0;
 "#;
 
+/// Step 4: why the analysis pass could not decode a file, and when. Cleared
+/// when a scan sees the file change, so the pass tries it again.
+const ANALYSIS_FAILURES: &str = r#"
+ALTER TABLE tracks ADD COLUMN analysis_error TEXT;
+ALTER TABLE tracks ADD COLUMN analysis_failed_at INTEGER;
+"#;
+
 /// Upsert one present track's metadata by path. The operator-work columns are
 /// deliberately absent: the waveform is filled asynchronously by the waveform
 /// worker (`set_waveform`), and cue points and play counts are operator work a
 /// metadata rescan must never clobber. A tag column flagged in
-/// `edited_fields` keeps its value.
+/// `edited_fields` keeps its value. A recorded analysis failure is cleared,
+/// since the upsert only runs for a file that changed.
 const UPSERT_TRACK_SQL: &str = "INSERT INTO tracks \
      (path, content_type, title, artist, album, genre, year, duration, bpm, \
       sample_rate, bitrate, format, mtime, fingerprint) \
@@ -1288,7 +1349,8 @@ const UPSERT_TRACK_SQL: &str = "INSERT INTO tracks \
         duration=excluded.duration, \
         bpm=excluded.bpm, sample_rate=excluded.sample_rate, \
         bitrate=excluded.bitrate, format=excluded.format, mtime=excluded.mtime, \
-        fingerprint=COALESCE(excluded.fingerprint, fingerprint)";
+        fingerprint=COALESCE(excluded.fingerprint, fingerprint), \
+        analysis_error=NULL, analysis_failed_at=NULL";
 
 /// A database this build must not touch.
 #[derive(Debug, PartialEq)]
@@ -1499,6 +1561,15 @@ mod tests {
             seed_dismissal(conn);
             conn.execute_batch("UPDATE tracks SET edited_fields = 1")
                 .unwrap();
+        },
+        |conn| {
+            seed_track(conn);
+            seed_dismissal(conn);
+            conn.execute_batch(
+                "UPDATE tracks SET edited_fields = 1, \
+                        analysis_error = 'bad', analysis_failed_at = 5",
+            )
+            .unwrap();
         },
     ];
 
@@ -2127,6 +2198,112 @@ mod tests {
         assert_eq!(jobs[0].id, a);
         assert!(!jobs[0].needs_waveform);
         assert!(jobs[0].needs_fingerprint);
+    }
+
+    #[test]
+    fn a_failed_analysis_is_not_retried_or_counted_as_waiting() {
+        let db = Db::open_in_memory().unwrap();
+        for path in ["/a.mp3", "/b.mp3"] {
+            db.insert_track(&TrackInsert {
+                path: path.into(),
+                content_type: "music".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        let jobs = db.tracks_needing_analysis().unwrap();
+        let (a, b) = (jobs[0].id, jobs[1].id);
+        assert_eq!(db.unhashed_count().unwrap(), 2);
+
+        db.set_analysis_failed(a, "probe: unsupported feature", 7)
+            .unwrap();
+
+        let jobs = db.tracks_needing_analysis().unwrap();
+        assert_eq!(jobs.iter().map(|j| j.id).collect::<Vec<_>>(), vec![b]);
+        assert_eq!(db.unhashed_count().unwrap(), 1);
+        let unreadable = db.unreadable_tracks().unwrap();
+        assert_eq!(unreadable.len(), 1);
+        assert_eq!(unreadable[0].row.track.id, a);
+        assert_eq!(unreadable[0].row.path, "/a.mp3");
+        assert_eq!(unreadable[0].error, "probe: unsupported feature");
+        assert_eq!(unreadable[0].failed_at, 7);
+    }
+
+    #[test]
+    fn a_changed_file_clears_its_analysis_failure() {
+        let db = Db::open_in_memory().unwrap();
+        let file = TrackInsert {
+            path: "/a.mp3".into(),
+            content_type: "music".into(),
+            mtime: Some(1),
+            ..Default::default()
+        };
+        db.insert_track(&file).unwrap();
+        let id = only_id(&db);
+        db.set_analysis_failed(id, "bad", 7).unwrap();
+
+        db.reconcile(&Reconcile {
+            upserts: vec![TrackInsert {
+                mtime: Some(2),
+                ..file
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert!(db.unreadable_tracks().unwrap().is_empty());
+        assert_eq!(db.tracks_needing_analysis().unwrap()[0].id, id);
+        assert_eq!(db.unhashed_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn a_reattached_file_clears_its_analysis_failure() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&TrackInsert {
+            path: "/a.mp3".into(),
+            content_type: "music".into(),
+            fingerprint: Some("v1:a".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        let id = only_id(&db);
+        db.set_analysis_failed(id, "bad", 7).unwrap();
+
+        db.reconcile(&Reconcile {
+            gone: vec![id],
+            new_files: vec![TrackInsert {
+                path: "/moved/a.mp3".into(),
+                content_type: "music".into(),
+                fingerprint: Some("v1:a".into()),
+                ..Default::default()
+            }],
+            now_ms: 9,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert!(db.unreadable_tracks().unwrap().is_empty());
+        assert_eq!(db.tracks_needing_analysis().unwrap()[0].id, id);
+    }
+
+    #[test]
+    fn a_missing_track_is_not_listed_as_unreadable() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&TrackInsert {
+            path: "/a.mp3".into(),
+            content_type: "music".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let id = only_id(&db);
+        db.set_analysis_failed(id, "bad", 7).unwrap();
+        db.reconcile(&Reconcile {
+            gone: vec![id],
+            now_ms: 9,
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(db.unreadable_tracks().unwrap().is_empty());
     }
 
     #[test]

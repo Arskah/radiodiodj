@@ -13,6 +13,7 @@ const empty: HealthReport = {
   exact: [],
   possible: [],
   unhashed: 0,
+  unreadable: [],
   check: null,
   checkDismissed: false,
   tagWriteFailures: [],

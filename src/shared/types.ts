@@ -139,6 +139,16 @@ export interface DuplicateGroup {
   tracks: DuplicateMember[];
 }
 
+/** A track whose file was read but could not be decoded. */
+export interface UnreadableTrack {
+  track: Track;
+  path: string;
+  contentType: ContentType;
+  error: string;
+  /** Unix ms. */
+  failedAt: number;
+}
+
 /** What a library check found on disk that no scan has applied yet. */
 export interface CheckReport {
   /** Unix ms. */
@@ -157,8 +167,10 @@ export interface HealthReport {
   missingDismissed: boolean;
   exact: DuplicateGroup[];
   possible: DuplicateGroup[];
-  /** Present tracks not fingerprinted yet. */
+  /** Present tracks still waiting to be fingerprinted. */
   unhashed: number;
+  /** Present tracks the analysis pass could not decode. */
+  unreadable: UnreadableTrack[];
   check: CheckReport | null;
   checkDismissed: boolean;
   /** Edits that could not be written into their file. */

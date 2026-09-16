@@ -40,7 +40,8 @@ The library lives in SQLite (`radiodiodj.db`, WAL mode) and is opened by
 - **Operator work is never in the upsert's `SET` list.** Cue points, play
   count, waveform and fingerprint must survive a rescan. `UPSERT_TRACK_SQL`
   touches only tag-derived columns, and it only overwrites the fingerprint with
-  a non-null value.
+  a non-null value. It also clears the recorded analysis failure, since it runs
+  only for a file that changed.
 - **Index only what search needs.** `tracks_au` fires on
   `UPDATE OF title, artist, album, genre`, so writing a waveform or bumping a
   play count does not rewrite the FTS row.

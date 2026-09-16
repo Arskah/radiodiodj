@@ -1,11 +1,12 @@
-# Library health — missing tracks, duplicates and disk changes
+# Library health — missing tracks, duplicates, unreadable files and disk changes
 
 The _Library_ tab of _Settings_ tells the operator when the library needs
-attention, and lets them act on it. It reports three things:
+attention, and lets them act on it. It reports four things:
 
 1. **Disk changes** — files added, changed or removed since the last scan.
-2. **Missing tracks** — tracks whose file a scan could not find, one by one.
-3. **Duplicates** — exact copies, and tracks that look like the same song.
+2. **Unreadable tracks** — files the analysis pass could not decode.
+3. **Missing tracks** — tracks whose file a scan could not find, one by one.
+4. **Duplicates** — exact copies, and tracks that look like the same song.
 
 A count on the Settings button says when any of them needs attention.
 
@@ -39,6 +40,9 @@ place.
 │   ▸ New (12)   ▸ Changed (3)   ▸ Gone (1)                    │
 │   [Check now]                                                │
 │                                                              │
+│ Unreadable tracks (1)                                        │
+│   Title / Artist   …/bad.mp3   fingerprint: probe: …      F  │
+│                                                              │
 │ Missing tracks (5)                                [Dismiss]  │
 │   ☐ Title / Artist   …/old/path.mp3   2 d ago   ◇ ▶12  ≡     │
 │   ☐ ▸ No longer under a library path (812)                   │
@@ -57,7 +61,8 @@ place.
 F Show in folder   E Edit metadata…   C Cue points…
 ```
 
-A section with nothing to report says _No issues_. Disk changes says _Not
+A section with nothing to report says _No issues_. Unreadable tracks and tag
+writes are shown only when there is something to list. Disk changes says _Not
 checked since the last scan_ or _No changes_ instead.
 
 The tab and the Settings button carry the same **attention count**:
@@ -190,6 +195,23 @@ Advancement treats a missing track as **never playable**:
 - Playing a missing track from the playlist is refused, and the track stays
   where it is.
 
+## Unreadable tracks
+
+A track whose file the analysis pass read but could not decode: a truncated or
+corrupt file, or a codec symphonia has no reader for (for example MP3 audio in a
+RIFF/WAVE container). Each row shows the error and has _Show in folder_.
+
+The failure is stored on the track (`analysis_error`, `analysis_failed_at`), and
+the pass skips the track from then on. A scan that sees the file change (a new
+modification time or content type), or reattaches it at a new path, clears the
+failure, so a replaced file is tried again. A file that could not be _read_, such
+as one on a share that dropped out, is not recorded: the pass tries it again on
+its next run.
+
+To fix one, replace the file with a good copy and scan, or delete it, scan, and
+purge the missing track. Unreadable tracks are not in the attention count, and
+cannot be dismissed.
+
 ## Duplicates
 
 ### Exact copies
@@ -198,8 +220,10 @@ Present tracks that share a [fingerprint](./track-identity.md#fingerprint): the
 same audio at more than one path, of any content type.
 
 Tracks are fingerprinted by the analysis pass that follows a first scan, so on a
-new library exact copies appear over several minutes. Until the pass is done the
-section says _Still checking N tracks for exact copies…_.
+new library exact copies appear over several minutes. While tracks are waiting
+for the pass, the section says _Still checking N tracks for exact copies…_. A
+track the pass could not decode is not waiting: it is listed under [Unreadable
+tracks](#unreadable-tracks) instead, so the note does not stay up for good.
 
 ### Possible duplicates
 
@@ -283,7 +307,8 @@ HealthReport
   exact            [DuplicateGroup]  key, dismissed,
                                      tracks[{track, path, contentType}]
   possible         [DuplicateGroup]
-  unhashed         count             present tracks not fingerprinted yet
+  unhashed         count             present tracks waiting to be fingerprinted
+  unreadable       [UnreadableTrack] track, path, contentType, error, failedAt
   check            CheckReport?      checkedAt, new, changed, gone, unrooted,
                                      unreachable, partial
   checkDismissed   bool

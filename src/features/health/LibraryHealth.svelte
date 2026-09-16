@@ -289,6 +289,39 @@
     </section>
   {/if}
 
+  {#if report.unreadable.length > 0}
+    <section class="health-section" id="health-unreadable">
+      <header>
+        <h5 class="tuning-group-title">
+          Unreadable tracks ({report.unreadable.length})
+        </h5>
+      </header>
+      <p class="health-note">
+        These files could not be decoded, so they have no waveform and may not
+        play. Replace or delete the file; the next scan picks up the change.
+      </p>
+      {#each report.unreadable as u (u.track.id)}
+        <div class="health-row">
+          <span class="health-name">
+            <span class="health-title">{u.track.title}</span>
+            <span class="health-sub">{u.track.artist}</span>
+          </span>
+          <span class="health-path" title={u.path}>{u.path}</span>
+          <span class="health-error" title={u.error}>{u.error}</span>
+          <span class="health-actions">
+            <button
+              title="Show in folder"
+              aria-label="Show in folder"
+              onclick={() => app.revealTrack(u.track)}
+              ><span class="material-symbols-outlined">folder_open</span
+              ></button
+            >
+          </span>
+        </div>
+      {/each}
+    </section>
+  {/if}
+
   <section class="health-section" id="health-missing">
     <header>
       <h5 class="tuning-group-title">

@@ -36,6 +36,18 @@ pub fn of_file(path: &Path) -> Result<String> {
     of_source(Box::new(file), path.extension().and_then(|e| e.to_str()))
 }
 
+/// The failure came from reading the file rather than from what it holds, so
+/// a later attempt may succeed. An early end of stream is the file's fault.
+pub fn is_read_error(e: &anyhow::Error) -> bool {
+    e.chain().any(|cause| {
+        let io = match cause.downcast_ref::<SymphoniaError>() {
+            Some(SymphoniaError::IoError(io)) => Some(io),
+            _ => cause.downcast_ref::<std::io::Error>(),
+        };
+        io.is_some_and(|io| io.kind() != std::io::ErrorKind::UnexpectedEof)
+    })
+}
+
 /// Fingerprint audio already in memory or behind any seekable source.
 pub fn of_source(source: Box<dyn MediaSource>, extension: Option<&str>) -> Result<String> {
     let mut hint = Hint::new();
@@ -156,6 +168,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a.mp3");
         std::fs::write(&path, b"not audio at all").unwrap();
-        assert!(of_file(&path).is_err());
+        let err = of_file(&path).unwrap_err();
+        assert!(!is_read_error(&err), "{err:#}");
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_opened_is_a_read_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = of_file(&dir.path().join("gone.mp3")).unwrap_err();
+        assert!(is_read_error(&err), "{err:#}");
     }
 }
