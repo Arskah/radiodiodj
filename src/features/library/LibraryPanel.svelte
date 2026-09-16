@@ -42,7 +42,7 @@
 
   function cue(track: Track, e: MouseEvent): void {
     e.stopPropagation();
-    app.cueLoadAndPlay(track);
+    app.cueLoad(track);
   }
 
   function startEdit(track: Track, e: MouseEvent): void {
@@ -126,7 +126,7 @@
       items.push({
         label: "Preview on cue deck",
         icon: "headphones",
-        onselect: () => app.cueLoadAndPlay(track),
+        onselect: () => app.cueLoad(track),
       });
     }
     items.push({

@@ -288,6 +288,11 @@ over the peak curve.
 
 Auditioning on the cue deck never affects on-air output.
 
+Both modes load **parked**. Cueing a track stages it; the operator decides when
+it makes noise. This also keeps the mode toggle quiet — switching reloads the
+deck, so autoplay would restart the audio every time an operator compared the
+two.
+
 **Cue editor overlay** (`CuePointOverlay.svelte`), opened from the library row
 context menu or the cue deck's marker button, gives the same waveform
 full-width plus a millisecond field per marker for values a drag cannot hit.

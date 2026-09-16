@@ -588,13 +588,17 @@ export class AppState {
   // ----- Cue deck transport -----
 
   /**
-   * Audition a track on the cue deck. `cuePoints` picks the mode: `null` is
-   * *Absolute* — the whole file, nothing applied, which is what an operator
-   * scrubs to find an in-point. Anything else is *Preview*, including an
-   * unsaved draft from the cue editor, so a ramp can be heard before it is
-   * committed.
+   * Put a track on the cue deck, **parked**. Cueing is a staging action: the
+   * operator decides when it makes noise. Loading on play would also restart
+   * the audio on every Absolute/Preview toggle, since switching mode reloads
+   * the deck.
+   *
+   * `cuePoints` picks the mode: `null` is *Absolute* — the whole file, nothing
+   * applied, which is what an operator scrubs to find an in-point. Anything
+   * else is *Preview*, including an unsaved draft from the cue editor, so a
+   * ramp can be heard before it is committed.
    */
-  cueLoadAndPlay(track: Track, cuePoints: CuePoints | null = null): void {
+  cueLoad(track: Track, cuePoints: CuePoints | null = null): void {
     this.cueError = null;
     this.cueTrack = track;
     this.cueAppliedPoints = cuePoints;
@@ -604,13 +608,10 @@ export class AppState {
     this.cueCurrentTime = 0;
     this.loadCueWaveform(track.id);
     this.loadCueCoverArt(track.id);
-    void this.cueBackend
-      .load(track.id, cuePoints)
-      .then(() => this.cueBackend.play())
-      .catch((err) => {
-        logger.error("Cue load/play failed:", err);
-        this.cueError = err instanceof Error ? err.message : String(err);
-      });
+    void this.cueBackend.load(track.id, cuePoints).catch((err) => {
+      logger.error("Cue load failed:", err);
+      this.cueError = err instanceof Error ? err.message : String(err);
+    });
   }
 
   /** Which audition mode the cue deck is in. */
@@ -621,12 +622,13 @@ export class AppState {
   /**
    * Switch audition mode, which reloads the deck: the markers are applied by
    * the player at load time, so there is no way to toggle them on a running
-   * source. Restarts from the top, which is what auditioning an edit wants.
+   * source. The reload parks at the top — an operator comparing the two modes
+   * should not be made to duck a burst of audio on each toggle.
    */
   setCueMode(mode: "absolute" | "preview"): void {
     const track = this.cueTrack;
     if (!track || this.cueMode === mode) return;
-    this.cueLoadAndPlay(
+    this.cueLoad(
       track,
       mode === "preview" ? (track.cue_points ?? NO_CUE_POINTS) : null,
     );

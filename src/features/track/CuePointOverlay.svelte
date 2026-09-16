@@ -108,7 +108,7 @@
   }
 
   function preview(): void {
-    if (track) app.cueLoadAndPlay(track, draft);
+    if (track) app.cueLoad(track, draft);
   }
 
   async function save(): Promise<void> {

@@ -394,9 +394,11 @@ fn cue_load(
             },
             cue_points: cue_points.unwrap_or_default(),
             start_at: 0.0,
-            // Cueing a track starts auditioning it; the renderer's cue transport
-            // takes over from there.
-            autoplay: true,
+            // Parked, not playing. Cueing a track is a staging action — the
+            // operator decides when it makes noise, and switching audition
+            // mode reloads the deck, so autoplay would restart the audio on
+            // every Absolute/Preview toggle.
+            autoplay: false,
         });
     })
 }
