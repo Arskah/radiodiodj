@@ -1942,6 +1942,30 @@ describe("AppState cue points", () => {
     expect(app.cueIsPlaying).toBe(true);
   });
 
+  it("an edited audition reloads where it was", async () => {
+    app.cueLoad(t(1, { cue_points: trimmed }), trimmed, true, 4.5);
+    await flushAsync();
+    expect(cueMock.loadedStartAt).toEqual([4.5]);
+    expect(app.cueCurrentTime).toBe(4.5);
+  });
+
+  it("the clock never starts past the end of what airs", async () => {
+    const track = t(1, { cue_points: trimmed });
+    app.cueLoad(track, trimmed, false, 1e6);
+    expect(app.cueCurrentTime).toBe(app.cueDuration);
+  });
+
+  it("reloading the same track keeps its curve", async () => {
+    api.getWaveform.mockResolvedValue([1, 2, 3]);
+    const track = t(1);
+    app.cueLoad(track);
+    await flushAsync();
+    app.cueLoad(track, trimmed);
+    await flushAsync();
+    expect(app.cueWaveform).toEqual([1, 2, 3]);
+    expect(api.getWaveform).toHaveBeenCalledTimes(1);
+  });
+
   it("restoring an empty deck clears whatever the editor left on it", async () => {
     const before = app.cueSnapshot();
     app.cueLoad(t(1), trimmed, true);

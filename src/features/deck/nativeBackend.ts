@@ -76,12 +76,14 @@ export class NativeBackend implements DeckBackend {
     trackId: number,
     cuePoints?: CuePoints | null,
     autoplay = false,
+    startAt = 0,
   ): Promise<void> {
     await this.subscribed;
     await invoke<void>(`${this.ipc.commandPrefix}_load`, {
       id: trackId,
       cuePoints: cuePoints ?? null,
       autoplay,
+      startAt,
     });
   }
 

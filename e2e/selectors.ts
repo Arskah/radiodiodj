@@ -43,8 +43,13 @@ export const sel = {
   metadataSave: "#btn-metadata-save",
   metadataCancel: "#btn-metadata-cancel",
   cuePointDialog: "#cue-point-dialog",
+  /** A marker's time field: `m:ss.mmm`, committed on Enter or blur. */
   cuePointField: (marker: string) => `#cue-field-${marker}`,
-  cuePointMarker: "#cue-point-dialog .wf-marker",
+  /** Marker lines in the zoomed strip — one per set marker in view. */
+  cuePointMarker: "#cue-point-dialog .cue-detail-line",
+  /** Plays the raw file, markers ignored. */
+  cuePointPlay: "#btn-cue-points-play",
+  cuePointClock: "#cue-points-clock",
   cuePointSave: "#btn-cue-points-save",
   cuePointClose: "#btn-cue-points-close",
   cuePointCancel: "#btn-cue-points-cancel",

@@ -11,6 +11,7 @@ export class MockBackend implements DeckBackend {
   loadedCuePoints: (CuePoints | null)[] = [];
   /** Whether each `load` was asked to play on arrival. */
   loadedAutoplay: boolean[] = [];
+  loadedStartAt: number[] = [];
   seekCalls: number[] = [];
   volume = 1;
   playCalls = 0;
@@ -31,10 +32,12 @@ export class MockBackend implements DeckBackend {
     trackId: number,
     cuePoints?: CuePoints | null,
     autoplay = false,
+    startAt = 0,
   ): Promise<void> {
     this.loadedIds.push(trackId);
     this.loadedCuePoints.push(cuePoints ?? null);
     this.loadedAutoplay.push(autoplay);
+    this.loadedStartAt.push(startAt);
     if (this.loadShouldReject) throw new Error("load failed");
     if (autoplay) this.emit({ type: "pause-state", paused: false });
   }

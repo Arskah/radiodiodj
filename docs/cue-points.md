@@ -74,22 +74,70 @@ where its markers move.
 ### Cue editor
 
 `CuePointOverlay.svelte`, opened from a library row's context menu or the cue
-deck's marker button. The same waveform full-width, plus a millisecond field per
-marker for values a drag cannot hit.
+deck's marker button. Markers are placed roughly by eye, then tuned by ear, and
+the layout follows that order:
 
-Only markers that are actually set get a line. An unset marker has no position
-of its own — it resolves onto a neighbour — so drawing all five would stack
-three grabbable handles on the cue-out; a _Set_ button beside each field places
-one at its resolved position instead. Dragging is a pointer convenience and the
-SVG stays `aria-hidden`: the millisecond fields are the accessible way to set a
-marker.
+```
+ ┌ overview ─ whole file ── ║░░░ region ░░░║ ─── [window] ───────────┐  click = seek
+ │            Cue In / Cue Out tabs ▲      ▲                           │
+ ├ lane ───── ▼In ▼FI                 ▼FO ▼Out                       ─┤  flags drag
+ ├ detail ─── ▒▒│▁▃▅▇▆▅▃▂▅▇█▇▅▃▂▁▃▅▆▇▆▅│▒▒  (envelope over it)       ─┤  click = seek
+ │ [▶ Play] [🎧 Audition] [■] 8:55.1                     Airs 1:16     │
+ │ ● Cue In   [ 8:55.152 ] ◀ ▶ ⌖ ✕   … one row per marker              │
+ └───────────────────────────────────────────────────────────────────┘
+```
 
-**Auditioning happens inside the dialog.** _Audition_ loads the unsaved draft
-onto the cue deck and plays it. Play/pause and stop are in the dialog's footer,
-the editor's own curve carries the playhead, and clicking the curve seeks — so
-an out-point can be checked without waiting out the track. Every press of
-_Audition_ reloads, because markers are applied at load time; a draft edited
-mid-audition is not heard until it does.
+**Two strips, always both.** The _overview_ draws the whole file from the
+stored 400-bucket curve with the region shaded and the detail strip's window
+outlined. The _detail_ strip zooms onto the region widened by
+`max(2 s, 5 % of the region)` each side, the margin dimmed. Until Cue In or
+Cue Out is set it follows the playhead in a 30-second window instead. Its curve
+comes from `get_waveform_detail`, which decodes the file once on open into RMS
+per 10 ms (about 120 kB for twenty minutes, taken from the prefetch cache when
+the file is resident, never stored); the stored curve stands in until it
+arrives. A thin line over the detail strip traces the gain envelope, a port of
+`envelope::gain_at`, so what is drawn is what airs.
+
+**A click on a curve only ever seeks.** Markers move by handles that are not
+the curve: flags in a lane above the detail strip, and tabs on the region's
+edges in the overview for Cue In and Cue Out. A press arms a drag without
+moving anything — the handle moves only once the pointer travels 3 px, keeping
+its grab offset — so a click selects a marker without nudging it. Flags that
+would overlap stack into up to three lane rows. The detail frame holds still
+during a drag and reframes on drop; it also reframes when a field is committed,
+and when a nudge or mark carries Cue In or Cue Out out of view. Only set markers
+get a flag or a line: an unset one resolves onto a neighbour.
+
+**Two ways to listen.** _Play_ loads the whole file (`cue_load` without cue
+points) and ignores the markers, so editing never interrupts it and the audio
+either side of a boundary can be heard. _Audition_ loads the draft with its
+trims and fades. An edit during an audition reloads it at the same file
+position and keeps its play state, once a drag has dropped and typing or
+nudging has paused for 250 ms — `cue_load` takes a `startAt` in air seconds for
+this, and the worker clamps it. With nothing loaded, a seek parks the raw file
+at that point, so there is a playhead to mark at before anything has played.
+
+**Tuning by ear.** Each row has one time field (`m:ss.mmm`, `ss.mmm` or
+`NNNms`, committed on Enter or blur; empty clears), nudge buttons, _mark at
+playhead_ and clear. A row or flag click selects that marker for the keyboard:
+
+| key               | action                                                                                   |
+| ----------------- | ---------------------------------------------------------------------------------------- |
+| Space             | play / pause what is loaded, raw when nothing is                                         |
+| A                 | audition the draft                                                                       |
+| I · O · F · G · N | mark Cue In · Cue Out · Fade In · Fade Out · Next Start at the playhead                  |
+| ← / →             | nudge the selected marker 10 ms; Shift 100 ms, Alt 1 s                                   |
+| P                 | pre-roll: Cue In raw from 2 s before it, anything else as an audition from 2 s before it |
+
+Mark with nothing playing places the marker where it resolves, and a nudge on
+an unset marker starts from there too.
+
+**Input stops at a neighbour.** A drag, nudge, mark or typed value for Cue In,
+Fade In, Fade Out or Cue Out stops at the nearest _set_ one of the others, and
+at the ends of the file; Next Start is bounded only by the file. Unset markers
+are ignored, since an unset Fade In resolves onto Cue In and would otherwise
+pin it. This shapes input only — the backend's clamp (below) still decides what
+is stored.
 
 **The dialog borrows the cue deck and gives it back.** It snapshots what the
 deck was showing when it opened and restores that, parked, on every exit — a
@@ -260,7 +308,10 @@ the `set_tuning_config` pattern; the renderer adopts what comes back. There is
 deliberately no TypeScript reimplementation — one rule in two languages drifts,
 and the authoritative clamp runs at load time against the decoded duration,
 which the renderer never sees. `shared/cuePoints.ts` only ever applies the
-documented `NULL` fallbacks.
+documented `NULL` fallbacks. The editor's
+[neighbour stops](#cue-editor) (`shared/cueEditor.ts`) are the one exception,
+and only for input: they keep a drag from producing an order the sort would
+rearrange, and never stand in for the clamp.
 
 ## Edge cases
 

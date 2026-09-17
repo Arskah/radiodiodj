@@ -15,7 +15,7 @@
 //! scaling is what matters.
 
 use anyhow::{Context, Result};
-use rodio::Decoder;
+use rodio::{Decoder, Source};
 use std::io::Cursor;
 use std::sync::Arc;
 
@@ -134,6 +134,52 @@ where
         rms
     };
     quantise(&normalised)
+}
+
+/// Resolution of [`compute_detail`]'s curve: one bucket per this many
+/// milliseconds of audio.
+pub const DETAIL_BUCKET_MS: u32 = 10;
+
+/// Compute a fixed-time-resolution RMS curve for the cue editor's zoomed strip:
+/// one byte per [`DETAIL_BUCKET_MS`] of audio, normalised like
+/// [`compute_peaks`]. Unlike the stored curve its length follows the track, so
+/// a 20-minute file yields about 120 kB — computed on demand, never stored.
+pub fn compute_detail(bytes: Bytes) -> Result<Vec<u8>> {
+    let decoder = new_decoder(bytes)?;
+    let per_bucket = u64::from(decoder.sample_rate())
+        * u64::from(decoder.channels())
+        * u64::from(DETAIL_BUCKET_MS)
+        / 1000;
+    Ok(fill_fixed(decoder, per_bucket.max(1)))
+}
+
+/// Accumulate `source` into consecutive windows of `per_bucket` samples and
+/// normalise their RMS to the loudest window.
+fn fill_fixed<S>(source: S, per_bucket: u64) -> Vec<u8>
+where
+    S: Iterator<Item = f32>,
+{
+    let mut cells: Vec<Cell> = Vec::new();
+    let mut cur = Cell::default();
+    for sample in source {
+        let s = sample as f64;
+        cur.sum_sq += s * s;
+        cur.count += 1;
+        if cur.count == per_bucket {
+            cells.push(cur);
+            cur = Cell::default();
+        }
+    }
+    if cur.count > 0 {
+        cells.push(cur);
+    }
+    let rms: Vec<f32> = cells.iter().map(|c| c.rms()).collect();
+    let max_rms = rms.iter().cloned().fold(0.0f32, f32::max);
+    if max_rms > 0.0 {
+        quantise(&rms.iter().map(|r| r / max_rms).collect::<Vec<_>>())
+    } else {
+        quantise(&rms)
+    }
 }
 
 /// Map normalised amplitudes (nominally 0.0..=1.0, clamped) to `u8` 0..=255.
@@ -257,5 +303,37 @@ mod tests {
     fn empty_source_yields_zero_curve() {
         let peaks = fill_buckets(std::iter::empty::<f32>());
         assert_eq!(peaks, vec![0u8; WAVEFORM_BUCKETS]);
+    }
+
+    #[test]
+    fn detail_has_one_bucket_per_ten_milliseconds() {
+        // 2 s at 8 kHz mono: 200 buckets of 80 samples each.
+        let wav = bytes_of(synth_wav(8000, 16_000));
+        let detail = compute_detail(wav).expect("compute");
+        assert_eq!(detail.len(), 200);
+    }
+
+    #[test]
+    fn detail_keeps_the_partial_last_bucket() {
+        let wav = bytes_of(synth_wav(8000, 16_040));
+        let detail = compute_detail(wav).expect("compute");
+        assert_eq!(detail.len(), 201);
+        assert!(
+            detail[200] > 0,
+            "partial tail is loud, so it must not be empty"
+        );
+    }
+
+    #[test]
+    fn detail_follows_the_signal() {
+        let wav = bytes_of(synth_wav(8000, 16_000));
+        let detail = compute_detail(wav).expect("compute");
+        assert!(detail[..100].iter().all(|&p| p == 0), "silent half");
+        assert!(detail[100..].iter().all(|&p| p == 255), "loud half");
+    }
+
+    #[test]
+    fn detail_of_garbage_errors() {
+        assert!(compute_detail(bytes_of(vec![0u8, 1, 2, 3])).is_err());
     }
 }
