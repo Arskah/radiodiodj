@@ -380,8 +380,14 @@ body {
   /* Twelve tracks so the deck row and the panel row can split the width
      differently. They used to share one 8fr/4fr pair, which forced the cue
      deck into the panel column's proportions — too narrow once it grew a
-     marker button and an audition-mode toggle (#279). The decks now split
-     evenly while the panels keep 2:1. */
+     marker button and an audition-mode toggle (#279). The decks split 7:5
+     while the panels keep 2:1.
+     The decks were even until the main one grew live-fade buttons (#280):
+     its header now carries four transport buttons, two fade pills and the
+     AUTO/MANUAL toggle, and its control row is `flex-shrink: 0`, so the
+     overflow came out of the track title instead. The cue deck gives the
+     column up because it is the one built to absorb it — its control row
+     shrinks and its volume slider is elastic. */
   grid-template-columns: repeat(12, 1fr);
   grid-template-rows: minmax(120px, auto) 1fr;
   gap: var(--sp-xs);
@@ -391,12 +397,12 @@ body {
 }
 
 #now-playing {
-  grid-column: 1 / 7;
+  grid-column: 1 / 8;
   grid-row: 1;
 }
 
 #cue-deck {
-  grid-column: 7 / 13;
+  grid-column: 8 / 13;
   grid-row: 1;
 }
 
