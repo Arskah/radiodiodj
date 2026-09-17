@@ -246,14 +246,15 @@ Everything else is an ordinary state-machine test in `playlist/engine.rs`.
 Events stay **role-mapped**, per sakuvirtanen's constraint that the frontend,
 the now-playing webhook, and everything else continue to refer to `main`:
 
-| topic              | meaning                                                        |
-| ------------------ | -------------------------------------------------------------- |
-| `main-deck:*`      | emitted for whichever deck currently holds the `main` role     |
-| `arm-deck:*`       | same shape, for the armed deck — lets the UI show what is next |
-| `tail-deck:*`      | same shape, for a deck playing an outgoing track out           |
-| `program:roles`    | slot → role plus the track in each; debugging and future UI    |
-| `program:handover` | the `main` role moved: outgoing and incoming track ids         |
-| `cue:*`            | unchanged; the cue deck is not on the bus                      |
+| topic               | meaning                                                        |
+| ------------------- | -------------------------------------------------------------- |
+| `main-deck:*`       | emitted for whichever deck currently holds the `main` role     |
+| `arm-deck:*`        | same shape, for the armed deck — lets the UI show what is next |
+| `tail-deck:*`       | same shape, for a deck playing an outgoing track out           |
+| `program:roles`     | slot → role plus the track in each; debugging and future UI    |
+| `program:handover`  | the `main` role moved: outgoing and incoming track ids         |
+| `program:faded-out` | a fade to silence finished on air; the playlist stops          |
+| `cue:*`             | unchanged; the cue deck is not on the bus                      |
 
 On handover, `main-deck:time` and `main-deck:duration` are **re-emitted
 immediately** for the incoming track, so the renderer flips cleanly rather than
@@ -283,6 +284,57 @@ main-deck load keeps setting pending, the arm-load does not, and handover sets
 and commits the incoming track explicitly — the swap's own pause-state event
 still carries the already-fired outgoing track and is swallowed by the existing
 dedupe.
+
+## Live fades
+
+Two operator transport actions ride on the bus: **Fade out** ramps the on-air
+deck to silence and stops it, and **Fade to next** starts the next item now and
+fades the outgoing track out underneath it.
+
+The only new audio primitive is a **deck gain ramp**: `Cmd::Fade { to, ms,
+on_complete }`, stepped from the same 50 ms tick that times handover. It is
+runtime-only and never persisted, and it does not replace the operator's deck
+volume — it multiplies it (`Deck::effective_volume`), so a sink rebuilt mid-fade
+resumes at the faded level and the volume survives the fade. Every command that
+changes what a deck is doing cancels the ramp and restores full gain, which is
+what guarantees the next track on that deck starts at the level the operator
+left. The curve is linear, matching `envelope::gain_at`.
+
+**A fade-out ends as a Stop, not just a silent deck.** When a ramp with
+`RampDone::Stop` completes on the `main` role the worker announces
+`program:faded-out`, and the playlist runs the same `stop()` the Stop button
+does: the track goes to history and `current` clears. Without that the engine
+would go on believing a silent deck was playing, and the next Play would resume
+a deck with nothing on it. So Play after a fade-out starts the next queued item,
+exactly as it does after Stop. A tail fading out under an incoming track is not
+that, and announces nothing.
+
+This is deliberately a _deck_ control, where the stored fades of
+[cue-points.md](./cue-points.md) are a _source_ envelope. The two compose by
+multiplication rather than fighting over one value, so a live fade fired inside
+a track's own stored fade-out attenuates it further with no jump in level.
+
+**Fade to next is handover fired early.** `Cmd::HandOverNow` is the one command
+that acts on two decks, so the worker intercepts it in its dispatch loop instead
+of applying it to one: it calls the same `hand_over` the tick does at
+`next_start`, then ramps the deck that just became the tail down to silence. The
+playlist engine needs no special case at all — it reconciles against
+`program:handover` exactly as it does for an automatic segue.
+
+When there is nothing armed and decoded to hand over to, or a tail is already
+playing (three audible tracks is not something the bus mixes), the ramp
+completes with `RampDone::EndTrack` instead: the deck emits `{role}:ended`, and
+the playlist advances under the rules it already applies at the end of any
+track — advancing in Auto, stopping in Manual. That decision is the worker's,
+because only it knows what is decoded on which deck this tick.
+
+A fade aimed at `main` takes any tail with it, ramping both and cutting the tail
+when the ramp completes. Cutting it up front would leave it silent while `main`
+was still audible, which is not what the operator asked for.
+
+Durations come from `tuning.player.fadeOutMs` and `fadeToNextMs`, read per press
+from the stored config rather than the `PlayerTuning` the bus captured at spawn,
+so a change in Settings applies to the next press.
 
 ## Relationship to the playlist
 

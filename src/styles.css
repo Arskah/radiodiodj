@@ -380,8 +380,14 @@ body {
   /* Twelve tracks so the deck row and the panel row can split the width
      differently. They used to share one 8fr/4fr pair, which forced the cue
      deck into the panel column's proportions — too narrow once it grew a
-     marker button and an audition-mode toggle (#279). The decks now split
-     evenly while the panels keep 2:1. */
+     marker button and an audition-mode toggle (#279). The decks split 7:5
+     while the panels keep 2:1.
+     The decks were even until the main one grew live-fade buttons (#280):
+     its header now carries four transport buttons, two fade pills and the
+     AUTO/MANUAL toggle, and its control row is `flex-shrink: 0`, so the
+     overflow came out of the track title instead. The cue deck gives the
+     column up because it is the one built to absorb it — its control row
+     shrinks and its volume slider is elastic. */
   grid-template-columns: repeat(12, 1fr);
   grid-template-rows: minmax(120px, auto) 1fr;
   gap: var(--sp-xs);
@@ -391,12 +397,12 @@ body {
 }
 
 #now-playing {
-  grid-column: 1 / 7;
+  grid-column: 1 / 8;
   grid-row: 1;
 }
 
 #cue-deck {
-  grid-column: 7 / 13;
+  grid-column: 8 / 13;
   grid-row: 1;
 }
 
@@ -584,6 +590,81 @@ body {
 .transport-primary:hover {
   background: var(--primary);
   filter: brightness(1.08);
+}
+
+/* Live fades. A separate group from #player-controls, one --sp-md gap away, and
+   deliberately smaller than a .transport button: the hard transport stays the
+   loud thing, and a fade is never mistaken for a cut. */
+#fade-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+}
+
+.fade-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 10px;
+  overflow: hidden;
+  background: var(--surface-container-highest);
+  border: 1px solid color-mix(in srgb, var(--outline-variant) 30%, transparent);
+  border-radius: var(--r-lg);
+  color: var(--on-surface);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  transition:
+    background 0.15s,
+    transform 0.1s;
+}
+
+.fade-btn:hover:not(:disabled) {
+  background: var(--surface-bright);
+}
+
+.fade-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.fade-btn:disabled {
+  color: var(--outline);
+  cursor: default;
+  opacity: 0.5;
+}
+
+.fade-btn .material-symbols-outlined {
+  font-size: 18px;
+}
+
+.fade-label,
+.fade-btn .material-symbols-outlined {
+  position: relative;
+  z-index: 1;
+}
+
+/* Ramp progress, animated locally over the duration the renderer asked for —
+   no per-tick IPC. Dropping .ramping snaps it back, so a cancelled fade and a
+   finished one both clear with no timer to keep. */
+.fade-btn .fade-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: color-mix(in srgb, var(--primary) 35%, transparent);
+}
+
+.fade-btn.ramping {
+  border-color: var(--primary);
+}
+
+.fade-btn.ramping .fade-fill {
+  width: 100%;
+  transition: width var(--fade-ms, 0ms) linear;
 }
 
 /* Segmented AUTO / MANUAL toggle */

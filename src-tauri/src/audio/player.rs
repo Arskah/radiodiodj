@@ -94,6 +94,44 @@ pub enum Cmd {
     /// Air seconds, measured from `cue_in`. The worker adds the offset.
     Seek(f64),
     SetVolume(f32),
+    /// Ramp this deck's gain to `to` over `ms`, then run `on_complete`.
+    ///
+    /// Runtime only, never persisted, and never a replacement for the
+    /// operator's deck volume: the ramp multiplies it (see `Deck::gain`). Any
+    /// other transport command cancels the ramp and restores full gain, so the
+    /// next track on this deck always starts where the operator left the fader.
+    Fade {
+        to: f32,
+        ms: u64,
+        on_complete: Option<RampDone>,
+    },
+    /// Move the `main` role to the armed deck now, and fade the outgoing track
+    /// out underneath the incoming one over `fade_ms`.
+    ///
+    /// Aimed at `main`, but it is the one command that acts on two decks, so
+    /// the worker intercepts it in its dispatch loop rather than applying it to
+    /// a single deck. A no-op unless a deck is armed and decoded and no tail is
+    /// already playing — the caller falls back to a plain fade-out plus a next.
+    HandOverNow {
+        fade_ms: u64,
+    },
+}
+
+/// What a completed ramp does to the deck it ran on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RampDone {
+    /// Stop the deck: what a fade to silence is for. The deck is reset exactly
+    /// as [`Cmd::Stop`] resets it, so nothing downstream needs a second
+    /// termination rule.
+    Stop,
+    /// Stop the deck *and* announce the track as ended, so whatever follows an
+    /// ordinary end-of-track follows this too.
+    ///
+    /// This is how *Fade to next* degrades when nothing is armed to overlap
+    /// with: the playlist advances because the track ended, under the rules it
+    /// already has — it advances in Auto and stops in Manual, and a transport
+    /// command mid-ramp cancels the fade and with it the ending.
+    EndTrack,
 }
 
 /// The event topics one deck emits on. Built from a prefix, which is a *role*

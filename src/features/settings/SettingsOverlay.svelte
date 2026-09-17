@@ -872,6 +872,42 @@
               </div>
             </div>
 
+            <h5 class="tuning-group-title">Fades</h5>
+            <div class="device-row">
+              <label for="tune-fade-out">Fade out (ms)</label>
+              <input
+                id="tune-fade-out"
+                type="number"
+                min="200"
+                max="30000"
+                value={tuning.player.fadeOutMs}
+                oninput={(e) =>
+                  numInput(e, (v) => (tuning.player.fadeOutMs = v))}
+                onchange={saveTuning}
+              />
+              <div class="hint">
+                How long the deck's Fade out button takes to reach silence
+                before stopping.
+              </div>
+            </div>
+            <div class="device-row">
+              <label for="tune-fade-next">Fade to next (ms)</label>
+              <input
+                id="tune-fade-next"
+                type="number"
+                min="200"
+                max="30000"
+                value={tuning.player.fadeToNextMs}
+                oninput={(e) =>
+                  numInput(e, (v) => (tuning.player.fadeToNextMs = v))}
+                onchange={saveTuning}
+              />
+              <div class="hint">
+                How long the outgoing track takes to fade under the incoming
+                one. Usually shorter than a fade to silence.
+              </div>
+            </div>
+
             <h5 class="tuning-group-title">Network &amp; cache</h5>
             <div class="device-row">
               <label for="tune-cache">Prefetch cache size (MiB)</label>

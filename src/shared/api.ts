@@ -132,6 +132,21 @@ export const api = {
   mainDeckIsPlaying(): Promise<boolean> {
     return invoke<boolean>("main_deck_is_playing");
   },
+  /**
+   * Ramp the on-air deck to silence and stop it. The playlist stays where it
+   * is, as it does for Stop. Omit `ms` to use the configured duration.
+   */
+  mainDeckFadeOut(ms?: number): Promise<void> {
+    return invoke<void>("main_deck_fade_out", { ms: ms ?? null });
+  },
+  /**
+   * Start the next item now and fade the outgoing track out underneath it.
+   * With nothing armed to overlap with, the fade ends the track instead and
+   * the playlist advances as it would at any other end of track.
+   */
+  mainDeckFadeToNext(ms?: number): Promise<void> {
+    return invoke<void>("main_deck_fade_to_next", { ms: ms ?? null });
+  },
   /** Current playlist state, for a renderer that has just started up. */
   playlistSync(): Promise<PlaylistSnapshot> {
     return invoke<PlaylistSnapshot>("playlist_sync");

@@ -255,6 +255,10 @@ export interface PlayerConfig {
   readWatchdogTimeoutMs: number;
   openRetryIntervalMs: number;
   readRetryBackoffsMs: number[];
+  /** How long the live Fade out action takes to reach silence. */
+  fadeOutMs: number;
+  /** How long the outgoing track takes to fade under the incoming one. */
+  fadeToNextMs: number;
 }
 
 /// Library health tuning.

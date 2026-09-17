@@ -20,7 +20,7 @@ use admin::{AdminLock, AdminStatus};
 use audio::bus::ProgramBus;
 use audio::cue::CueDeck;
 use audio::cue_points::CuePoints;
-use audio::player::{Cmd, PlayerTuning};
+use audio::player::{Cmd, PlayerTuning, RampDone};
 use broadcast::{service::default_now_playing_dir, BroadcastService};
 use library::check::LibraryCheck;
 use library::db::{Db, LibraryStats, OpenError, Track, TrackMetadataUpdate};
@@ -361,6 +361,37 @@ fn main_deck_seek(app_state: State<'_, AppState>, seconds: f64) {
 #[tauri::command(rename_all = "camelCase")]
 fn main_deck_set_volume(app_state: State<'_, AppState>, volume: f32) {
     app_state.bus.send_main(Cmd::SetVolume(volume));
+}
+
+/// Ramp the on-air deck to silence, then stop it. The playlist stays where it
+/// is, exactly as it does for Stop.
+///
+/// The duration comes from the stored config rather than the player tuning the
+/// bus captured at spawn, so a change in Settings applies to the next press.
+#[tauri::command(rename_all = "camelCase")]
+fn main_deck_fade_out(app_state: State<'_, AppState>, ms: Option<u64>) {
+    let ms = ms.unwrap_or_else(|| app_state.config.get_tuning().player.fade_out_ms);
+    app_state.bus.send_main(Cmd::Fade {
+        to: 0.0,
+        ms,
+        on_complete: Some(RampDone::Stop),
+    });
+}
+
+/// Start the next item now and fade the outgoing track out underneath it.
+///
+/// With a deck armed and decoded this is a handover fired early: the same role
+/// swap the bus performs at `next_start`, so the playlist engine reconciles
+/// against `program:handover` with no special case.
+///
+/// With nothing armed there is nothing to overlap with, so the bus degrades it
+/// to a fade that *ends* the track and the playlist advances under the rules it
+/// already applies at the end of any track. That choice is the worker's because
+/// only it knows what is decoded on which deck this tick.
+#[tauri::command(rename_all = "camelCase")]
+fn main_deck_fade_to_next(app_state: State<'_, AppState>, ms: Option<u64>) {
+    let ms = ms.unwrap_or_else(|| app_state.config.get_tuning().player.fade_to_next_ms);
+    app_state.bus.send_main(Cmd::HandOverNow { fade_ms: ms });
 }
 
 /// Return a track's stored amplitude-curve peaks (one byte per bucket) for the
@@ -975,6 +1006,8 @@ pub fn run() {
             main_deck_stop,
             main_deck_seek,
             main_deck_set_volume,
+            main_deck_fade_out,
+            main_deck_fade_to_next,
             get_waveform,
             get_waveform_detail,
             get_cover_art,

@@ -64,6 +64,8 @@ const { api } = vi.hoisted(() => {
     revertTrackTags: vi.fn(),
     retryTagWrite: vi.fn(),
     dismissTagWrite: vi.fn(),
+    mainDeckFadeOut: vi.fn(),
+    mainDeckFadeToNext: vi.fn(),
     getTuningConfig: vi.fn(),
     setTuningConfig: vi.fn(),
     setCuePoints: vi.fn(),
@@ -99,6 +101,8 @@ function defaultTuning() {
       readWatchdogTimeoutMs: 10000,
       openRetryIntervalMs: 2000,
       readRetryBackoffsMs: [500, 1000, 2000],
+      fadeOutMs: 4000,
+      fadeToNextMs: 2500,
     },
     library: { checkIntervalMin: 15, writeTags: false, tagWriteTimeoutSec: 30 },
   };
@@ -207,6 +211,8 @@ function resetApi(): void {
   api.search.mockResolvedValue([]);
   api.trackPlayed.mockResolvedValue(undefined);
   api.mainDeckIsPlaying.mockResolvedValue(false);
+  api.mainDeckFadeOut.mockResolvedValue(undefined);
+  api.mainDeckFadeToNext.mockResolvedValue(undefined);
   api.getStats.mockResolvedValue({
     totalTracks: 0,
     totalArtists: 0,
@@ -732,6 +738,47 @@ describe("AppState playback control", () => {
     expect(app.progressPct).toBe(25);
     app.duration = 0;
     expect(app.progressPct).toBe(0);
+  });
+
+  it("fadeOut asks for the configured duration and shows the ramp", () => {
+    app.fadeOut();
+    expect(api.mainDeckFadeOut).toHaveBeenCalledWith(undefined);
+    expect(app.fading).toBe("out");
+    expect(app.fadeMs).toBe(app.tuning.player.fadeOutMs);
+  });
+
+  it("pressing a fade again finishes it now rather than restarting it", () => {
+    app.fadeOut();
+    app.fadeOut();
+    expect(api.mainDeckFadeOut).toHaveBeenLastCalledWith(0);
+    expect(app.fading).toBeNull();
+  });
+
+  it("fadeToNext uses its own duration", () => {
+    app.fadeToNext();
+    expect(api.mainDeckFadeToNext).toHaveBeenCalledWith(undefined);
+    expect(app.fading).toBe("next");
+    expect(app.fadeMs).toBe(app.tuning.player.fadeToNextMs);
+  });
+
+  it("transport actions clear a running fade", () => {
+    for (const act of [
+      () => app.stop(),
+      () => app.next(),
+      () => app.prev(),
+      () => app.togglePlay(),
+    ]) {
+      app.fadeOut();
+      expect(app.fading).toBe("out");
+      act();
+      expect(app.fading).toBeNull();
+    }
+  });
+
+  it("a deck that went quiet clears the fade", () => {
+    app.fadeOut();
+    mock.emitPauseState(true);
+    expect(app.fading).toBeNull();
   });
 });
 

@@ -175,6 +175,14 @@ pub struct PlayerConfig {
     pub open_retry_interval_ms: u64,
     #[serde(default = "default_read_retry_backoffs_ms")]
     pub read_retry_backoffs_ms: Vec<u64>,
+    /// How long the live *Fade out* transport action takes to reach silence.
+    #[serde(default = "default_fade_out_ms")]
+    pub fade_out_ms: u64,
+    /// How long the outgoing track takes to fade under the incoming one on
+    /// *Fade to next*. Shorter than a fade to silence by default: a long ramp
+    /// buries the track that just started.
+    #[serde(default = "default_fade_to_next_ms")]
+    pub fade_to_next_ms: u64,
 }
 
 fn default_read_watchdog_timeout_ms() -> u64 {
@@ -186,6 +194,17 @@ fn default_open_retry_interval_ms() -> u64 {
 fn default_read_retry_backoffs_ms() -> Vec<u64> {
     vec![500, 1000, 2000]
 }
+fn default_fade_out_ms() -> u64 {
+    4_000
+}
+fn default_fade_to_next_ms() -> u64 {
+    2_500
+}
+
+/// Bounds on both fade durations. The floor keeps a "fade" from being an
+/// indistinguishable cut; the ceiling keeps a mis-typed value from holding the
+/// deck for a minute of inaudible ramp.
+pub const FADE_MS_RANGE: std::ops::RangeInclusive<u64> = 200..=30_000;
 
 impl Default for PlayerConfig {
     fn default() -> Self {
@@ -193,6 +212,8 @@ impl Default for PlayerConfig {
             read_watchdog_timeout_ms: default_read_watchdog_timeout_ms(),
             open_retry_interval_ms: default_open_retry_interval_ms(),
             read_retry_backoffs_ms: default_read_retry_backoffs_ms(),
+            fade_out_ms: default_fade_out_ms(),
+            fade_to_next_ms: default_fade_to_next_ms(),
         }
     }
 }
@@ -475,6 +496,12 @@ fn normalize_tuning(mut t: TuningConfig) -> TuningConfig {
             *b = (*b).max(1);
         }
     }
+    p.fade_out_ms = p
+        .fade_out_ms
+        .clamp(*FADE_MS_RANGE.start(), *FADE_MS_RANGE.end());
+    p.fade_to_next_ms = p
+        .fade_to_next_ms
+        .clamp(*FADE_MS_RANGE.start(), *FADE_MS_RANGE.end());
 
     t.library.tag_write_timeout_sec = t.library.tag_write_timeout_sec.clamp(5, 300);
 
