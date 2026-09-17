@@ -29,6 +29,7 @@ void app.hydrateScanStatus();
 void app.hydrateWaveformStatus();
 void app.loadHealth();
 void app.loadAudioConfig();
+void app.loadAdmin();
 
 const win = getCurrentWindow();
 let closing = false;

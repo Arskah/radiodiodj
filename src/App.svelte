@@ -9,7 +9,24 @@
   import TrackTooltip from "./features/track/TrackTooltip.svelte";
   import MetadataOverlay from "./features/track/MetadataOverlay.svelte";
   import CuePointOverlay from "./features/track/CuePointOverlay.svelte";
+  import UnlockDialog from "./features/admin/UnlockDialog.svelte";
+  import { idleLock } from "./features/admin/idleLock";
   import { app } from "./shared/state.svelte";
+
+  const lock = idleLock(
+    window,
+    () =>
+      app.admin.passwordSet && app.admin.unlocked
+        ? app.admin.idleLockMin * 60_000
+        : null,
+    () => app.lockAdmin(),
+  );
+
+  $effect(() => {
+    void [app.admin.passwordSet, app.admin.unlocked, app.admin.idleLockMin];
+    lock.poke();
+  });
+  $effect(() => lock.dispose);
 </script>
 
 <Toolbar />
@@ -24,3 +41,4 @@
 <TrackTooltip />
 <MetadataOverlay />
 <CuePointOverlay />
+<UnlockDialog />

@@ -267,3 +267,11 @@ export interface DeviceInfo {
   description: string;
   isDefault: boolean;
 }
+
+/** Admin mode as the backend reports it. See `docs/admin-mode.md`. */
+export interface AdminStatus {
+  passwordSet: boolean;
+  /** True whenever no password is set. */
+  unlocked: boolean;
+  idleLockMin: number;
+}

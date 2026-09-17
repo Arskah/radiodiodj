@@ -229,6 +229,34 @@ impl Default for LibraryConfig {
     }
 }
 
+/// Admin mode. Delete `passwordHash` from `config.json` to recover a
+/// forgotten password.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminConfig {
+    /// Argon2 PHC string. `None` leaves admin mode always unlocked.
+    #[serde(default)]
+    pub password_hash: Option<String>,
+    /// Minutes without input before admin mode locks again.
+    #[serde(default = "default_idle_lock_min")]
+    pub idle_lock_min: u64,
+}
+
+fn default_idle_lock_min() -> u64 {
+    15
+}
+
+pub const IDLE_LOCK_MIN_RANGE: std::ops::RangeInclusive<u64> = 1..=240;
+
+impl Default for AdminConfig {
+    fn default() -> Self {
+        Self {
+            password_hash: None,
+            idle_lock_min: default_idle_lock_min(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
@@ -246,6 +274,8 @@ pub struct AppConfig {
     pub now_playing: NowPlayingConfig,
     #[serde(default)]
     pub tuning: TuningConfig,
+    #[serde(default)]
+    pub admin: AdminConfig,
 }
 
 pub struct Config {
@@ -361,6 +391,31 @@ impl Config {
         cfg.tuning = normalize_tuning(tuning);
         self.save_locked(&cfg)?;
         Ok(cfg.tuning.clone())
+    }
+
+    pub fn password_hash(&self) -> Option<String> {
+        self.inner.lock().admin.password_hash.clone()
+    }
+
+    pub fn set_password_hash(&self, hash: Option<String>) -> Result<()> {
+        let mut cfg = self.inner.lock();
+        cfg.admin.password_hash = hash;
+        self.save_locked(&cfg)
+    }
+
+    pub fn idle_lock_min(&self) -> u64 {
+        let min = self.inner.lock().admin.idle_lock_min;
+        min.clamp(*IDLE_LOCK_MIN_RANGE.start(), *IDLE_LOCK_MIN_RANGE.end())
+    }
+
+    /// Store the idle timeout, clamped to [`IDLE_LOCK_MIN_RANGE`]. Returns the
+    /// stored value.
+    pub fn set_idle_lock_min(&self, minutes: u64) -> Result<u64> {
+        let minutes = minutes.clamp(*IDLE_LOCK_MIN_RANGE.start(), *IDLE_LOCK_MIN_RANGE.end());
+        let mut cfg = self.inner.lock();
+        cfg.admin.idle_lock_min = minutes;
+        self.save_locked(&cfg)?;
+        Ok(minutes)
     }
 
     pub fn remove_path(&self, kind: &str, dir_path: &str) -> Result<bool> {
@@ -577,6 +632,39 @@ mod tests {
         drop(cfg);
         let cfg2 = Config::open(dir.path()).unwrap();
         assert_eq!(cfg2.get_tuning(), clamped);
+    }
+
+    #[test]
+    fn admin_defaults_when_missing() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("config.json"), r#"{"musicPaths":[]}"#).unwrap();
+        let cfg = Config::open(dir.path()).unwrap();
+        assert_eq!(cfg.password_hash(), None);
+        assert_eq!(cfg.idle_lock_min(), 15);
+    }
+
+    #[test]
+    fn admin_partial_json_fills_defaults() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("config.json"),
+            r#"{"admin":{"passwordHash":"$argon2id$x"}}"#,
+        )
+        .unwrap();
+        let cfg = Config::open(dir.path()).unwrap();
+        assert_eq!(cfg.password_hash().as_deref(), Some("$argon2id$x"));
+        assert_eq!(cfg.idle_lock_min(), 15);
+    }
+
+    #[test]
+    fn idle_lock_min_clamps_and_round_trips() {
+        let dir = tempdir().unwrap();
+        let cfg = Config::open(dir.path()).unwrap();
+        assert_eq!(cfg.set_idle_lock_min(0).unwrap(), 1);
+        assert_eq!(cfg.set_idle_lock_min(10_000).unwrap(), 240);
+        assert_eq!(cfg.set_idle_lock_min(30).unwrap(), 30);
+        drop(cfg);
+        assert_eq!(Config::open(dir.path()).unwrap().idle_lock_min(), 30);
     }
 
     #[test]

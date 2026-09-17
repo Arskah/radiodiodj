@@ -96,7 +96,13 @@
           <div class="scan-status-bar-track">
             <div class="scan-status-bar-fill" style:width="{pct}%"></div>
           </div>
-          <button type="button" class="scan-status-cancel" onclick={onCancel}>
+          <button
+            type="button"
+            class="scan-status-cancel"
+            onclick={onCancel}
+            disabled={!app.isAdmin}
+            title={app.isAdmin ? undefined : "Unlock admin mode to cancel"}
+          >
             Cancel
           </button>
         {:else}

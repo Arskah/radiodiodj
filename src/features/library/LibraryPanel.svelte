@@ -134,11 +134,13 @@
         onselect: () => app.cueLoad(track),
       });
     }
-    items.push({
-      label: "Edit metadata…",
-      icon: "edit",
-      onselect: () => (app.editingMetadata = track),
-    });
+    if (app.isAdmin) {
+      items.push({
+        label: "Edit metadata…",
+        icon: "edit",
+        onselect: () => (app.editingMetadata = track),
+      });
+    }
     items.push({
       label: "Cue points…",
       icon: "line_start_diamond",
@@ -262,14 +264,16 @@
               <span class="material-symbols-outlined">headphones</span>
             </button>
           {/if}
-          <button
-            class="btn-edit"
-            title="Edit metadata"
-            aria-label="Edit track metadata"
-            onclick={(e) => startEdit(track, e)}
-          >
-            <span class="material-symbols-outlined">edit</span>
-          </button>
+          {#if app.isAdmin}
+            <button
+              class="btn-edit"
+              title="Edit metadata"
+              aria-label="Edit track metadata"
+              onclick={(e) => startEdit(track, e)}
+            >
+              <span class="material-symbols-outlined">edit</span>
+            </button>
+          {/if}
           <button
             class="btn-add"
             title="Add to playlist"

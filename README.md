@@ -53,6 +53,9 @@ library that was reset).
 - Linux: `~/.local/share/com.radiodiodj/` (or `$XDG_DATA_HOME/com.radiodiodj/`)
 - Windows: `%APPDATA%\com.radiodiodj\` (typically `C:\Users\<you>\AppData\Roaming\com.radiodiodj\`)
 
+Forgot the admin password: quit the app, delete `passwordHash` from the `admin`
+section of `config.json`, and relaunch. See [docs/admin-mode.md](docs/admin-mode.md).
+
 ## Logs
 
 RadiodioDJ writes a rotating log file (`RadiodioDJ.log`, 1 MB max, one prior file kept).

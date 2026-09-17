@@ -328,6 +328,20 @@ body {
   transform: scale(0.95);
 }
 
+.nav-icon-btn:disabled {
+  cursor: not-allowed;
+  background: none;
+}
+
+/* Dim the icon only: the health badge stays readable while locked. */
+.nav-icon-btn:disabled > .material-symbols-outlined {
+  opacity: 0.4;
+}
+
+#btn-admin-lock.active {
+  color: var(--primary);
+}
+
 #btn-settings {
   position: relative;
 }
@@ -1811,9 +1825,14 @@ body {
   font-size: 11px;
 }
 
-.scan-status-cancel:hover {
+.scan-status-cancel:hover:not(:disabled) {
   border-color: var(--primary);
   color: var(--primary);
+}
+
+.scan-status-cancel:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* ============================================================
@@ -2012,8 +2031,24 @@ body {
   text-align: right;
 }
 
-.settings-section--tuning .device-row input[type="text"] {
+.settings-section--tuning .device-row input[type="text"],
+.settings-section--tuning .device-row input[type="password"] {
   text-align: left;
+}
+
+#admin-mode-section .admin-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-md);
+  margin-bottom: var(--sp-md);
+  font-size: 13px;
+  color: var(--on-surface);
+}
+
+#admin-mode-section .admin-error {
+  margin-bottom: var(--sp-md);
+  font-size: 13px;
+  color: var(--error);
 }
 
 .settings-section--tuning .device-row input:focus {

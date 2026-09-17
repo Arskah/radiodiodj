@@ -64,6 +64,13 @@ const { api } = vi.hoisted(() => {
     getTuningConfig: vi.fn(),
     setTuningConfig: vi.fn(),
     setCuePoints: vi.fn(),
+    adminStatus: vi.fn(),
+    adminUnlock: vi.fn(),
+    adminLock: vi.fn(),
+    adminSetPassword: vi.fn(),
+    adminClearPassword: vi.fn(),
+    adminSetIdleLockMin: vi.fn(),
+    onAdminStateChanged: vi.fn(),
   };
   return { api };
 });
@@ -213,6 +220,16 @@ function resetApi(): void {
     libraryReset: false,
   });
   api.saveSession.mockResolvedValue(undefined);
+  api.adminStatus.mockResolvedValue({
+    passwordSet: false,
+    unlocked: true,
+    idleLockMin: 15,
+  });
+  api.adminUnlock.mockResolvedValue(false);
+  api.adminLock.mockResolvedValue(undefined);
+  api.adminSetPassword.mockResolvedValue(undefined);
+  api.adminClearPassword.mockResolvedValue(undefined);
+  api.adminSetIdleLockMin.mockResolvedValue(undefined);
   api.listAudioDevices.mockResolvedValue([]);
   api.getMainDevice.mockResolvedValue(null);
   api.getCueDevice.mockResolvedValue(null);
@@ -2195,5 +2212,94 @@ describe("AppState library health", () => {
     const { app } = makeApp();
     await app.loadHealth();
     expect(app.health).toEqual(EMPTY_HEALTH);
+  });
+});
+
+describe("admin mode", () => {
+  let app: AppState;
+
+  const locked = { passwordSet: true, unlocked: false, idleLockMin: 15 };
+
+  beforeEach(() => {
+    resetApi();
+    app = makeApp().app;
+  });
+
+  it("is admin while no password is set", async () => {
+    await app.loadAdmin();
+    expect(app.isAdmin).toBe(true);
+  });
+
+  it("starts locked when a password is set", async () => {
+    api.adminStatus.mockResolvedValue(locked);
+    await app.loadAdmin();
+    expect(app.isAdmin).toBe(false);
+  });
+
+  it("stays locked on a wrong password", async () => {
+    api.adminStatus.mockResolvedValue(locked);
+    await app.loadAdmin();
+    app.unlockOpen = true;
+    api.adminUnlock.mockResolvedValue(false);
+    expect(await app.unlockAdmin("nope")).toBe(false);
+    expect(api.adminUnlock).toHaveBeenCalledWith("nope");
+    expect(app.isAdmin).toBe(false);
+    expect(app.unlockOpen).toBe(true);
+  });
+
+  it("unlocks on the right password and closes the dialog", async () => {
+    api.adminStatus.mockResolvedValue(locked);
+    await app.loadAdmin();
+    app.unlockOpen = true;
+    api.adminUnlock.mockResolvedValue(true);
+    expect(await app.unlockAdmin("hunter42")).toBe(true);
+    expect(app.isAdmin).toBe(true);
+    expect(app.unlockOpen).toBe(false);
+  });
+
+  it("locking closes Settings and the metadata editor, not the cue-point editor", async () => {
+    api.adminStatus.mockResolvedValue({ ...locked, unlocked: true });
+    await app.loadAdmin();
+    app.settingsOpen = true;
+    app.editingMetadata = t(1);
+    app.editingCuePoints = t(2);
+
+    app.lockAdmin();
+
+    expect(api.adminLock).toHaveBeenCalled();
+    expect(app.isAdmin).toBe(false);
+    expect(app.settingsOpen).toBe(false);
+    expect(app.editingMetadata).toBeNull();
+    expect(app.editingCuePoints?.id).toBe(2);
+  });
+
+  it("follows the backend's admin-state-changed event", async () => {
+    const handler = api.onAdminStateChanged.mock.calls[0][0];
+    app.settingsOpen = true;
+    handler(locked);
+    expect(app.isAdmin).toBe(false);
+    expect(app.settingsOpen).toBe(false);
+  });
+
+  it("setting and removing a password keep the app unlocked", async () => {
+    await app.setAdminPassword("hunter42");
+    expect(api.adminSetPassword).toHaveBeenCalledWith("hunter42");
+    expect(app.admin.passwordSet).toBe(true);
+    expect(app.isAdmin).toBe(true);
+
+    await app.clearAdminPassword();
+    expect(app.admin.passwordSet).toBe(false);
+    expect(app.isAdmin).toBe(true);
+  });
+
+  it("adopts the backend's clamped idle timeout", async () => {
+    api.adminStatus.mockResolvedValue({
+      ...locked,
+      unlocked: true,
+      idleLockMin: 1,
+    });
+    await app.setIdleLockMin(0);
+    expect(api.adminSetIdleLockMin).toHaveBeenCalledWith(0);
+    expect(app.admin.idleLockMin).toBe(1);
   });
 });

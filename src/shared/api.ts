@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type {
+  AdminStatus,
   ContentType,
   CuePoints,
   PlaylistItem,
@@ -340,6 +341,32 @@ export const api = {
   // any marker that was coerced into order or inside the file.
   setCuePoints(id: number, points: CuePoints): Promise<CuePoints> {
     return invoke<CuePoints>("set_cue_points", { id, points });
+  },
+  adminStatus(): Promise<AdminStatus> {
+    return invoke<AdminStatus>("admin_status");
+  },
+  /** Resolves to whether the password matched. */
+  adminUnlock(password: string): Promise<boolean> {
+    return invoke<boolean>("admin_unlock", { password });
+  },
+  adminLock(): Promise<void> {
+    return invoke<void>("admin_lock");
+  },
+  adminSetPassword(password: string): Promise<void> {
+    return invoke<void>("admin_set_password", { password });
+  },
+  adminClearPassword(): Promise<void> {
+    return invoke<void>("admin_clear_password");
+  },
+  adminSetIdleLockMin(minutes: number): Promise<void> {
+    return invoke<void>("admin_set_idle_lock_min", { minutes });
+  },
+  onAdminStateChanged(
+    callback: (status: AdminStatus) => void,
+  ): Promise<UnlistenFn> {
+    return listen<AdminStatus>("admin-state-changed", (e) =>
+      callback(e.payload),
+    );
   },
   async pickDirectory(): Promise<string | null> {
     const dir = await open({ directory: true, multiple: false });

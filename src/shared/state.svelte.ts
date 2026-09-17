@@ -1,4 +1,5 @@
 import type {
+  AdminStatus,
   ContentType,
   CuePoints,
   DeviceInfo,
@@ -209,6 +210,16 @@ export class AppState {
   // Track whose cue points are open in the cue-point editor.
   editingCuePoints = $state<Track | null>(null);
 
+  // Admin mode, mirrored from the backend. With no password set the app is
+  // always admin. See docs/admin-mode.md.
+  admin = $state<AdminStatus>({
+    passwordSet: false,
+    unlocked: true,
+    idleLockMin: 15,
+  });
+  isAdmin = $derived(!this.admin.passwordSet || this.admin.unlocked);
+  unlockOpen = $state(false);
+
   backend: DeckTransport;
   cueBackend: DeckBackend;
 
@@ -313,6 +324,7 @@ export class AppState {
 
     void api.onPlaylistState((snapshot) => this.applySnapshot(snapshot));
     void api.onLibraryHealth((report) => (this.health = report));
+    void api.onAdminStateChanged((status) => this.applyAdmin(status));
 
     api.onScanProgress(({ processed, total }) => {
       if (this.scanStatus.status === "running") {
@@ -1146,6 +1158,60 @@ export class AppState {
       }
     }
     this.scheduleSave();
+  }
+
+  async loadAdmin(): Promise<void> {
+    try {
+      this.applyAdmin(await api.adminStatus());
+    } catch (err) {
+      logger.error("Admin status lookup failed:", err);
+    }
+  }
+
+  /** Resolves to whether the password matched. */
+  async unlockAdmin(password: string): Promise<boolean> {
+    const ok = await api.adminUnlock(password);
+    if (ok) {
+      this.applyAdmin({ ...this.admin, unlocked: true });
+      this.unlockOpen = false;
+    }
+    return ok;
+  }
+
+  lockAdmin(): void {
+    this.applyAdmin({ ...this.admin, unlocked: false });
+    void api.adminLock().catch((err) => {
+      logger.error("Admin lock failed:", err);
+    });
+  }
+
+  async setAdminPassword(password: string): Promise<void> {
+    await api.adminSetPassword(password);
+    this.applyAdmin({ ...this.admin, passwordSet: true, unlocked: true });
+  }
+
+  async clearAdminPassword(): Promise<void> {
+    await api.adminClearPassword();
+    this.applyAdmin({ ...this.admin, passwordSet: false, unlocked: true });
+  }
+
+  async setIdleLockMin(minutes: number): Promise<void> {
+    await api.adminSetIdleLockMin(minutes);
+    await this.loadAdmin();
+  }
+
+  /**
+   * Adopt a new admin status. Leaving admin mode closes the admin-only
+   * dialogs; the cue-point editor stays open, since only its save is gated.
+   */
+  private applyAdmin(status: AdminStatus): void {
+    this.admin = status;
+    if (this.isAdmin) {
+      this.unlockOpen = false;
+    } else {
+      this.settingsOpen = false;
+      this.editingMetadata = null;
+    }
   }
 
   async scan(): Promise<void> {
