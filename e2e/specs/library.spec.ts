@@ -32,6 +32,19 @@ describe("library", () => {
       async () => (await browser.$$(sel.trackRow).length) >= 3,
       { timeout: 15_000, timeoutMsg: "scan did not populate track list" },
     );
+
+    // Rows appear from scan progress, so the list can be complete while the
+    // scan still runs and the settings overlay is still up. The overlay closes
+    // only once `scan()` resolves, which makes it the signal that no further
+    // refresh of the track list is pending — without it a test can act on rows
+    // that a later refresh replaces underneath it.
+    await browser.waitUntil(
+      async () =>
+        ((await browser.$("#settings-overlay").getAttribute("class")) ?? "")
+          .split(/\s+/)
+          .includes("hidden"),
+      { timeout: 15_000, timeoutMsg: "scan did not finish" },
+    );
   }
 
   it("scans a fixture library and lists tracks", async () => {
@@ -173,9 +186,19 @@ describe("library", () => {
     await bootAndScan();
 
     // Rows are tabbable, but reaching one costs a tab per row above it; focus
-    // the first directly and exercise the binding itself.
-    await browser.execute(() =>
-      document.querySelector<HTMLElement>(".track-row")?.focus(),
+    // the first directly and exercise the binding itself. Focus is re-applied
+    // until it sticks: the key event is delivered to whatever holds focus at
+    // that moment, so a row re-render between the focus call and the keystroke
+    // would otherwise send Shift+F10 to the body and time out on the menu.
+    await browser.waitUntil(
+      async () =>
+        browser.execute(() => {
+          const row = document.querySelector<HTMLElement>(".track-row");
+          if (!row) return false;
+          if (document.activeElement !== row) row.focus();
+          return document.activeElement === row;
+        }),
+      { timeout: 5_000, timeoutMsg: "the first track row never took focus" },
     );
     await browser.keys(["Shift", "F10"]);
 
