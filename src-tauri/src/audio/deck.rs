@@ -860,6 +860,28 @@ fn hand_over(
     }
 }
 
+/// Whether a completed ramp announces the track as ended, so the playlist
+/// advances the way it does at the end of any track. Only ever on air: an
+/// `EndTrack` ramp is the *Fade to next* fallback, and a tail ending would tell
+/// the playlist a track finished that it already accounted for.
+fn ends_the_track(done: RampDone, role: DeckRole) -> bool {
+    done == RampDone::EndTrack && role == DeckRole::Main
+}
+
+/// Whether a completed ramp announces `program:faded-out`, which the playlist
+/// answers by taking the track off air exactly as Stop does.
+///
+/// Only a fade to silence **on air** is that. A tail ramping down under an
+/// incoming track is the second half of a handover the playlist has already
+/// reconciled — announcing there would stop the track that just started.
+///
+/// Pure because the alternative is an untestable seam: the emit itself needs a
+/// running Tauri app, while the rule about which completions announce is the
+/// part that can actually be got wrong.
+fn announces_faded_out(done: RampDone, role: DeckRole) -> bool {
+    done == RampDone::Stop && role == DeckRole::Main
+}
+
 /// Whether a handover can be forced right now: something armed and decoded to
 /// hand over *to*, and no tail already playing — a third audible track is not
 /// something the bus is built to mix, and the engine never arms during an
@@ -1105,17 +1127,13 @@ pub(super) fn run(
             };
             let Some(done) = on_complete else { continue };
             let role_index = deck.role as usize;
-            let on_main = deck.role == DeckRole::Main;
-            if done == RampDone::EndTrack {
+            let announce = announces_faded_out(done, deck.role);
+            if ends_the_track(done, deck.role) {
                 let _ = app.emit(&events[role_index].topics.ended, ());
-                main_ended |= on_main;
+                main_ended = true;
             }
             stop_deck(&app, &mut output, deck, &events[role_index]);
-            // A fade to silence on air is a Stop the operator asked for slowly:
-            // whoever owns the playlist has to hear about it, or it goes on
-            // believing a silent deck is playing. A tail fading out under an
-            // incoming track is not that, and says nothing.
-            if done == RampDone::Stop && on_main {
+            if announce {
                 if let Some(topic) = faded_out_topic {
                     let _ = app.emit(topic, ());
                 }
@@ -1455,6 +1473,34 @@ mod tests {
         assert_eq!(deck.step_ramp(Instant::now()), Some(Some(RampDone::Stop)));
         assert_eq!(deck.gain, 0.0);
         assert!(deck.step_ramp(Instant::now()).is_none(), "ramp is spent");
+    }
+
+    /// The rule behind `program:faded-out`. A fade to silence on air is a Stop
+    /// the operator asked for slowly, and the playlist has to hear about it or
+    /// it goes on believing a silent deck is playing — which is what left the
+    /// Play button dead after a fade-out.
+    #[test]
+    fn a_fade_to_silence_on_air_announces_itself() {
+        assert!(announces_faded_out(RampDone::Stop, DeckRole::Main));
+    }
+
+    /// The tail of a *Fade to next* ends in a stop too, but the playlist has
+    /// already reconciled that handover: announcing would stop the track that
+    /// just started.
+    #[test]
+    fn a_tail_fading_out_under_the_next_track_announces_nothing() {
+        assert!(!announces_faded_out(RampDone::Stop, DeckRole::Tail));
+        assert!(!announces_faded_out(RampDone::Stop, DeckRole::Arm));
+    }
+
+    /// The two completions are answered differently and must not be confused:
+    /// one takes the track off air, the other ends it so the playlist advances.
+    #[test]
+    fn ending_a_track_and_fading_it_out_are_distinct() {
+        assert!(!announces_faded_out(RampDone::EndTrack, DeckRole::Main));
+        assert!(ends_the_track(RampDone::EndTrack, DeckRole::Main));
+        assert!(!ends_the_track(RampDone::Stop, DeckRole::Main));
+        assert!(!ends_the_track(RampDone::EndTrack, DeckRole::Tail));
     }
 
     /// Forcing a handover needs something decoded to hand over *to*, and must
