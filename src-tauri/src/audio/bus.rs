@@ -72,6 +72,12 @@ impl ProgramBus {
         let _ = self.tx.send((DeckRole::Main, cmd));
     }
 
+    /// Send a command to whichever deck is armed. Used to park the next
+    /// playlist item ahead of a handover; never for anything audible.
+    pub fn send_arm(&self, cmd: Cmd) {
+        let _ = self.tx.send((DeckRole::Arm, cmd));
+    }
+
     pub fn main_is_playing(&self) -> bool {
         self.main_playing.load(Ordering::SeqCst)
     }

@@ -26,11 +26,23 @@ pub trait Refiller {
     fn threshold(&self) -> i64;
 }
 
+/// What the arm deck is holding: the track and the markers it will air under.
+///
+/// Compared against the desired target after every transition, so an arm-load —
+/// which reads a file — is issued only when what comes next actually changed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ArmTarget {
+    pub id: i64,
+    pub cue_override: Option<CuePoints>,
+}
+
 /// Something the service has to do in the world after a transition.
 ///
 /// Prefetch-window updates and snapshot emission are deliberately absent: they
 /// follow *every* transition, so the service does them unconditionally rather
-/// than each transition having to remember to ask.
+/// than each transition having to remember to ask. [`Effect::Arm`] is in the
+/// same family — see [`Playlist::reconcile_arm`] — but it is an effect because
+/// it reaches a deck.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
     /// Load the track on the main deck and start playback.
@@ -52,6 +64,17 @@ pub enum Effect {
     },
     /// Stop the main deck.
     Stop,
+    /// Load the track onto the arm deck, parked and silent, so a handover at the
+    /// outgoing track's next start has something to hand over *to*.
+    ///
+    /// Arming is not an airing: no play count, no history entry, and no
+    /// broadcast pending track. All of that happens when the role moves.
+    Arm {
+        id: i64,
+        cue_override: Option<CuePoints>,
+    },
+    /// Clear the arm deck. What was armed is no longer what comes next.
+    Disarm,
     /// Count the airing against the track's play count.
     TrackPlayed(i64),
     /// Arm the outage retry timer. The index selects a delay from the backoff
@@ -107,6 +130,9 @@ pub struct Playlist {
     current_override: Option<CuePoints>,
     auto_playlist: bool,
     auto_advance: bool,
+    /// What the arm deck currently holds. The item itself stays in `items`, so
+    /// arming shifts no index and the Upcoming list is untouched.
+    armed: Option<ArmTarget>,
     /// Track ids resident in the prefetch cache, from `main-deck:cache-state`.
     cached_ids: HashSet<i64>,
     /// Track ids whose file a scan found gone, from the library health report.
@@ -150,6 +176,54 @@ impl Playlist {
             .map(|t| t.id)
             .chain(self.items.iter().filter_map(|i| i.as_track().map(|t| t.id)))
             .collect()
+    }
+
+    /// Bring the arm deck in line with what actually comes next, returning the
+    /// effect that does it — or `None` when it is already right.
+    ///
+    /// Called by the service after *every* transition rather than each
+    /// transition remembering to arm, which is the discipline
+    /// [`Playlist::prefetch_window`] already follows: a queue mutation, a track
+    /// change and a refill all move what comes next, and any of them forgetting
+    /// would leave a stale track armed to go on air.
+    pub fn reconcile_arm(&mut self) -> Option<Effect> {
+        let desired = self.arm_target();
+        if desired == self.armed {
+            return None;
+        }
+        self.armed = desired;
+        Some(match desired {
+            Some(ArmTarget { id, cue_override }) => Effect::Arm { id, cue_override },
+            None => Effect::Disarm,
+        })
+    }
+
+    /// The item a handover would move to, or `None` when no handover is
+    /// possible: nothing on air to hand over from, manual mode, a stop marker
+    /// next, or an empty queue. Arming *is* the authorisation, so every policy
+    /// question is answered here rather than in the bus worker. A missing track
+    /// is skipped, as advancement skips it; an uncached one is armed anyway,
+    /// because the arm-load is the early read.
+    fn arm_target(&self) -> Option<ArmTarget> {
+        if !self.auto_advance || self.current.is_none() {
+            return None;
+        }
+        for item in &self.items {
+            match item {
+                PlaylistItem::Stop => return None,
+                PlaylistItem::Track { track, .. } if self.missing_ids.contains(&track.id) => {}
+                PlaylistItem::Track {
+                    track,
+                    cue_override,
+                } => {
+                    return Some(ArmTarget {
+                        id: track.id,
+                        cue_override: *cue_override,
+                    })
+                }
+            }
+        }
+        None
     }
 
     // ----- queue mutations -----
@@ -1506,5 +1580,194 @@ mod tests {
             }]
         );
         assert_eq!(p.snapshot(None).current_override, Some(points(2_000)));
+    }
+
+    // ----- arming the next item -----
+
+    /// The item a handover would move to is the head of the playlist, and
+    /// arming leaves it exactly where it was: nothing is consumed until the
+    /// role actually moves.
+    #[test]
+    fn the_head_of_the_playlist_is_what_gets_armed() {
+        let r = FakeRefiller::new();
+        let mut p = Playlist::new();
+        p.add(track(1));
+        p.add(track(2));
+        p.play_index(0, &r);
+
+        assert_eq!(
+            p.reconcile_arm(),
+            Some(Effect::Arm {
+                id: 2,
+                cue_override: None
+            })
+        );
+        assert_eq!(queued(&p), vec![Some(2)]);
+    }
+
+    /// Arming reads a file, so it is issued only when what comes next changed.
+    #[test]
+    fn re_reconciling_an_unchanged_queue_arms_nothing() {
+        let r = FakeRefiller::new();
+        let mut p = Playlist::new();
+        p.add(track(1));
+        p.add(track(2));
+        p.play_index(0, &r);
+        p.reconcile_arm();
+
+        assert_eq!(p.reconcile_arm(), None);
+    }
+
+    /// A reorder moves what comes next, so the arm deck has to be reloaded — the
+    /// defect the whole reconcile-after-every-transition discipline exists to
+    /// prevent.
+    #[test]
+    fn a_reorder_re_arms() {
+        let r = FakeRefiller::new();
+        let mut p = Playlist::new();
+        p.add(track(1));
+        p.add(track(2));
+        p.add(track(3));
+        p.play_index(0, &r);
+        p.reconcile_arm();
+
+        p.move_item(1, 0);
+
+        assert_eq!(
+            p.reconcile_arm(),
+            Some(Effect::Arm {
+                id: 3,
+                cue_override: None
+            })
+        );
+    }
+
+    /// Emptying the queue disarms: what was armed is no longer what comes next.
+    #[test]
+    fn clearing_the_queue_disarms() {
+        let r = FakeRefiller::new();
+        let mut p = Playlist::new();
+        p.add(track(1));
+        p.add(track(2));
+        p.play_index(0, &r);
+        p.reconcile_arm();
+
+        p.clear();
+
+        assert_eq!(p.reconcile_arm(), Some(Effect::Disarm));
+    }
+
+    /// An item override travels with the arm, or the handover would air the
+    /// radio edit of a track the operator queued for one custom airing.
+    #[test]
+    fn an_item_override_is_armed_with_the_track() {
+        let r = FakeRefiller::new();
+        let mut p = Playlist::new();
+        p.add(track(1));
+        p.play_index(0, &r);
+        p.add_front(track(2), Some(points(3_000)));
+
+        assert_eq!(
+            p.reconcile_arm(),
+            Some(Effect::Arm {
+                id: 2,
+                cue_override: Some(points(3_000))
+            })
+        );
+    }
+
+    /// A stop marker is a deliberate hard stop. Nothing past one is armed, so
+    /// nothing past one can segue.
+    #[test]
+    fn nothing_is_armed_ahead_of_a_stop_marker() {
+        let r = FakeRefiller::new();
+        let mut p = Playlist::new();
+        p.add(track(1));
+        p.add_stop();
+        p.add(track(2));
+        p.play_index(0, &r);
+
+        assert_eq!(p.reconcile_arm(), None);
+    }
+
+    /// Manual mode means the operator drives every track change themselves.
+    #[test]
+    fn manual_mode_arms_nothing() {
+        let r = FakeRefiller::new();
+        let mut p = Playlist::new();
+        p.add(track(1));
+        p.add(track(2));
+        p.play_index(0, &r);
+        p.reconcile_arm();
+
+        p.set_auto_advance(false);
+
+        assert_eq!(p.reconcile_arm(), Some(Effect::Disarm));
+    }
+
+    /// Nothing on air is nothing to hand over from.
+    #[test]
+    fn a_queue_with_nothing_on_air_arms_nothing() {
+        let mut p = Playlist::new();
+        p.add(track(1));
+
+        assert_eq!(p.reconcile_arm(), None);
+    }
+
+    /// Advancement drops a missing track, so a handover skips it too: its file
+    /// is gone, and unlike an uncached track there is nothing to wait for.
+    #[test]
+    fn a_missing_head_is_skipped_when_arming() {
+        let r = FakeRefiller::new();
+        let mut p = Playlist::new();
+        p.add(track(1));
+        p.add(track(2));
+        p.add(track(3));
+        p.play_index(0, &r);
+        p.on_missing_state(HashSet::from([2]), &r);
+
+        assert_eq!(
+            p.reconcile_arm(),
+            Some(Effect::Arm {
+                id: 3,
+                cue_override: None
+            })
+        );
+    }
+
+    /// An uncached track is armed anyway: the arm-load *is* the early read,
+    /// which is most of the value on a slow share.
+    #[test]
+    fn an_uncached_track_is_still_armed() {
+        let r = FakeRefiller::new();
+        let mut p = Playlist::new();
+        p.add(track(1));
+        p.add(track(2));
+        p.play_index(0, &r);
+        // Cache membership is known, and the next track is not in it.
+        p.on_cache_state(vec![1], &r);
+
+        assert_eq!(
+            p.reconcile_arm(),
+            Some(Effect::Arm {
+                id: 2,
+                cue_override: None
+            })
+        );
+    }
+
+    /// Stopping clears what is on air, so there is nothing to hand over from.
+    #[test]
+    fn stopping_disarms() {
+        let r = FakeRefiller::new();
+        let mut p = Playlist::new();
+        p.add(track(1));
+        p.add(track(2));
+        p.play_index(0, &r);
+        p.reconcile_arm();
+
+        p.stop();
+
+        assert_eq!(p.reconcile_arm(), Some(Effect::Disarm));
     }
 }
