@@ -26,11 +26,11 @@ export const ORDERED_MARKERS: readonly CueMarker[] = [
 ];
 
 /** Context each side of the region: at least this many seconds… */
-export const MARGIN_MIN_S = 2;
+export const MARGIN_MIN_S = 5;
 /** …or this fraction of the region, whichever is larger. */
-export const MARGIN_FRACTION = 0.05;
+export const MARGIN_FRACTION = 0.15;
 /** Half-width of the window that follows the playhead when there is no region. */
-export const FOLLOW_HALF_S = 15;
+export const FOLLOW_HALF_S = 30;
 /** How far before a marker a pre-roll starts. */
 export const PRE_ROLL_S = 2;
 /** Nudge steps: plain, Shift, Alt. */

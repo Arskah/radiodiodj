@@ -90,8 +90,8 @@ the layout follows that order:
 **Two strips, always both.** The _overview_ draws the whole file from the
 stored 400-bucket curve with the region shaded and the detail strip's window
 outlined. The _detail_ strip zooms onto the region widened by
-`max(2 s, 5 % of the region)` each side, the margin dimmed. Until Cue In or
-Cue Out is set it follows the playhead in a 30-second window instead. Its curve
+`max(5 s, 15 % of the region)` each side, the margin dimmed. Until Cue In or
+Cue Out is set it follows the playhead in a 60-second window instead. Its curve
 comes from `get_waveform_detail`, which decodes the file once on open into RMS
 per 10 ms (about 120 kB for twenty minutes, taken from the prefetch cache when
 the file is resident, never stored); the stored curve stands in until it

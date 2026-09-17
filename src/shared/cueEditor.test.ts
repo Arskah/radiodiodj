@@ -31,20 +31,20 @@ const points = (p: Partial<CuePoints>): CuePoints => ({
 const FILE = 1235.518; // the 20:35 track from the recording
 
 describe("regionFrame", () => {
-  it("gives a short region two seconds either side", () => {
+  it("gives a short region five seconds either side", () => {
     const f = regionFrame(
       points({ cue_in_ms: 100_000, cue_out_ms: 108_000 }),
       FILE,
     );
-    expect(f).toEqual({ from: 98, to: 110 });
+    expect(f).toEqual({ from: 95, to: 113 });
   });
 
-  it("gives a long region five percent either side", () => {
+  it("gives a long region fifteen percent either side", () => {
     const f = regionFrame(
       points({ cue_in_ms: 100_000, cue_out_ms: 700_000 }),
       FILE,
     );
-    expect(f).toEqual({ from: 70, to: 730 });
+    expect(f).toEqual({ from: 10, to: 790 });
   });
 
   it("stays inside the file", () => {
@@ -55,21 +55,22 @@ describe("regionFrame", () => {
 
   it("frames an open end against the end of the file", () => {
     const f = regionFrame(points({ cue_in_ms: 1_200_000 }), FILE);
-    expect(f.from).toBeCloseTo(1198);
+    // 35.5 s region: 15 % beats the 5 s floor.
+    expect(f.from).toBeCloseTo(1200 - 35.518 * 0.15);
     expect(f.to).toBe(FILE);
   });
 });
 
 describe("followFrame", () => {
   it("centres on the playhead", () => {
-    expect(followFrame(100, FILE)).toEqual({ from: 85, to: 115 });
+    expect(followFrame(100, FILE)).toEqual({ from: 70, to: 130 });
   });
 
   it("slides rather than shrinks at either end", () => {
-    expect(followFrame(3, FILE)).toEqual({ from: 0, to: 30 });
+    expect(followFrame(3, FILE)).toEqual({ from: 0, to: 60 });
     const end = followFrame(FILE - 1, FILE);
     expect(end.to).toBeCloseTo(FILE);
-    expect(end.to - end.from).toBeCloseTo(30);
+    expect(end.to - end.from).toBeCloseTo(60);
   });
 
   it("shows all of a file shorter than the window", () => {
@@ -79,17 +80,17 @@ describe("followFrame", () => {
 
 describe("editorFrame", () => {
   it("follows the playhead until a region exists", () => {
-    expect(editorFrame(points({}), FILE, 100)).toEqual({ from: 85, to: 115 });
+    expect(editorFrame(points({}), FILE, 100)).toEqual({ from: 70, to: 130 });
     expect(editorFrame(points({ fade_in_ms: 5000 }), FILE, null)).toEqual({
       from: 0,
-      to: 30,
+      to: 60,
     });
   });
 
   it("frames the region once Cue In or Cue Out is set", () => {
     expect(
       editorFrame(points({ cue_in_ms: 100_000, cue_out_ms: 108_000 }), FILE, 5),
-    ).toEqual({ from: 98, to: 110 });
+    ).toEqual({ from: 95, to: 113 });
   });
 });
 
