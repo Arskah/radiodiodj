@@ -282,6 +282,13 @@ instead of fighting it. See
 existing `sink.empty()` → `:ended` path ends a trimmed track with no new
 termination logic. `next_start_ms` is what triggers handover on the program bus.
 
+The two paths never both advance: handover wins whenever one was armed and
+ready, and `:ended` advances only when it was not. A null `next_start_ms`
+resolves to `cueOut`, so an unprepped track fires the handover tick as its sink
+empties and the outgoing deck runs dry within a tick — audibly the hard cut it
+has always been. See
+[program-bus.md](./program-bus.md#transport-during-an-overlap).
+
 ### Accurate seek
 
 A cue point placed on a transient must sound identical on every airing.

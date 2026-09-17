@@ -101,12 +101,20 @@ The mixer summing every on-air Deck into the main output device. One output stre
 _Avoid_: Master, output, PGM
 
 **Deck role**:
-What a Deck is doing right now: `main` (on air, defines Now playing) or `arm` (loaded, awaiting Handover). Roles move between decks; decks do not move between roles.
+What a Deck is doing right now: `main` (on air, defines Now playing), `arm` (loaded with the next Playlist item, awaiting Handover) or `tail` (handed over, playing out the outgoing track's Overlap). Roles move between decks; decks do not move between roles.
 _Avoid_: A deck, B deck, slot
 
 **Main deck**:
 The Deck currently holding the `main` role. Its output is what listeners hear. A role, not a fixed deck.
 _Avoid_: Program deck, A deck
+
+**Tail deck**:
+The Deck holding the `tail` role: the outgoing track after Handover, still audible on the Program bus but no longer Now playing. Vacated at its Cue out, at which point it becomes the arm Deck.
+_Avoid_: Outgoing deck, old deck, B deck
+
+**Overlap**:
+The span between Handover and the outgoing track's Cue out, during which the Main deck and the Tail deck are both audible.
+_Avoid_: Crossfade, blend
 
 **Cue deck**:
 Off-air deck on a separate output device, used to audition a track and its Cue points. Never on the Program bus.
@@ -200,6 +208,7 @@ _Avoid_: Persist, sync
 - Only music tracks advance the **Interleave** counters
 - Every on-air **Deck** feeds the **Program bus**; the **Cue deck** does not
 - Exactly one **Deck** holds the `main` **Deck role** at a time; **Handover** moves it
+- Two program **Decks** means no **Deck** is armed during an **Overlap**: the **Tail deck** becomes the arm **Deck** when it is vacated, and only then is the following **Playlist** item loaded
 - A **Track** may carry a **Radio edit**; a **Playlist** item may carry an **Item override** that wins for that airing
 - **Air time** derives from the **Cue points** that apply to an airing, not from the **Track**'s file duration
 - A **Library check** predicts what the next **Scan** would do; only the **Scan** applies it, and only **Purge** deletes
