@@ -69,6 +69,8 @@ const DEFAULT_TUNING: TuningConfig = {
     readWatchdogTimeoutMs: 10000,
     openRetryIntervalMs: 2000,
     readRetryBackoffsMs: [500, 1000, 2000],
+    fadeOutMs: 4000,
+    fadeToNextMs: 2500,
   },
   library: { checkIntervalMin: 15, writeTags: false, tagWriteTimeoutSec: 30 },
 };
@@ -127,6 +129,11 @@ export class AppState {
   // that carried one. Mirrored from the snapshot like everything else here.
   currentCueOverride = $state<CuePoints | null>(null);
   currentTrack = $state<Track | null>(null);
+  // Which live fade is running, for the button that started it. The ramp itself
+  // is the backend's; this only drives the progress the operator sees, animated
+  // locally over `fadeMs` rather than stepped over IPC.
+  fading = $state<"out" | "next" | null>(null);
+  fadeMs = $state(0);
   autoPlaylistActive = $state(false);
   autoAdvance = $state(true);
   // History is the renderer's own: a display log, fed by the `displaced` track
@@ -244,6 +251,9 @@ export class AppState {
       switch (event.type) {
         case "pause-state":
           this.isPlaying = !event.paused;
+          // A fade that reached silence stopped the deck; so did anything else
+          // that paused it. Either way there is no ramp left to show.
+          if (event.paused) this.fading = null;
           break;
         case "time":
           this.currentTime = event.seconds;
@@ -563,6 +573,9 @@ export class AppState {
    * waveform and artwork of an unchanged track would flash the deck.
    */
   private onCurrentChanged(track: Track | null): void {
+    // A fade to next is over the moment the incoming track is on air: the ramp
+    // that is still running belongs to the tail, not to the transport.
+    this.fading = null;
     this.currentTime = 0;
     if (!track) {
       this.duration = 0;
@@ -634,6 +647,9 @@ export class AppState {
   }
 
   togglePlay(): void {
+    // Play is how a fade is aborted: the backend cancels the ramp, so the
+    // button must stop showing one.
+    this.fading = null;
     if (!this.currentTrack) {
       if (this.playlist.length > 0) this.playIndex(0);
       return;
@@ -648,14 +664,45 @@ export class AppState {
   }
 
   stop(): void {
+    this.fading = null;
     this.send(api.playlistStop());
   }
 
   next(): void {
+    this.fading = null;
     this.send(api.playlistNext());
   }
 
+  /**
+   * Ramp the on-air deck to silence, then stop. Pressing again while the ramp
+   * runs finishes it immediately — mid-fade, the operator wants it gone, not
+   * restarted.
+   */
+  fadeOut(): void {
+    const finishing = this.fading === "out";
+    this.send(api.mainDeckFadeOut(finishing ? 0 : undefined));
+    if (finishing) {
+      this.fading = null;
+      return;
+    }
+    this.fading = "out";
+    this.fadeMs = this.tuning.player.fadeOutMs;
+  }
+
+  /** Start the next item now and fade this one out underneath it. */
+  fadeToNext(): void {
+    const finishing = this.fading === "next";
+    this.send(api.mainDeckFadeToNext(finishing ? 0 : undefined));
+    if (finishing) {
+      this.fading = null;
+      return;
+    }
+    this.fading = "next";
+    this.fadeMs = this.tuning.player.fadeToNextMs;
+  }
+
   prev(): void {
+    this.fading = null;
     if (this.currentTrack && this.currentTime > 3) {
       this.currentTime = 0;
       void this.backend.seek(0);

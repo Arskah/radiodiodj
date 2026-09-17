@@ -1,8 +1,17 @@
 <script lang="ts">
   import { app, formatSpan, formatTime } from "../../shared/state.svelte";
+  import { isTrackItem } from "../../shared/types";
   import Waveform from "./Waveform.svelte";
   import MissingBadge from "../track/MissingBadge.svelte";
   import defaultCover from "../../assets/radiodiodi_label.svg";
+
+  // Something to fade *to*: the next queued item is a track, or the
+  // auto-playlist will produce one. A stop marker next means the show ends
+  // here, which is Fade out's job, not this button's.
+  const canFadeToNext = $derived(
+    app.autoPlaylistActive ||
+      (app.playlist.length > 0 && isTrackItem(app.playlist[0])),
+  );
 
   let progressBar: HTMLDivElement;
   let hoverPct = $state<number | null>(null);
@@ -105,6 +114,45 @@
           onclick={() => app.next()}
         >
           <span class="material-symbols-outlined">skip_next</span>
+        </button>
+      </div>
+      <!-- Deliberately its own group, a gap away from the hard transport: a
+           fade must never be one mis-click from a cut. Smaller and labelled,
+           so it never reads as another transport button. -->
+      <div id="fade-controls" role="group" aria-label="Fades">
+        <button
+          id="btn-fade-out"
+          class="fade-btn"
+          class:ramping={app.fading === "out"}
+          style:--fade-ms="{app.fadeMs}ms"
+          disabled={!app.currentTrack}
+          title={app.fading === "out"
+            ? "Finish the fade now"
+            : "Fade to silence, then stop"}
+          onclick={() => app.fadeOut()}
+        >
+          <span class="fade-fill" aria-hidden="true"></span>
+          <span class="material-symbols-outlined" aria-hidden="true"
+            >trending_down</span
+          >
+          <span class="fade-label">Fade out</span>
+        </button>
+        <button
+          id="btn-fade-next"
+          class="fade-btn"
+          class:ramping={app.fading === "next"}
+          style:--fade-ms="{app.fadeMs}ms"
+          disabled={!app.currentTrack || !canFadeToNext}
+          title={app.fading === "next"
+            ? "Finish the fade now"
+            : "Start the next item and fade this one out underneath it"}
+          onclick={() => app.fadeToNext()}
+        >
+          <span class="fade-fill" aria-hidden="true"></span>
+          <span class="material-symbols-outlined" aria-hidden="true"
+            >multiple_stop</span
+          >
+          <span class="fade-label">Fade next</span>
         </button>
       </div>
       <div

@@ -31,6 +31,12 @@ pub const ROLES_EVENT: &str = "program:roles";
 /// the outgoing track handed to history.
 pub const HANDOVER_EVENT: &str = "program:handover";
 
+/// Topic a completed fade to silence on the `main` role is announced on. The
+/// playlist takes the track off air when it fires, so a fade-out leaves exactly
+/// the state Stop leaves — without it the engine would still believe the silent
+/// track was playing, and the next Play would resume a deck with nothing on it.
+pub const FADED_OUT_EVENT: &str = "program:faded-out";
+
 pub struct ProgramBus {
     tx: Sender<(DeckRole, Cmd)>,
     /// Mirrors the last `pause-state` the `main` role emitted, whichever deck
@@ -68,6 +74,7 @@ impl ProgramBus {
                 events,
                 roles_topic: Some(ROLES_EVENT),
                 handover_topic: Some(HANDOVER_EVENT),
+                faded_out_topic: Some(FADED_OUT_EVENT),
             };
             if let Err(e) = run(app.clone(), rx, output, set, cache, tuning) {
                 log::error!("program bus thread exited: {}", e);

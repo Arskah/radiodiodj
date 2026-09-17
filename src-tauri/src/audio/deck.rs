@@ -27,7 +27,7 @@ use super::cue_points::{CuePoints, Resolved};
 use super::output::Output;
 use super::player::{
     append_span, clamp_start, decode_bytes, read_file, read_with_retry, Bytes, Cmd, PlayerTuning,
-    Topics,
+    RampDone, Topics,
 };
 
 const TICK_INTERVAL: Duration = Duration::from_millis(50);
@@ -71,7 +71,49 @@ fn tail_companion(cmd: &Cmd) -> Option<TailAction> {
         Cmd::Pause => Some(TailAction::Pause),
         Cmd::Play => Some(TailAction::Resume),
         Cmd::Seek(_) | Cmd::SetVolume(_) => None,
+        // A fade is an explicit change to what is on air, but not yet: cutting
+        // the tail here would leave it silent for the length of the ramp while
+        // `main` was still audible. The tail is faded alongside and cut when
+        // the ramp completes — see [`fade_main`].
+        Cmd::Fade { .. } => None,
+        // Handled before dispatch; it never reaches a single deck.
+        Cmd::HandOverNow { .. } => None,
     }
+}
+
+/// A live gain ramp on one deck: "from here, to `to`, over `ms`".
+///
+/// Deliberately distinct from a track's stored fades, which are keyed on file
+/// position and applied at the source (`audio/envelope.rs`). This is a deck
+/// control, so the two compose by multiplication instead of fighting over one
+/// value.
+#[derive(Clone, Copy, Debug)]
+struct Ramp {
+    from: f32,
+    to: f32,
+    started: Instant,
+    ms: u64,
+    on_complete: Option<RampDone>,
+}
+
+/// Gain part-way through a ramp, and whether it has finished.
+///
+/// Linear, matching the stored envelope's own curve (`envelope::gain_at`): the
+/// live ramp and a track's stored fade-in have unrelated durations, so there is
+/// no symmetric crossfade for an equal-power law to preserve — one curve
+/// convention across the codebase is worth more.
+///
+/// Pure so the interpolation is testable without an audio device, the way
+/// [`handover_due`] and [`watchdog_timed_out`] are.
+fn ramp_gain(from: f32, to: f32, elapsed: Duration, ms: u64) -> (f32, bool) {
+    if ms == 0 {
+        return (to, true);
+    }
+    let t = elapsed.as_secs_f32() / (ms as f32 / 1000.0);
+    if t >= 1.0 {
+        return (to, true);
+    }
+    (from + (to - from) * t, false)
 }
 
 /// Whether the deck holding `main` should hand over on this tick: it has
@@ -165,6 +207,12 @@ pub(super) struct Deck {
     /// `Load` and `Stop`; background reads carry the token they were issued for.
     generation: u64,
     volume: f32,
+    /// Live ramp gain, multiplied into `volume` on its way to the sink. `1.0`
+    /// whenever no fade is running, which every transport command restores —
+    /// so a deck can never be left quiet for the next track.
+    gain: f32,
+    /// The ramp currently stepping `gain`, if any.
+    ramp: Option<Ramp>,
     /// A load deferred because no audio output could be opened. The idle loop
     /// retries the open and replays this load once a device is available (#259).
     pending_load: Option<PendingLoad>,
@@ -189,11 +237,21 @@ impl Deck {
             load_start: None,
             generation: 0,
             volume: 1.0,
+            gain: 1.0,
+            ramp: None,
             pending_load: None,
             last_time_emit: Instant::now()
                 .checked_sub(TIME_EMIT_INTERVAL)
                 .unwrap_or_else(Instant::now),
         }
+    }
+
+    /// What the sink is actually set to: the operator's deck volume scaled by
+    /// any live ramp. Every `set_volume` goes through here, so a sink rebuilt
+    /// mid-fade (an output reopen, a seek) resumes at the ramp's level instead
+    /// of jumping back to full.
+    fn effective_volume(&self) -> f32 {
+        (self.volume * self.gain).clamp(0.0, 1.0)
     }
 
     /// Connect to the mixer if this deck has no live sink. A sink built against
@@ -204,7 +262,7 @@ impl Deck {
         }
         if self.sink.is_none() {
             let sink = Sink::connect_new(mixer);
-            sink.set_volume(self.volume);
+            sink.set_volume(self.effective_volume());
             self.sink = Some(sink);
             self.sink_generation = generation;
         }
@@ -217,9 +275,49 @@ impl Deck {
             sink.stop();
         }
         let sink = Sink::connect_new(mixer);
-        sink.set_volume(self.volume);
+        sink.set_volume(self.effective_volume());
         self.sink = Some(sink);
         self.sink_generation = generation;
+    }
+
+    /// Start a ramp from wherever the gain is now.
+    fn start_ramp(&mut self, to: f32, ms: u64, on_complete: Option<RampDone>) {
+        self.ramp = Some(Ramp {
+            from: self.gain,
+            to: to.clamp(0.0, 1.0),
+            started: Instant::now(),
+            ms,
+            on_complete,
+        });
+    }
+
+    /// Step a running ramp and apply the new gain. Returns what the ramp asked
+    /// to happen once it finished, which the caller runs — completion needs the
+    /// whole deck set (a stop cuts the tail too), not just this deck.
+    fn step_ramp(&mut self, now: Instant) -> Option<Option<RampDone>> {
+        let ramp = self.ramp?;
+        let (gain, done) = ramp_gain(ramp.from, ramp.to, now - ramp.started, ramp.ms);
+        self.gain = gain;
+        if let Some(sink) = self.sink.as_ref() {
+            sink.set_volume(self.effective_volume());
+        }
+        if !done {
+            return None;
+        }
+        self.ramp = None;
+        Some(ramp.on_complete)
+    }
+
+    /// Abandon any ramp and restore full gain. Every transport command does
+    /// this before acting: a fade is only ever the most recent intent.
+    fn cancel_ramp(&mut self) {
+        if self.ramp.take().is_none() && self.gain == 1.0 {
+            return;
+        }
+        self.gain = 1.0;
+        if let Some(sink) = self.sink.as_ref() {
+            sink.set_volume(self.effective_volume());
+        }
     }
 
     /// Drop everything about the loaded track. Shared by `Stop` and by every
@@ -236,6 +334,7 @@ impl Deck {
         self.current_bytes = None;
         self.seek_offset = 0.0;
         self.pending_load = None;
+        self.cancel_ramp();
     }
 }
 
@@ -270,6 +369,10 @@ pub(super) struct DeckSet {
     /// Topic a move of the `main` role is announced on, or `None` for a worker
     /// that never hands over.
     pub handover_topic: Option<&'static str>,
+    /// Topic a completed fade to silence on `main` is announced on, so the
+    /// playlist can take the track off air. `None` for a worker whose decks
+    /// nothing else owns (the cue deck).
+    pub faded_out_topic: Option<&'static str>,
 }
 
 /// Emit a pause-state change and record it on the role's `playing` mirror.
@@ -437,6 +540,9 @@ fn apply(
     deck_index: usize,
     cmd: Cmd,
 ) {
+    if cancels_ramp(&cmd) {
+        deck.cancel_ramp();
+    }
     match cmd {
         Cmd::Load {
             id,
@@ -485,18 +591,7 @@ fn apply(
             }
             set_pause_state(app, events, true);
         }
-        Cmd::Stop => {
-            if let Some((mixer, generation)) = output.current() {
-                deck.replace_sink(&mixer, generation);
-            }
-            // Invalidate any in-flight read.
-            deck.generation = deck.generation.wrapping_add(1);
-            deck.reset();
-            // Stop cancels a deferred load too — the user no longer wants it.
-            output.clear_retry();
-            let _ = app.emit(&events.topics.buffering, false);
-            set_pause_state(app, events, true);
-        }
+        Cmd::Stop => stop_deck(app, output, deck, events),
         Cmd::Seek(s) => {
             // Air seconds in, absolute file position out — the caller neither
             // knows nor needs to know where the track's audio really starts.
@@ -532,14 +627,52 @@ fn apply(
             }
         }
         Cmd::SetVolume(v) => {
-            let clamped = v.clamp(0.0, 1.0);
-            deck.volume = clamped;
+            deck.volume = v.clamp(0.0, 1.0);
             // Remembered on the deck and applied when its sink next connects.
+            // A running ramp is left alone: it scales whatever the operator
+            // sets, so the two compose instead of racing.
             if let Some(sink) = deck.sink.as_ref() {
-                sink.set_volume(clamped);
+                sink.set_volume(deck.effective_volume());
             }
         }
+        Cmd::Fade {
+            to,
+            ms,
+            on_complete,
+        } => {
+            // A second fade restarts the ramp from the level reached so far,
+            // so repeated presses never step back up.
+            deck.start_ramp(to, ms, on_complete);
+        }
+        // Intercepted by the worker before dispatch; it acts on two decks.
+        Cmd::HandOverNow { .. } => {}
     }
+}
+
+/// Which commands abandon a running ramp. Everything that changes what the deck
+/// is doing does; the two that only re-aim it — a further fade, and the
+/// operator's own volume, which a ramp multiplies — do not.
+fn cancels_ramp(cmd: &Cmd) -> bool {
+    match cmd {
+        Cmd::Load { .. } | Cmd::Play | Cmd::Pause | Cmd::Stop | Cmd::Seek(_) => true,
+        Cmd::SetVolume(_) | Cmd::Fade { .. } | Cmd::HandOverNow { .. } => false,
+    }
+}
+
+/// Tear the deck down to nothing loaded. Shared by [`Cmd::Stop`] and by a ramp
+/// that completes with [`RampDone::Stop`], which must land in exactly the same
+/// state — the fade is only how the deck got quiet, not what happened to it.
+fn stop_deck(app: &AppHandle, output: &mut Output, deck: &mut Deck, events: &DeckEvents) {
+    if let Some((mixer, generation)) = output.current() {
+        deck.replace_sink(&mixer, generation);
+    }
+    // Invalidate any in-flight read.
+    deck.generation = deck.generation.wrapping_add(1);
+    deck.reset();
+    // Stop cancels a deferred load too — the user no longer wants it.
+    output.clear_retry();
+    let _ = app.emit(&events.topics.buffering, false);
+    set_pause_state(app, events, true);
 }
 
 /// Handle a completed background read. Stale results (superseded by a newer
@@ -727,6 +860,50 @@ fn hand_over(
     }
 }
 
+/// Whether a handover can be forced right now: something armed and decoded to
+/// hand over *to*, and no tail already playing — a third audible track is not
+/// something the bus is built to mix, and the engine never arms during an
+/// overlap anyway, so this only ever declines what it should.
+fn hand_over_now_allowed(arm_ready: bool, tail_present: bool) -> bool {
+    arm_ready && !tail_present
+}
+
+/// Start the next item now and fade the outgoing track out underneath it: the
+/// same role swap [`hand_over`] performs at `next_start`, fired on operator
+/// command, with a ramp on the deck it leaves behind.
+///
+/// When it cannot overlap — nothing armed and decoded, or a tail already
+/// playing — the outgoing track is faded out and *ended* instead, so the
+/// playlist advances under the rules it applies at any other end of track. The
+/// caller checks the same condition before sending, but it can go stale between
+/// the check and this tick, and a transport button that silently does nothing
+/// is worse than one that fades.
+///
+/// The engine needs no special case either way: it reconciles against
+/// `program:handover`, or against the track ending.
+fn hand_over_now(
+    app: &AppHandle,
+    decks: &mut [Deck],
+    events: &[DeckEvents],
+    topic: Option<&'static str>,
+    fade_ms: u64,
+) {
+    let Some(m) = decks.iter().position(|d| d.role == DeckRole::Main) else {
+        return;
+    };
+    let armed = decks.iter().position(|d| d.role == DeckRole::Arm);
+    let tail_present = decks.iter().any(|d| d.role == DeckRole::Tail);
+    let arm_ready = armed.is_some_and(|a| decks[a].active && !decks[a].loading);
+    match armed.filter(|_| hand_over_now_allowed(arm_ready, tail_present)) {
+        Some(arm) => {
+            hand_over(app, decks, events, topic, m, arm);
+            // `hand_over` has just made this deck the tail.
+            decks[m].start_ramp(0.0, fade_ms, Some(RampDone::Stop));
+        }
+        None => decks[m].start_ramp(0.0, fade_ms, Some(RampDone::EndTrack)),
+    }
+}
+
 /// Silence a tail deck and hand the slot back as the armed one. Used by every
 /// explicit operator action that changes what is on air, and by the rule that a
 /// tail dies with the track that displaced it.
@@ -766,6 +943,7 @@ pub(super) fn run(
         events,
         roles_topic,
         handover_topic,
+        faded_out_topic,
     } = set;
     // Completed background reads arrive here; `load_tx` is cloned per read.
     let (load_tx, load_rx) = channel::<LoadMsg>();
@@ -778,6 +956,14 @@ pub(super) fn run(
         loop {
             match rx.try_recv() {
                 Ok((role, cmd)) => {
+                    // The one command that acts on two decks, so it never goes
+                    // through `apply`. Declined when nothing is armed and
+                    // decoded or a tail is already playing — the caller falls
+                    // back to a fade-out plus a plain next.
+                    if let Cmd::HandOverNow { fade_ms } = cmd {
+                        hand_over_now(&app, &mut decks, &events, handover_topic, fade_ms);
+                        continue;
+                    }
                     let Some(i) = decks.iter().position(|d| d.role == role) else {
                         continue;
                     };
@@ -785,6 +971,14 @@ pub(super) fn run(
                     let companion = (role == DeckRole::Main)
                         .then(|| tail_companion(&cmd))
                         .flatten();
+                    // A fade aimed at `main` takes any tail with it: fading one
+                    // of two audible tracks to silence is not what the operator
+                    // asked for. The tail's own ramp ends in a stop, and the
+                    // vacate rule below hands the slot back as the armed one.
+                    let fade_tail = match (role, &cmd) {
+                        (DeckRole::Main, Cmd::Fade { to, ms, .. }) => Some((*to, *ms)),
+                        _ => None,
+                    };
                     apply(
                         &app,
                         &mut output,
@@ -816,6 +1010,11 @@ pub(super) fn run(
                                     set_pause_state(&app, tail_events, false);
                                 }
                             }
+                        }
+                    }
+                    if let Some((to, ms)) = fade_tail {
+                        if let Some(t) = decks.iter().position(|d| d.role == DeckRole::Tail) {
+                            decks[t].start_ramp(to, ms, Some(RampDone::Stop));
                         }
                     }
                 }
@@ -896,6 +1095,33 @@ pub(super) fn run(
             }
         }
 
+        // Step any live fade. A ramp that ends in a stop tears its deck down
+        // here rather than in the dispatch loop, so a fade-out lands in exactly
+        // the state an immediate `Stop` would have left.
+        let mut main_ended = false;
+        for deck in decks.iter_mut() {
+            let Some(on_complete) = deck.step_ramp(now) else {
+                continue;
+            };
+            let Some(done) = on_complete else { continue };
+            let role_index = deck.role as usize;
+            let on_main = deck.role == DeckRole::Main;
+            if done == RampDone::EndTrack {
+                let _ = app.emit(&events[role_index].topics.ended, ());
+                main_ended |= on_main;
+            }
+            stop_deck(&app, &mut output, deck, &events[role_index]);
+            // A fade to silence on air is a Stop the operator asked for slowly:
+            // whoever owns the playlist has to hear about it, or it goes on
+            // believing a silent deck is playing. A tail fading out under an
+            // incoming track is not that, and says nothing.
+            if done == RampDone::Stop && on_main {
+                if let Some(topic) = faded_out_topic {
+                    let _ = app.emit(topic, ());
+                }
+            }
+        }
+
         // Handover, checked before ended detection so a track whose next start
         // is its cue out segues rather than hard-cutting: the two paths must
         // never both advance the playlist.
@@ -918,7 +1144,6 @@ pub(super) fn run(
         }
 
         // Time + ended detection are only meaningful with a live sink.
-        let mut main_ended = false;
         for deck in decks.iter_mut() {
             let Some((pos, empty)) = deck
                 .sink
@@ -1135,6 +1360,111 @@ mod tests {
         assert_eq!(tail_companion(&Cmd::Play), Some(TailAction::Resume));
         assert_eq!(tail_companion(&Cmd::Seek(12.0)), None);
         assert_eq!(tail_companion(&Cmd::SetVolume(0.5)), None);
+    }
+
+    fn fade(ms: u64) -> Cmd {
+        Cmd::Fade {
+            to: 0.0,
+            ms,
+            on_complete: Some(RampDone::Stop),
+        }
+    }
+
+    /// A fade must not cut the tail when it starts: the tail is ramped
+    /// alongside and torn down when the ramp completes, so the two stay
+    /// audible together for the length of the fade.
+    #[test]
+    fn a_fade_does_not_cut_the_tail_up_front() {
+        assert_eq!(tail_companion(&fade(3000)), None);
+        assert_eq!(tail_companion(&Cmd::HandOverNow { fade_ms: 3000 }), None);
+    }
+
+    #[test]
+    fn ramp_interpolates_linearly_between_its_endpoints() {
+        assert_eq!(ramp_gain(1.0, 0.0, Duration::ZERO, 1000).0, 1.0);
+        assert_eq!(
+            ramp_gain(1.0, 0.0, Duration::from_millis(250), 1000).0,
+            0.75
+        );
+        assert_eq!(ramp_gain(1.0, 0.0, Duration::from_millis(500), 1000).0, 0.5);
+        // A ramp starting part-way down — a second press mid-fade — carries on
+        // from where it was rather than stepping back up.
+        assert_eq!(
+            ramp_gain(0.5, 0.0, Duration::from_millis(500), 1000).0,
+            0.25
+        );
+    }
+
+    #[test]
+    fn ramp_completes_exactly_on_its_target() {
+        let (gain, done) = ramp_gain(1.0, 0.0, Duration::from_millis(1000), 1000);
+        assert_eq!(gain, 0.0);
+        assert!(done);
+        // Overshoot — a tick that lands late — never runs past the target.
+        let (gain, done) = ramp_gain(1.0, 0.0, Duration::from_secs(30), 1000);
+        assert_eq!(gain, 0.0);
+        assert!(done);
+    }
+
+    /// A zero-length fade is a cut, not a division by zero.
+    #[test]
+    fn a_zero_length_ramp_lands_immediately() {
+        let (gain, done) = ramp_gain(1.0, 0.0, Duration::ZERO, 0);
+        assert_eq!(gain, 0.0);
+        assert!(done);
+    }
+
+    /// Anything that changes what the deck is doing abandons the ramp; the two
+    /// that only re-aim it do not. Without this a faded-out deck could be left
+    /// quiet for the track that follows.
+    #[test]
+    fn transport_commands_cancel_a_ramp() {
+        assert!(cancels_ramp(&Cmd::Play));
+        assert!(cancels_ramp(&Cmd::Pause));
+        assert!(cancels_ramp(&Cmd::Stop));
+        assert!(cancels_ramp(&Cmd::Seek(3.0)));
+        assert!(cancels_ramp(&Cmd::Load {
+            id: 1,
+            path: PathBuf::new(),
+            duration: None,
+            cue_points: CuePoints::default(),
+            start_at: 0.0,
+            autoplay: true,
+        }));
+        assert!(!cancels_ramp(&Cmd::SetVolume(0.5)));
+        assert!(!cancels_ramp(&fade(3000)));
+    }
+
+    /// The ramp scales the operator's volume rather than replacing it, so a
+    /// sink rebuilt mid-fade resumes at the faded level.
+    #[test]
+    fn the_ramp_multiplies_the_deck_volume() {
+        let mut deck = Deck::new(DeckSlot::A, DeckRole::Main);
+        deck.volume = 0.5;
+        assert_eq!(deck.effective_volume(), 0.5);
+        deck.gain = 0.5;
+        assert_eq!(deck.effective_volume(), 0.25);
+        deck.cancel_ramp();
+        assert_eq!(deck.effective_volume(), 0.5, "volume survives the fade");
+    }
+
+    #[test]
+    fn stepping_a_ramp_reports_completion_once() {
+        let mut deck = Deck::new(DeckSlot::A, DeckRole::Main);
+        deck.start_ramp(0.0, 0, Some(RampDone::Stop));
+        assert_eq!(deck.step_ramp(Instant::now()), Some(Some(RampDone::Stop)));
+        assert_eq!(deck.gain, 0.0);
+        assert!(deck.step_ramp(Instant::now()).is_none(), "ramp is spent");
+    }
+
+    /// Forcing a handover needs something decoded to hand over *to*, and must
+    /// refuse while a tail is playing: a third audible track is not something
+    /// the bus is built to mix.
+    #[test]
+    fn a_forced_handover_needs_an_armed_deck_and_no_tail() {
+        assert!(hand_over_now_allowed(true, false));
+        assert!(!hand_over_now_allowed(false, false));
+        assert!(!hand_over_now_allowed(true, true));
     }
 
     /// Roles address events, so a third `DeckEvents` has to exist for the

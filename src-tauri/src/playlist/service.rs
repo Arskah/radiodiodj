@@ -18,7 +18,7 @@ use tauri::{AppHandle, Emitter, Listener};
 use super::engine::{Effect, Playlist, Refiller, Transition};
 use super::generate;
 use super::model::{PlaylistItem, Snapshot};
-use crate::audio::bus::{ProgramBus, HANDOVER_EVENT};
+use crate::audio::bus::{ProgramBus, FADED_OUT_EVENT, HANDOVER_EVENT};
 use crate::audio::cache::Cache;
 use crate::audio::cue_points::CuePoints;
 use crate::audio::player::Cmd;
@@ -137,6 +137,15 @@ impl PlaylistService {
                 return;
             };
             Inner::apply(&handover, move |p, r| p.on_handover(moved.to, r));
+        });
+
+        // A fade to silence finished on air. It is a Stop the operator asked
+        // for slowly, so it takes the track off air exactly as Stop does —
+        // otherwise the engine keeps believing a silent deck is playing and the
+        // next Play resumes nothing.
+        let faded = Arc::clone(&self.inner);
+        app.listen(FADED_OUT_EVENT, move |_| {
+            Inner::apply(&faded, |p, _| p.stop());
         });
 
         // The tail is gone, so the deck it held can be armed again.
