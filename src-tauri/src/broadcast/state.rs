@@ -5,7 +5,8 @@ use super::payload::{BroadcastTrack, Payload};
 /// Pure FSM tracking what the broadcast service has last announced.
 ///
 /// Inputs come from `BroadcastService` after listening to Tauri events:
-/// - `set_pending(track)` — called from `main_deck_load` with the track about to play.
+/// - `set_pending(track)` — the track about to play on the main deck.
+/// - `on_air(track)` — a handover put a track on air with no load of its own.
 /// - `on_pause_state(paused)` — main deck pause-state transitions.
 /// - `on_ended()` — main deck track ended naturally.
 /// - `on_shutdown()` — app quit; fire final stop if currently playing.
@@ -30,6 +31,22 @@ impl State {
 
     pub fn set_pending(&mut self, track: BroadcastTrack) {
         self.pending = Some(track);
+    }
+
+    /// A track went on air without a load having just happened: the `main` role
+    /// moved to a deck that was already playing.
+    ///
+    /// The one input that says "this is on air" outright. Pause-state is an
+    /// inference, and at a handover it is a race — the bus worker emits the
+    /// swap's pause-state before the playlist engine has reconciled — so the
+    /// handover says so itself instead.
+    pub fn on_air(&mut self, track: BroadcastTrack, now: DateTime<Utc>) -> Effect {
+        self.pending = Some(track.clone());
+        if self.announced_track_id == Some(track.id) {
+            return Effect::None;
+        }
+        self.announced_track_id = Some(track.id);
+        Effect::Fire(Payload::now_playing(track, now))
     }
 
     pub fn on_pause_state(&mut self, paused: bool, now: DateTime<Utc>) -> Effect {

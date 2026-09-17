@@ -51,6 +51,13 @@
           >{app.currentTrack ? app.currentTrack.title : "No Track Loaded"}</span
         >
         <span id="np-artist">{app.currentTrack?.artist ?? ""}</span>
+        {#if app.tailTrack}
+          <span
+            class="tail-line"
+            title="Handed over — still playing out underneath, until its cue out"
+            >⤵ {app.tailTrack.title} · −{formatSpan(app.tailRemaining)}</span
+          >
+        {/if}
         {#if app.isBuffering}
           <!-- Shimmer on the progress bar is the visual cue; keep a
                screen-reader-only announcement since CSS is invisible to AT. -->

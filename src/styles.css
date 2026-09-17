@@ -512,6 +512,21 @@ body {
   white-space: nowrap;
 }
 
+/* The outgoing track of a handover, while both are still audible. Quieter than
+   the artist line: it is what just left the air, not what is on it. */
+.tail-line {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  color: var(--on-surface-variant);
+  opacity: 0.8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .deck-header-controls {
   display: flex;
   align-items: center;

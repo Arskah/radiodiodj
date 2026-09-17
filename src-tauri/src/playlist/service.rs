@@ -18,15 +18,22 @@ use tauri::{AppHandle, Emitter, Listener};
 use super::engine::{Effect, Playlist, Refiller, Transition};
 use super::generate;
 use super::model::{PlaylistItem, Snapshot};
-use crate::audio::bus::ProgramBus;
+use crate::audio::bus::{ProgramBus, HANDOVER_EVENT};
 use crate::audio::cache::Cache;
 use crate::audio::cue_points::CuePoints;
 use crate::audio::player::Cmd;
 use crate::broadcast::BroadcastService;
-use crate::library::db::{Db, Track};
+use crate::library::db::{Db, Track, TrackLoadInfo};
 use crate::library::health::HEALTH_EVENT;
 use crate::persist::config::Config;
 use crate::persist::session::SessionState;
+
+/// The part of `program:handover` the playlist needs: the incoming track. The
+/// outgoing one is already on record as `current`.
+#[derive(serde::Deserialize)]
+struct HandoverEvent {
+    to: i64,
+}
 
 /// The part of the library health report the playlist needs.
 #[derive(serde::Deserialize)]
@@ -122,6 +129,20 @@ impl PlaylistService {
         let ended = Arc::clone(&self.inner);
         app.listen("main-deck:ended", move |_| {
             Inner::apply(&ended, |p, r| p.on_ended(r));
+        });
+
+        let handover = Arc::clone(&self.inner);
+        app.listen(HANDOVER_EVENT, move |event| {
+            let Ok(moved) = serde_json::from_str::<HandoverEvent>(event.payload()) else {
+                return;
+            };
+            Inner::apply(&handover, move |p, r| p.on_handover(moved.to, r));
+        });
+
+        // The tail is gone, so the deck it held can be armed again.
+        let tail_ended = Arc::clone(&self.inner);
+        app.listen("tail-deck:ended", move |_| {
+            Inner::apply(&tail_ended, |p, _| p.on_tail_ended());
         });
 
         let failed = Arc::clone(&self.inner);
@@ -324,7 +345,12 @@ impl Inner {
         let (transition, snapshot, window) = {
             let refiller = inner.refiller();
             let mut playlist = inner.playlist.lock();
-            let transition = f(&mut playlist, &refiller);
+            let mut transition = f(&mut playlist, &refiller);
+            // Bringing the arm deck in line follows every transition rather
+            // than each one remembering to ask, for the same reason the
+            // prefetch window does: a queue mutation, a track change and a
+            // refill all move what comes next.
+            transition.effects.extend(playlist.reconcile_arm());
             let snapshot = playlist.snapshot(transition.displaced.clone());
             let window = playlist.prefetch_window();
             (transition, snapshot, window)
@@ -362,6 +388,13 @@ impl Inner {
                 inner.load_deck(*id, *cue_override, *seconds, false);
             }
             Effect::Stop => inner.bus.send_main(Cmd::Stop),
+            Effect::Arm { id, cue_override } => inner.arm_deck(*id, *cue_override),
+            Effect::Disarm => inner.bus.send_arm(Cmd::Stop),
+            Effect::NowPlaying { id, cue_override } => {
+                if let Some(info) = inner.load_info(*id, *cue_override) {
+                    inner.broadcast.went_on_air(info.into());
+                }
+            }
             Effect::TrackPlayed(id) => {
                 if let Err(e) = inner.db.increment_play_count(*id) {
                     log::error!("play count update failed for track {}: {}", id, e);
@@ -374,15 +407,65 @@ impl Inner {
         }
     }
 
-    /// Resolve the track's path and hand it to the main deck. Reports whether the
-    /// load was actually issued, so a missing row does not leave the caller
-    /// sending Play at nothing.
+    /// Park the next playlist item on the arm deck, so a handover has something
+    /// to hand over to.
     ///
+    /// Deliberately does **not** set the broadcast's pending track. An arm-load
+    /// happens minutes before the track goes on air, and now-playing fires on
+    /// `main-deck:pause-state`, so setting it here would broadcast the incoming
+    /// track the moment the operator paused and resumed the *outgoing* one.
+    fn arm_deck(&self, id: i64, cue_override: Option<CuePoints>) {
+        let Some(info) = self.load_info(id, cue_override) else {
+            return;
+        };
+        self.bus.send_arm(Self::load_cmd(&info, 0.0, false));
+    }
+
+    /// Resolve a track's row and fold in the markers this airing plays under.
+    ///
+    /// The item's override if it carries one, the track's radio edit otherwise.
+    /// Resolution happens on the thread that starts the load — the worker is
+    /// handed the markers to apply and never consults the library itself.
+    /// Writing the effective points back onto the load info is also what keeps
+    /// the broadcast's `durationSec` reporting the airing rather than the radio
+    /// edit.
+    fn load_info(&self, id: i64, cue_override: Option<CuePoints>) -> Option<TrackLoadInfo> {
+        let mut info = match self.db.get_track_load_info(id) {
+            Ok(Some(info)) => info,
+            Ok(None) => {
+                log::error!("playlist: track {} is no longer in the library", id);
+                return None;
+            }
+            Err(e) => {
+                log::error!("playlist: track {} lookup failed: {}", id, e);
+                return None;
+            }
+        };
+        if let Some(points) = cue_override {
+            info.cue_points = points;
+        }
+        Some(info)
+    }
+
     /// `start_at` and `autoplay` travel with the load rather than following it
     /// as separate commands: the deck reads the file on a background thread, so
     /// a Seek sent straight after a Load arrives before there is anything to
     /// seek in, and a Play would override a restore that is meant to stay
     /// parked.
+    fn load_cmd(info: &TrackLoadInfo, start_at: f64, autoplay: bool) -> Cmd {
+        Cmd::Load {
+            id: info.id,
+            path: PathBuf::from(info.path.clone()),
+            duration: (info.duration > 0.0).then_some(info.duration),
+            cue_points: info.cue_points,
+            start_at,
+            autoplay,
+        }
+    }
+
+    /// Hand a track to the main deck. Reports whether the load was actually
+    /// issued, so a missing row does not leave the caller sending Play at
+    /// nothing.
     fn load_deck(
         &self,
         id: i64,
@@ -390,38 +473,12 @@ impl Inner {
         start_at: f64,
         autoplay: bool,
     ) -> bool {
-        let mut info = match self.db.get_track_load_info(id) {
-            Ok(Some(info)) => info,
-            Ok(None) => {
-                log::error!("playlist: track {} is no longer in the library", id);
-                return false;
-            }
-            Err(e) => {
-                log::error!("playlist: track {} lookup failed: {}", id, e);
-                return false;
-            }
+        let Some(info) = self.load_info(id, cue_override) else {
+            return false;
         };
-        // The item's override if it carries one, the track's radio edit
-        // otherwise. Resolution happens here, on the thread that starts the
-        // load — the worker is handed the markers to apply and never consults
-        // the library itself. Writing the effective points back onto the load
-        // info is also what keeps the broadcast's `durationSec` reporting the
-        // airing rather than the radio edit.
-        if let Some(points) = cue_override {
-            info.cue_points = points;
-        }
-        let path = PathBuf::from(info.path.clone());
-        let duration = info.duration;
-        let cue_points = info.cue_points;
+        let cmd = Self::load_cmd(&info, start_at, autoplay);
         self.broadcast.set_pending_track(info.into());
-        self.bus.send_main(Cmd::Load {
-            id,
-            path,
-            duration: (duration > 0.0).then_some(duration),
-            cue_points,
-            start_at,
-            autoplay,
-        });
+        self.bus.send_main(cmd);
         true
     }
 

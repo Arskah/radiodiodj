@@ -132,6 +132,12 @@ export class AppState {
   // History is the renderer's own: a display log, fed by the `displaced` track
   // in each snapshot.
   history = $state<Track[]>([]);
+  // The outgoing track of a handover while it is still audible on the program
+  // bus: the tail deck's track and how much of it is left. `null` whenever no
+  // overlap is in progress, which is most of the time.
+  tailTrackId = $state<number | null>(null);
+  tailDuration = $state(0);
+  tailRemaining = $state(0);
   isPlaying = $state(false);
   isBuffering = $state(false);
   volume = $state(1);
@@ -323,6 +329,19 @@ export class AppState {
     });
 
     void api.onPlaylistState((snapshot) => this.applySnapshot(snapshot));
+
+    // The outgoing track of a handover, while it is still audible. Without
+    // this the operator hears two tracks with nothing on screen saying so.
+    void api.onDeckRoles((roles) => {
+      const tail = roles.find((r) => r.role === "tail");
+      this.tailTrackId = tail?.trackId ?? null;
+      if (this.tailTrackId === null) this.tailRemaining = 0;
+    });
+    void api.onTailDuration((seconds) => (this.tailDuration = seconds));
+    void api.onTailTime(
+      (seconds) =>
+        (this.tailRemaining = Math.max(0, this.tailDuration - seconds)),
+    );
     void api.onLibraryHealth((report) => (this.health = report));
     void api.onAdminStateChanged((status) => this.applyAdmin(status));
 
@@ -373,6 +392,19 @@ export class AppState {
     if (!this.currentTrack) return null;
     const rest = Math.max(0, this.duration - this.currentTime);
     return this.autoAdvance ? rest + this.upcomingAirTime : rest;
+  }
+
+  /**
+   * The outgoing track still audible under the one on air, or `null` when no
+   * handover is overlapping. Resolved out of history — where the handover's
+   * `displaced` track has just landed — since `program:roles` carries ids.
+   */
+  get tailTrack(): Track | null {
+    if (this.tailTrackId === null) return null;
+    for (let i = this.history.length - 1; i >= 0; i--) {
+      if (this.history[i].id === this.tailTrackId) return this.history[i];
+    }
+    return null;
   }
 
   // Drives the "Reconnecting…" banner: playback is blocked waiting for the

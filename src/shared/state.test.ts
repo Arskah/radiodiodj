@@ -17,6 +17,9 @@ const { api } = vi.hoisted(() => {
     mainDeckIsPlaying: vi.fn(),
     playlistSync: vi.fn(),
     onPlaylistState: vi.fn(),
+    onDeckRoles: vi.fn(),
+    onTailTime: vi.fn(),
+    onTailDuration: vi.fn(),
     playlistAdd: vi.fn(),
     playlistAddFront: vi.fn(),
     playlistSetItemCuePoints: vi.fn(),
@@ -176,9 +179,31 @@ const known = (id: number): Track => {
   return track;
 };
 
+/**
+ * The program bus' role and tail-deck event streams, captured so a test can
+ * drive a handover overlap the way the worker would.
+ */
+const bus: {
+  roles?: (roles: unknown[]) => void;
+  tailTime?: (seconds: number) => void;
+  tailDuration?: (seconds: number) => void;
+} = {};
+
 function resetApi(): void {
   vi.clearAllMocks();
   library.clear();
+  api.onDeckRoles.mockImplementation((cb: (roles: unknown[]) => void) => {
+    bus.roles = cb;
+    return Promise.resolve(() => {});
+  });
+  api.onTailTime.mockImplementation((cb: (s: number) => void) => {
+    bus.tailTime = cb;
+    return Promise.resolve(() => {});
+  });
+  api.onTailDuration.mockImplementation((cb: (s: number) => void) => {
+    bus.tailDuration = cb;
+    return Promise.resolve(() => {});
+  });
   api.search.mockResolvedValue([]);
   api.trackPlayed.mockResolvedValue(undefined);
   api.mainDeckIsPlaying.mockResolvedValue(false);
@@ -824,6 +849,44 @@ describe("AppState backend events", () => {
   beforeEach(() => {
     resetApi();
     ({ app, mock } = makeApp());
+  });
+
+  it("shows the outgoing track of a handover while it is still audible", () => {
+    app.addToPlaylist(t(1));
+    app.addToPlaylist(t(2));
+    app.playIndex(0);
+    // The handover's snapshot is what puts the outgoing track in history,
+    // which is where its title is resolved from.
+    app.playIndex(0);
+    expect(app.history.at(-1)?.id).toBe(1);
+
+    bus.tailDuration?.(180);
+    bus.roles?.([
+      { slot: "a", role: "tail", trackId: 1 },
+      { slot: "b", role: "main", trackId: 2 },
+    ]);
+    bus.tailTime?.(172);
+
+    expect(app.tailTrack?.id).toBe(1);
+    expect(app.tailRemaining).toBe(8);
+  });
+
+  it("drops the outgoing track the moment the tail is vacated", () => {
+    app.addToPlaylist(t(1));
+    app.addToPlaylist(t(2));
+    app.playIndex(0);
+    app.playIndex(0);
+    bus.tailDuration?.(180);
+    bus.roles?.([{ slot: "a", role: "tail", trackId: 1 }]);
+    expect(app.tailTrack?.id).toBe(1);
+
+    bus.roles?.([
+      { slot: "a", role: "arm", trackId: null },
+      { slot: "b", role: "main", trackId: 2 },
+    ]);
+
+    expect(app.tailTrack).toBeNull();
+    expect(app.tailRemaining).toBe(0);
   });
 
   it("time event mirrors to currentTime", () => {

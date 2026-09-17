@@ -43,12 +43,48 @@ pub enum DeckSlot {
 }
 
 /// What a deck is doing right now. `Main` is on air and defines Now playing;
-/// `Arm` is loaded and waiting to take over.
+/// `Arm` is loaded and waiting to take over; `Tail` has handed over and is
+/// playing the outgoing track out — audible, but no longer Now playing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DeckRole {
     Main,
     Arm,
+    Tail,
+}
+
+/// What a command aimed at the `main` role does to a deck playing a tail under
+/// it: any explicit change to what is on air cuts the tail, and only reaching
+/// its own cue out lets one finish. Seek and volume leave it alone — they act
+/// on the incoming track, which is what `main` means.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TailAction {
+    Cut,
+    Pause,
+    Resume,
+}
+
+fn tail_companion(cmd: &Cmd) -> Option<TailAction> {
+    match cmd {
+        // Next, prev, play-index and play-now all reach the deck as a Load.
+        Cmd::Load { .. } | Cmd::Stop => Some(TailAction::Cut),
+        Cmd::Pause => Some(TailAction::Pause),
+        Cmd::Play => Some(TailAction::Resume),
+        Cmd::Seek(_) | Cmd::SetVolume(_) => None,
+    }
+}
+
+/// Whether the deck holding `main` should hand over on this tick: it has
+/// reached the outgoing track's next start, and there is a deck armed and
+/// decoded to hand over to.
+///
+/// Pure so the trigger is testable without an audio device, the way
+/// [`watchdog_timed_out`] is.
+fn handover_due(pos: f64, next_start: Option<f64>, playing: bool, arm_ready: bool) -> bool {
+    match next_start {
+        Some(at) => playing && arm_ready && pos >= at,
+        None => false,
+    }
 }
 
 /// Where a deck's events go while it holds its current role, and the
@@ -203,6 +239,15 @@ impl Deck {
     }
 }
 
+/// The `program:handover` payload: the `main` role moved from one deck to
+/// another. What the playlist engine reconciles against.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Handover {
+    from: Option<i64>,
+    to: i64,
+}
+
 /// One entry of the `program:roles` snapshot: which slot holds which role, and
 /// what is on it.
 #[derive(Clone, PartialEq, Eq, Serialize)]
@@ -222,6 +267,9 @@ pub(super) struct DeckSet {
     /// Topic for the slot→role snapshot, or `None` for a worker whose decks
     /// have no roles to speak of (the cue deck).
     pub roles_topic: Option<&'static str>,
+    /// Topic a move of the `main` role is announced on, or `None` for a worker
+    /// that never hands over.
+    pub handover_topic: Option<&'static str>,
 }
 
 /// Emit a pause-state change and record it on the role's `playing` mirror.
@@ -630,6 +678,68 @@ fn watchdog_timed_out(
     }
 }
 
+/// Move the `main` role from `main` to the armed deck `arm`, which starts
+/// playing. The outgoing deck becomes the tail: still audible, no longer Now
+/// playing.
+///
+/// `main-deck:duration` and `:time` are re-emitted for the incoming track right
+/// here rather than left to the next tick, so the renderer flips in one go
+/// instead of drawing the outgoing playhead over the incoming track.
+fn hand_over(
+    app: &AppHandle,
+    decks: &mut [Deck],
+    events: &[DeckEvents],
+    topic: Option<&'static str>,
+    main: usize,
+    arm: usize,
+) {
+    let from = decks[main].current_id;
+    let Some(to) = decks[arm].current_id else {
+        return;
+    };
+    decks[main].role = DeckRole::Tail;
+    decks[arm].role = DeckRole::Main;
+
+    if let Some(sink) = decks[arm].sink.as_ref() {
+        sink.play();
+    }
+    set_pause_state(app, &events[DeckRole::Tail as usize], false);
+
+    let incoming = &decks[arm];
+    let main_events = &events[DeckRole::Main as usize];
+    if let Some(d) = incoming.cue.air_duration() {
+        let _ = app.emit(&main_events.topics.duration, d);
+    }
+    let pos = incoming
+        .sink
+        .as_ref()
+        .map(|s| s.get_pos().as_secs_f64())
+        .unwrap_or(0.0);
+    let _ = app.emit(
+        &main_events.topics.time,
+        incoming.cue.air_time(incoming.seek_offset + pos),
+    );
+    set_pause_state(app, main_events, false);
+
+    log::info!("program bus: handover {:?} -> {}", from, to);
+    if let Some(topic) = topic {
+        let _ = app.emit(topic, Handover { from, to });
+    }
+}
+
+/// Silence a tail deck and hand the slot back as the armed one. Used by every
+/// explicit operator action that changes what is on air, and by the rule that a
+/// tail dies with the track that displaced it.
+fn cut_tail(app: &AppHandle, output: &Output, deck: &mut Deck, events: &DeckEvents) {
+    if let Some((mixer, generation)) = output.current() {
+        deck.replace_sink(&mixer, generation);
+    }
+    deck.generation = deck.generation.wrapping_add(1);
+    deck.reset();
+    deck.role = DeckRole::Arm;
+    set_pause_state(app, events, true);
+}
+
 fn role_snapshot(decks: &[Deck]) -> Vec<RoleEntry> {
     decks
         .iter()
@@ -655,6 +765,7 @@ pub(super) fn run(
         mut decks,
         events,
         roles_topic,
+        handover_topic,
     } = set;
     // Completed background reads arrive here; `load_tx` is cloned per read.
     let (load_tx, load_rx) = channel::<LoadMsg>();
@@ -671,6 +782,9 @@ pub(super) fn run(
                         continue;
                     };
                     let role_index = decks[i].role as usize;
+                    let companion = (role == DeckRole::Main)
+                        .then(|| tail_companion(&cmd))
+                        .flatten();
                     apply(
                         &app,
                         &mut output,
@@ -682,6 +796,28 @@ pub(super) fn run(
                         i,
                         cmd,
                     );
+                    if let Some(action) = companion {
+                        if let Some(t) = decks.iter().position(|d| d.role == DeckRole::Tail) {
+                            let tail_events = &events[DeckRole::Tail as usize];
+                            match action {
+                                TailAction::Cut => {
+                                    cut_tail(&app, &output, &mut decks[t], tail_events)
+                                }
+                                TailAction::Pause => {
+                                    if let Some(sink) = decks[t].sink.as_ref() {
+                                        sink.pause();
+                                    }
+                                    set_pause_state(&app, tail_events, true);
+                                }
+                                TailAction::Resume => {
+                                    if let Some(sink) = decks[t].sink.as_ref() {
+                                        sink.play();
+                                    }
+                                    set_pause_state(&app, tail_events, false);
+                                }
+                            }
+                        }
+                    }
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => return Ok(()),
@@ -760,7 +896,29 @@ pub(super) fn run(
             }
         }
 
+        // Handover, checked before ended detection so a track whose next start
+        // is its cue out segues rather than hard-cutting: the two paths must
+        // never both advance the playlist.
+        if let Some(m) = decks.iter().position(|d| d.role == DeckRole::Main) {
+            let pos = decks[m]
+                .sink
+                .as_ref()
+                .map(|s| decks[m].seek_offset + s.get_pos().as_secs_f64());
+            let armed = decks.iter().position(|d| d.role == DeckRole::Arm);
+            if let (Some(pos), Some(arm)) = (pos, armed) {
+                if handover_due(
+                    pos,
+                    decks[m].cue.next_start,
+                    decks[m].active && !decks[m].loading,
+                    decks[arm].active && !decks[arm].loading,
+                ) {
+                    hand_over(&app, &mut decks, &events, handover_topic, m, arm);
+                }
+            }
+        }
+
         // Time + ended detection are only meaningful with a live sink.
+        let mut main_ended = false;
         for deck in decks.iter_mut() {
             let Some((pos, empty)) = deck
                 .sink
@@ -784,6 +942,26 @@ pub(super) fn run(
                 deck.active = false;
                 set_pause_state(&app, events, true);
                 let _ = app.emit(&events.topics.ended, ());
+                main_ended |= deck.role == DeckRole::Main;
+            }
+        }
+
+        // A tail is vacated at its own cue out, or when the deck that took over
+        // from it ends, whichever comes first: a tail belongs to the track that
+        // displaced it and dies with it, so at most two tracks are ever
+        // audible. The freed slot becomes the armed one, which is what lets the
+        // playlist load the following item onto it.
+        if let Some(t) = decks.iter().position(|d| d.role == DeckRole::Tail) {
+            if main_ended {
+                cut_tail(
+                    &app,
+                    &output,
+                    &mut decks[t],
+                    &events[DeckRole::Tail as usize],
+                );
+            } else if !decks[t].active && !decks[t].loading {
+                decks[t].reset();
+                decks[t].role = DeckRole::Arm;
             }
         }
 
@@ -909,6 +1087,77 @@ mod tests {
         assert_eq!(roles[0].track_id, None);
         assert_eq!(roles[1].slot, DeckSlot::B);
         assert_eq!(roles[1].role, DeckRole::Arm);
+    }
+
+    /// The trigger: the main deck reaching the outgoing track's next start,
+    /// with a deck armed and decoded to hand over to.
+    #[test]
+    fn handover_is_due_at_next_start_and_not_before() {
+        assert!(!handover_due(9.9, Some(10.0), true, true));
+        assert!(handover_due(10.0, Some(10.0), true, true));
+        assert!(handover_due(10.1, Some(10.0), true, true));
+    }
+
+    /// A track nobody prepped has no next start of its own: it resolves to cue
+    /// out, so the tick fires as the sink empties and the result is the hard cut
+    /// it has always been. `None` reaches the worker only before a load has
+    /// resolved, and there is nothing to hand over then.
+    #[test]
+    fn nothing_is_due_without_a_resolved_next_start() {
+        assert!(!handover_due(500.0, None, true, true));
+    }
+
+    /// Never mid-load or off air: an arm deck still reading its file, or a main
+    /// deck that is not playing, has nothing to hand over with.
+    #[test]
+    fn handover_waits_for_both_decks_to_be_ready() {
+        assert!(!handover_due(10.0, Some(10.0), true, false));
+        assert!(!handover_due(10.0, Some(10.0), false, true));
+    }
+
+    /// Any explicit change to what is on air cuts the tail with it; seek and
+    /// volume act on the incoming track alone.
+    #[test]
+    fn a_command_to_main_carries_the_tail_with_it() {
+        assert_eq!(tail_companion(&Cmd::Stop), Some(TailAction::Cut));
+        assert_eq!(
+            tail_companion(&Cmd::Load {
+                id: 1,
+                path: PathBuf::new(),
+                duration: None,
+                cue_points: CuePoints::default(),
+                start_at: 0.0,
+                autoplay: true,
+            }),
+            Some(TailAction::Cut)
+        );
+        assert_eq!(tail_companion(&Cmd::Pause), Some(TailAction::Pause));
+        assert_eq!(tail_companion(&Cmd::Play), Some(TailAction::Resume));
+        assert_eq!(tail_companion(&Cmd::Seek(12.0)), None);
+        assert_eq!(tail_companion(&Cmd::SetVolume(0.5)), None);
+    }
+
+    /// Roles address events, so a third `DeckEvents` has to exist for the
+    /// outgoing deck — `events[DeckRole::Tail as usize]` is indexed directly.
+    #[test]
+    fn every_role_addresses_its_own_topics() {
+        let events = [
+            DeckEvents::new("main-deck"),
+            DeckEvents::new("arm-deck"),
+            DeckEvents::new("tail-deck"),
+        ];
+        assert_eq!(
+            events[DeckRole::Main as usize].topics.ended,
+            "main-deck:ended"
+        );
+        assert_eq!(
+            events[DeckRole::Arm as usize].topics.ended,
+            "arm-deck:ended"
+        );
+        assert_eq!(
+            events[DeckRole::Tail as usize].topics.ended,
+            "tail-deck:ended"
+        );
     }
 
     /// Commands are routed by role, so `main_deck_*` reaches whichever slot
