@@ -233,6 +233,19 @@ fn set_pause_state(app: &AppHandle, events: &DeckEvents, paused: bool) {
     let _ = app.emit(&events.topics.pause_state, paused);
 }
 
+/// Report where a load leaves the deck, at the moment the `Load` is taken
+/// rather than when the read lands. The outgoing track's audio is already gone
+/// by then, so a renderer told nothing keeps drawing its playhead — and, for a
+/// parked load, its transport state — over the incoming track for as long as
+/// the file takes to arrive. A load that will autoplay stays "playing": it is
+/// buffering into playback, which is what the buffering event says.
+fn report_load_start(app: &AppHandle, events: &DeckEvents, start_at: f64, autoplay: bool) {
+    let _ = app.emit(&events.topics.time, start_at.max(0.0));
+    if !autoplay {
+        set_pause_state(app, events, true);
+    }
+}
+
 /// Emit an `output-unavailable` event only when the availability actually
 /// changes, so the idle retry loop's repeated failures don't spam the UI and a
 /// recovery reliably clears the banner.
@@ -302,6 +315,7 @@ fn start_load(
         output.mark_retry_now();
         deck.current_id = Some(id);
         let _ = app.emit(&events.topics.buffering, true);
+        report_load_start(app, events, start_at, autoplay);
         return;
     };
     deck.pending_load = None;
@@ -321,6 +335,7 @@ fn start_load(
     deck.loading = true;
     deck.load_start = Some(Instant::now());
     let _ = app.emit(&events.topics.buffering, true);
+    report_load_start(app, events, start_at, autoplay);
 
     let generation = deck.generation;
     let tx = load_tx.clone();

@@ -711,6 +711,7 @@ export class AppState {
       ? airDuration({ ...track, cue_points: cuePoints })
       : (track.duration ?? 0);
     this.cueCurrentTime = Math.min(Math.max(0, startAt), this.cueDuration);
+    this.cueIsPlaying = autoplay;
     if (!sameTrack) {
       this.loadCueWaveform(track.id);
       this.loadCueCoverArt(track.id);

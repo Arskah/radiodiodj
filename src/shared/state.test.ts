@@ -1942,6 +1942,13 @@ describe("AppState cue points", () => {
     expect(app.cueIsPlaying).toBe(true);
   });
 
+  it("cueing over a playing track stops it without waiting for the read", () => {
+    app.cueLoad(t(1), null, true);
+    app.cueLoad(t(2));
+    expect(app.cueIsPlaying).toBe(false);
+    expect(app.cueCurrentTime).toBe(0);
+  });
+
   it("an edited audition reloads where it was", async () => {
     app.cueLoad(t(1, { cue_points: trimmed }), trimmed, true, 4.5);
     await flushAsync();
