@@ -38,6 +38,7 @@ hmac = "=0.13.0"
 sha2 = "=0.11.0"
 chrono = { version = "=0.4.45", features = ["serde"] }
 strum = { version = "=0.28.0", features = ["derive"] }
+argon2 = "=0.6.0"
 
 [dev-dependencies]
 tempfile = "=3.27.0"
@@ -46,3 +47,7 @@ wiremock = "=0.6.5"
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+
+# Password hashing is unbearably slow unoptimised; keep debug builds and tests quick.
+[profile.dev.package.argon2]
+opt-level = 3

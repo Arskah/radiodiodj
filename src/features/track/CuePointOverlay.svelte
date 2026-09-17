@@ -392,8 +392,10 @@
             id="btn-cue-points-save"
             class="btn btn-primary"
             onclick={save}
-            disabled={saving || !dirty}
-            title="Every airing of this track uses these cue points"
+            disabled={saving || !dirty || !app.isAdmin}
+            title={app.isAdmin
+              ? "Every airing of this track uses these cue points"
+              : "Unlock admin mode to save cue points to the track"}
           >
             {saving ? "Saving…" : "Save to track"}
           </button>

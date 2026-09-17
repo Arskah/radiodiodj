@@ -2,7 +2,24 @@
   import { app } from "../../shared/state.svelte";
   import ErrorBanner from "../ui/ErrorBanner.svelte";
 
+  const settingsTitle = $derived.by(() => {
+    if (!app.isAdmin) {
+      return app.healthAttention > 0
+        ? `Settings — the library needs attention (${app.healthAttention}); unlock admin mode`
+        : "Settings — unlock admin mode";
+    }
+    return app.healthAttention > 0
+      ? `Settings — the library needs attention (${app.healthAttention})`
+      : "Settings — library paths, audio devices, scan";
+  });
+
+  function toggleLock(): void {
+    if (app.isAdmin) app.lockAdmin();
+    else app.unlockOpen = true;
+  }
+
   async function openSettings(): Promise<void> {
+    if (!app.isAdmin) return;
     await app.loadLibraryPaths();
     app.settingsOpen = true;
   }
@@ -71,12 +88,28 @@
       <span class="material-symbols-outlined">auto_awesome</span>
       Auto Mode
     </button>
+    {#if app.admin.passwordSet}
+      <button
+        id="btn-admin-lock"
+        class="nav-icon-btn"
+        class:active={app.isAdmin}
+        title={app.isAdmin
+          ? "Admin mode unlocked — click to lock"
+          : "Admin mode locked — click to unlock"}
+        aria-label={app.isAdmin ? "Lock admin mode" : "Unlock admin mode"}
+        aria-pressed={app.isAdmin}
+        onclick={toggleLock}
+      >
+        <span class="material-symbols-outlined"
+          >{app.isAdmin ? "lock_open" : "lock"}</span
+        >
+      </button>
+    {/if}
     <button
       id="btn-settings"
       class="nav-icon-btn"
-      title={app.healthAttention > 0
-        ? `Settings — the library needs attention (${app.healthAttention})`
-        : "Settings — library paths, audio devices, scan"}
+      disabled={!app.isAdmin}
+      title={settingsTitle}
       aria-label={app.healthAttention > 0
         ? `Settings, ${app.healthAttention} library issues`
         : "Settings"}

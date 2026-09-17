@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
 
+mod admin;
 mod audio;
 mod broadcast;
 mod library;
@@ -15,6 +16,7 @@ use audio::devices::{list_output_devices, DeviceInfo};
 
 pub const APP_NAME: &str = "RadiodioDJ";
 
+use admin::{AdminLock, AdminStatus};
 use audio::bus::ProgramBus;
 use audio::cue::CueDeck;
 use audio::cue_points::CuePoints;
@@ -68,6 +70,8 @@ fn refuse_to_start(app: &AppHandle, refusal: &OpenError) {
 pub struct AppState {
     db: Arc<Db>,
     config: Arc<Config>,
+    /// Admin mode. The invoke handler refuses admin-only commands while locked.
+    admin: Arc<AdminLock>,
     session: Arc<Session>,
     scan: Arc<ScanState>,
     /// Background job that fills track waveforms after a metadata scan.
@@ -677,6 +681,64 @@ fn get_waveform_status(state: State<'_, AppState>) -> WaveformStatus {
     state.waveform.status()
 }
 
+/// Wrap the command handler so admin-only commands are refused while admin
+/// mode is locked. See `admin::ADMIN_COMMANDS`.
+fn admin_gated<R: tauri::Runtime>(
+    handler: impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static,
+) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
+    move |invoke| {
+        let refused = invoke
+            .message
+            .webview()
+            .try_state::<AppState>()
+            .and_then(|state| state.admin.gate(invoke.message.command()).err());
+        if let Some(e) = refused {
+            log::warn!("refused {}: {e}", invoke.message.command());
+            invoke.resolver.reject(e);
+            return true;
+        }
+        handler(invoke)
+    }
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn admin_status(state: State<'_, AppState>) -> AdminStatus {
+    state.admin.status()
+}
+
+/// Returns whether the password matched.
+#[tauri::command(rename_all = "camelCase")]
+async fn admin_unlock(state: State<'_, AppState>, password: String) -> Result<bool, String> {
+    let admin = Arc::clone(&state.admin);
+    tauri::async_runtime::spawn_blocking(move || admin.unlock(&password))
+        .await
+        .map_err(err)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn admin_lock(state: State<'_, AppState>) {
+    state.admin.lock();
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn admin_set_password(state: State<'_, AppState>, password: String) -> Result<(), String> {
+    let admin = Arc::clone(&state.admin);
+    tauri::async_runtime::spawn_blocking(move || admin.set_password(&password))
+        .await
+        .map_err(err)?
+        .map_err(err)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn admin_clear_password(state: State<'_, AppState>) -> Result<(), String> {
+    state.admin.clear_password().map_err(err)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn admin_set_idle_lock_min(state: State<'_, AppState>, minutes: u64) -> Result<(), String> {
+    state.admin.set_idle_lock_min(minutes).map_err(err)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let log_level = std::env::var("RUST_LOG")
@@ -736,6 +798,10 @@ pub fn run() {
             let library_reset = opened.reset_backup.is_some();
             let db = Arc::new(opened.db);
             let config = Arc::new(Config::open(&data_dir)?);
+            let admin = Arc::new(AdminLock::new(
+                Arc::clone(&config),
+                Some(app.handle().clone()),
+            ));
             let session = Arc::new(Session::open(&data_dir));
             if library_reset {
                 session.forget_tracks()?;
@@ -805,6 +871,7 @@ pub fn run() {
             app.manage(AppState {
                 db,
                 config,
+                admin,
                 session,
                 scan,
                 waveform,
@@ -821,7 +888,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(admin_gated(tauri::generate_handler![
             search,
             get_track,
             get_tracks_by_ids,
@@ -889,7 +956,13 @@ pub fn run() {
             retry_tag_write,
             dismiss_tag_write,
             set_cue_points,
-        ])
+            admin_status,
+            admin_unlock,
+            admin_lock,
+            admin_set_password,
+            admin_clear_password,
+            admin_set_idle_lock_min,
+        ]))
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {

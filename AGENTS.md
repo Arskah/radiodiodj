@@ -22,6 +22,7 @@ Tauri 2 app. Two process boundaries: a Rust backend and a Svelte 5 / Vite render
 **Rust backend** (`src-tauri/src/`) — grouped by domain:
 
 - `lib.rs` — `tauri::Builder` setup (`tauri-plugin-log` first, then `tauri-plugin-dialog`), `AppState`, all `#[tauri::command]` handlers, panic hook (force-capture backtrace → `log::error!`)
+- `admin.rs` — admin mode: `AdminLock` (unlocked flag, Argon2 password check), `ADMIN_COMMANDS`, and the gate the invoke handler applies
 - `main.rs` — thin `pub fn main() { radiodiodj_lib::run() }` binary entry
 - `audio/` — `formats.rs` (supported extension table), `player.rs` (shared deck primitives: the `Cmd` vocabulary, the `Topics` table, whole-file read/retry and symphonia decode for mp3/flac/vorbis/wav/aac/m4a), `output.rs` (one `OutputStream` per device, opened lazily with self-healing retry), `deck.rs` (one rodio `Sink` per deck plus the worker loop that ticks a whole set of them against one output; emits `{role}:time` (10 Hz) / `:duration` / `:pause-state` / `:ended` / `:error` / `:buffering` / `:load-failed` / `:output-unavailable`), `bus.rs` (the program bus — deck A + deck B on one mixer, one worker, `program:roles`), `cue.rs` (the cue deck: one deck on its own output, `cue:*`), `cue_points.rs` (the five per-track markers and their resolution to file positions — pure, no device), `envelope.rs` (the `Enveloped<I>` source applying a track's stored fades)
 - `library/` (overview: `docs/library.md`) — `db.rs` (rusqlite + FTS5, WAL, `parking_lot::Mutex<Connection>`, append-only `rusqlite_migration` steps with a `schema.sql` snapshot, pre-migration backup, newer-DB refusal), `scanner.rs` + `scan_state.rs` (recursive walkdir scan, `lofty` tag extraction, mtime+content_type delta cache, one reconcile transaction per scan, background worker thread emitting `scan-progress` / `scan-state-changed` events with cancel token), `listing.rs` (root listing plus the changed and gone rules, shared by scan and check), `fingerprint.rs` (tag-independent content hash of the first MiB of demuxed packets), `waveform_scan.rs` (background pass filling waveforms and fingerprints), `health.rs` (the `library-health` report: missing tracks, exact and possible duplicates, unreadable tracks, dismissals, failed tag writes), `check.rs` (the timed library check — listing and stat only, never writes), `tag_write.rs` (opt-in write-back of metadata edits into the files' tags)
@@ -33,7 +34,7 @@ Tauri 2 app. Two process boundaries: a Rust backend and a Svelte 5 / Vite render
 - `main.ts` — app entry; mounts Svelte, hooks Tauri `onCloseRequested` to await `flushSave()` before `win.destroy()`
 - `App.svelte` — top-level UI tree
 - `shared/` — `types.ts`, `api.ts` (typed `invoke()` wrapper, folder picker via `@tauri-apps/plugin-dialog`), `state.svelte.ts` (Svelte 5 `$state` store; deck transport via `DeckTransport`, playlist state mirrored from backend snapshots), colocated `state.test.ts` + `mockBackend.ts` + `mockPlaylist.ts`
-- `features/<feature>/` — one folder per UI feature: `library/`, `playlist/`, `deck/` (NowPlaying.svelte + CueDeck.svelte + Waveform.svelte + backend.ts + nativeBackend.ts), `scan/`, `settings/` (SettingsOverlay.svelte — Audio, Library (paths, scan and library health), Now Playing, Advanced tabs), `health/` (LibraryHealth.svelte), `toolbar/`, `track/` (TrackTooltip.svelte + MetadataOverlay.svelte + CuePointOverlay.svelte)
+- `features/<feature>/` — one folder per UI feature: `library/`, `playlist/`, `deck/` (NowPlaying.svelte + CueDeck.svelte + Waveform.svelte + backend.ts + nativeBackend.ts), `scan/`, `settings/` (SettingsOverlay.svelte — Audio, Library (paths, scan and library health), Now Playing, Advanced tabs), `health/` (LibraryHealth.svelte), `admin/` (UnlockDialog.svelte + idleLock.ts), `toolbar/`, `track/` (TrackTooltip.svelte + MetadataOverlay.svelte + CuePointOverlay.svelte)
 
 ## Key Patterns
 
@@ -59,6 +60,8 @@ Tauri 2 app. Two process boundaries: a Rust backend and a Svelte 5 / Vite render
 
 **Library health:** `library::health::Health` keeps one report — missing tracks, exact duplicates (shared fingerprint), possible duplicates (music with the same normalised artist, album and title), unreadable tracks (`analysis_error`, set by the analysis pass when a file cannot be decoded and cleared by the upsert when the file changes; a read failure is not recorded) and the latest library check — and re-emits it as `library-health` after scans, the analysis pass, metadata edits, path changes and purges. The app never deletes audio files: an unwanted copy is deleted by the operator, then marked missing by a scan and purged with `purge_tracks(ids)`. Dismissals (`health_dismissals` table; the check's in memory) silence the badge only while the finding is unchanged. The playlist engine takes missing ids from the same event: advancement drops them up to the next stop marker, even on a cold cache. The library check runs at launch and every `tuning.library.checkIntervalMin` minutes, never alongside a scan, and reports only. See `docs/library-health.md`.
 
+**Admin mode:** with a password set (`admin.passwordHash` in `config.json`), each launch starts locked. While locked, Settings, metadata edits, _Save to track_ and scan cancel are unavailable; playback, playlist, library browsing, the cue deck and _Use once_ stay open, and the health badge still shows. `lib.rs` wraps the command handler in `admin_gated`, which rejects every command in `admin::ADMIN_COMMANDS` while locked. The unlocked flag lives only in `AppState`; the renderer mirrors it (`app.admin`, `app.isAdmin`) and runs the idle timer, which can lock but never unlock. No password means always unlocked. Not a security boundary. See `docs/admin-mode.md`.
+
 **Playlist ownership:** the backend owns the playlist, what is on air, and advancement. The renderer sends `playlist_*` commands and mirrors the `program:playlist-state` snapshot that comes back — it keeps no playlist of its own. History is the one exception: a renderer-side display log fed by each snapshot's `displaced` track. See `docs/backend-owned-playlist.md`.
 
 **Auto-playlist:** Toggle mode that keeps a lookahead buffer queued, refilling from random DB selection when it drops below the threshold. Runs in `playlist::engine` alongside advancement, so a refill and the track change that triggered it are one transition.
@@ -71,6 +74,7 @@ Tauri 2 app. Two process boundaries: a Rust backend and a Svelte 5 / Vite render
 - `serde(default)` per-field on `SessionState` / `AppConfig` lets new fields land without a schema version bump. Match this pattern when adding fields.
 - DB schema changes: append a step to `MIGRATION_STEPS` (never edit a shipped one), add a `SEEDS` entry, and regenerate `src-tauri/src/library/schema.sql` with `UPDATE_SCHEMA=1 cargo test schema_matches_snapshot`. Operator-work columns stay out of `UPSERT_TRACK_SQL`'s `SET` list. See `docs/database.md`.
 - pnpm `minimumReleaseAge` constraint blocks plugin versions younger than ~3 days; pin to a slightly older stable version when adding `tauri-plugin-*` deps.
+- A new admin-only command must be added to `admin::ADMIN_COMMANDS`, or it runs while admin mode is locked.
 - Tauri command argument name `state` collides with the `State<AppState>` injection; the managed state arg is named `app` in command handlers.
 - `release-please-config.json` bumps `package.json`, `src-tauri/tauri.conf.json` (jsonpath `$.version`), and `src-tauri/Cargo.toml` (`# x-release-please-version` annotation) on each release. Keep all three in sync.
 - `tauri-plugin-log` is initialized first in the builder chain so panics before later plugin setup still reach the file sink. Renderer `console.*` is intercepted by `attachConsole()` in `main.ts`; vitest must not import `main.ts` (it doesn't — tests use `mockBackend`). Log level honors `RUST_LOG` (whole-app level only — no module syntax) and falls back to `Debug` in `cfg!(debug_assertions)` / `Info` in release. `symphonia*` modules are forced to `Warn` (`symphonia_bundle_mp3` to `Error`, whose false-sync warnings on a non-MP3 file otherwise fill the 1 MB log) to keep the webview console readable.
@@ -86,6 +90,9 @@ library that was reset).
 - macOS: `~/Library/Application Support/com.radiodiodj/`
 - Linux: `~/.local/share/com.radiodiodj/` (or `$XDG_DATA_HOME/com.radiodiodj/`)
 - Windows: `%APPDATA%\com.radiodiodj\` (typically `C:\Users\<you>\AppData\Roaming\com.radiodiodj\`)
+
+Forgot the admin password: quit the app, delete `passwordHash` from the `admin`
+section of `config.json`, and relaunch. See `docs/admin-mode.md`.
 
 ## Logs
 

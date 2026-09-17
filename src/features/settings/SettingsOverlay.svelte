@@ -32,9 +32,20 @@
   let testResult = $state<string | null>(null);
   let testing = $state(false);
   let showSecret = $state(false);
+  let newPassword = $state("");
+  let confirmPassword = $state("");
+  let passwordFormOpen = $state(false);
+  let confirmingRemove = $state(false);
+  let passwordBusy = $state(false);
+  let passwordError = $state<string | null>(null);
 
   $effect(() => {
     if (app.settingsOpen) {
+      newPassword = "";
+      confirmPassword = "";
+      passwordFormOpen = false;
+      confirmingRemove = false;
+      passwordError = null;
       void app.loadAudioConfig();
       void loadNowPlayingConfig();
       tuning = $state.snapshot(app.tuning);
@@ -63,6 +74,51 @@
       .map((s) => Number(s))
       .filter((n) => Number.isFinite(n) && n > 0);
     if (parsed.length > 0) apply(parsed);
+  }
+
+  async function savePassword(e: SubmitEvent): Promise<void> {
+    e.preventDefault();
+    if (newPassword === "") {
+      passwordError = "Enter a password";
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      passwordError = "The passwords do not match";
+      return;
+    }
+    passwordBusy = true;
+    passwordError = null;
+    try {
+      await app.setAdminPassword(newPassword);
+      newPassword = "";
+      confirmPassword = "";
+      passwordFormOpen = false;
+    } catch (err) {
+      passwordError = err instanceof Error ? err.message : String(err);
+    } finally {
+      passwordBusy = false;
+    }
+  }
+
+  async function removePassword(): Promise<void> {
+    passwordBusy = true;
+    passwordError = null;
+    try {
+      await app.clearAdminPassword();
+      confirmingRemove = false;
+    } catch (err) {
+      passwordError = err instanceof Error ? err.message : String(err);
+    } finally {
+      passwordBusy = false;
+    }
+  }
+
+  function saveIdleLockMin(e: Event): void {
+    const v = Number((e.currentTarget as HTMLInputElement).value);
+    if (!Number.isFinite(v)) return;
+    void app.setIdleLockMin(Math.round(v)).catch((err) => {
+      passwordError = err instanceof Error ? err.message : String(err);
+    });
   }
 
   async function loadNowPlayingConfig(): Promise<void> {
@@ -495,6 +551,115 @@
             </div>
           </div>
         {:else}
+          <div
+            id="admin-mode-section"
+            class="settings-section settings-section--tuning"
+          >
+            <h4>Admin Mode</h4>
+            <p class="settings-section-desc">
+              With a password set, settings, scanning, metadata edits and saving
+              cue points to a track need it. This guards against mistakes; it is
+              not a security boundary. Forgot it? Quit, delete
+              <code>admin.passwordHash</code> from <code>config.json</code>, and
+              relaunch.
+            </p>
+            {#if passwordFormOpen || !app.admin.passwordSet}
+              <form onsubmit={savePassword}>
+                <div class="device-row">
+                  <label for="admin-new-password"
+                    >{app.admin.passwordSet
+                      ? "New password"
+                      : "Password"}</label
+                  >
+                  <input
+                    id="admin-new-password"
+                    type="password"
+                    autocomplete="new-password"
+                    bind:value={newPassword}
+                  />
+                </div>
+                <div class="device-row">
+                  <label for="admin-confirm-password">Confirm password</label>
+                  <input
+                    id="admin-confirm-password"
+                    type="password"
+                    autocomplete="new-password"
+                    bind:value={confirmPassword}
+                  />
+                </div>
+                <div class="admin-actions">
+                  <button
+                    id="btn-admin-save-password"
+                    type="submit"
+                    class="btn-scan-now"
+                    disabled={passwordBusy}
+                    >{app.admin.passwordSet
+                      ? "Change password"
+                      : "Set password"}</button
+                  >
+                  {#if passwordFormOpen}
+                    <button
+                      type="button"
+                      class="np-browse"
+                      onclick={() => (passwordFormOpen = false)}>Cancel</button
+                    >
+                  {/if}
+                </div>
+              </form>
+            {:else}
+              <div class="admin-actions">
+                {#if confirmingRemove}
+                  <span
+                    >Remove the password? Anyone can then change settings.</span
+                  >
+                  <button
+                    id="btn-admin-remove-confirm"
+                    class="btn-scan-now"
+                    disabled={passwordBusy}
+                    onclick={removePassword}>Remove</button
+                  >
+                  <button
+                    class="np-browse"
+                    onclick={() => (confirmingRemove = false)}>Keep</button
+                  >
+                {:else}
+                  <button
+                    id="btn-admin-change-password"
+                    class="btn-scan-now"
+                    onclick={() => (passwordFormOpen = true)}
+                    >Change password</button
+                  >
+                  <button
+                    id="btn-admin-remove-password"
+                    class="np-browse"
+                    onclick={() => (confirmingRemove = true)}
+                    >Remove password</button
+                  >
+                {/if}
+              </div>
+            {/if}
+            {#if passwordError}
+              <div id="admin-password-error" class="admin-error" role="alert">
+                {passwordError}
+              </div>
+            {/if}
+            <div class="device-row">
+              <label for="admin-idle-lock">Lock after idle (minutes)</label>
+              <input
+                id="admin-idle-lock"
+                type="number"
+                min="1"
+                max="240"
+                value={app.admin.idleLockMin}
+                onchange={saveIdleLockMin}
+              />
+              <div class="hint">
+                Admin mode locks again after this long without input, and on
+                every launch.
+              </div>
+            </div>
+          </div>
+
           <div class="settings-section settings-section--tuning">
             <h4>Advanced Tuning</h4>
             <p class="settings-section-desc">
