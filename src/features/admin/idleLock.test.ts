@@ -38,6 +38,40 @@ describe("idleLock", () => {
     expect(onIdle).toHaveBeenCalledTimes(1);
   });
 
+  it("locks on input after a deadline the timer missed", () => {
+    // A backgrounded webview may hold the timer back; the clock moves on.
+    lock.poke();
+    vi.setSystemTime(Date.now() + 5000);
+    target.dispatchEvent(new Event("pointermove"));
+    expect(onIdle).toHaveBeenCalledTimes(1);
+  });
+
+  it("locks when the window returns after the deadline", () => {
+    lock.poke();
+    vi.setSystemTime(Date.now() + 5000);
+    target.dispatchEvent(new Event("focus"));
+    expect(onIdle).toHaveBeenCalledTimes(1);
+  });
+
+  it("returning before the deadline does not restart the countdown", () => {
+    lock.poke();
+    vi.advanceTimersByTime(600);
+    target.dispatchEvent(new Event("visibilitychange"));
+    vi.advanceTimersByTime(400);
+    expect(onIdle).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses a changed timeout from the last input", () => {
+    lock.poke();
+    vi.advanceTimersByTime(500);
+    timeout = 600;
+    lock.poke();
+    vi.advanceTimersByTime(599);
+    expect(onIdle).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(onIdle).toHaveBeenCalledTimes(1);
+  });
+
   it("runs no countdown while there is nothing to lock", () => {
     timeout = null;
     lock.poke();
