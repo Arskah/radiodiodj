@@ -141,9 +141,21 @@ An uncached track is armed anyway: the arm-load **is** the early read, which is
 most of the value on a slow share. A late or failed one simply means no
 handover fires.
 
-A deck hands over **at most once per load**. The latch is cleared on `Load`, and
-on `Seek` only when the new position lands before `next_start` — so seeking back
-into an outro re-arms the moment while seeking past it does not re-fire.
+**The swap is its own latch.** A deck hands over at most once per load for free:
+the moment it does, it holds `tail`, and only the `main` deck is ever tested. A
+per-deck "already handed over" flag was written into this design and then found
+to be unreachable state — nothing makes a tail deck `main` again without a
+`Load`, which resets everything anyway.
+
+A handover that could not fire at `next_start` — nothing was armed yet — fires
+as soon as one is ready, with a shorter overlap than authored. That is the
+graceful degradation of a late arm-load, and strictly better than the hard cut
+it replaces.
+
+No command authorises a handover beyond the arm-load itself. The worker's test
+is "is a deck armed, decoded and parked", which the engine controls by arming or
+disarming, so a separate `ArmHandover` would carry no information the arm deck's
+own readiness does not.
 
 ### Vacating a tail
 
@@ -209,9 +221,9 @@ constructs it rather than ahead of it.
    and an ordinary parked `Load` on the arm deck. **No audible change** — the arm
    deck loads and sits silent, visible only in `program:roles`. The existing
    suite passes unmodified.
-2. **Handover.** The `Tail` role, the once-per-load latch, the swap on the tick,
-   `program:handover` and the engine's reconcile, both vacate rules, transport
-   cutting the tail, and broadcast's explicit on-air input. Indivisible:
+2. **Handover.** The `Tail` role, the swap on the tick, `program:handover` and
+   the engine's reconcile, both vacate rules, transport cutting the tail, and
+   broadcast's explicit on-air input. Indivisible:
    handover without the vacate rules is broken audio, and without the reconcile
    the playlist double-plays.
 3. **Tail indication.** One line in `NowPlaying.svelte` while a tail is audible
@@ -224,8 +236,9 @@ constructs it rather than ahead of it.
    above.
 
 The trigger follows `watchdog_timed_out`'s precedent in `audio/deck.rs` — a
-pure `handover_due(pos, next_start, handed_over, arm_ready)` fed the position,
+pure `handover_due(pos, next_start, playing, arm_ready)` fed the position,
 unit-tested with no audio device, with the worker loop as a thin caller.
+`tail_companion(cmd)` is pure for the same reason.
 Everything else is an ordinary state-machine test in `playlist/engine.rs`.
 
 ## Events and commands

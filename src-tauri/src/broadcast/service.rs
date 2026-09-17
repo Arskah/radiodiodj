@@ -74,6 +74,11 @@ impl BroadcastService {
         self.inner.state.lock().set_pending(track);
     }
 
+    /// Announce a track that went on air by handover rather than by a load.
+    pub fn went_on_air(&self, track: BroadcastTrack) {
+        Inner::dispatch(&self.inner, |s| s.on_air(track, Utc::now()));
+    }
+
     /// Attach app.listen handlers for main-deck:pause-state and main-deck:ended.
     /// Cue deck uses cue:* topics and is intentionally not subscribed.
     pub fn attach_to_app(&self, app: &AppHandle) {

@@ -18,7 +18,7 @@ use tauri::{AppHandle, Emitter, Listener};
 use super::engine::{Effect, Playlist, Refiller, Transition};
 use super::generate;
 use super::model::{PlaylistItem, Snapshot};
-use crate::audio::bus::ProgramBus;
+use crate::audio::bus::{ProgramBus, HANDOVER_EVENT};
 use crate::audio::cache::Cache;
 use crate::audio::cue_points::CuePoints;
 use crate::audio::player::Cmd;
@@ -27,6 +27,13 @@ use crate::library::db::{Db, Track, TrackLoadInfo};
 use crate::library::health::HEALTH_EVENT;
 use crate::persist::config::Config;
 use crate::persist::session::SessionState;
+
+/// The part of `program:handover` the playlist needs: the incoming track. The
+/// outgoing one is already on record as `current`.
+#[derive(serde::Deserialize)]
+struct HandoverEvent {
+    to: i64,
+}
 
 /// The part of the library health report the playlist needs.
 #[derive(serde::Deserialize)]
@@ -122,6 +129,20 @@ impl PlaylistService {
         let ended = Arc::clone(&self.inner);
         app.listen("main-deck:ended", move |_| {
             Inner::apply(&ended, |p, r| p.on_ended(r));
+        });
+
+        let handover = Arc::clone(&self.inner);
+        app.listen(HANDOVER_EVENT, move |event| {
+            let Ok(moved) = serde_json::from_str::<HandoverEvent>(event.payload()) else {
+                return;
+            };
+            Inner::apply(&handover, move |p, r| p.on_handover(moved.to, r));
+        });
+
+        // The tail is gone, so the deck it held can be armed again.
+        let tail_ended = Arc::clone(&self.inner);
+        app.listen("tail-deck:ended", move |_| {
+            Inner::apply(&tail_ended, |p, _| p.on_tail_ended());
         });
 
         let failed = Arc::clone(&self.inner);
@@ -369,6 +390,11 @@ impl Inner {
             Effect::Stop => inner.bus.send_main(Cmd::Stop),
             Effect::Arm { id, cue_override } => inner.arm_deck(*id, *cue_override),
             Effect::Disarm => inner.bus.send_arm(Cmd::Stop),
+            Effect::NowPlaying { id, cue_override } => {
+                if let Some(info) = inner.load_info(*id, *cue_override) {
+                    inner.broadcast.went_on_air(info.into());
+                }
+            }
             Effect::TrackPlayed(id) => {
                 if let Err(e) = inner.db.increment_play_count(*id) {
                     log::error!("play count update failed for track {}: {}", id, e);

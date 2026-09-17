@@ -6,9 +6,9 @@
 //! soundboard or a sweeper deck is another entry in the `Vec`, not another
 //! rewrite.
 //!
-//! v1 holds roles static: slot A is `main`, slot B is armed and idle. Handover
-//! — moving the `main` role at the outgoing track's `nextStart` — is a later
-//! increment; nothing here changes audible behaviour.
+//! The `main` role moves between the decks at the outgoing track's `nextStart`
+//! — see `docs/program-bus.md#handover`. The playlist engine authorises a
+//! handover by arm-loading the next item; this worker only times it.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Sender};
@@ -25,6 +25,11 @@ use crate::persist::config::DeviceRef;
 /// Topic the slot→role snapshot is emitted on. Debugging and future UI; the
 /// transport and Now playing speak role-mapped `main-deck:*` instead.
 pub const ROLES_EVENT: &str = "program:roles";
+
+/// Topic a move of the `main` role is announced on. The playlist engine
+/// reconciles against it: the queued item is consumed, the airing counted, and
+/// the outgoing track handed to history.
+pub const HANDOVER_EVENT: &str = "program:handover";
 
 pub struct ProgramBus {
     tx: Sender<(DeckRole, Cmd)>,
@@ -44,7 +49,11 @@ impl ProgramBus {
     ) -> Self {
         let (tx, rx) = channel();
         // Indexed by `DeckRole as usize`.
-        let events = vec![DeckEvents::new("main-deck"), DeckEvents::new("arm-deck")];
+        let events = vec![
+            DeckEvents::new("main-deck"),
+            DeckEvents::new("arm-deck"),
+            DeckEvents::new("tail-deck"),
+        ];
         let main_playing = Arc::clone(&events[DeckRole::Main as usize].playing);
         let decks = vec![
             Deck::new(DeckSlot::A, DeckRole::Main),
@@ -58,6 +67,7 @@ impl ProgramBus {
                 decks,
                 events,
                 roles_topic: Some(ROLES_EVENT),
+                handover_topic: Some(HANDOVER_EVENT),
             };
             if let Err(e) = run(app.clone(), rx, output, set, cache, tuning) {
                 log::error!("program bus thread exited: {}", e);

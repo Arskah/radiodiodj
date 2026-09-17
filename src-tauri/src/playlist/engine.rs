@@ -75,6 +75,13 @@ pub enum Effect {
     },
     /// Clear the arm deck. What was armed is no longer what comes next.
     Disarm,
+    /// Announce a track that went on air by handover, so the now-playing
+    /// broadcast is correct during a segue — when what is on air changes
+    /// without a load having just happened.
+    NowPlaying {
+        id: i64,
+        cue_override: Option<CuePoints>,
+    },
     /// Count the airing against the track's play count.
     TrackPlayed(i64),
     /// Arm the outage retry timer. The index selects a delay from the backoff
@@ -133,6 +140,10 @@ pub struct Playlist {
     /// What the arm deck currently holds. The item itself stays in `items`, so
     /// arming shifts no index and the Upcoming list is untouched.
     armed: Option<ArmTarget>,
+    /// A handover has happened and the outgoing track is still playing out. The
+    /// tail occupies the deck the next item would be armed on, so nothing is
+    /// armed until it is vacated.
+    overlapping: bool,
     /// Track ids resident in the prefetch cache, from `main-deck:cache-state`.
     cached_ids: HashSet<i64>,
     /// Track ids whose file a scan found gone, from the library health report.
@@ -205,7 +216,7 @@ impl Playlist {
     /// is skipped, as advancement skips it; an uncached one is armed anyway,
     /// because the arm-load is the early read.
     fn arm_target(&self) -> Option<ArmTarget> {
-        if !self.auto_advance || self.current.is_none() {
+        if !self.auto_advance || self.current.is_none() || self.overlapping {
             return None;
         }
         for item in &self.items {
@@ -346,6 +357,7 @@ impl Playlist {
         let displaced = self.current.take();
         self.current_override = None;
         self.auto_playlist = false;
+        self.overlapping = false;
         Transition {
             effects: vec![Effect::CancelRetry, Effect::Stop],
             displaced,
@@ -379,6 +391,54 @@ impl Playlist {
         }
         self.refill(r);
         self.advance(false, r)
+    }
+
+    /// The bus moved the `main` role: `to` is already playing on the deck that
+    /// took it, so this consumes the queued item and counts the airing without
+    /// asking for a load. The outgoing track becomes `displaced` for history,
+    /// exactly as it would on an ordinary track change.
+    ///
+    /// A handover the playlist cannot account for — no queued item with that id
+    /// — is ignored rather than guessed at.
+    pub fn on_handover(&mut self, to: i64, r: &dyn Refiller) -> Transition {
+        let Some(at) = self
+            .items
+            .iter()
+            .position(|i| i.as_track().is_some_and(|t| t.id == to))
+        else {
+            return Transition::default();
+        };
+        let PlaylistItem::Track {
+            track,
+            cue_override,
+        } = self.items.remove(at)
+        else {
+            return Transition::default();
+        };
+        self.clear_retry();
+        let displaced = self.current.replace(track);
+        self.current_override = cue_override;
+        self.armed = None;
+        self.overlapping = displaced.is_some();
+        self.refill(r);
+        Transition {
+            effects: vec![
+                Effect::CancelRetry,
+                Effect::NowPlaying {
+                    id: to,
+                    cue_override,
+                },
+                Effect::TrackPlayed(to),
+            ],
+            displaced,
+        }
+    }
+
+    /// The tail deck was vacated, so a deck is free to arm again. The arm
+    /// itself follows from the reconcile every transition ends with.
+    pub fn on_tail_ended(&mut self) -> Transition {
+        self.overlapping = false;
+        Transition::default()
     }
 
     /// A read failed after retries, or the watchdog fired. Skip to the next
@@ -505,6 +565,9 @@ impl Playlist {
         let id = track.id;
         self.current = Some(track);
         self.current_override = cue_override;
+        // The load this returns cuts the tail on its way through the bus, so
+        // the deck it was on is free to arm again.
+        self.overlapping = false;
         self.refill(r);
         Transition::effects(vec![
             Effect::CancelRetry,
@@ -1769,5 +1832,189 @@ mod tests {
         p.stop();
 
         assert_eq!(p.reconcile_arm(), Some(Effect::Disarm));
+    }
+
+    // ----- handover -----
+
+    /// The bus has already started the incoming track, so the playlist consumes
+    /// the item and counts the airing without asking for a load — and hands the
+    /// outgoing track to history, as an ordinary track change would.
+    #[test]
+    fn a_handover_advances_without_a_load() {
+        let r = FakeRefiller::new();
+        let mut p = Playlist::new();
+        p.add(track(1));
+        p.add(track(2));
+        p.add(track(3));
+        p.play_index(0, &r);
+        p.reconcile_arm();
+
+        let t = p.on_handover(2, &r);
+
+        assert_eq!(
+            t.effects,
+            vec![
+                Effect::CancelRetry,
+                Effect::NowPlaying {
+                    id: 2,
+                    cue_override: None
+                },
+                Effect::TrackPlayed(2),
+            ]
+        );
+        assert!(
+            !t.effects.iter().any(|e| matches!(e, Effect::Play { .. })),
+            "the incoming deck is already playing"
+        );
+        assert_eq!(t.displaced.map(|t| t.id), Some(1));
+        assert_eq!(p.snapshot(None).current.map(|t| t.id), Some(2));
+        assert_eq!(queued(&p), vec![Some(3)]);
+    }
+
+    /// The item's override is what the arm deck was loaded under, so it becomes
+    /// what is on air — not the radio edit.
+    #[test]
+    fn a_handover_keeps_the_item_override() {
+        let r = FakeRefiller::new();
+        let mut p = Playlist::new();
+        p.add(track(1));
+        p.play_index(0, &r);
+        p.add_front(track(2), Some(points(4_000)));
+        p.reconcile_arm();
+
+        let t = p.on_handover(2, &r);
+
+        assert_eq!(
+            t.effects[1],
+            Effect::NowPlaying {
+                id: 2,
+                cue_override: Some(points(4_000))
+            }
+        );
+        assert_eq!(p.snapshot(None).current_override, Some(points(4_000)));
+    }
+
+    /// Nothing is armed while a tail is draining: with two decks it is holding
+    /// the slot the next item would load onto.
+    #[test]
+    fn an_overlap_blocks_arming_until_the_tail_is_vacated() {
+        let r = FakeRefiller::new();
+        let mut p = Playlist::new();
+        p.add(track(1));
+        p.add(track(2));
+        p.add(track(3));
+        p.play_index(0, &r);
+        p.reconcile_arm();
+        p.on_handover(2, &r);
+
+        // The arm deck became the main deck, so nothing is held and nothing
+        // can be armed while the tail occupies the other slot.
+        assert_eq!(p.reconcile_arm(), None, "still overlapping");
+
+        p.on_tail_ended();
+
+        assert_eq!(
+            p.reconcile_arm(),
+            Some(Effect::Arm {
+                id: 3,
+                cue_override: None
+            })
+        );
+    }
+
+    /// The load an explicit track change issues cuts the tail on its way
+    /// through the bus, so the overlap is over without a tail-ended event —
+    /// otherwise arming would stay blocked for the rest of the session.
+    #[test]
+    fn an_explicit_track_change_ends_the_overlap() {
+        let r = FakeRefiller::new();
+        let mut p = Playlist::new();
+        p.add(track(1));
+        p.add(track(2));
+        p.add(track(3));
+        p.add(track(4));
+        p.play_index(0, &r);
+        p.reconcile_arm();
+        p.on_handover(2, &r);
+
+        p.next(&r);
+
+        assert_eq!(
+            p.reconcile_arm(),
+            Some(Effect::Arm {
+                id: 4,
+                cue_override: None
+            })
+        );
+    }
+
+    /// Stopping ends the overlap too: the tail is cut with the main deck.
+    #[test]
+    fn stopping_ends_the_overlap() {
+        let r = FakeRefiller::new();
+        let mut p = Playlist::new();
+        p.add(track(1));
+        p.add(track(2));
+        p.add(track(3));
+        p.add(track(4));
+        p.play_index(0, &r);
+        p.reconcile_arm();
+        p.on_handover(2, &r);
+        p.stop();
+        p.play_index(0, &r);
+
+        assert!(matches!(p.reconcile_arm(), Some(Effect::Arm { .. })));
+    }
+
+    /// A handover the playlist cannot account for is ignored rather than
+    /// guessed at: what is on air stays what it was.
+    #[test]
+    fn a_handover_to_an_unqueued_track_changes_nothing() {
+        let r = FakeRefiller::new();
+        let mut p = Playlist::new();
+        p.add(track(1));
+        p.add(track(2));
+        p.play_index(0, &r);
+
+        let t = p.on_handover(99, &r);
+
+        assert_eq!(t, Transition::default());
+        assert_eq!(p.snapshot(None).current.map(|t| t.id), Some(1));
+        assert_eq!(queued(&p), vec![Some(2)]);
+    }
+
+    /// Advancement on `:ended` is the fallback when no handover happened, and
+    /// it is unchanged — the two paths must never both advance.
+    #[test]
+    fn ending_without_a_handover_still_advances() {
+        let r = FakeRefiller::new();
+        let mut p = Playlist::new();
+        p.add(track(1));
+        p.add(track(2));
+        p.play_index(0, &r);
+
+        let t = p.on_ended(&r);
+
+        assert_eq!(
+            t.effects,
+            vec![Effect::CancelRetry, play(2), Effect::TrackPlayed(2)]
+        );
+    }
+
+    /// A handover refills, as any advance does: the queue it consumed from is
+    /// one shorter.
+    #[test]
+    fn a_handover_refills_the_lookahead_buffer() {
+        let r = FakeRefiller::generating(4, 3);
+        let mut p = Playlist::new();
+        p.add(track(1));
+        p.add(track(2));
+        p.set_auto_playlist(true, &r);
+        p.play_index(0, &r);
+        let before = queued(&p).len();
+
+        p.on_handover(2, &r);
+
+        assert!(queued(&p).len() >= before, "the buffer was topped back up");
     }
 }
