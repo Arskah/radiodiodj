@@ -123,6 +123,29 @@ export function regionOutside(
   return r.cueIn < frame.from || r.cueOut > frame.to;
 }
 
+/** How far an edge may drift, as a share of the span, before a reframe. */
+export const REFRAME_DRIFT = 0.25;
+
+/**
+ * True when the detail frame should move to fit the region: Cue In or Cue Out
+ * has left it, or the region has changed enough that the frame no longer fits
+ * it — marking Cue Out after Cue In, say, which first framed the whole tail.
+ * A nudge stays under the drift limit, so the view holds still while tuning.
+ */
+export function needsReframe(
+  frame: Frame,
+  draft: CuePoints,
+  fileDuration: number,
+): boolean {
+  if (regionOutside(frame, draft, fileDuration)) return true;
+  const ideal = regionFrame(draft, fileDuration);
+  const limit = REFRAME_DRIFT * (frame.to - frame.from);
+  return (
+    Math.abs(ideal.from - frame.from) > limit ||
+    Math.abs(ideal.to - frame.to) > limit
+  );
+}
+
 /**
  * True when a following window should turn the page: the playhead has left
  * it, or is in its last tenth with more file to come.

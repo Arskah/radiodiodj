@@ -8,6 +8,7 @@ import {
   formatCueTime,
   gainAt,
   markerBounds,
+  needsReframe,
   nudge,
   nudgeStep,
   parseCueTime,
@@ -120,6 +121,31 @@ describe("regionOutside / followNeedsPage", () => {
     expect(followNeedsPage({ from: FILE - 30, to: FILE }, FILE - 1, FILE)).toBe(
       false,
     );
+  });
+});
+
+describe("needsReframe", () => {
+  it("zooms in once Cue Out follows Cue In", () => {
+    // Cue In alone frames everything up to the end of the file.
+    const inOnly = points({ cue_in_ms: 100_000 });
+    const frame = regionFrame(inOnly, FILE);
+    const both = { ...inOnly, cue_out_ms: 110_000 };
+    expect(needsReframe(frame, both, FILE)).toBe(true);
+  });
+
+  it("holds still while a marker is nudged", () => {
+    const d = points({ cue_in_ms: 100_000, cue_out_ms: 110_000 });
+    const frame = regionFrame(d, FILE);
+    expect(needsReframe(frame, { ...d, cue_out_ms: 110_010 }, FILE)).toBe(
+      false,
+    );
+    expect(needsReframe(frame, { ...d, cue_in_ms: 99_000 }, FILE)).toBe(false);
+  });
+
+  it("moves when a marker leaves the frame", () => {
+    const d = points({ cue_in_ms: 100_000, cue_out_ms: 110_000 });
+    const frame = regionFrame(d, FILE);
+    expect(needsReframe(frame, { ...d, cue_out_ms: 116_000 }, FILE)).toBe(true);
   });
 });
 

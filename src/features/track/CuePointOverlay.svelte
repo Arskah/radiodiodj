@@ -36,11 +36,11 @@
     followNeedsPage,
     formatClock,
     hasRegion,
+    needsReframe,
     nudge,
     nudgeStep,
     playheadFile,
     preRollTarget,
-    regionOutside,
     reloadStartAt,
     resolvedMs,
     setMarker,
@@ -199,8 +199,8 @@
 
   /**
    * Point the detail strip at the region, or at the playhead when there is
-   * none. Unforced, it only moves when the region has come or gone, or has
-   * left the frame.
+   * none. Unforced, it only moves when the region has come or gone, or no
+   * longer fits the frame.
    */
   function reframe(force = false): void {
     if (!track || fileDuration <= 0) return;
@@ -208,7 +208,7 @@
     if (
       force ||
       nowRegion !== framingRegion ||
-      (nowRegion && regionOutside(frame, draft, fileDuration))
+      (nowRegion && needsReframe(frame, draft, fileDuration))
     ) {
       frame = editorFrame(draft, fileDuration, playhead);
       framingRegion = nowRegion;
