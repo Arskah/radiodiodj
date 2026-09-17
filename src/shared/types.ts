@@ -56,6 +56,20 @@ export interface CuePoints {
   next_start_ms: number | null;
 }
 
+/** What a program deck is doing right now, from `program:roles`. */
+export type DeckRole = "main" | "arm" | "tail";
+
+/**
+ * One entry of the deck-role snapshot. `tail` is a deck playing an outgoing
+ * track out after a handover: audible on the program bus, but no longer Now
+ * playing.
+ */
+export interface DeckRoleEntry {
+  slot: "a" | "b";
+  role: DeckRole;
+  trackId: number | null;
+}
+
 export type PlaylistTrackItem = {
   kind: "track";
   track: Track;

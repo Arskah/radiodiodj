@@ -5,6 +5,7 @@ import type {
   AdminStatus,
   ContentType,
   CuePoints,
+  DeckRoleEntry,
   PlaylistItem,
   DeviceInfo,
   DeviceRef,
@@ -141,6 +142,22 @@ export const api = {
     return listen<PlaylistSnapshot>("program:playlist-state", (e) =>
       callback(e.payload),
     );
+  },
+  /**
+   * Which program deck holds which role, and what is on it. The transport and
+   * Now playing speak role-mapped `main-deck:*` events instead; this is what
+   * says a handover has left an outgoing track playing out underneath.
+   */
+  onDeckRoles(callback: (roles: DeckRoleEntry[]) => void): Promise<UnlistenFn> {
+    return listen<DeckRoleEntry[]>("program:roles", (e) => callback(e.payload));
+  },
+  /** Air position of the outgoing track during an overlap. */
+  onTailTime(callback: (seconds: number) => void): Promise<UnlistenFn> {
+    return listen<number>("tail-deck:time", (e) => callback(e.payload));
+  },
+  /** Air duration of the outgoing track during an overlap. */
+  onTailDuration(callback: (seconds: number) => void): Promise<UnlistenFn> {
+    return listen<number>("tail-deck:duration", (e) => callback(e.payload));
   },
   /** Show the track's file in Finder / Explorer / the file manager. */
   revealTrack(id: number): Promise<void> {
