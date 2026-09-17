@@ -371,6 +371,35 @@ fn get_waveform(app_state: State<'_, AppState>, id: i64) -> Result<Option<Vec<u8
     app_state.db.get_waveform(id).map_err(err)
 }
 
+/// Decode a track into the cue editor's fine curve (see
+/// [`audio::waveform::compute_detail`]) and return it as raw bytes. The file is
+/// taken from the prefetch cache when resident, so a networked share is not
+/// read a second time for a track already queued.
+#[tauri::command(rename_all = "camelCase")]
+async fn get_waveform_detail(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<tauri::ipc::Response, String> {
+    let db = Arc::clone(&state.db);
+    let cache = Arc::clone(&state.cache);
+    let detail = tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
+        let bytes = match cache.get(id) {
+            Some(b) => b,
+            None => {
+                let media = db
+                    .get_media_track(id)?
+                    .ok_or_else(|| anyhow::anyhow!("track not found"))?;
+                Arc::from(std::fs::read(&media.path)?.into_boxed_slice())
+            }
+        };
+        audio::waveform::compute_detail(bytes)
+    })
+    .await
+    .map_err(err)?
+    .map_err(|e| format!("{e:#}"))?;
+    Ok(tauri::ipc::Response::new(detail))
+}
+
 /// Extract a track's embedded cover art as a base64 `data:` URL for the deck's
 /// vinyl disc, or `None` when the file has no artwork. Read on demand (like the
 /// waveform) rather than stored, so the library DB stays free of image blobs.
@@ -501,6 +530,7 @@ fn cue_load(
     id: i64,
     cue_points: Option<CuePoints>,
     autoplay: Option<bool>,
+    start_at: Option<f64>,
 ) -> Result<(), String> {
     let track = state
         .db
@@ -517,12 +547,14 @@ fn cue_load(
                 None
             },
             cue_points: cue_points.unwrap_or_default(),
-            start_at: 0.0,
+            // Air seconds. The cue editor reloads an edited audition where it
+            // was; the worker clamps a start past the new air duration.
+            start_at: start_at.unwrap_or(0.0),
             // Parked by default. Cueing a track is a staging action — the
             // operator decides when it makes noise, and switching audition
             // mode reloads the deck, so autoplay would restart the audio on
-            // every Absolute/Preview toggle. The cue editor's Audition button
-            // is the explicit ask, and sets this.
+            // every Absolute/Preview toggle. The cue editor's transport is the
+            // explicit ask, and sets this.
             autoplay: autoplay.unwrap_or(false),
         });
     })
@@ -944,6 +976,7 @@ pub fn run() {
             main_deck_seek,
             main_deck_set_volume,
             get_waveform,
+            get_waveform_detail,
             get_cover_art,
             get_now_playing_config,
             set_now_playing_config,

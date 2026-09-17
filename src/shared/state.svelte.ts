@@ -690,26 +690,37 @@ export class AppState {
    *
    * `autoplay` is the one exception to parking, and travels with the load
    * because the deck parks the sink when the background read lands. The cue
-   * editor's Audition button sets it; nothing else does.
+   * editor's transport (Play, Audition, pre-roll) sets it; nothing else does.
+   *
+   * `startAt` is air seconds, for the cue editor reloading an edited audition
+   * where it was.
    */
   cueLoad(
     track: Track,
     cuePoints: CuePoints | null = null,
     autoplay = false,
+    startAt = 0,
   ): void {
     this.cueError = null;
+    // A reload of the same track (mode switch, edited audition) keeps its
+    // curve and art rather than blanking and refetching them.
+    const sameTrack = this.cueTrack?.id === track.id;
     this.cueTrack = track;
     this.cueAppliedPoints = cuePoints;
     this.cueDuration = cuePoints
       ? airDuration({ ...track, cue_points: cuePoints })
       : (track.duration ?? 0);
-    this.cueCurrentTime = 0;
-    this.loadCueWaveform(track.id);
-    this.loadCueCoverArt(track.id);
-    void this.cueBackend.load(track.id, cuePoints, autoplay).catch((err) => {
-      logger.error("Cue load failed:", err);
-      this.cueError = err instanceof Error ? err.message : String(err);
-    });
+    this.cueCurrentTime = Math.min(Math.max(0, startAt), this.cueDuration);
+    if (!sameTrack) {
+      this.loadCueWaveform(track.id);
+      this.loadCueCoverArt(track.id);
+    }
+    void this.cueBackend
+      .load(track.id, cuePoints, autoplay, startAt)
+      .catch((err) => {
+        logger.error("Cue load failed:", err);
+        this.cueError = err instanceof Error ? err.message : String(err);
+      });
   }
 
   /** Which audition mode the cue deck is in. */

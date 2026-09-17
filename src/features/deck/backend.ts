@@ -40,11 +40,15 @@ export interface DeckBackend extends DeckTransport {
    *
    * `autoplay` travels with the load because the deck parks the sink when the
    * background read lands, so a `play()` issued alongside would be undone.
-   * Cueing stays parked; the cue editor's Audition button is what sets it.
+   * Cueing stays parked; only the cue editor's transport sets it.
+   *
+   * `startAt` is in air seconds, so an edited audition can be reloaded where
+   * it was. The deck clamps a start past the air duration.
    */
   load(
     trackId: number,
     cuePoints?: CuePoints | null,
     autoplay?: boolean,
+    startAt?: number,
   ): Promise<void>;
 }

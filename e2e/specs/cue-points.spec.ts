@@ -74,17 +74,33 @@ describe("cue points", () => {
     }, sel.cuePointField(marker));
   }
 
+  /** A field's value in ms; NaN while it is empty. */
+  async function fieldMs(marker: string): Promise<number> {
+    const m = /^(\d+):(\d\d)\.(\d{3})$/.exec(await fieldValue(marker));
+    return m ? Number(m[1]) * 60_000 + Number(m[2]) * 1000 + Number(m[3]) : NaN;
+  }
+
+  /** Type `ms` into a marker's field and commit it with Enter. */
   async function setField(marker: string, ms: number): Promise<void> {
     await browser.execute(
       (s, value) => {
         const el = document.querySelector(s) as HTMLInputElement | null;
         if (!el) return;
+        el.focus();
         el.value = value;
         el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+        );
       },
       sel.cuePointField(marker),
-      String(ms),
+      `${ms}ms`,
     );
+  }
+
+  /** Click a row button by its accessible name. */
+  async function clickLabelled(name: string): Promise<void> {
+    await browser.$(`#cue-point-dialog [aria-label="${name}"]`).click();
   }
 
   async function selectOption(selector: string, index: number): Promise<void> {
@@ -255,6 +271,20 @@ describe("cue points", () => {
     // Still open: the whole point of the audition living in the dialog.
     expect(await browser.$(sel.cuePointDialog).isExisting()).toBe(true);
 
+    // 3b — an edit mid-audition reloads it and keeps it playing: the deck
+    // reports the new air time without the operator pressing anything.
+    await setField("cue_out_ms", 8_000);
+    await browser.waitUntil(
+      async () => (await pill(sel.cueTimeDisplay)).total === 7,
+      { timeout: 10_000, timeoutMsg: "an edit did not reach the audition" },
+    );
+    expect(await label(sel.cuePlay)).toBe("Pause cue");
+    await setField("cue_out_ms", MARKERS.cue_out_ms);
+    await browser.waitUntil(
+      async () => (await pill(sel.cueTimeDisplay)).total === AIR_SECONDS,
+      { timeout: 10_000, timeoutMsg: "the audition did not follow back" },
+    );
+
     // 4 — save, and the library column switches to air time.
     await closeCuePoints(sel.cuePointSave);
     await browser.waitUntil(
@@ -266,7 +296,7 @@ describe("cue points", () => {
     // the DB round trip rather than the local patch `saveCuePoints` applies.
     await openCuePoints(edited);
     for (const [marker, ms] of Object.entries(MARKERS)) {
-      expect(await fieldValue(marker)).toBe(String(ms));
+      expect(await fieldMs(marker)).toBe(ms);
     }
     await closeCuePoints(sel.cuePointClose);
 
@@ -380,15 +410,69 @@ describe("cue points", () => {
     const edited = await rowIndexByTitle("cue-fixture");
     await openCuePoints(edited);
 
-    // Past the end of a 30s file: the backend bounds it and returns what it
-    // stored, which is what the reopened dialog shows.
+    // Past the end of a 30s file: the field stops at the file, the backend
+    // bounds it again and returns what it stored, which the reopened dialog
+    // shows.
     await setField("cue_out_ms", 999_000);
     await closeCuePoints(sel.cuePointSave);
 
     await openCuePoints(edited);
-    const stored = Number(await fieldValue("cue_out_ms"));
+    const stored = await fieldMs("cue_out_ms");
     expect(stored).toBeLessThanOrEqual(30_000);
     expect(stored).toBeGreaterThan(0);
     await closeCuePoints(sel.cuePointClose);
+  });
+
+  /**
+   * The by-ear loop: play the raw file, mark at the playhead, nudge. Raw play
+   * ignores the markers, so editing them must never interrupt it.
+   */
+  it("marks at the playhead and nudges while the raw file plays", async () => {
+    await bootAndScan();
+    await enableCueDeck();
+    const edited = await rowIndexByTitle("cue-fixture");
+    await openCuePoints(edited);
+
+    await browser.$(sel.cuePointPlay).click();
+    await browser.waitUntil(
+      async () => (await pill(sel.cueTimeDisplay)).total === 30,
+      { timeout: 10_000, timeoutMsg: "raw play did not load the whole file" },
+    );
+    await browser.waitUntil(
+      async () => (await pill(sel.cueTimeDisplay)).current >= 1,
+      { timeout: 10_000, timeoutMsg: "raw play never advanced" },
+    );
+
+    // I marks Cue In at the playhead.
+    await browser.keys(["i"]);
+    await browser.waitUntil(async () => (await fieldMs("cue_in_ms")) >= 1_000, {
+      timeout: 5_000,
+      timeoutMsg: "I did not mark Cue In at the playhead",
+    });
+    const marked = await fieldMs("cue_in_ms");
+
+    // The marked row is selected, so the arrow keys nudge it.
+    await browser.keys(["ArrowRight"]);
+    await browser.waitUntil(
+      async () => (await fieldMs("cue_in_ms")) === marked + 10,
+      { timeout: 5_000, timeoutMsg: "→ did not nudge Cue In by 10 ms" },
+    );
+    await clickLabelled("Move Cue In earlier");
+    await browser.waitUntil(
+      async () => (await fieldMs("cue_in_ms")) === marked,
+      { timeout: 5_000, timeoutMsg: "the row button did not nudge back" },
+    );
+
+    // Nothing above reloaded the deck: it still plays the whole file.
+    expect((await pill(sel.cueTimeDisplay)).total).toBe(30);
+    expect(await label(sel.cuePlay)).toBe("Pause cue");
+    expect(await count(sel.cuePointMarker)).toBe(1);
+
+    await browser.$(sel.cuePointCancel).click();
+    await browser.$(sel.cuePointDiscard).click();
+    await browser.$(sel.cuePointDialog).waitForExist({
+      reverse: true,
+      timeout: 5_000,
+    });
   });
 });

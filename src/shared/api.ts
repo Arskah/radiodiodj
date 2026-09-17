@@ -100,6 +100,14 @@ export const api = {
     return invoke<number[] | null>("get_waveform", { id });
   },
   /**
+   * Decode a track into the cue editor's fine curve: one byte (0..=255) per
+   * 10 ms of audio. Computed on demand, so this can take a few seconds.
+   */
+  async getWaveformDetail(id: number): Promise<Uint8Array> {
+    const buf = await invoke<ArrayBuffer>("get_waveform_detail", { id });
+    return new Uint8Array(buf);
+  },
+  /**
    * Fetch a track's embedded cover art as a base64 `data:` URL for the deck's
    * vinyl disc, or `null` when the file has no artwork. Read on demand.
    */

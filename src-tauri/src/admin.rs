@@ -160,6 +160,7 @@ mod tests {
         "playlist_add",
         "playlist_set_item_cue_points",
         "cue_load",
+        "get_waveform_detail",
         "reveal_track",
         "library_health",
         "library_check_now",

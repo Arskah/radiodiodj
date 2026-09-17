@@ -1,7 +1,7 @@
 <script lang="ts" module>
   import type { CueMarkerKind } from "../../shared/cuePoints";
 
-  /** A cue-point marker drawn over the curve, optionally draggable. */
+  /** A cue-point marker drawn over the curve. */
   export interface WaveformMarker {
     /** Stable key; handed back on drag. */
     id: string;
@@ -9,8 +9,6 @@
     at: number;
     /** Drives the marker colour; see `.wf-marker` in styles.css. */
     kind: CueMarkerKind;
-    /** Native tooltip on the grab area. */
-    label: string;
   }
 </script>
 
@@ -29,9 +27,8 @@
    *
    * Two cue-point features ride on the same geometry (#279). `crop` narrows the
    * viewBox to a sub-range of the file, which is how *Preview* mode shows only
-   * what airs; `markers` draws the cue points, draggable when `onmarkermove` is
-   * given. The SVG stays `aria-hidden`: dragging is a pointer convenience, and
-   * the cue editor's millisecond fields are the accessible way to set a marker.
+   * what airs; `markers` draws the cue points, read-only — the cue editor has
+   * its own strips for moving them.
    */
   interface Props {
     peaks: number[] | null;
@@ -45,14 +42,6 @@
     crop?: { from: number; to: number } | null;
     /** Cue points to draw over the curve. */
     markers?: WaveformMarker[] | null;
-    /** Makes the markers draggable. Reports a fraction of the whole file. */
-    onmarkermove?: ((id: string, at: number) => void) | null;
-    /**
-     * Click-to-seek on the curve itself, reported as a fraction of the whole
-     * file. Only the cue editor uses it — the decks have a seek bar of their
-     * own underneath, and a click there already scrubs.
-     */
-    onseek?: ((at: number) => void) | null;
   }
 
   const {
@@ -62,8 +51,6 @@
     id,
     crop = null,
     markers = null,
-    onmarkermove = null,
-    onseek = null,
   }: Props = $props();
 
   // viewBox units: one x-unit per bucket, 0..100 vertical (bars grow up from the
@@ -99,60 +86,12 @@
   function clamp01(v: number): number {
     return Math.min(1, Math.max(0, v));
   }
-
-  // ----- Marker dragging -----
-
-  let svg: SVGSVGElement | undefined = $state();
-  let dragging: string | null = null;
-
-  /** Map a viewport x to a fraction of the *file*, inside the drawn window. */
-  function atFromClientX(clientX: number): number {
-    if (!svg) return from;
-    const rect = svg.getBoundingClientRect();
-    const t = clamp01((clientX - rect.left) / rect.width);
-    return from + t * (to - from);
-  }
-
-  // Every handler stops propagation: the seek bar underneath treats a
-  // pointerdown as a scrub, and grabbing a handle must not also move the
-  // playhead.
-  function onHandleDown(e: PointerEvent, markerId: string): void {
-    if (!onmarkermove) return;
-    e.stopPropagation();
-    e.preventDefault();
-    dragging = markerId;
-    (e.currentTarget as Element).setPointerCapture(e.pointerId);
-    onmarkermove(markerId, atFromClientX(e.clientX));
-  }
-
-  function onHandleMove(e: PointerEvent): void {
-    if (!dragging) return;
-    e.stopPropagation();
-    onmarkermove?.(dragging, atFromClientX(e.clientX));
-  }
-
-  function onHandleUp(e: PointerEvent): void {
-    if (!dragging) return;
-    e.stopPropagation();
-    (e.currentTarget as Element).releasePointerCapture(e.pointerId);
-    dragging = null;
-  }
-
-  /** A click on the curve, away from any handle, seeks there. */
-  function onSurfaceDown(e: PointerEvent): void {
-    if (!onseek || dragging) return;
-    onseek(atFromClientX(e.clientX));
-  }
 </script>
 
 <svg
   class="waveform"
-  class:editable={onmarkermove != null}
-  class:seekable={onseek != null}
-  bind:this={svg}
   viewBox="{originX} 0 {spanX} {HEIGHT}"
   preserveAspectRatio="none"
-  onpointerdown={onSurfaceDown}
   aria-hidden="true"
 >
   {#if count > 0}
@@ -221,25 +160,6 @@
           y2={HEIGHT}
           vector-effect="non-scaling-stroke"
         />
-        {#if onmarkermove}
-          <!-- Transparent fat line over the marker: a constant-width grab area
-               that survives the non-uniform stretch, where a <rect> would not. -->
-          <line
-            class="wf-grab"
-            x1={x}
-            y1="0"
-            x2={x}
-            y2={HEIGHT}
-            vector-effect="non-scaling-stroke"
-            role="presentation"
-            onpointerdown={(e) => onHandleDown(e, m.id)}
-            onpointermove={onHandleMove}
-            onpointerup={onHandleUp}
-            onpointercancel={onHandleUp}
-          >
-            <title>{m.label}</title>
-          </line>
-        {/if}
       {/each}
     </g>
   {/if}

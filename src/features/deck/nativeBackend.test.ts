@@ -137,6 +137,7 @@ describe("NativeBackend (deckId='cue')", () => {
       id: 42,
       cuePoints: null,
       autoplay: false,
+      startAt: 0,
     });
     await b.play();
     expect(invoke).toHaveBeenCalledWith("cue_play");
@@ -160,10 +161,11 @@ describe("NativeBackend (deckId='cue')", () => {
       id: 42,
       cuePoints: points,
       autoplay: false,
+      startAt: 0,
     });
   });
 
-  // Staging is silent; the editor's Audition button is the explicit ask, and
+  // Staging is silent; the editor's transport is the explicit ask, and
   /// it travels with the load because the deck parks the sink when the read
   /// lands.
   it("asks the load to play when an audition requests it", async () => {
@@ -173,6 +175,18 @@ describe("NativeBackend (deckId='cue')", () => {
       id: 42,
       cuePoints: null,
       autoplay: true,
+      startAt: 0,
+    });
+  });
+
+  it("forwards where an edited audition resumes", async () => {
+    const b = new NativeBackend("cue");
+    await b.load(42, null, true, 12.5);
+    expect(invoke).toHaveBeenCalledWith("cue_load", {
+      id: 42,
+      cuePoints: null,
+      autoplay: true,
+      startAt: 12.5,
     });
   });
 
