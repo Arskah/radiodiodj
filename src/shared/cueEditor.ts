@@ -123,6 +123,33 @@ export function regionOutside(
   return r.cueIn < frame.from || r.cueOut > frame.to;
 }
 
+/** Narrowest the zoom may be dragged, in seconds. */
+export const MIN_FRAME_S = 0.5;
+
+/** Move one edge of the frame, keeping it inside the file and `MIN_FRAME_S` wide. */
+export function resizeFrame(
+  frame: Frame,
+  edge: "from" | "to",
+  t: number,
+  fileDuration: number,
+): Frame {
+  const at = Math.min(fileDuration, Math.max(0, t));
+  return edge === "from"
+    ? { from: Math.min(at, frame.to - MIN_FRAME_S), to: frame.to }
+    : { from: frame.from, to: Math.max(at, frame.from + MIN_FRAME_S) };
+}
+
+/** Slide the frame so it starts at `from`, keeping its width and the file's ends. */
+export function panFrame(
+  frame: Frame,
+  from: number,
+  fileDuration: number,
+): Frame {
+  const width = frame.to - frame.from;
+  const start = Math.min(Math.max(0, from), Math.max(0, fileDuration - width));
+  return { from: start, to: start + width };
+}
+
 /** How far an edge may drift, as a share of the span, before a reframe. */
 export const REFRAME_DRIFT = 0.25;
 

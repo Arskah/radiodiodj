@@ -11,12 +11,14 @@ import {
   needsReframe,
   nudge,
   nudgeStep,
+  panFrame,
   parseCueTime,
   playheadFile,
   preRollTarget,
   rebucket,
   regionFrame,
   regionOutside,
+  resizeFrame,
   reloadStartAt,
   setMarker,
   stackFlags,
@@ -121,6 +123,49 @@ describe("regionOutside / followNeedsPage", () => {
     expect(followNeedsPage({ from: FILE - 30, to: FILE }, FILE - 1, FILE)).toBe(
       false,
     );
+  });
+});
+
+describe("resizeFrame / panFrame", () => {
+  const frame = { from: 100, to: 130 };
+
+  it("moves the edge that was grabbed", () => {
+    expect(resizeFrame(frame, "from", 110, FILE)).toEqual({
+      from: 110,
+      to: 130,
+    });
+    expect(resizeFrame(frame, "to", 140, FILE)).toEqual({
+      from: 100,
+      to: 140,
+    });
+  });
+
+  it("never drags an edge past the other", () => {
+    expect(resizeFrame(frame, "from", 200, FILE)).toEqual({
+      from: 129.5,
+      to: 130,
+    });
+    expect(resizeFrame(frame, "to", 0, FILE)).toEqual({ from: 100, to: 100.5 });
+  });
+
+  it("keeps the edges inside the file", () => {
+    expect(resizeFrame(frame, "from", -10, FILE).from).toBe(0);
+    expect(resizeFrame(frame, "to", 1e6, FILE).to).toBe(FILE);
+  });
+
+  it("pans without changing the width", () => {
+    expect(panFrame(frame, 200, FILE)).toEqual({ from: 200, to: 230 });
+  });
+
+  it("stops panning at either end of the file", () => {
+    expect(panFrame(frame, -50, FILE)).toEqual({ from: 0, to: 30 });
+    const end = panFrame(frame, 1e6, FILE);
+    expect(end.to).toBeCloseTo(FILE);
+    expect(end.to - end.from).toBeCloseTo(30);
+  });
+
+  it("shows the whole of a file shorter than the frame", () => {
+    expect(panFrame({ from: 0, to: 30 }, 5, 12)).toEqual({ from: 0, to: 30 });
   });
 });
 

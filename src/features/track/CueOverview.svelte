@@ -2,8 +2,11 @@
   /**
    * The cue editor's whole-file strip. A click anywhere seeks. Cue In and Cue
    * Out move by the tabs on the region's edges, and only by those: a press on
-   * the curve can never grab a marker. The Preview strip's window is outlined
-   * so the operator sees where the zoom sits.
+   * the curve can never grab a marker.
+   *
+   * The zoom box is the detail strip's window, and it is also its control: its
+   * grips resize it and its middle pans it, which takes framing off the region
+   * until _Fit_ hands it back.
    */
   import Waveform, { type WaveformMarker } from "../deck/Waveform.svelte";
   import type { Frame } from "../../shared/cueEditor";
@@ -17,10 +20,18 @@
     region: Frame | null;
     markers: WaveformMarker[];
     frame: Frame;
+    /** The operator sized the zoom by hand, so it no longer follows the region. */
+    manual: boolean;
     playhead: number | null;
     onseek: ((t: number) => void) | null;
     onedgemove: (key: CueMarker, t: number) => void;
     onedgeend: () => void;
+    /** A grip was dragged: move that edge of the zoom to `t`. */
+    onframeresize: (edge: "from" | "to", t: number) => void;
+    /** The box was panned: start the zoom at `t`, keeping its width. */
+    onframepan: (t: number) => void;
+    /** Double-click: hand framing back to the region. */
+    onframefit: () => void;
   }
 
   const {
@@ -29,10 +40,14 @@
     region,
     markers,
     frame,
+    manual,
     playhead,
     onseek,
     onedgemove,
     onedgeend,
+    onframeresize,
+    onframepan,
+    onframefit,
   }: Props = $props();
 
   let surface: HTMLDivElement | undefined = $state();
@@ -51,6 +66,15 @@
     timeAt,
     onmove: (id, t) => onedgemove(id as CueMarker, t),
     onend: () => onedgeend(),
+  });
+
+  const frameDrag = createDrag({
+    timeAt,
+    onmove: (id, t) => {
+      if (id === "pan") onframepan(t);
+      else onframeresize(id as "from" | "to", t);
+    },
+    onend: () => {},
   });
 
   function onSurfaceDown(e: PointerEvent): void {
@@ -97,11 +121,44 @@
         style:width="{pct(region.to) - pct(region.from)}%"
       ></div>
     {/if}
+    <div class="cue-overview-shade" style:width="{pct(frame.from)}%"></div>
+    <div class="cue-overview-shade right" style:left="{pct(frame.to)}%"></div>
     <div
       class="cue-overview-window"
+      class:manual
       style:left="{pct(frame.from)}%"
-      style:width="{Math.max(0.3, pct(frame.to) - pct(frame.from))}%"
-    ></div>
+      style:width="{Math.max(0.5, pct(frame.to) - pct(frame.from))}%"
+      role="presentation"
+      ondblclick={onframefit}
+    >
+      <div
+        class="cue-grip start"
+        role="presentation"
+        title="Drag to widen or narrow the zoom"
+        onpointerdown={(e) => frameDrag.down(e, "from", frame.from)}
+        onpointermove={frameDrag.move}
+        onpointerup={frameDrag.up}
+        onpointercancel={frameDrag.up}
+      ></div>
+      <div
+        class="cue-pan"
+        role="presentation"
+        title="Drag to move the zoom · double-click to fit the region"
+        onpointerdown={(e) => frameDrag.down(e, "pan", frame.from)}
+        onpointermove={frameDrag.move}
+        onpointerup={frameDrag.up}
+        onpointercancel={frameDrag.up}
+      ></div>
+      <div
+        class="cue-grip end"
+        role="presentation"
+        title="Drag to widen or narrow the zoom"
+        onpointerdown={(e) => frameDrag.down(e, "to", frame.to)}
+        onpointermove={frameDrag.move}
+        onpointerup={frameDrag.up}
+        onpointercancel={frameDrag.up}
+      ></div>
+    </div>
   </div>
 </div>
 
@@ -159,12 +216,77 @@
     pointer-events: none;
   }
 
+  /* Lens: everything outside the zoom is dimmed, so the box reads as the lit
+     part of the track. Only its grips and middle take pointers. */
+  .cue-overview-shade {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    background: color-mix(in srgb, var(--surface-container) 62%, transparent);
+    pointer-events: none;
+  }
+
+  .cue-overview-shade.right {
+    right: 0;
+    left: auto;
+    width: auto;
+  }
+
   .cue-overview-window {
     position: absolute;
     top: 0;
     bottom: 0;
-    border: 1px solid color-mix(in srgb, var(--on-surface) 55%, transparent);
-    border-radius: 2px;
-    pointer-events: none;
+    display: flex;
+    border-radius: 3px;
+    box-shadow: inset 0 0 0 1px
+      color-mix(in srgb, var(--secondary) 55%, transparent);
+  }
+
+  .cue-overview-window.manual {
+    box-shadow: inset 0 0 0 1px var(--secondary);
+  }
+
+  .cue-grip {
+    position: relative;
+    width: 8px;
+    flex: 0 0 8px;
+    background: color-mix(in srgb, var(--secondary) 30%, transparent);
+    cursor: ew-resize;
+    touch-action: none;
+  }
+
+  /* Grab bar down the middle of each grip. */
+  .cue-grip::after {
+    content: "";
+    position: absolute;
+    top: 25%;
+    bottom: 25%;
+    left: 3px;
+    width: 2px;
+    border-radius: 1px;
+    background: color-mix(in srgb, var(--secondary) 85%, transparent);
+  }
+
+  .cue-grip:hover {
+    background: color-mix(in srgb, var(--secondary) 55%, transparent);
+  }
+
+  .cue-grip.start {
+    border-radius: 3px 0 0 3px;
+  }
+
+  .cue-grip.end {
+    border-radius: 0 3px 3px 0;
+  }
+
+  .cue-pan {
+    flex: 1;
+    cursor: grab;
+    touch-action: none;
+  }
+
+  .cue-pan:active {
+    cursor: grabbing;
   }
 </style>

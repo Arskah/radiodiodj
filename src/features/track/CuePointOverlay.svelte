@@ -8,6 +8,7 @@
    * - The **detail** strip zooms onto the region plus a margin, or follows the
    *   playhead until there is one. Markers drag by their flags in the lane
    *   above it, never by the curve, so a seek click cannot move a marker.
+   *   Sizing the overview's zoom box by hand takes framing over until _Fit_.
    * - **Play** plays the raw file and ignores edits; **Audition** plays the
    *   draft, and an edit mid-audition reloads it where it was.
    * - Each row, and the keyboard, marks at the playhead and nudges.
@@ -38,10 +39,12 @@
     hasRegion,
     needsReframe,
     nudge,
+    panFrame,
     nudgeStep,
     playheadFile,
     preRollTarget,
     reloadStartAt,
+    resizeFrame,
     resolvedMs,
     setMarker,
     type Frame,
@@ -88,6 +91,8 @@
   let framingRegion = $state(false);
   /** A handle is being dragged: the frame holds and auditions wait. */
   let dragging = $state(false);
+  /** The zoom was sized by hand, so it no longer follows the region. */
+  let manualFrame = $state(false);
 
   const track = $derived(app.editingCuePoints);
   const fileDuration = $derived(track?.duration ?? 0);
@@ -172,6 +177,7 @@
     // moment playback changes it, wiping the draft mid-edit.
     untrack(() => {
       deckBefore = app.cueSnapshot();
+      manualFrame = false;
       reframe(true);
     });
     loadCurves(t.id);
@@ -204,6 +210,9 @@
    */
   function reframe(force = false): void {
     if (!track || fileDuration <= 0) return;
+    // A hand-sized zoom outranks every automatic refit; only Fit (and
+    // reopening the dialog) gives framing back.
+    if (manualFrame) return;
     const nowRegion = hasRegion(draft);
     if (
       force ||
@@ -215,9 +224,27 @@
     }
   }
 
+  /** Hand framing back to the region — the _Fit_ button and a box double-click. */
+  function fitFrame(): void {
+    manualFrame = false;
+    reframe(true);
+  }
+
+  function resizeZoom(edge: "from" | "to", t: number): void {
+    manualFrame = true;
+    frame = resizeFrame(frame, edge, t, fileDuration);
+  }
+
+  function panZoom(t: number): void {
+    manualFrame = true;
+    frame = panFrame(frame, t, fileDuration);
+  }
+
   // A following frame turns the page as the playhead reaches its edge.
   $effect(() => {
-    if (framingRegion || playhead == null || fileDuration <= 0) return;
+    if (manualFrame || framingRegion || playhead == null || fileDuration <= 0) {
+      return;
+    }
     if (untrack(() => followNeedsPage(frame, playhead, fileDuration))) {
       frame = followFrame(playhead, fileDuration);
     }
@@ -504,9 +531,13 @@
           markers={overviewMarkers}
           {frame}
           {playhead}
+          manual={manualFrame}
           onseek={canPlay ? seek : null}
           onedgemove={moveTo}
           onedgeend={endDrag}
+          onframeresize={resizeZoom}
+          onframepan={panZoom}
+          onframefit={fitFrame}
         />
         <CueDetail
           {detail}
@@ -576,6 +607,18 @@
             >
           {/if}
           <span class="cue-footer-gap"></span>
+          <button
+            id="btn-cue-points-fit"
+            class="btn btn-icon"
+            onclick={fitFrame}
+            disabled={!manualFrame}
+            title="Fit the zoom to the region — the box also fits on a double-click"
+          >
+            <span class="material-symbols-outlined" aria-hidden="true"
+              >fit_screen</span
+            >
+            Fit
+          </button>
           <span class="cue-summary">
             Airs <strong>{formatTime(airSeconds)}</strong> of
             {formatTime(fileDuration)}

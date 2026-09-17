@@ -98,6 +98,13 @@ the file is resident, never stored); the stored curve stands in until it
 arrives. A thin line over the detail strip traces the gain envelope, a port of
 `envelope::gain_at`, so what is drawn is what airs.
 
+**The zoom box is also its control.** The box the overview draws around the
+detail strip's window has 8 px grips that resize it and a middle that pans it,
+with everything outside it dimmed. Sizing it by hand takes framing off the
+region: from then on marks and nudges leave the view alone, until _Fit_ — the
+button, or a double-click on the box — hands it back. Reopening the dialog
+resets to automatic framing.
+
 **A click on a curve only ever seeks.** Markers move by handles that are not
 the curve: flags in a lane above the detail strip, and tabs on the region's
 edges in the overview for Cue In and Cue Out. A press arms a drag without
@@ -105,7 +112,10 @@ moving anything — the handle moves only once the pointer travels 3 px, keeping
 its grab offset — so a click selects a marker without nudging it. Flags that
 would overlap stack into up to three lane rows. The detail frame holds still
 during a drag and reframes on drop; it also reframes when a field is committed,
-and when a nudge or mark carries Cue In or Cue Out out of view. Only set markers
+and when a nudge or mark carries Cue In or Cue Out out of view or leaves the
+frame no longer fitting the region — marking Cue Out after Cue In, say, where
+the first mark framed the whole tail of the file. A nudge moves an edge by too
+little to trigger that, so the view holds still while tuning. Only set markers
 get a flag or a line: an unset one resolves onto a neighbour.
 
 **Two ways to listen.** _Play_ loads the whole file (`cue_load` without cue
