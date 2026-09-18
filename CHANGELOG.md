@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.19.0](https://github.com/Arskah/radiodiodj/compare/v0.18.0...v0.19.0) (2026-09-18)
+
+
+### Features
+
+* **audio:** segue handover at Next start on the program bus ([#399](https://github.com/Arskah/radiodiodj/issues/399)) ([8befcf0](https://github.com/Arskah/radiodiodj/commit/8befcf0b22330af5ad6be456e026e30cd307be7b)), closes [#278](https://github.com/Arskah/radiodiodj/issues/278)
+* **deck:** live fade-out / fade-to-next transport actions ([#400](https://github.com/Arskah/radiodiodj/issues/400)) ([aee16c7](https://github.com/Arskah/radiodiodj/commit/aee16c73491bdc3787ac0c2c5d2b5a121812e06a)), closes [#280](https://github.com/Arskah/radiodiodj/issues/280)
+* **ui:** admin mode — password-lock settings and metadata edits ([#396](https://github.com/Arskah/radiodiodj/issues/396)) ([7382d8a](https://github.com/Arskah/radiodiodj/commit/7382d8a0ec24db312c020fc5d7d295333a8b69db)), closes [#386](https://github.com/Arskah/radiodiodj/issues/386)
+* **ui:** overhaul the cue point editor ([#398](https://github.com/Arskah/radiodiodj/issues/398)) ([42981b7](https://github.com/Arskah/radiodiodj/commit/42981b7107a7574b29aed5b332f641e2270ce503))
+
+
+### Bug Fixes
+
+* don't wait for cue track to load before updating UI on new track ([e0652e3](https://github.com/Arskah/radiodiodj/commit/e0652e359484b9689293dd72b0c6da87eda5e945))
+* **ui:** don't let a context menu dismiss itself as it opens ([5400c49](https://github.com/Arskah/radiodiodj/commit/5400c49a9d61038fabbff7cd9075c493ba3f678b))
+
+
+### Tests
+
+* **e2e:** wait out the metadata dialog's slide-in before clicking ([6f55c4c](https://github.com/Arskah/radiodiodj/commit/6f55c4cf0a6e4a2558c233d0ae7eeee3d70622ad))
+* fix flakiness with a timeout ([e61f06b](https://github.com/Arskah/radiodiodj/commit/e61f06b813f90d9855d17b85cafbbdd35f04d6ae))
+
 ## [0.18.0](https://github.com/Arskah/radiodiodj/compare/v0.17.0...v0.18.0) (2026-09-16)
 
 
