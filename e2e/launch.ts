@@ -82,3 +82,26 @@ async function copyFiles(from: string, to: string): Promise<void> {
 function sanitize(s: string): string {
   return s.replace(/[^a-z0-9._-]+/gi, "_").slice(0, 100);
 }
+
+/**
+ * Wait until every CSS animation running inside `selector` has finished.
+ *
+ * WebdriverIO resolves an element's click point from its bounding box and then
+ * dispatches the click as a separate command. A dialog that is still sliding in
+ * moves between those two steps, so the click can land beside the button it
+ * aimed at — silently, with no error. Waiting for the animation to settle
+ * removes the race.
+ */
+export async function waitForAnimations(selector: string): Promise<void> {
+  await browser.waitUntil(
+    async () =>
+      browser.execute((s) => {
+        const el = document.querySelector(s);
+        if (!el) return false;
+        return el
+          .getAnimations({ subtree: true })
+          .every((a) => a.playState === "finished");
+      }, selector),
+    { timeout: 5_000, timeoutMsg: `animations in ${selector} did not settle` },
+  );
+}

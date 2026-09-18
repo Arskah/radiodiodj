@@ -1,5 +1,5 @@
 import { browser, expect } from "@wdio/globals";
-import { launchApp, captureArtifacts } from "../launch";
+import { launchApp, captureArtifacts, waitForAnimations } from "../launch";
 import { createFixtureLibrary, type FixtureLibrary } from "../fixtures";
 import { sel } from "../selectors";
 
@@ -61,7 +61,8 @@ describe("metadata editing", () => {
   async function openEditor(): Promise<void> {
     await browser.$(sel.editButton).click();
     await browser.$(sel.metadataDialog).waitForExist({ timeout: 5_000 });
-    // The overlay animates in; wait until the title field is interactable.
+    // The overlay slides in; clicking before it settles can miss the button.
+    await waitForAnimations(sel.metadataDialog);
     await browser.$(sel.metadataTitle).waitForClickable({ timeout: 5_000 });
   }
 
