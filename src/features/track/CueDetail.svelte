@@ -258,7 +258,7 @@
     font-size: 9px;
     font-weight: 600;
     line-height: 13px;
-    color: #0b0e14;
+    color: var(--on-marker);
     background: var(--mk);
     cursor: ew-resize;
     white-space: nowrap;

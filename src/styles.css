@@ -10,6 +10,12 @@
    stitch_radiodiodj_desktop_player/radiodiodj/DESIGN.md.
    ============================================================ */
 :root {
+  /* The static fallback palette, and the pre-hydration one: a theme overrides
+     these as inline properties on <html>. `color-scheme` is what native chrome
+     (scrollbars, select popups, number spinners) follows — no custom property
+     reaches it. */
+  color-scheme: dark;
+
   /* Surfaces (Midnight charcoal tiers) */
   --surface: #111317;
   --surface-dim: #111317;
@@ -53,6 +59,18 @@
 
   /* Signal green — playback / LED only */
   --signal-green: #4ade80;
+  --led-highlight: #ff8a80;
+
+  /* Depth. Shadows carry no alpha of their own: each site mixes the opacity it
+     wants, so one token retints every shadow in the app. */
+  --shadow-color: #000000;
+  --inner-highlight: #ffffff;
+  --scrim: rgba(0, 0, 0, 0.6);
+
+  /* Content colours for surfaces that are themselves a token */
+  --on-warning-container: #3a1a00;
+  --on-toggle-knob: #ffffff;
+  --on-marker: #0b0e14;
 
   /* Cue point markers (#279). One colour per marker, shared by the waveform
      lines and the editor's swatches so the two are read together. Deliberately
@@ -86,17 +104,18 @@
 
 /* ---- Skeuomorphic helpers (ported from the mockup <style> blocks) ---- */
 .inner-shadow-recessed {
-  box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.6);
+  box-shadow: inset 0 2px 4px 0
+    color-mix(in srgb, var(--shadow-color) 60%, transparent);
 }
 
 .inner-glow-deck {
   box-shadow:
-    inset 0 1px 4px rgba(255, 255, 255, 0.05),
-    inset 0 -1px 4px rgba(0, 0, 0, 0.5);
+    inset 0 1px 4px color-mix(in srgb, var(--inner-highlight) 5%, transparent),
+    inset 0 -1px 4px color-mix(in srgb, var(--shadow-color) 50%, transparent);
 }
 
 .neon-glow-primary {
-  box-shadow: 0 0 8px rgba(184, 195, 255, 0.4);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--primary) 40%, transparent);
 }
 
 .led-glow-green {
@@ -108,7 +127,11 @@
   width: 8px;
   height: 8px;
   border-radius: var(--r-pill);
-  background: radial-gradient(circle at 35% 30%, #ff8a80, var(--error) 70%);
+  background: radial-gradient(
+    circle at 35% 30%,
+    var(--led-highlight),
+    var(--error) 70%
+  );
   box-shadow: 0 0 8px var(--error);
   flex-shrink: 0;
 }
@@ -141,6 +164,10 @@
     "GRAD" 0,
     "opsz" 24;
   user-select: none;
+}
+
+html {
+  background: var(--background);
 }
 
 body {
@@ -579,8 +606,8 @@ body {
   border-color: var(--primary);
   color: var(--on-primary);
   box-shadow:
-    0 2px 6px rgba(0, 0, 0, 0.4),
-    0 0 8px rgba(184, 195, 255, 0.4);
+    0 2px 6px color-mix(in srgb, var(--shadow-color) 40%, transparent),
+    0 0 8px color-mix(in srgb, var(--primary) 40%, transparent);
 }
 
 .transport-primary .material-symbols-outlined {
@@ -883,8 +910,8 @@ body {
   background-position: center;
   border: 1px solid color-mix(in srgb, var(--outline-variant) 25%, transparent);
   box-shadow:
-    inset 0 2px 6px rgb(0 0 0 / 0.5),
-    0 2px 8px rgb(0 0 0 / 0.4);
+    inset 0 2px 6px color-mix(in srgb, var(--shadow-color) 50%, transparent),
+    0 2px 8px color-mix(in srgb, var(--shadow-color) 40%, transparent);
   color: var(--on-surface-variant);
   overflow: hidden;
 }
@@ -898,8 +925,8 @@ body {
   border-radius: 50%;
   object-fit: cover;
   box-shadow:
-    0 0 0 2px rgb(0 0 0 / 0.55),
-    0 1px 4px rgb(0 0 0 / 0.4);
+    0 0 0 2px color-mix(in srgb, var(--shadow-color) 55%, transparent),
+    0 1px 4px color-mix(in srgb, var(--shadow-color) 40%, transparent);
 }
 
 /* Spindle hole punched through the center of the label. */
@@ -912,7 +939,8 @@ body {
   min-height: 4px;
   border-radius: 50%;
   background: var(--surface-container-lowest);
-  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.6);
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--shadow-color) 60%, transparent);
   z-index: 1;
 }
 
@@ -1649,7 +1677,8 @@ body {
 .playlist-row.active .pl-num {
   background: var(--surface-container);
   color: var(--primary);
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);
+  box-shadow: inset 0 1px 2px
+    color-mix(in srgb, var(--shadow-color) 50%, transparent);
 }
 
 .pl-body {
@@ -1838,7 +1867,7 @@ body {
 .error-banner.warning {
   background: var(--tertiary);
   border-color: var(--tertiary);
-  color: #3a1a00;
+  color: var(--on-warning-container);
   box-shadow: 0 0 8px var(--tertiary);
 }
 
@@ -1925,7 +1954,7 @@ body {
   align-items: center;
   justify-content: center;
   padding: var(--sp-lg);
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--scrim);
   backdrop-filter: blur(12px);
 }
 
@@ -1943,7 +1972,8 @@ body {
   background: var(--surface-container-low);
   border: 1px solid var(--outline-variant);
   border-radius: var(--r-xl);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 24px 64px
+    color-mix(in srgb, var(--shadow-color) 60%, transparent);
   overflow: hidden;
 }
 
@@ -2210,8 +2240,33 @@ body {
   color: var(--outline);
 }
 
+/* The chevron is a mask, not a picture of a chevron: a data URI would bake its
+   colour in and stop following the theme. A <select> cannot carry ::after, so
+   the arrow hangs off a wrapper. */
+.device-row .select-wrap {
+  position: relative;
+  display: block;
+}
+
+.device-row .select-wrap::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  width: 18px;
+  height: 18px;
+  transform: translateY(-50%);
+  pointer-events: none;
+  background-color: var(--outline);
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: 18px;
+}
+
 .device-row select {
   appearance: none;
+  width: 100%;
   padding: var(--sp-md);
   background: var(--surface-container-lowest);
   border: 1px solid var(--outline-variant);
@@ -2220,10 +2275,6 @@ body {
   font-size: 13px;
   font-family: inherit;
   cursor: pointer;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%238e90a2' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 12px center;
-  background-size: 18px;
   padding-right: 40px;
 }
 
@@ -2320,7 +2371,8 @@ body {
   color: var(--outline);
   font-style: italic;
   font-size: 12px;
-  box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.5);
+  box-shadow: inset 0 2px 4px 0
+    color-mix(in srgb, var(--shadow-color) 50%, transparent);
 }
 
 .settings-row {
@@ -2470,7 +2522,7 @@ body {
   width: 20px;
   height: 20px;
   border-radius: var(--r-pill);
-  background: #fff;
+  background: var(--on-toggle-knob);
   transition: transform 0.2s;
 }
 
@@ -2639,7 +2691,8 @@ body {
   border: 1px solid var(--outline-variant);
   border-radius: var(--r-xl);
   padding: var(--sp-md);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 8px 24px
+    color-mix(in srgb, var(--shadow-color) 60%, transparent);
   font-size: 12px;
   pointer-events: none;
 }
@@ -2700,7 +2753,8 @@ body {
   background: var(--surface-container-high);
   border: 1px solid var(--outline-variant);
   border-radius: var(--r-xl);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 8px 24px
+    color-mix(in srgb, var(--shadow-color) 60%, transparent);
   display: flex;
   flex-direction: column;
 }

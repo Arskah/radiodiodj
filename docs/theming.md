@@ -134,7 +134,7 @@ A theme may set these, and nothing else:
 | error       | `--error`, `--on-error`, `--error-container`, `--on-error-container`                                                                                                                                                             |
 | signal      | `--signal-green`, `--led-highlight`                                                                                                                                                                                              |
 | cue markers | `--cue-in-color`, `--fade-in-color`, `--fade-out-color`, `--cue-out-color`, `--next-start-color`, `--on-marker`                                                                                                                  |
-| depth       | `--shadow-color`, `--shadow-color-strong`, `--inner-highlight`, `--scrim`, `--glow-primary`                                                                                                                                      |
+| depth       | `--shadow-color`, `--inner-highlight`, `--scrim`                                                                                                                                                                                 |
 | controls    | `--on-toggle-knob`                                                                                                                                                                                                               |
 
 The same names are the `:root` block at the top of `src/styles.css`, the
@@ -150,12 +150,26 @@ without rendering it. Fonts additionally need font files, a `@font-face` rule
 built from operator text, and a fetch — every property colours were chosen to
 avoid.
 
-**Shadows are colours, not shadows.** `--shadow-color`, `--shadow-color-strong`,
-`--inner-highlight`, `--scrim` and `--glow-primary` are colours; the geometry
-(`inset 0 2px 4px`) stays in `styles.css`. This is what a light theme actually
-needs — black shadows read wrong on a light surface — while keeping the value
-grammar to exactly one production. A themeable `box-shadow` would have meant a
-second, much looser grammar for the one case that does not need it.
+**Shadows are colours, not shadows.** `--shadow-color`, `--inner-highlight` and
+`--scrim` are colours; the geometry (`inset 0 2px 4px`) stays in `styles.css`.
+This is what a light theme actually needs — black shadows read wrong on a light
+surface — while keeping the value grammar to exactly one production. A themeable
+`box-shadow` would have meant a second, much looser grammar for the one case
+that does not need it.
+
+**A shadow token carries no alpha of its own.** Each site mixes the opacity it
+wants — `color-mix(in srgb, var(--shadow-color) 55%, transparent)` — so the
+fourteen shadows in `styles.css` keep the four distinct alphas they were tuned
+with, and one token still retints all of them. Baking the alpha into two tokens
+(`--shadow-color` and a `-strong`) was the first shape of this, and it would
+have quietly flattened 0.4 / 0.5 / 0.55 / 0.6 into two values. `--scrim` is the
+exception and carries its own alpha, because it is used directly as a
+background rather than inside a shadow.
+
+There is no `--glow-primary`. The primary glow is
+`color-mix(in srgb, var(--primary) 40%, transparent)`, which is what the
+hardcoded `rgba(184, 195, 255, 0.4)` already was, so it follows `--primary` with
+no token of its own.
 
 **The set stays small because `color-mix` does the rest.** `styles.css` already
 uses `color-mix(in srgb, var(--token) 25%, transparent)` in 49 places, so every

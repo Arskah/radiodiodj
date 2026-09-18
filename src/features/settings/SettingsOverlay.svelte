@@ -289,18 +289,20 @@
             {:else}
               <div class="device-row">
                 <label for="main-device">Master Output Device</label>
-                <select
-                  id="main-device"
-                  value={deviceKey(app.mainDevice)}
-                  onchange={onMainDeviceChange}
-                >
-                  <option value="">System default</option>
-                  {#each app.audioDevices as d (deviceKey(d))}
-                    <option value={deviceKey(d)}>
-                      {d.description}{d.isDefault ? " (default)" : ""}
-                    </option>
-                  {/each}
-                </select>
+                <span class="select-wrap">
+                  <select
+                    id="main-device"
+                    value={deviceKey(app.mainDevice)}
+                    onchange={onMainDeviceChange}
+                  >
+                    <option value="">System default</option>
+                    {#each app.audioDevices as d (deviceKey(d))}
+                      <option value={deviceKey(d)}>
+                        {d.description}{d.isDefault ? " (default)" : ""}
+                      </option>
+                    {/each}
+                  </select>
+                </span>
                 {#if mainDeviceChanged}
                   <div class="hint">
                     Restart required to apply main-device change.
@@ -310,18 +312,20 @@
 
               <div class="device-row">
                 <label for="cue-device">Cue / Headphones Output</label>
-                <select
-                  id="cue-device"
-                  value={deviceKey(app.cueDevice)}
-                  onchange={onCueDeviceChange}
-                >
-                  <option value="">Disabled</option>
-                  {#each app.audioDevices as d (deviceKey(d))}
-                    <option value={deviceKey(d)}>
-                      {d.description}{d.isDefault ? " (default)" : ""}
-                    </option>
-                  {/each}
-                </select>
+                <span class="select-wrap">
+                  <select
+                    id="cue-device"
+                    value={deviceKey(app.cueDevice)}
+                    onchange={onCueDeviceChange}
+                  >
+                    <option value="">Disabled</option>
+                    {#each app.audioDevices as d (deviceKey(d))}
+                      <option value={deviceKey(d)}>
+                        {d.description}{d.isDefault ? " (default)" : ""}
+                      </option>
+                    {/each}
+                  </select>
+                </span>
                 <div class="hint">
                   Pick a different device than main for headphone preview.
                 </div>

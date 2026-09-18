@@ -711,7 +711,7 @@
   .cue-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.55);
+    background: var(--scrim);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -719,9 +719,10 @@
   }
 
   .cue-dialog {
-    background: var(--surface-container, #1e2430);
-    border-radius: var(--r-lg, 8px);
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+    background: var(--surface-container);
+    border-radius: var(--r-lg);
+    box-shadow: 0 16px 48px
+      color-mix(in srgb, var(--shadow-color) 45%, transparent);
     width: min(1200px, calc(100% - 32px));
     max-height: 92vh;
     overflow-y: auto;

@@ -101,7 +101,7 @@
   .unlock-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.5);
+    background: var(--scrim);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -109,9 +109,10 @@
   }
 
   .unlock-content {
-    background: var(--panel-bg, #1e2430);
+    background: var(--surface-container);
     border-radius: 8px;
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+    box-shadow: 0 16px 48px
+      color-mix(in srgb, var(--shadow-color) 40%, transparent);
     width: min(360px, calc(100% - 32px));
     padding: 20px;
   }
@@ -129,35 +130,35 @@
     gap: 8px;
     font-size: 18px;
     font-weight: 600;
-    color: #fff;
+    color: var(--on-surface);
   }
 
   .unlock-desc {
     margin: 0;
     font-size: 13px;
-    color: #aaa;
+    color: var(--on-surface-variant);
   }
 
   input {
     background: transparent;
-    border: 1px solid rgba(255, 255, 255, 0.15);
+    border: 1px solid var(--outline-variant);
     border-radius: 4px;
     padding: 8px 10px;
-    color: #fff;
+    color: var(--on-surface);
     font-size: 14px;
     outline: none;
   }
 
   input:focus {
-    border-color: rgba(92, 130, 245, 0.8);
-    box-shadow: 0 0 0 2px rgba(92, 130, 245, 0.15);
+    border-color: var(--primary);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 15%, transparent);
   }
 
   .unlock-error {
-    color: #e74c3c;
+    color: var(--error);
     font-size: 13px;
     padding: 8px 10px;
-    background: rgba(231, 76, 60, 0.1);
+    background: color-mix(in srgb, var(--error) 10%, transparent);
     border-radius: 4px;
   }
 
@@ -169,8 +170,8 @@
 
   .btn {
     background: transparent;
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    color: #ccc;
+    border: 1px solid var(--outline-variant);
+    color: var(--on-surface-variant);
     padding: 8px 16px;
     border-radius: 4px;
     cursor: pointer;
@@ -178,8 +179,8 @@
   }
 
   .btn:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.08);
-    color: #fff;
+    background: color-mix(in srgb, var(--on-surface) 8%, transparent);
+    color: var(--on-surface);
   }
 
   .btn:disabled {
@@ -188,12 +189,16 @@
   }
 
   .btn-primary {
-    background: #4e7af5;
-    border-color: #4e7af5;
-    color: #fff;
+    background: var(--primary-container);
+    border-color: var(--primary-container);
+    color: var(--on-primary-container);
   }
 
   .btn-primary:hover:not(:disabled) {
-    background: #5d86f7;
+    background: color-mix(
+      in srgb,
+      var(--primary-container) 88%,
+      var(--on-primary-container)
+    );
   }
 </style>
