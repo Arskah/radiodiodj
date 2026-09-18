@@ -44,8 +44,8 @@ pnpm typecheck && pnpm lint                                 # tsc + svelte-check
 ## Data files
 
 RadiodioDJ stores its database (`radiodiodj.db`), config (`config.json`), session
-state (`session.json`), and default now-playing output in a per-user data
-directory. Database backups sit beside it: `radiodiodj.v{N}.bak.db` (before a
+state (`session.json`), themes (`themes/`), station artwork (`branding/`), and
+default now-playing output in a per-user data directory. Database backups sit beside it: `radiodiodj.v{N}.bak.db` (before a
 migration, newest two kept) and `radiodiodj.legacy-v{N}.bak.db` (a pre-baseline
 library that was reset).
 

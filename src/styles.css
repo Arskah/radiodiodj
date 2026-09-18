@@ -2934,3 +2934,49 @@ body {
   gap: var(--sp-sm);
   margin-bottom: var(--sp-sm);
 }
+
+/* A station's own logo, in place of the brand text. Capped here rather than in
+   a theme: a 4000 px PNG must not be able to blow out the nav bar. */
+.brand-logo {
+  height: 20px;
+  width: auto;
+  max-width: 160px;
+  object-fit: contain;
+}
+
+.identity-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+}
+
+/* A checkerboard reads transparency, which most logos have. */
+.identity-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 40px;
+  flex-shrink: 0;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--r-lg);
+  background: var(--surface-container-lowest);
+  color: var(--outline);
+  overflow: hidden;
+}
+
+.identity-preview.round {
+  width: 40px;
+  border-radius: 50%;
+}
+
+.identity-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* The record label is cropped to a circle in the deck, so preview it that way. */
+.identity-preview.round img {
+  object-fit: cover;
+}

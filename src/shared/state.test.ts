@@ -69,6 +69,10 @@ const { api } = vi.hoisted(() => {
     getTuningConfig: vi.fn(),
     setTuningConfig: vi.fn(),
     getAppearance: vi.fn(),
+    setStationName: vi.fn(),
+    setStationImage: vi.fn(),
+    clearStationImage: vi.fn(),
+    pickImageFile: vi.fn(),
     listThemes: vi.fn(),
     setTheme: vi.fn(),
     reloadThemes: vi.fn(),
@@ -287,6 +291,10 @@ function resetApi(): void {
   );
   api.reloadThemes.mockResolvedValue(appearance());
   api.listThemes.mockResolvedValue([]);
+  api.setStationName.mockImplementation((name: unknown) =>
+    Promise.resolve(appearance({ stationName: name as string | null })),
+  );
+  api.clearStationImage.mockResolvedValue(appearance());
 }
 
 /** A resolved appearance, as the backend would hand it over. */
@@ -1360,6 +1368,50 @@ describe("AppState appearance", () => {
     await app.reloadThemes();
     expect(api.reloadThemes).toHaveBeenCalled();
     expect(api.listThemes).toHaveBeenCalled();
+  });
+
+  it("falls back to the product name until the station is named", async () => {
+    await app.loadAppearance();
+    expect(app.brandName).toBe("RadiodioDJ");
+
+    await app.setStationName("Radio Foo");
+    expect(app.brandName).toBe("Radio Foo");
+    expect(api.setStationName).toHaveBeenCalledWith("Radio Foo");
+  });
+
+  // A rename should reach the title bar without waiting for a track change.
+  it("retitles the window when the station is renamed", async () => {
+    await app.loadAppearance();
+    await app.setStationName("Radio Foo");
+    expect(document.title).toBe("Radio Foo");
+
+    await app.setStationName(null);
+    expect(document.title).toBe("RadiodioDJ");
+  });
+
+  it("adopts the name the backend stored, not the one asked for", async () => {
+    // The backend trims and caps; the draft must snap to what was stored.
+    api.setStationName.mockResolvedValueOnce(
+      appearance({ stationName: "Radio Foo" }),
+    );
+    await app.setStationName("   Radio Foo   ");
+    expect(app.appearance?.stationName).toBe("Radio Foo");
+  });
+
+  it("carries the station images through as data URLs", async () => {
+    api.setStationImage.mockResolvedValueOnce(
+      appearance({ logo: "data:image/png;base64,AAAA" }),
+    );
+    await app.setStationImage("logo", "/tmp/from-desktop.png");
+
+    expect(api.setStationImage).toHaveBeenCalledWith(
+      "logo",
+      "/tmp/from-desktop.png",
+    );
+    expect(app.appearance?.logo).toBe("data:image/png;base64,AAAA");
+
+    await app.clearStationImage("logo");
+    expect(app.appearance?.logo).toBeNull();
   });
 
   it("saves a paint hint so the next launch does not flash", async () => {

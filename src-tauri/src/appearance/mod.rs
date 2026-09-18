@@ -7,10 +7,12 @@ pub mod store;
 pub mod theme;
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
 use serde::Serialize;
+
+use crate::persist::config::AppearanceConfig;
 
 pub use store::{ThemeListing, MIDNIGHT};
 
@@ -30,11 +32,16 @@ pub struct Appearance {
     pub problem: Option<String>,
 }
 
-/// Resolve the configured theme, falling back to Midnight if it cannot be used.
+/// Resolve the configured theme and the station's identity into what the
+/// renderer paints.
 ///
-/// A failure is never fatal: the app must start even with a broken theme file,
-/// and the operator is told through `problem` rather than an empty window.
-pub fn resolve(data_dir: &Path, theme_id: &str, station_name: Option<String>) -> Appearance {
+/// A theme failure is never fatal: the app must start even with a broken theme
+/// file, and the operator is told through `problem` rather than an empty window.
+///
+/// The station's own images win over whatever the theme ships, so switching
+/// theme never costs the operator their logo.
+pub fn resolve(data_dir: &Path, config: &AppearanceConfig) -> Appearance {
+    let theme_id = &config.theme_id;
     let (resolved, problem) = match store::resolve(data_dir, theme_id) {
         Ok(resolved) => (resolved, None),
         Err(err) => {
@@ -47,15 +54,27 @@ pub fn resolve(data_dir: &Path, theme_id: &str, station_name: Option<String>) ->
         }
     };
 
+    let branding = branding_dir(data_dir);
+    let identity = |name: &Option<String>| name.as_ref().map(|n| branding.join(n));
+
     Appearance {
         theme_id: resolved.id,
         base: resolved.base.as_str().to_string(),
         tokens: resolved.tokens,
-        station_name,
-        logo: resolved.logo.as_deref().and_then(read_image),
-        label: resolved.label.as_deref().and_then(read_image),
+        station_name: config.station_name.clone(),
+        logo: image_for(identity(&config.logo), resolved.logo),
+        label: image_for(identity(&config.label), resolved.label),
         problem,
     }
+}
+
+/// The station's own image, else the theme's. A slot the operator set but whose
+/// file has gone missing falls through to the theme rather than showing nothing.
+fn image_for(identity: Option<PathBuf>, theme: Option<PathBuf>) -> Option<String> {
+    identity
+        .as_deref()
+        .and_then(read_image)
+        .or_else(|| theme.as_deref().and_then(read_image))
 }
 
 /// The largest image a theme or the station may ship.
@@ -76,6 +95,70 @@ pub fn read_image(path: &Path) -> Option<String> {
     let mime = mime_of(path, &bytes)?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
     Some(format!("data:{mime};base64,{encoded}"))
+}
+
+/// `{app_data_dir}/branding` — where the station's own images are copied to, so
+/// they are present at every launch regardless of where the original moved.
+pub fn branding_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("branding")
+}
+
+/// Which station image a command is acting on.
+#[derive(serde::Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum ImageSlot {
+    Logo,
+    Label,
+}
+
+/// Copy an operator-chosen image into `{app_data_dir}/branding`, and return the
+/// file name to store in config.
+///
+/// The app owns the copy: a logo is a few kilobytes and must be present at every
+/// launch, unlike a library, so depending on a path the operator may later move
+/// would be the more fragile choice.
+pub fn adopt_image(data_dir: &Path, slot: ImageSlot, source: &Path) -> Result<String, String> {
+    let size = std::fs::metadata(source)
+        .map_err(|e| format!("could not read the image: {e}"))?
+        .len();
+    if size > MAX_IMAGE_BYTES {
+        return Err("images must be 2 MiB or smaller".to_string());
+    }
+
+    let bytes = std::fs::read(source).map_err(|e| format!("could not read the image: {e}"))?;
+    let mime = mime_of(source, &bytes)
+        .ok_or_else(|| "that file is not a PNG, JPEG, WebP or SVG".to_string())?;
+
+    let extension = match mime {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        _ => "svg",
+    };
+    let name = match slot {
+        ImageSlot::Logo => format!("logo.{extension}"),
+        ImageSlot::Label => format!("label.{extension}"),
+    };
+
+    let dir = branding_dir(data_dir);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+
+    // Replacing a slot leaves the previous file behind if the type changed, so
+    // clear the other extensions this slot could have used.
+    for old in ["png", "jpg", "webp", "svg"] {
+        let stale = dir.join(match slot {
+            ImageSlot::Logo => format!("logo.{old}"),
+            ImageSlot::Label => format!("label.{old}"),
+        });
+        if stale.file_name() != Path::new(&name).file_name() {
+            let _ = std::fs::remove_file(stale);
+        }
+    }
+
+    std::fs::write(dir.join(&name), &bytes)
+        .map_err(|e| format!("could not save the image: {e}"))?;
+    Ok(name)
 }
 
 /// Type by magic bytes, never by extension alone — except for SVG, which is
@@ -104,10 +187,21 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    fn config(theme_id: &str) -> AppearanceConfig {
+        AppearanceConfig {
+            theme_id: theme_id.to_string(),
+            ..AppearanceConfig::default()
+        }
+    }
+
+    fn png(path: &std::path::Path) {
+        fs::write(path, [0x89, b'P', b'N', b'G', 0x0D]).unwrap();
+    }
+
     #[test]
     fn resolves_a_built_in_into_a_complete_map() {
         let tmp = tempdir().unwrap();
-        let appearance = resolve(tmp.path(), store::DAYLIGHT, None);
+        let appearance = resolve(tmp.path(), &config(store::DAYLIGHT));
 
         assert_eq!(appearance.theme_id, store::DAYLIGHT);
         assert_eq!(appearance.base, "light");
@@ -120,7 +214,7 @@ mod tests {
     #[test]
     fn falls_back_to_midnight_and_says_why() {
         let tmp = tempdir().unwrap();
-        let appearance = resolve(tmp.path(), "gone", None);
+        let appearance = resolve(tmp.path(), &config("gone"));
 
         assert_eq!(appearance.theme_id, MIDNIGHT);
         assert_eq!(appearance.base, "dark");
@@ -130,7 +224,13 @@ mod tests {
     #[test]
     fn carries_the_station_name_through_untouched() {
         let tmp = tempdir().unwrap();
-        let appearance = resolve(tmp.path(), MIDNIGHT, Some("Radio Foo".into()));
+        let appearance = resolve(
+            tmp.path(),
+            &AppearanceConfig {
+                station_name: Some("Radio Foo".into()),
+                ..config(MIDNIGHT)
+            },
+        );
         assert_eq!(appearance.station_name.as_deref(), Some("Radio Foo"));
     }
 
@@ -166,5 +266,119 @@ mod tests {
         let svg = tmp.path().join("mark.svg");
         fs::write(&svg, "<svg/>").unwrap();
         assert!(read_image(&svg).unwrap().starts_with("data:image/svg+xml;"));
+    }
+
+    /// The operator's own image wins over whatever the theme ships, so trying a
+    /// different theme never costs them their logo.
+    #[test]
+    fn station_identity_wins_over_a_themes_image() {
+        let tmp = tempdir().unwrap();
+
+        // A theme that ships its own logo.
+        let theme_dir = store::themes_dir(tmp.path()).join("branded");
+        fs::create_dir_all(&theme_dir).unwrap();
+        fs::write(
+            theme_dir.join("theme.json"),
+            r#"{"name":"Branded","base":"dark","tokens":{},"logo":"logo.svg"}"#,
+        )
+        .unwrap();
+        fs::write(theme_dir.join("logo.svg"), "<svg/>").unwrap();
+
+        let themed = resolve(tmp.path(), &config("branded"));
+        assert!(themed.logo.unwrap().starts_with("data:image/svg+xml;"));
+
+        // The station's own logo, which must win.
+        fs::create_dir_all(branding_dir(tmp.path())).unwrap();
+        png(&branding_dir(tmp.path()).join("logo.png"));
+
+        let owned = resolve(
+            tmp.path(),
+            &AppearanceConfig {
+                logo: Some("logo.png".into()),
+                ..config("branded")
+            },
+        );
+        assert!(owned.logo.unwrap().starts_with("data:image/png;"));
+    }
+
+    /// A slot pointing at a file that has gone falls through to the theme rather
+    /// than showing nothing.
+    #[test]
+    fn a_missing_station_image_falls_through() {
+        let tmp = tempdir().unwrap();
+        let appearance = resolve(
+            tmp.path(),
+            &AppearanceConfig {
+                logo: Some("vanished.png".into()),
+                ..config(MIDNIGHT)
+            },
+        );
+        assert_eq!(appearance.logo, None);
+    }
+
+    #[test]
+    fn adopts_an_image_into_the_branding_directory() {
+        let tmp = tempdir().unwrap();
+        let source = tmp.path().join("from-desktop.png");
+        png(&source);
+
+        let name = adopt_image(tmp.path(), ImageSlot::Logo, &source).unwrap();
+        assert_eq!(name, "logo.png");
+        assert!(branding_dir(tmp.path()).join("logo.png").is_file());
+    }
+
+    /// Replacing a slot with a different file type must not leave the old one
+    /// behind for the next resolve to find.
+    #[test]
+    fn replacing_a_slot_clears_the_previous_file() {
+        let tmp = tempdir().unwrap();
+        let png_source = tmp.path().join("a.png");
+        png(&png_source);
+        adopt_image(tmp.path(), ImageSlot::Logo, &png_source).unwrap();
+
+        let svg_source = tmp.path().join("b.svg");
+        fs::write(&svg_source, "<svg/>").unwrap();
+        let name = adopt_image(tmp.path(), ImageSlot::Logo, &svg_source).unwrap();
+
+        assert_eq!(name, "logo.svg");
+        assert!(!branding_dir(tmp.path()).join("logo.png").exists());
+    }
+
+    #[test]
+    fn the_two_slots_do_not_collide() {
+        let tmp = tempdir().unwrap();
+        let source = tmp.path().join("art.png");
+        png(&source);
+
+        assert_eq!(
+            adopt_image(tmp.path(), ImageSlot::Logo, &source).unwrap(),
+            "logo.png"
+        );
+        assert_eq!(
+            adopt_image(tmp.path(), ImageSlot::Label, &source).unwrap(),
+            "label.png"
+        );
+    }
+
+    #[test]
+    fn refuses_to_adopt_a_file_that_is_not_an_image() {
+        let tmp = tempdir().unwrap();
+        let source = tmp.path().join("payload.png");
+        fs::write(&source, b"<script>alert(1)</script>").unwrap();
+
+        let err = adopt_image(tmp.path(), ImageSlot::Logo, &source).unwrap_err();
+        assert!(err.contains("not a PNG"), "{err}");
+    }
+
+    #[test]
+    fn refuses_to_adopt_an_oversized_image() {
+        let tmp = tempdir().unwrap();
+        let source = tmp.path().join("huge.png");
+        let mut bytes = vec![0x89, b'P', b'N', b'G'];
+        bytes.resize((MAX_IMAGE_BYTES + 1) as usize, 0);
+        fs::write(&source, bytes).unwrap();
+
+        let err = adopt_image(tmp.path(), ImageSlot::Logo, &source).unwrap_err();
+        assert!(err.contains("2 MiB"), "{err}");
     }
 }

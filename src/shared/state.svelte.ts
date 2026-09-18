@@ -1,6 +1,7 @@
 import type {
   AdminStatus,
   Appearance,
+  ImageSlot,
   ThemeListing,
   ContentType,
   CuePoints,
@@ -223,6 +224,14 @@ export class AppState {
 
   /** Token names currently set on <html>, so a theme switch can clear them. */
   #appliedTokens: string[] = [];
+
+  /**
+   * What the operator calls their station, falling back to the product name.
+   * A theme never sets this — it is station identity, not palette.
+   */
+  get brandName(): string {
+    return this.appearance?.stationName ?? APP_NAME;
+  }
 
   // Every theme the operator can pick, invalid ones included — a theme that
   // "didn't show up" is the worst failure mode for a drop-in-a-folder feature.
@@ -576,7 +585,7 @@ export class AppState {
       this.waveform = null;
       this.coverArt = null;
       this.isPlaying = false;
-      document.title = APP_NAME;
+      document.title = this.brandName;
       return;
     }
     // Optimistic until the deck reports the decoded duration, which is the one
@@ -586,7 +595,7 @@ export class AppState {
     this.duration = airDuration(airedTrack(track, this.currentCueOverride));
     this.loadWaveform(track.id);
     this.loadCoverArt(track.id);
-    document.title = `${track.title} - ${track.artist} | ${APP_NAME}`;
+    document.title = `${track.title} - ${track.artist} | ${this.brandName}`;
   }
 
   /**
@@ -1032,6 +1041,18 @@ export class AppState {
     }
   }
 
+  async setStationName(name: string | null): Promise<void> {
+    this.applyAppearance(await api.setStationName(name));
+  }
+
+  async setStationImage(slot: ImageSlot, path: string): Promise<void> {
+    this.applyAppearance(await api.setStationImage(slot, path));
+  }
+
+  async clearStationImage(slot: ImageSlot): Promise<void> {
+    this.applyAppearance(await api.clearStationImage(slot));
+  }
+
   /// Adopt the theme the backend resolved and return it, so a caller can read
   /// `problem` off the result.
   async setTheme(themeId: string): Promise<Appearance> {
@@ -1069,6 +1090,12 @@ export class AppState {
 
     this.appearance = next;
     savePaintHint(next);
+
+    // A rename should reach the title bar without waiting for a track change.
+    const track = this.currentTrack;
+    document.title = track
+      ? `${track.title} - ${track.artist} | ${this.brandName}`
+      : this.brandName;
   }
 
   async setMainDeviceConfig(device: DeviceRef | null): Promise<void> {
@@ -1293,7 +1320,7 @@ export class AppState {
     if (this.currentTrack?.id === updated.id) {
       this.currentTrack = updated;
       if (oldTitle && oldTitle !== updated.title) {
-        document.title = `${updated.title} - ${updated.artist} | ${APP_NAME}`;
+        document.title = `${updated.title} - ${updated.artist} | ${this.brandName}`;
       }
     }
     this.scheduleSave();

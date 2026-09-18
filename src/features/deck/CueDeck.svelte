@@ -178,7 +178,11 @@
         class:spinning={app.cueIsPlaying}
         aria-hidden="true"
       >
-        <img class="vinyl-art" src={app.cueCoverArt ?? defaultCover} alt="" />
+        <img
+          class="vinyl-art"
+          src={app.cueCoverArt ?? app.appearance?.label ?? defaultCover}
+          alt=""
+        />
       </div>
       <div
         class="cue-progress-bar"
