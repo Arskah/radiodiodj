@@ -1,6 +1,7 @@
 import type {
   AdminStatus,
   Appearance,
+  ThemeListing,
   ContentType,
   CuePoints,
   DeviceInfo,
@@ -91,7 +92,8 @@ export const EMPTY_HEALTH: HealthReport = {
 };
 
 export type PlaylistTab = "playlist" | "history";
-export type SettingsTab = "audio" | "library" | "now-playing" | "advanced";
+export type SettingsTab =
+  "audio" | "library" | "now-playing" | "appearance" | "advanced";
 
 /**
  * What the cue deck was showing when a surface borrowed it. `previewing` rather
@@ -221,6 +223,10 @@ export class AppState {
 
   /** Token names currently set on <html>, so a theme switch can clear them. */
   #appliedTokens: string[] = [];
+
+  // Every theme the operator can pick, invalid ones included — a theme that
+  // "didn't show up" is the worst failure mode for a drop-in-a-folder feature.
+  themes = $state<ThemeListing[]>([]);
 
   hoveredTrack = $state<Track | null>(null);
   hoverX = $state(0);
@@ -1016,6 +1022,16 @@ export class AppState {
     }
   }
 
+  /// Re-enumerate the themes directory. Called when the Appearance tab opens
+  /// and after a reload, never on a timer — nothing repaints unasked.
+  async loadThemes(): Promise<void> {
+    try {
+      this.themes = await api.listThemes();
+    } catch (err) {
+      logger.error("Failed to list themes", err);
+    }
+  }
+
   /// Adopt the theme the backend resolved and return it, so a caller can read
   /// `problem` off the result.
   async setTheme(themeId: string): Promise<Appearance> {
@@ -1030,6 +1046,7 @@ export class AppState {
   async reloadThemes(): Promise<Appearance> {
     const next = await api.reloadThemes();
     this.applyAppearance(next);
+    await this.loadThemes();
     return next;
   }
 

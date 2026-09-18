@@ -2825,3 +2825,112 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--outline);
 }
+
+/* ============================================================
+   Settings → Appearance (#403)
+   ============================================================ */
+
+/* The active theme could not be loaded, so the palette on screen is the last
+   good one. A repaint mid-show is never worth freshness. */
+.theme-problem {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-sm);
+  margin-bottom: var(--sp-md);
+  padding: var(--sp-md);
+  border-radius: var(--r-lg);
+  background: color-mix(in srgb, var(--tertiary) 15%, transparent);
+  border: 1px solid var(--tertiary);
+  color: var(--on-surface);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.theme-problem .material-symbols-outlined {
+  font-size: 18px;
+  color: var(--tertiary);
+  flex-shrink: 0;
+}
+
+.theme-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-xs);
+  margin-bottom: var(--sp-md);
+}
+
+.theme-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-sm);
+  padding: var(--sp-md);
+  background: var(--surface-container-lowest);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--r-lg);
+  color: var(--on-surface);
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.theme-row:hover:not(:disabled) {
+  background: var(--surface-container-high);
+}
+
+.theme-row.active {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+}
+
+/* An invalid theme is listed, never hidden: a theme that "didn't show up" is
+   the worst failure mode for a drop-in-a-folder feature. */
+.theme-row.invalid {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.theme-mark {
+  font-size: 18px;
+  color: var(--outline);
+  flex-shrink: 0;
+}
+
+.theme-row.active .theme-mark {
+  color: var(--primary);
+}
+
+.theme-row.invalid .theme-mark {
+  color: var(--error);
+}
+
+.theme-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.theme-name {
+  font-weight: 600;
+}
+
+.theme-meta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--outline);
+}
+
+.theme-error {
+  margin-top: var(--sp-xs);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--error);
+}
+
+.theme-actions {
+  display: flex;
+  gap: var(--sp-sm);
+  margin-bottom: var(--sp-sm);
+}

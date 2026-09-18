@@ -48,10 +48,24 @@
       passwordError = null;
       void app.loadAudioConfig();
       void loadNowPlayingConfig();
+      // Covers "I dropped a folder in, then came here to look for it".
+      void app.loadThemes();
       tuning = $state.snapshot(app.tuning);
       mainDeviceChanged = false;
     }
   });
+
+  // Selecting a theme applies it immediately — the running app is the preview,
+  // and reverting is picking the previous entry.
+  async function pickTheme(themeId: string): Promise<void> {
+    await app.setTheme(themeId);
+  }
+
+  // Re-enumerates and re-resolves, so editing the active theme and pressing
+  // this repaints. A theme that has become invalid leaves the colours alone.
+  async function reload(): Promise<void> {
+    await app.reloadThemes();
+  }
 
   // Persist the current draft, then adopt the backend's clamped result so the
   // inputs snap to any coerced values.
@@ -255,6 +269,16 @@
         >
           <span class="material-symbols-outlined">rss_feed</span>
           Now Playing
+        </button>
+        <button
+          class="settings-tab"
+          class:active={app.settingsTab === "appearance"}
+          role="tab"
+          aria-selected={app.settingsTab === "appearance"}
+          onclick={() => (app.settingsTab = "appearance")}
+        >
+          <span class="material-symbols-outlined">palette</span>
+          Appearance
         </button>
         <button
           class="settings-tab"
@@ -554,7 +578,84 @@
               </div>
             </div>
           </div>
-        {:else}
+        {:else if app.settingsTab === "appearance"}
+          <div class="settings-section">
+            <h4>Theme</h4>
+            <p class="settings-section-desc">
+              A theme repaints the player. It changes no layout, no wording and
+              no behaviour, and the app never repaints itself unasked — drop a
+              folder in, then press <em>Reload themes</em>.
+            </p>
+
+            {#if app.appearance?.problem}
+              <div class="theme-problem" role="status">
+                <span class="material-symbols-outlined" aria-hidden="true"
+                  >warning</span
+                >
+                {app.appearance.problem} — the colours on screen are the last good
+                ones.
+              </div>
+            {/if}
+
+            <div class="theme-list" role="radiogroup" aria-label="Theme">
+              {#each app.themes as theme (theme.id + theme.source)}
+                {@const active = app.appearance?.themeId === theme.id}
+                <button
+                  id={`appearance-theme-${theme.id}`}
+                  class="theme-row"
+                  class:active
+                  class:invalid={theme.error !== null}
+                  role="radio"
+                  aria-checked={active}
+                  disabled={theme.error !== null}
+                  onclick={() => pickTheme(theme.id)}
+                >
+                  <span class="material-symbols-outlined theme-mark">
+                    {theme.error !== null
+                      ? "block"
+                      : active
+                        ? "radio_button_checked"
+                        : "radio_button_unchecked"}
+                  </span>
+                  <span class="theme-text">
+                    <span class="theme-name">{theme.name}</span>
+                    <span class="theme-meta">
+                      {theme.source}{theme.base
+                        ? ` · ${theme.base}`
+                        : ""}{theme.author ? ` · ${theme.author}` : ""}
+                    </span>
+                    {#if theme.error}
+                      <span class="theme-error">{theme.error}</span>
+                    {/if}
+                  </span>
+                </button>
+              {/each}
+            </div>
+
+            <div class="theme-actions">
+              <button id="appearance-reload" class="np-browse" onclick={reload}>
+                <span class="material-symbols-outlined" aria-hidden="true"
+                  >refresh</span
+                >
+                Reload themes
+              </button>
+              <button
+                id="appearance-reveal"
+                class="np-browse"
+                onclick={() => void api.revealThemesDir()}
+              >
+                <span class="material-symbols-outlined" aria-hidden="true"
+                  >folder_open</span
+                >
+                Show in folder
+              </button>
+            </div>
+            <div class="hint">
+              Themes live in <code>themes/</code> in the app data folder. Copy
+              the <code>example</code> folder, edit the values, then reload.
+            </div>
+          </div>
+        {:else if app.settingsTab === "advanced"}
           <div
             id="admin-mode-section"
             class="settings-section settings-section--tuning"
