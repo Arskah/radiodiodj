@@ -1310,6 +1310,58 @@ describe("AppState appearance", () => {
     ).toBe("");
   });
 
+  it("lists themes, invalid ones included", async () => {
+    // A theme that "didn't show up" is the worst failure mode here, so an
+    // invalid one is listed with its reason rather than filtered out.
+    api.listThemes.mockResolvedValueOnce([
+      {
+        id: "midnight",
+        name: "Midnight",
+        author: null,
+        base: "dark",
+        source: "built-in",
+        error: null,
+      },
+      {
+        id: "broken-blue",
+        name: "broken-blue",
+        author: null,
+        base: null,
+        source: "themes/broken-blue",
+        error: '"--surfase" is not a theme token',
+      },
+    ]);
+
+    await app.loadThemes();
+    expect(app.themes.map((t) => t.id)).toEqual(["midnight", "broken-blue"]);
+    expect(app.themes[1]!.error).toContain("--surfase");
+  });
+
+  it("keeps the last list when listing fails", async () => {
+    api.listThemes.mockResolvedValueOnce([
+      {
+        id: "midnight",
+        name: "Midnight",
+        author: null,
+        base: "dark",
+        source: "built-in",
+        error: null,
+      },
+    ]);
+    await app.loadThemes();
+
+    api.listThemes.mockRejectedValueOnce(new Error("boom"));
+    await app.loadThemes();
+
+    expect(app.themes).toHaveLength(1);
+  });
+
+  it("re-enumerates after a reload, so an edited theme shows its new name", async () => {
+    await app.reloadThemes();
+    expect(api.reloadThemes).toHaveBeenCalled();
+    expect(api.listThemes).toHaveBeenCalled();
+  });
+
   it("saves a paint hint so the next launch does not flash", async () => {
     await app.loadAppearance();
 

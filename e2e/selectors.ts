@@ -75,4 +75,6 @@ export const sel = {
   // Settings tabs carry no ids; WebdriverIO's `*=` accepts a tag plus one class.
   settingsTab: (label: string) => `button.settings-tab*=${label}`,
   cueDeviceSelect: "#cue-device",
+  themeRow: (id: string) => `#appearance-theme-${id}`,
+  reloadThemes: "#appearance-reload",
 } as const;
