@@ -204,7 +204,6 @@ fn load_session(app: State<'_, AppState>) -> Result<SessionLoadResult, String> {
         .playlist_ids
         .iter()
         .chain(item_ids)
-        .chain(s.history_ids.iter())
         .chain(s.current_track_id.iter())
     {
         if seen.insert(*id) {
@@ -306,10 +305,10 @@ fn playlist_next(app: State<'_, AppState>) {
     app.playlist.next();
 }
 
-/// Step back to a track the renderer took off its own history.
+/// Step back to the last track that aired.
 #[tauri::command(rename_all = "camelCase")]
-fn playlist_prev(app: State<'_, AppState>, id: i64) -> Result<(), String> {
-    app.playlist.prev(id)
+fn playlist_prev(app: State<'_, AppState>) {
+    app.playlist.prev();
 }
 
 #[tauri::command(rename_all = "camelCase")]

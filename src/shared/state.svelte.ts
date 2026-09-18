@@ -136,8 +136,8 @@ export class AppState {
   fadeMs = $state(0);
   autoPlaylistActive = $state(false);
   autoAdvance = $state(true);
-  // History is the renderer's own: a display log, fed by the `displaced` track
-  // in each snapshot.
+  // What has aired, oldest first. Owned by the backend — this mirrors the
+  // `history` in each snapshot, which is the airing log's tail.
   history = $state<Track[]>([]);
   // The outgoing track of a handover while it is still audible on the program
   // bus: the tail deck's track and how much of it is left. `null` whenever no
@@ -406,8 +406,8 @@ export class AppState {
 
   /**
    * The outgoing track still audible under the one on air, or `null` when no
-   * handover is overlapping. Resolved out of history — where the handover's
-   * `displaced` track has just landed — since `program:roles` carries ids.
+   * handover is overlapping. Resolved out of history — where the handover put
+   * the outgoing track — since `program:roles` carries ids.
    */
   get tailTrack(): Track | null {
     if (this.tailTrackId === null) return null;
@@ -521,27 +521,6 @@ export class AppState {
     return this.history.slice().reverse();
   }
 
-  appendHistory(track: Track): void {
-    const cap = this.tuning.autoPlaylist.historyCap;
-    this.history.push(track);
-    if (this.history.length > cap) {
-      this.history.splice(0, this.history.length - cap);
-    }
-    this.scheduleSave();
-  }
-
-  removeFromHistory(displayIndex: number): void {
-    const i = this.history.length - 1 - displayIndex;
-    if (i < 0 || i >= this.history.length) return;
-    this.history.splice(i, 1);
-    this.scheduleSave();
-  }
-
-  clearHistory(): void {
-    this.history.length = 0;
-    this.scheduleSave();
-  }
-
   requeueFromHistory(displayIndex: number): void {
     const i = this.history.length - 1 - displayIndex;
     const track = this.history[i];
@@ -559,7 +538,7 @@ export class AppState {
     this.autoPlaylistActive = snapshot.autoPlaylistActive;
     this.autoAdvance = snapshot.autoAdvance;
     this.awaitingNetwork = snapshot.awaitingNetwork;
-    if (snapshot.displaced) this.appendHistory(snapshot.displaced);
+    this.history = snapshot.history;
     const changed =
       (this.currentTrack?.id ?? null) !== (snapshot.current?.id ?? null);
     this.currentTrack = snapshot.current;
@@ -721,7 +700,7 @@ export class AppState {
       void this.backend.seek(0);
       return;
     }
-    this.send(api.playlistPrev(previous.id));
+    this.send(api.playlistPrev());
   }
 
   toggleMode(): void {
@@ -877,7 +856,6 @@ export class AppState {
     const apply = (t: Track | null): Track | null =>
       t && t.id === id ? { ...t, cue_points: stored } : t;
     this.tracks = this.tracks.map((t) => apply(t) as Track);
-    this.history = this.history.map((t) => apply(t) as Track);
     this.playlist = this.playlist.map((i) =>
       isTrackItem(i) && i.track.id === id
         ? { ...i, track: { ...i.track, cue_points: stored } }
@@ -1045,12 +1023,8 @@ export class AppState {
       this.sessionLoaded = true;
       return;
     }
-    const { state, tracks } = result;
+    const { state } = result;
     if (result.libraryReset) void this.noteLibraryReset();
-    const byId = new Map(tracks.map((t) => [t.id, t]));
-    this.history = state.historyIds
-      .map((id) => byId.get(id))
-      .filter((t): t is Track => t !== undefined);
     // Master level is fixed at unity (#354): the volume slider left the operator
     // UI, so a persisted value from an older session would be unrecoverable.
     // Normalization is ReplayGain's job (#80), not the operator's.
@@ -1106,7 +1080,6 @@ export class AppState {
                 cue_override: i.cue_override ?? null,
               },
         ),
-        historyIds: this.history.map((t) => t.id),
         currentTrackId: this.currentTrack?.id ?? null,
         currentTime: this.currentTime,
         currentCueOverride: this.currentCueOverride,

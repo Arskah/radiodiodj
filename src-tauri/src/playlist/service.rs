@@ -25,6 +25,7 @@ use crate::audio::player::Cmd;
 use crate::broadcast::BroadcastService;
 use crate::library::db::{Db, Track, TrackLoadInfo};
 use crate::library::health::HEALTH_EVENT;
+use crate::library::scanner::now_ms;
 use crate::persist::config::Config;
 use crate::persist::session::SessionState;
 
@@ -62,6 +63,7 @@ struct DbRefiller<'a> {
     interleave: generate::Interleave,
     buffer: i64,
     threshold: i64,
+    history_cap: usize,
 }
 
 impl Refiller for DbRefiller<'_> {
@@ -78,6 +80,10 @@ impl Refiller for DbRefiller<'_> {
 
     fn threshold(&self) -> i64 {
         self.threshold
+    }
+
+    fn history_cap(&self) -> usize {
+        self.history_cap
     }
 }
 
@@ -175,14 +181,15 @@ impl PlaylistService {
         });
     }
 
-    /// Current state, for a renderer that has just (re)connected. Carries no
-    /// `displaced` — nothing left the deck to produce it.
+    /// Current state, for a renderer that has just (re)connected.
     pub fn snapshot(&self) -> Snapshot {
-        self.inner.playlist.lock().snapshot(None)
+        self.inner.playlist.lock().snapshot()
     }
 
     /// Restore the persisted playlist and put the saved track back on the deck,
-    /// paused at its saved position.
+    /// paused at its saved position. History comes from the airing log rather
+    /// than the session file, so a restart shows what actually went out even if
+    /// the session was lost.
     pub fn hydrate(&self, state: &SessionState) {
         let items = self.resolve_items(state);
         let current = state
@@ -192,6 +199,15 @@ impl PlaylistService {
         let seconds = state.current_time;
         let auto_playlist = state.auto_playlist_active;
         let auto_advance = state.auto_advance;
+        let cap = self.inner.config.get_tuning().auto_playlist.history_cap;
+        let history = self
+            .inner
+            .db
+            .recent_airings(cap as i64)
+            .unwrap_or_else(|e| {
+                log::error!("history restore failed: {}", e);
+                vec![]
+            });
         Inner::apply(&self.inner, move |p, _| {
             p.hydrate(
                 items,
@@ -200,6 +216,7 @@ impl PlaylistService {
                 seconds,
                 auto_playlist,
                 auto_advance,
+                history,
             )
         });
     }
@@ -274,9 +291,10 @@ impl PlaylistService {
         Inner::apply(&self.inner, |p, r| p.next(r));
     }
 
-    /// Step back to `id`, which the renderer read off its own history.
-    pub fn prev(&self, id: i64) -> Result<(), String> {
-        self.with_track(id, |p, r, track| p.prev(track, r))
+    /// Step back to the last track that aired, which the playlist reads off its
+    /// own history.
+    pub fn prev(&self) {
+        Inner::apply(&self.inner, |p, r| p.prev(r));
     }
 
     pub fn stop(&self) {
@@ -332,6 +350,7 @@ impl Inner {
             interleave: generate::Interleave::from_config(&tuning),
             buffer: tuning.auto_playlist.auto_playlist_buffer as i64,
             threshold: tuning.auto_playlist.auto_playlist_threshold as i64,
+            history_cap: tuning.auto_playlist.history_cap,
         }
     }
 
@@ -354,13 +373,14 @@ impl Inner {
         let (transition, snapshot, window) = {
             let refiller = inner.refiller();
             let mut playlist = inner.playlist.lock();
+            playlist.set_history_cap(refiller.history_cap());
             let mut transition = f(&mut playlist, &refiller);
             // Bringing the arm deck in line follows every transition rather
             // than each one remembering to ask, for the same reason the
             // prefetch window does: a queue mutation, a track change and a
             // refill all move what comes next.
             transition.effects.extend(playlist.reconcile_arm());
-            let snapshot = playlist.snapshot(transition.displaced.clone());
+            let snapshot = playlist.snapshot();
             let window = playlist.prefetch_window();
             (transition, snapshot, window)
         };
@@ -405,8 +425,8 @@ impl Inner {
                 }
             }
             Effect::TrackPlayed(id) => {
-                if let Err(e) = inner.db.increment_play_count(*id) {
-                    log::error!("play count update failed for track {}: {}", id, e);
+                if let Err(e) = inner.db.record_airing(*id, now_ms()) {
+                    log::error!("airing record failed for track {}: {}", id, e);
                 }
             }
             Effect::ArmRetry(attempt) => Inner::arm_retry(inner, *attempt),

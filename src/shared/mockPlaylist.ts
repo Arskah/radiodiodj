@@ -5,7 +5,7 @@ import type { PlaylistSnapshot } from "./api";
 /**
  * In-memory stand-in for the backend-owned playlist, the way `MockBackend`
  * stands in for the audio deck. It models what the renderer can observe —
- * queue order, what is on air, what was displaced — and emits the same
+ * queue order, what is on air, what has aired — and emits the same
  * `program:playlist-state` snapshots the real service does, so projection tests
  * exercise the whole loop rather than asserting on a spy.
  *
@@ -17,6 +17,8 @@ export class MockPlaylistBackend {
   playlist: PlaylistItem[] = [];
   current: Track | null = null;
   currentOverride: CuePoints | null = null;
+  history: Track[] = [];
+  historyCap = 100;
   autoPlaylistActive = false;
   autoAdvance = true;
   awaitingNetwork = false;
@@ -30,11 +32,11 @@ export class MockPlaylistBackend {
     };
   }
 
-  snapshot(displaced: Track | null = null): PlaylistSnapshot {
+  snapshot(): PlaylistSnapshot {
     return {
       playlist: this.playlist.slice(),
       current: this.current,
-      displaced,
+      history: this.history.slice(),
       autoPlaylistActive: this.autoPlaylistActive,
       autoAdvance: this.autoAdvance,
       currentOverride: this.currentOverride,
@@ -45,6 +47,11 @@ export class MockPlaylistBackend {
   /** Seed state the way a backend restoring a session file would, silently. */
   restore(state: Partial<Omit<MockPlaylistBackend, "on" | "snapshot">>): void {
     Object.assign(this, state);
+  }
+
+  /** Re-emit current state, as the service does after any transition. */
+  resync(): void {
+    this.emit();
   }
 
   add(track: Track): void {
@@ -112,12 +119,17 @@ export class MockPlaylistBackend {
     this.playIndex(0);
   }
 
-  /** Steps back without displacing: the caller is walking its own history. */
-  prev(track: Track): void {
+  /** Steps back to the last aired track, leaving its history entry in place. */
+  prev(): void {
+    const previous = this.history.at(-1);
+    if (!previous) {
+      this.emit();
+      return;
+    }
     if (this.current) {
       this.playlist.unshift(trackItem(this.current, this.currentOverride));
     }
-    this.current = track;
+    this.current = previous;
     // History stores tracks, not items, so a custom airing replays under the
     // radio edit — the same rule the engine follows.
     this.currentOverride = null;
@@ -125,11 +137,11 @@ export class MockPlaylistBackend {
   }
 
   stop(): void {
-    const displaced = this.current;
+    this.pushHistory(this.current);
     this.current = null;
     this.currentOverride = null;
     this.autoPlaylistActive = false;
-    this.emit(displaced);
+    this.emit();
   }
 
   setAutoPlaylist(active: boolean): void {
@@ -153,14 +165,23 @@ export class MockPlaylistBackend {
   }
 
   private playTrack(track: Track, cueOverride: CuePoints | null = null): void {
-    const displaced = this.current;
+    this.pushHistory(this.current);
     this.current = track;
     this.currentOverride = cueOverride;
-    this.emit(displaced);
+    this.emit();
   }
 
-  private emit(displaced: Track | null = null): void {
-    const snapshot = this.snapshot(displaced);
+  /** What leaves the deck joins history, within the cap — as the engine does. */
+  private pushHistory(aired: Track | null): void {
+    if (!aired) return;
+    this.history.push(aired);
+    if (this.history.length > this.historyCap) {
+      this.history.splice(0, this.history.length - this.historyCap);
+    }
+  }
+
+  private emit(): void {
+    const snapshot = this.snapshot();
     for (const listener of this.listeners) listener(snapshot);
   }
 }

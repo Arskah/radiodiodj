@@ -12,7 +12,8 @@ use super::model::{PlaylistItem, Snapshot};
 use crate::audio::cue_points::CuePoints;
 use crate::library::db::Track;
 
-/// Source of auto-playlist refill material, plus the sizing that governs it.
+/// Source of auto-playlist refill material, plus the sizes that govern it and
+/// the history window.
 ///
 /// Implemented over the library database in the service and faked in tests. The
 /// sizes are read per call so a settings change takes effect on the next refill
@@ -24,7 +25,14 @@ pub trait Refiller {
     fn buffer(&self) -> i64;
     /// Refill once fewer than this many remain.
     fn threshold(&self) -> i64;
+    /// How many aired tracks history keeps.
+    fn history_cap(&self) -> usize;
 }
+
+/// History window used until the stored tuning is read, which the service does
+/// before every transition. Matches the config default, so a playlist built
+/// before the first read behaves the same as one built after it.
+const DEFAULT_HISTORY_CAP: usize = 100;
 
 /// What the arm deck is holding: the track and the markers it will air under.
 ///
@@ -95,19 +103,11 @@ pub enum Effect {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Transition {
     pub effects: Vec<Effect>,
-    /// The track that just left the main deck. The renderer appends it to
-    /// history, so it is set only where history should actually grow: an
-    /// explicit track change or a stop, never a session restore and never
-    /// `prev` (which returns the outgoing track to the playlist instead).
-    pub displaced: Option<Track>,
 }
 
 impl Transition {
     fn effects(effects: Vec<Effect>) -> Self {
-        Self {
-            effects,
-            displaced: None,
-        }
+        Self { effects }
     }
 }
 
@@ -144,6 +144,18 @@ pub struct Playlist {
     /// tail occupies the deck the next item would be armed on, so nothing is
     /// armed until it is vacated.
     overlapping: bool,
+    /// What has aired, oldest first — the display log the History tab shows.
+    ///
+    /// Grows where a track actually leaves the deck: an explicit track change,
+    /// a handover, or a stop. Never on a session restore, and never on `prev`,
+    /// which returns the outgoing track to the playlist rather than airing past
+    /// it. The durable record is `play_log`; this is the window of it the
+    /// renderer displays, hydrated from there at launch.
+    history: Vec<Track>,
+    /// How many entries [`Playlist::history`] keeps, from the stored tuning.
+    /// Pushed in before every transition, so a settings change takes effect at
+    /// once.
+    history_cap: usize,
     /// Track ids resident in the prefetch cache, from `main-deck:cache-state`.
     cached_ids: HashSet<i64>,
     /// Track ids whose file a scan found gone, from the library health report.
@@ -160,17 +172,24 @@ impl Playlist {
     pub fn new() -> Self {
         Self {
             auto_advance: true,
+            history_cap: DEFAULT_HISTORY_CAP,
             ..Default::default()
         }
     }
 
+    /// Set the history window from the stored tuning.
+    pub fn set_history_cap(&mut self, cap: usize) {
+        self.history_cap = cap;
+        self.trim_history();
+    }
+
     // ----- projections -----
 
-    pub fn snapshot(&self, displaced: Option<Track>) -> Snapshot {
+    pub fn snapshot(&self) -> Snapshot {
         Snapshot {
             playlist: self.items.clone(),
             current: self.current.clone(),
-            displaced,
+            history: self.history.clone(),
             auto_playlist_active: self.auto_playlist,
             auto_advance: self.auto_advance,
             current_override: self.current_override,
@@ -334,34 +353,36 @@ impl Playlist {
         self.play_index(0, r)
     }
 
-    /// Step back to `previous`, returning whatever is on air to the head of the
-    /// playlist. History is the renderer's, so the caller supplies the track and
-    /// keeps its own entry: `displaced` stays `None` here on purpose, or the
-    /// renderer would append the outgoing track to a history it is stepping back
-    /// through.
-    pub fn prev(&mut self, previous: Track, r: &dyn Refiller) -> Transition {
+    /// Step back to the last thing that aired, returning whatever is on air to
+    /// the head of the playlist.
+    ///
+    /// The history entry is read, not consumed: stepping back is not an airing
+    /// of its own, and leaving the entry in place keeps a second press a rewind
+    /// rather than a walk further back. Nothing aired yet means nothing to step
+    /// back to.
+    pub fn prev(&mut self, r: &dyn Refiller) -> Transition {
+        let Some(previous) = self.history.last().cloned() else {
+            return Transition::default();
+        };
         if let Some(current) = self.current.take() {
             self.items.insert(
                 0,
                 PlaylistItem::with_override(current, self.current_override),
             );
         }
-        // The track being stepped back to comes off the renderer's history,
-        // which stores tracks rather than items — a custom airing replays under
-        // the radio edit.
+        // History stores tracks rather than items, so a custom airing replays
+        // under the radio edit.
         self.set_current(previous, None, r)
     }
 
     pub fn stop(&mut self) -> Transition {
         self.clear_retry();
-        let displaced = self.current.take();
+        let aired = self.current.take();
+        self.push_history(aired);
         self.current_override = None;
         self.auto_playlist = false;
         self.overlapping = false;
-        Transition {
-            effects: vec![Effect::CancelRetry, Effect::Stop],
-            displaced,
-        }
+        Transition::effects(vec![Effect::CancelRetry, Effect::Stop])
     }
 
     pub fn set_auto_advance(&mut self, on: bool) -> Transition {
@@ -395,8 +416,8 @@ impl Playlist {
 
     /// The bus moved the `main` role: `to` is already playing on the deck that
     /// took it, so this consumes the queued item and counts the airing without
-    /// asking for a load. The outgoing track becomes `displaced` for history,
-    /// exactly as it would on an ordinary track change.
+    /// asking for a load. The outgoing track joins history, exactly as it would
+    /// on an ordinary track change.
     ///
     /// A handover the playlist cannot account for — no queued item with that id
     /// — is ignored rather than guessed at.
@@ -416,22 +437,20 @@ impl Playlist {
             return Transition::default();
         };
         self.clear_retry();
-        let displaced = self.current.replace(track);
+        let aired = self.current.replace(track);
         self.current_override = cue_override;
         self.armed = None;
-        self.overlapping = displaced.is_some();
+        self.overlapping = aired.is_some();
+        self.push_history(aired);
         self.refill(r);
-        Transition {
-            effects: vec![
-                Effect::CancelRetry,
-                Effect::NowPlaying {
-                    id: to,
-                    cue_override,
-                },
-                Effect::TrackPlayed(to),
-            ],
-            displaced,
-        }
+        Transition::effects(vec![
+            Effect::CancelRetry,
+            Effect::NowPlaying {
+                id: to,
+                cue_override,
+            },
+            Effect::TrackPlayed(to),
+        ])
     }
 
     /// The tail deck was vacated, so a deck is free to arm again. The arm
@@ -503,6 +522,10 @@ impl Playlist {
                 }
             }
         }
+        // History rows show air time, so they carry the markers too.
+        for track in self.history.iter_mut().filter(|t| t.id == id) {
+            track.cue_points = points;
+        }
         Transition::default()
     }
 
@@ -510,6 +533,11 @@ impl Playlist {
 
     /// Restore a persisted playlist. The current track is loaded and seeked but
     /// not played: a restart must not put audio on air by itself.
+    ///
+    /// `history` is the airing log's tail. Its newest entry is normally the
+    /// track that is being restored to the deck — it aired before the restart —
+    /// and history holds what aired *before* what is on air, so that entry is
+    /// dropped rather than shown twice.
     #[allow(clippy::too_many_arguments)]
     pub fn hydrate(
         &mut self,
@@ -519,10 +547,16 @@ impl Playlist {
         seconds: f64,
         auto_playlist: bool,
         auto_advance: bool,
+        history: Vec<Track>,
     ) -> Transition {
         self.items = items;
         self.auto_playlist = auto_playlist;
         self.auto_advance = auto_advance;
+        self.history = history;
+        if self.history.last().map(|t| t.id) == current.as_ref().map(|t| t.id) {
+            self.history.pop();
+        }
+        self.trim_history();
         self.current = current;
         self.current_override = current_override;
         match &self.current {
@@ -546,10 +580,25 @@ impl Playlist {
         cue_override: Option<CuePoints>,
         r: &dyn Refiller,
     ) -> Transition {
-        let displaced = self.current.take();
-        let mut transition = self.set_current(track, cue_override, r);
-        transition.displaced = displaced;
-        transition
+        let aired = self.current.take();
+        self.push_history(aired);
+        self.set_current(track, cue_override, r)
+    }
+
+    /// Append what just left the deck to history, keeping it within the cap.
+    fn push_history(&mut self, aired: Option<Track>) {
+        let Some(track) = aired else {
+            return;
+        };
+        self.history.push(track);
+        self.trim_history();
+    }
+
+    fn trim_history(&mut self) {
+        if self.history.len() > self.history_cap {
+            let excess = self.history.len() - self.history_cap;
+            self.history.drain(..excess);
+        }
     }
 
     /// Put `track` on air. Any pending outage retry is superseded: without
@@ -754,6 +803,10 @@ mod tests {
         fn threshold(&self) -> i64 {
             self.threshold
         }
+
+        fn history_cap(&self) -> usize {
+            100
+        }
     }
 
     /// A recognisable override — only the marker's presence matters here, the
@@ -787,10 +840,13 @@ mod tests {
         fn threshold(&self) -> i64 {
             5
         }
+        fn history_cap(&self) -> usize {
+            100
+        }
     }
 
     fn queued(p: &Playlist) -> Vec<Option<i64>> {
-        p.snapshot(None)
+        p.snapshot()
             .playlist
             .iter()
             .map(|i| i.as_track().map(|t| t.id))
@@ -800,14 +856,19 @@ mod tests {
     /// The override carried by one queued item, as the renderer would read it
     /// off the snapshot.
     fn item_override(p: &Playlist, index: usize) -> Option<CuePoints> {
-        match &p.snapshot(None).playlist[index] {
+        match &p.snapshot().playlist[index] {
             PlaylistItem::Track { cue_override, .. } => *cue_override,
             PlaylistItem::Stop => None,
         }
     }
 
     fn current_id(p: &Playlist) -> Option<i64> {
-        p.snapshot(None).current.map(|t| t.id)
+        p.snapshot().current.map(|t| t.id)
+    }
+
+    /// History as the renderer reads it off the snapshot: oldest first.
+    fn history(p: &Playlist) -> Vec<i64> {
+        p.snapshot().history.iter().map(|t| t.id).collect()
     }
 
     fn with(items: &[Option<i64>]) -> Playlist {
@@ -905,15 +966,15 @@ mod tests {
             t.effects,
             vec![Effect::CancelRetry, play(2), Effect::TrackPlayed(2)]
         );
-        assert_eq!(t.displaced, None);
+        assert!(history(&p).is_empty());
     }
 
     #[test]
-    fn playing_a_new_track_displaces_the_previous_one() {
+    fn playing_a_new_track_moves_the_previous_one_into_history() {
         let mut p = with(&[Some(1), Some(2)]);
         p.play_index(0, &NoRefill);
-        let t = p.play_index(0, &NoRefill);
-        assert_eq!(t.displaced.map(|d| d.id), Some(1));
+        p.play_index(0, &NoRefill);
+        assert_eq!(history(&p), vec![1]);
         assert_eq!(current_id(&p), Some(2));
     }
 
@@ -931,7 +992,7 @@ mod tests {
         p.play_now(track(9), &NoRefill);
         let t = p.play_index(1, &NoRefill);
         assert_eq!(t.effects, vec![Effect::CancelRetry, Effect::Stop]);
-        assert_eq!(t.displaced.map(|d| d.id), Some(9));
+        assert_eq!(history(&p), vec![9]);
         assert_eq!(current_id(&p), None);
         assert_eq!(queued(&p), vec![Some(1), Some(2)]);
     }
@@ -970,34 +1031,45 @@ mod tests {
     }
 
     #[test]
-    fn prev_returns_the_outgoing_track_to_the_head_and_displaces_nothing() {
-        let mut p = with(&[Some(2)]);
-        p.play_index(0, &NoRefill);
-        let t = p.prev(track(1), &NoRefill);
+    fn prev_airs_the_last_aired_track_and_returns_the_outgoing_one_to_the_head() {
+        let mut p = with(&[Some(1), Some(2)]);
+        p.play_index(0, &NoRefill); // 1 on air
+        p.play_index(0, &NoRefill); // 2 on air, 1 in history
+        let t = p.prev(&NoRefill);
         assert_eq!(current_id(&p), Some(1));
         assert_eq!(queued(&p), vec![Some(2)]);
-        // History is the renderer's; `prev` steps back through it rather than
-        // appending to it.
-        assert_eq!(t.displaced, None);
+        assert!(t.effects.contains(&play(1)));
+    }
+
+    /// Stepping back is not an airing of its own: the entry stays where it is,
+    /// so a second press rewinds rather than walking further back.
+    #[test]
+    fn prev_leaves_the_history_entry_in_place() {
+        let mut p = with(&[Some(1), Some(2)]);
+        p.play_index(0, &NoRefill);
+        p.play_index(0, &NoRefill);
+        p.prev(&NoRefill);
+        assert_eq!(history(&p), vec![1]);
     }
 
     #[test]
-    fn prev_with_nothing_on_air_just_airs_the_previous_track() {
+    fn prev_with_nothing_aired_yet_is_a_no_op() {
         let mut p = with(&[Some(2)]);
-        let t = p.prev(track(1), &NoRefill);
-        assert_eq!(current_id(&p), Some(1));
-        assert_eq!(queued(&p), vec![Some(2)]);
-        assert_eq!(t.displaced, None);
+        p.play_index(0, &NoRefill);
+        assert_eq!(p.prev(&NoRefill), Transition::default());
+        assert_eq!(current_id(&p), Some(2));
     }
 
     #[test]
     fn prev_cancels_a_pending_outage_retry() {
-        let mut p = with(&[Some(2)]);
+        let mut p = with(&[Some(1), Some(2), Some(3)]);
+        p.play_index(0, &NoRefill);
+        p.play_index(0, &NoRefill);
         p.on_load_failed(&NoRefill);
-        assert!(p.snapshot(None).awaiting_network);
-        let t = p.prev(track(1), &NoRefill);
+        assert!(p.snapshot().awaiting_network);
+        let t = p.prev(&NoRefill);
         assert!(t.effects.contains(&Effect::CancelRetry));
-        assert!(!p.snapshot(None).awaiting_network);
+        assert!(!p.snapshot().awaiting_network);
     }
 
     #[test]
@@ -1005,17 +1077,17 @@ mod tests {
         let mut p = Playlist::new();
         let t = p.stop();
         assert_eq!(t.effects, vec![Effect::CancelRetry, Effect::Stop]);
-        assert_eq!(t.displaced, None);
+        assert!(history(&p).is_empty());
     }
 
     #[test]
-    fn stop_clears_the_deck_the_auto_playlist_and_displaces_the_track() {
+    fn stop_clears_the_deck_and_the_auto_playlist_and_logs_the_airing() {
         let mut p = with(&[Some(2)]);
         p.set_auto_playlist(true, &FakeRefiller::new());
         let t = p.stop();
         assert_eq!(t.effects, vec![Effect::CancelRetry, Effect::Stop]);
-        assert_eq!(t.displaced.map(|d| d.id), Some(2));
-        let snap = p.snapshot(None);
+        assert_eq!(history(&p), vec![2]);
+        let snap = p.snapshot();
         assert_eq!(snap.current, None);
         assert!(!snap.auto_playlist_active);
     }
@@ -1023,9 +1095,9 @@ mod tests {
     #[test]
     fn set_auto_advance_flips_the_flag() {
         let mut p = Playlist::new();
-        assert!(p.snapshot(None).auto_advance);
+        assert!(p.snapshot().auto_advance);
         p.set_auto_advance(false);
-        assert!(!p.snapshot(None).auto_advance);
+        assert!(!p.snapshot().auto_advance);
     }
 
     #[test]
@@ -1056,7 +1128,7 @@ mod tests {
         assert_eq!(t.effects, vec![Effect::CancelRetry, Effect::Stop]);
         assert_eq!(current_id(&p), None);
         assert_eq!(queued(&p), vec![Some(1)]);
-        assert!(!p.snapshot(None).auto_playlist_active);
+        assert!(!p.snapshot().auto_playlist_active);
     }
 
     #[test]
@@ -1140,7 +1212,7 @@ mod tests {
         p.set_auto_advance(false);
         let t = p.on_ended(&NoRefill);
         assert_eq!(t.effects, vec![Effect::CancelRetry, Effect::Stop]);
-        assert_eq!(t.displaced.map(|d| d.id), Some(1));
+        assert_eq!(history(&p), vec![1]);
         assert_eq!(queued(&p), vec![Some(2)]);
     }
 
@@ -1175,11 +1247,11 @@ mod tests {
         p.on_cache_state(vec![9], &NoRefill);
         let t = p.on_ended(&FakeRefiller::new());
         assert_eq!(t.effects, vec![Effect::ArmRetry(0)]);
-        assert!(p.snapshot(None).awaiting_network);
+        assert!(p.snapshot().awaiting_network);
 
         let t = p.on_cache_state(vec![9, 1], &NoRefill);
         assert!(t.effects.contains(&play(1)));
-        assert!(!p.snapshot(None).awaiting_network);
+        assert!(!p.snapshot().awaiting_network);
     }
 
     /// The barrier holds during an outage too. Skipping to a cached track that
@@ -1209,7 +1281,7 @@ mod tests {
         p.on_cache_state(vec![9], &NoRefill);
         let t = p.on_ended(&FakeRefiller::new());
         assert_eq!(t.effects, vec![Effect::CancelRetry, Effect::Stop]);
-        assert!(!p.snapshot(None).awaiting_network);
+        assert!(!p.snapshot().awaiting_network);
         assert_eq!(queued(&p), vec![Some(1)]);
     }
 
@@ -1274,11 +1346,11 @@ mod tests {
         p.play_now(track(9), &NoRefill);
         p.on_cache_state(vec![9], &NoRefill);
         p.on_ended(&FakeRefiller::new());
-        assert!(p.snapshot(None).awaiting_network);
+        assert!(p.snapshot().awaiting_network);
 
         let t = p.on_missing_state(missing(&[1]), &NoRefill);
         assert_eq!(t.effects, vec![Effect::CancelRetry]);
-        assert!(!p.snapshot(None).awaiting_network);
+        assert!(!p.snapshot().awaiting_network);
         assert!(queued(&p).is_empty());
     }
 
@@ -1317,7 +1389,7 @@ mod tests {
         assert_eq!(p.on_load_failed(&NoRefill), Transition::default());
         // Still waiting — the second failure adds no timer, but it must not
         // drop the banner either.
-        assert!(p.snapshot(None).awaiting_network);
+        assert!(p.snapshot().awaiting_network);
     }
 
     #[test]
@@ -1326,11 +1398,11 @@ mod tests {
         p.play_now(track(1), &NoRefill);
         let t = p.on_ended(&FakeRefiller::new());
         assert_eq!(t.effects, vec![Effect::CancelRetry]);
-        // Not a stop: the track played itself out, so there is nothing to
-        // displace into history and nothing to tell the deck.
-        assert_eq!(t.displaced, None);
+        // Not a stop: the track played itself out, so nothing left the deck
+        // for history and there is nothing to tell the deck.
+        assert!(history(&p).is_empty());
         assert_eq!(current_id(&p), Some(1));
-        assert!(!p.snapshot(None).awaiting_network);
+        assert!(!p.snapshot().awaiting_network);
     }
 
     #[test]
@@ -1364,7 +1436,7 @@ mod tests {
         p.add(track(9));
         let t = p.on_retry_tick(&NoRefill);
         assert!(t.effects.contains(&play(9)));
-        assert!(!p.snapshot(None).awaiting_network);
+        assert!(!p.snapshot().awaiting_network);
         assert_eq!(queued(&p), vec![Some(1)]);
     }
 
@@ -1372,11 +1444,11 @@ mod tests {
     fn an_explicit_track_change_cancels_the_pending_retry() {
         let mut p = with(&[Some(1)]);
         p.on_load_failed(&NoRefill);
-        assert!(p.snapshot(None).awaiting_network);
+        assert!(p.snapshot().awaiting_network);
 
         let t = p.play_index(0, &NoRefill);
         assert!(t.effects.contains(&Effect::CancelRetry));
-        assert!(!p.snapshot(None).awaiting_network);
+        assert!(!p.snapshot().awaiting_network);
         // Back to the top of the schedule, so a later outage waits a second
         // rather than resuming mid-backoff.
         p.add(track(2));
@@ -1391,7 +1463,7 @@ mod tests {
         let mut p = Playlist::new();
         let t = p.on_load_failed(&NoRefill);
         assert_eq!(t.effects, vec![Effect::CancelRetry]);
-        assert!(!p.snapshot(None).awaiting_network);
+        assert!(!p.snapshot().awaiting_network);
     }
 
     #[test]
@@ -1431,6 +1503,63 @@ mod tests {
         assert_eq!(p.prefetch_window(), vec![1, 2]);
     }
 
+    // ----- history -----
+
+    #[test]
+    fn history_keeps_only_the_newest_entries_within_the_cap() {
+        let mut p = with(&[Some(1), Some(2), Some(3), Some(4)]);
+        p.set_history_cap(2);
+        for _ in 0..4 {
+            p.play_index(0, &NoRefill);
+        }
+        // 4 is on air, so 1, 2 and 3 aired — the oldest falls off.
+        assert_eq!(history(&p), vec![2, 3]);
+    }
+
+    /// A settings change takes effect at once, not at the next airing.
+    #[test]
+    fn lowering_the_cap_trims_what_history_already_holds() {
+        let mut p = with(&[Some(1), Some(2), Some(3)]);
+        for _ in 0..3 {
+            p.play_index(0, &NoRefill);
+        }
+        assert_eq!(history(&p), vec![1, 2]);
+        p.set_history_cap(1);
+        assert_eq!(history(&p), vec![2]);
+    }
+
+    /// The log's newest entry is the airing of the track being restored to the
+    /// deck. History holds what aired *before* what is on air.
+    #[test]
+    fn hydrate_drops_the_airing_of_the_track_it_restores() {
+        let mut p = Playlist::new();
+        p.hydrate(
+            vec![],
+            Some(track(9)),
+            None,
+            0.0,
+            false,
+            true,
+            vec![track(7), track(8), track(9)],
+        );
+        assert_eq!(history(&p), vec![7, 8]);
+    }
+
+    #[test]
+    fn hydrate_with_nothing_restored_keeps_the_whole_log_tail() {
+        let mut p = Playlist::new();
+        p.hydrate(
+            vec![],
+            None,
+            None,
+            0.0,
+            false,
+            true,
+            vec![track(7), track(8)],
+        );
+        assert_eq!(history(&p), vec![7, 8]);
+    }
+
     // ----- session -----
 
     #[test]
@@ -1443,6 +1572,7 @@ mod tests {
             12.5,
             true,
             false,
+            vec![],
         );
         assert_eq!(
             t.effects,
@@ -1454,8 +1584,7 @@ mod tests {
         );
         // A restore must not put audio on air by itself.
         assert!(!t.effects.contains(&play(9)));
-        assert_eq!(t.displaced, None);
-        let snap = p.snapshot(None);
+        let snap = p.snapshot();
         assert_eq!(queued(&p), vec![Some(1), None]);
         assert_eq!(snap.current.map(|t| t.id), Some(9));
         assert!(snap.auto_playlist_active);
@@ -1473,6 +1602,7 @@ mod tests {
             0.0,
             false,
             true,
+            vec![],
         );
         assert_eq!(queued(&p), vec![Some(3)]);
         assert_eq!(current_id(&p), None);
@@ -1488,6 +1618,7 @@ mod tests {
             0.0,
             false,
             true,
+            vec![],
         );
         assert_eq!(t, Transition::default());
     }
@@ -1495,7 +1626,7 @@ mod tests {
     #[test]
     fn hydrate_clamps_a_negative_saved_position() {
         let mut p = Playlist::new();
-        let t = p.hydrate(vec![], Some(track(9)), None, -4.0, false, true);
+        let t = p.hydrate(vec![], Some(track(9)), None, -4.0, false, true, vec![]);
         assert_eq!(
             t.effects,
             vec![Effect::Resume {
@@ -1524,7 +1655,7 @@ mod tests {
             id: 9,
             cue_override: Some(points(2_000)),
         }));
-        assert_eq!(p.snapshot(None).current_override, Some(points(2_000)));
+        assert_eq!(p.snapshot().current_override, Some(points(2_000)));
     }
 
     /// An item that carries no override plays the radio edit, which the service
@@ -1533,7 +1664,7 @@ mod tests {
     fn an_ordinary_item_sends_no_override() {
         let mut p = with(&[Some(1)]);
         assert!(p.play_index(0, &NoRefill).effects.contains(&play(1)));
-        assert_eq!(p.snapshot(None).current_override, None);
+        assert_eq!(p.snapshot().current_override, None);
     }
 
     /// The defect the renderer-owned playlist had: `currentTrack` was a Track,
@@ -1541,13 +1672,15 @@ mod tests {
     #[test]
     fn prev_returns_the_outgoing_item_with_its_override_intact() {
         let mut p = Playlist::new();
+        p.add_front(track(4), None);
         p.add_front(track(9), Some(points(2_000)));
-        p.play_index(0, &NoRefill);
-        p.prev(track(4), &NoRefill);
+        p.play_index(1, &NoRefill); // 4 aired first
+        p.play_index(0, &NoRefill); // then 9, under its override
+        p.prev(&NoRefill);
         assert_eq!(queued(&p), vec![Some(9)]);
         assert_eq!(item_override(&p, 0), Some(points(2_000)));
         // The track stepped back to comes off history, which stores tracks.
-        assert_eq!(p.snapshot(None).current_override, None);
+        assert_eq!(p.snapshot().current_override, None);
     }
 
     #[test]
@@ -1556,7 +1689,7 @@ mod tests {
         p.add_front(track(9), Some(points(2_000)));
         p.play_index(0, &NoRefill);
         p.stop();
-        assert_eq!(p.snapshot(None).current_override, None);
+        assert_eq!(p.snapshot().current_override, None);
     }
 
     #[test]
@@ -1583,7 +1716,7 @@ mod tests {
         let mut p = with(&[None, Some(1)]);
         p.set_item_cue_points(0, Some(points(3_000)));
         p.set_item_cue_points(7, Some(points(3_000)));
-        assert!(p.snapshot(None).playlist[0].is_stop());
+        assert!(p.snapshot().playlist[0].is_stop());
         assert_eq!(queued(&p), vec![None, Some(1)]);
     }
 
@@ -1591,11 +1724,8 @@ mod tests {
     fn saving_a_radio_edit_refreshes_the_queued_copies_of_the_track() {
         let mut p = with(&[Some(1), Some(2)]);
         p.on_cue_points_saved(1, points(4_000));
-        let queued_points = |p: &Playlist, i: usize| {
-            p.snapshot(None).playlist[i]
-                .as_track()
-                .map(|t| t.cue_points)
-        };
+        let queued_points =
+            |p: &Playlist, i: usize| p.snapshot().playlist[i].as_track().map(|t| t.cue_points);
         assert_eq!(queued_points(&p, 0), Some(points(4_000)));
         assert_eq!(queued_points(&p, 1), Some(CuePoints::default()));
     }
@@ -1610,6 +1740,20 @@ mod tests {
         assert_eq!(item_override(&p, 0), Some(points(9_000)));
     }
 
+    /// History rows show air time, so a saved radio edit has to reach them too
+    /// or a trimmed track reads as its file length once it has aired.
+    #[test]
+    fn saving_a_radio_edit_refreshes_the_history_copies_of_the_track() {
+        let mut p = with(&[Some(1), Some(2)]);
+        p.play_index(0, &NoRefill);
+        p.play_index(0, &NoRefill);
+        p.on_cue_points_saved(1, points(4_000));
+        assert_eq!(
+            p.snapshot().history.first().map(|t| t.cue_points),
+            Some(points(4_000))
+        );
+    }
+
     /// A radio edit saved mid-broadcast applies from the next airing, so the
     /// numbers under the track on air must not move.
     #[test]
@@ -1618,7 +1762,7 @@ mod tests {
         p.play_index(0, &NoRefill);
         p.on_cue_points_saved(1, points(4_000));
         assert_eq!(
-            p.snapshot(None).current.map(|t| t.cue_points),
+            p.snapshot().current.map(|t| t.cue_points),
             Some(CuePoints::default())
         );
     }
@@ -1633,6 +1777,7 @@ mod tests {
             12.5,
             false,
             true,
+            vec![],
         );
         assert_eq!(
             t.effects,
@@ -1642,7 +1787,7 @@ mod tests {
                 cue_override: Some(points(2_000)),
             }]
         );
-        assert_eq!(p.snapshot(None).current_override, Some(points(2_000)));
+        assert_eq!(p.snapshot().current_override, Some(points(2_000)));
     }
 
     // ----- arming the next item -----
@@ -1866,8 +2011,8 @@ mod tests {
             !t.effects.iter().any(|e| matches!(e, Effect::Play { .. })),
             "the incoming deck is already playing"
         );
-        assert_eq!(t.displaced.map(|t| t.id), Some(1));
-        assert_eq!(p.snapshot(None).current.map(|t| t.id), Some(2));
+        assert_eq!(history(&p), vec![1]);
+        assert_eq!(p.snapshot().current.map(|t| t.id), Some(2));
         assert_eq!(queued(&p), vec![Some(3)]);
     }
 
@@ -1891,7 +2036,7 @@ mod tests {
                 cue_override: Some(points(4_000))
             }
         );
-        assert_eq!(p.snapshot(None).current_override, Some(points(4_000)));
+        assert_eq!(p.snapshot().current_override, Some(points(4_000)));
     }
 
     /// Nothing is armed while a tail is draining: with two decks it is holding
@@ -1979,7 +2124,7 @@ mod tests {
         let t = p.on_handover(99, &r);
 
         assert_eq!(t, Transition::default());
-        assert_eq!(p.snapshot(None).current.map(|t| t.id), Some(1));
+        assert_eq!(p.snapshot().current.map(|t| t.id), Some(1));
         assert_eq!(queued(&p), vec![Some(2)]);
     }
 

@@ -107,6 +107,8 @@ pub struct AutoPlaylistConfig {
     pub auto_playlist_buffer: usize,
     #[serde(default = "default_auto_playlist_threshold")]
     pub auto_playlist_threshold: usize,
+    /// How many aired tracks a snapshot carries for the History tab. Not a
+    /// retention limit: every airing stays in `play_log`.
     #[serde(default = "default_history_cap")]
     pub history_cap: usize,
     #[serde(default = "default_session_save_throttle_ms")]

@@ -826,6 +826,10 @@ impl Db {
     /// skipping any that are not missing (a
     /// scan may have revived one since the operator chose it). Returns the ids
     /// actually deleted.
+    ///
+    /// Their airings keep their record and lose only the id: the null-out is
+    /// explicit because `PRAGMA foreign_keys` is off, so an `ON DELETE` clause
+    /// on `play_log` would never fire.
     pub fn purge_tracks(&self, ids: &[i64]) -> Result<Vec<i64>> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
@@ -841,6 +845,13 @@ impl Db {
                 deleted.push(id?);
             }
         }
+        for chunk in deleted.chunks(500) {
+            let sql = format!(
+                "UPDATE play_log SET track_id = NULL WHERE track_id IN ({})",
+                vec!["?"; chunk.len()].join(",")
+            );
+            tx.execute(&sql, params_from_iter(chunk))?;
+        }
         tx.commit()?;
         Ok(deleted)
     }
@@ -852,6 +863,51 @@ impl Db {
             [id],
         )?;
         Ok(())
+    }
+
+    /// Record one airing: a `play_log` row and the track's play count, in one
+    /// transaction so the two can never disagree.
+    ///
+    /// The logged artist, title and duration are read from the track row in the
+    /// same statement that inserts, so nothing is passed in and a track purged
+    /// between arming and airing simply logs nothing.
+    pub fn record_airing(&self, id: i64, aired_at: i64) -> Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
+             SELECT id, ?1, artist, title, duration FROM tracks WHERE id = ?2",
+            params![aired_at, id],
+        )?;
+        tx.execute(
+            "UPDATE tracks SET play_count = play_count + 1 WHERE id = ?",
+            [id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The last `limit` airings, oldest first, as the tracks they aired.
+    ///
+    /// Airings of tracks the library no longer has are left out: the row stays
+    /// in the log for the record, but there is no track to show or requeue.
+    pub fn recent_airings(&self, limit: i64) -> Result<Vec<Track>> {
+        if limit <= 0 {
+            return Ok(vec![]);
+        }
+        let ids: Vec<i64> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare(
+                "SELECT track_id FROM play_log WHERE track_id IS NOT NULL \
+                 ORDER BY id DESC LIMIT ?",
+            )?;
+            let rows = stmt.query_map([limit], |r| r.get::<_, i64>(0))?;
+            rows.collect::<rusqlite::Result<Vec<i64>>>()?
+                .into_iter()
+                .rev()
+                .collect()
+        };
+        self.get_tracks_by_ids(&ids)
     }
 
     /// Update metadata fields for a track. Only non-None fields are included
@@ -1228,6 +1284,7 @@ const MIGRATION_STEPS: &[M] = &[
     M::up(HEALTH_DISMISSALS),
     M::up(EDITED_FIELDS),
     M::up(ANALYSIS_FAILURES),
+    M::up(PLAY_LOG),
 ];
 const MIGRATIONS: Migrations = Migrations::from_slice(MIGRATION_STEPS);
 
@@ -1327,6 +1384,26 @@ ALTER TABLE tracks ADD COLUMN edited_fields INTEGER NOT NULL DEFAULT 0;
 const ANALYSIS_FAILURES: &str = r#"
 ALTER TABLE tracks ADD COLUMN analysis_error TEXT;
 ALTER TABLE tracks ADD COLUMN analysis_failed_at INTEGER;
+"#;
+
+/// Step 5: what went on air, and when. Append-only — the station's record of
+/// its own broadcast, which is why the row carries the artist, title and
+/// duration as they read at air time rather than only a track id: a purge or a
+/// later tag fix must not rewrite the past. `track_id` is a convenience for
+/// requeueing, not the identity of the row, and is nulled when the track is
+/// purged (`purge_tracks`) — there is no foreign key, since
+/// `PRAGMA foreign_keys` is off and an `ON DELETE` clause would never fire.
+const PLAY_LOG: &str = r#"
+CREATE TABLE play_log (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  track_id INTEGER,
+  aired_at INTEGER NOT NULL,
+  artist   TEXT,
+  title    TEXT,
+  duration REAL
+);
+
+CREATE INDEX play_log_aired ON play_log(aired_at);
 "#;
 
 /// Upsert one present track's metadata by path. The operator-work columns are
@@ -1571,6 +1648,17 @@ mod tests {
             )
             .unwrap();
         },
+        |conn| {
+            seed_track(conn);
+            seed_dismissal(conn);
+            conn.execute_batch(
+                "UPDATE tracks SET edited_fields = 1, \
+                        analysis_error = 'bad', analysis_failed_at = 5; \
+                 INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
+                 SELECT id, 1000, artist, title, duration FROM tracks",
+            )
+            .unwrap();
+        },
     ];
 
     /// Operator work written at any schema version survives every later step.
@@ -1601,6 +1689,16 @@ mod tests {
             assert_eq!(db.get_waveform(id).unwrap(), Some(vec![0x00, 0xff]));
             let edited = if version >= 3 { EditedFields::TITLE } else { 0 };
             assert_eq!(track.edited_fields, edited, "seeded at v{version}");
+            let aired = if version >= 5 { vec![id] } else { vec![] };
+            assert_eq!(
+                db.recent_airings(10)
+                    .unwrap()
+                    .iter()
+                    .map(|t| t.id)
+                    .collect::<Vec<_>>(),
+                aired,
+                "seeded at v{version}"
+            );
         }
     }
 
@@ -1897,6 +1995,119 @@ mod tests {
         assert!(db.get_track(ids[0]).unwrap().is_none());
         assert_eq!(db.search("c", None, None, None).unwrap().len(), 1);
         assert!(db.search("a", None, None, None).unwrap().is_empty());
+    }
+
+    // ----- airing log -----
+
+    fn log_rows(db: &Db) -> Vec<(Option<i64>, i64, String, String)> {
+        let conn = db.conn.lock();
+        let mut stmt = conn
+            .prepare("SELECT track_id, aired_at, artist, title FROM play_log ORDER BY id")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap();
+        rows.collect::<rusqlite::Result<_>>().unwrap()
+    }
+
+    #[test]
+    fn recording_an_airing_logs_it_and_bumps_the_play_count() {
+        let db = Db::open_in_memory().unwrap();
+        insert(&db, "/a.mp3", "Song", "Band", "Album", "music");
+        let id = only_id(&db);
+
+        db.record_airing(id, 1_700).unwrap();
+
+        assert_eq!(
+            log_rows(&db),
+            vec![(Some(id), 1_700, "Band".into(), "Song".into())]
+        );
+        assert_eq!(db.get_track(id).unwrap().unwrap().play_count, 1);
+    }
+
+    /// The row records what aired, not what the library says now: a later tag
+    /// fix must not rewrite the broadcast record.
+    #[test]
+    fn a_logged_airing_keeps_the_tags_it_aired_with() {
+        let db = Db::open_in_memory().unwrap();
+        insert(&db, "/a.mp3", "Old Title", "Old Band", "Album", "music");
+        let id = only_id(&db);
+        db.record_airing(id, 1).unwrap();
+
+        db.update_track_metadata(&TrackMetadataUpdate {
+            id,
+            title: Some("New Title".into()),
+            artist: Some("New Band".into()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(
+            log_rows(&db),
+            vec![(Some(id), 1, "Old Band".into(), "Old Title".into())]
+        );
+    }
+
+    /// Nothing to read the snapshot off, so nothing is logged — and no error.
+    #[test]
+    fn airing_a_track_that_is_gone_logs_nothing() {
+        let db = Db::open_in_memory().unwrap();
+        db.record_airing(404, 1).unwrap();
+        assert!(log_rows(&db).is_empty());
+    }
+
+    #[test]
+    fn recent_airings_are_oldest_first_and_capped() {
+        let db = Db::open_in_memory().unwrap();
+        for i in 1..=3 {
+            insert(&db, &format!("/{i}.mp3"), "t", "a", "al", "music");
+        }
+        let ids: Vec<i64> = db.track_index().unwrap().iter().map(|r| r.id).collect();
+        for (n, id) in ids.iter().enumerate() {
+            db.record_airing(*id, n as i64).unwrap();
+        }
+
+        let airings: Vec<i64> = db.recent_airings(2).unwrap().iter().map(|t| t.id).collect();
+        assert_eq!(airings, vec![ids[1], ids[2]]);
+        assert!(db.recent_airings(0).unwrap().is_empty());
+    }
+
+    /// The same track twice is two airings, not one.
+    #[test]
+    fn recent_airings_repeat_a_track_aired_twice() {
+        let db = Db::open_in_memory().unwrap();
+        insert(&db, "/a.mp3", "t", "a", "al", "music");
+        let id = only_id(&db);
+        db.record_airing(id, 1).unwrap();
+        db.record_airing(id, 2).unwrap();
+
+        let airings: Vec<i64> = db
+            .recent_airings(10)
+            .unwrap()
+            .iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(airings, vec![id, id]);
+    }
+
+    /// A purge takes the track, never the record of its airing.
+    #[test]
+    fn purging_a_track_keeps_its_airings_and_only_drops_the_id() {
+        let db = Db::open_in_memory().unwrap();
+        insert(&db, "/a.mp3", "Song", "Band", "Album", "music");
+        let id = only_id(&db);
+        db.record_airing(id, 5).unwrap();
+        db.reconcile(&Reconcile {
+            gone: vec![id],
+            now_ms: 1,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(db.purge_tracks(&[id]).unwrap(), vec![id]);
+
+        assert_eq!(log_rows(&db), vec![(None, 5, "Band".into(), "Song".into())]);
+        assert!(db.recent_airings(10).unwrap().is_empty());
     }
 
     /// Cue points are clamped on write and the clamped value comes back, so the
