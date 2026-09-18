@@ -154,3 +154,13 @@ them for good; that is the only way a track is deleted. See
 station, sell it — but if you distribute a modified RadiodioDJ, ship its source
 under the same license. Patches back to
 [this repo](https://github.com/Arskah/radiodiodj) are welcome.
+
+## Sponsoring
+
+RadiodioDJ is free and open source. If it keeps your station on air, you can
+buy me a coffee:
+
+[![Buy Me A Coffee][bmc-button]][bmc]
+
+[bmc]: https://www.buymeacoffee.com/arska
+[bmc-button]: https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png
