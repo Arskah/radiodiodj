@@ -6,7 +6,7 @@ export default defineConfig({
   test: {
     name: "renderer",
     environment: "jsdom",
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "tools/**/*.test.ts"],
     coverage: {
       include: ["src/**/*.{ts,svelte}"],
     },

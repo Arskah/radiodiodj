@@ -11,6 +11,7 @@
     "prettier.config.mjs",
     "svelte.config.mjs",
     "vite.config.mts",
-    "vitest.config.mts"
+    "vitest.config.mts",
+    "tools/**/*.ts"
   ]
 }
