@@ -66,3 +66,30 @@ describe("api.updateTrackMetadata", () => {
     });
   });
 });
+
+describe("api appearance commands", () => {
+  it("sends the theme id camelCased, as the command expects", async () => {
+    await api.setTheme("station-red");
+    expect(invoke.mock.calls[0]).toEqual([
+      "set_theme",
+      { themeId: "station-red" },
+    ]);
+  });
+
+  it("takes no argument for the readers and the reload", async () => {
+    await api.getAppearance();
+    await api.listThemes();
+    await api.reloadThemes();
+    await api.revealThemesDir();
+
+    expect(invoke.mock.calls.map(([cmd]) => cmd)).toEqual([
+      "get_appearance",
+      "list_themes",
+      "reload_themes",
+      "reveal_themes_dir",
+    ]);
+    expect(
+      invoke.mock.calls.every(([, payload]) => payload === undefined),
+    ).toBe(true);
+  });
+});

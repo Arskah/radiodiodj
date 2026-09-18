@@ -4,6 +4,7 @@ import { attachConsole } from "@tauri-apps/plugin-log";
 import App from "./App.svelte";
 import { api } from "./shared/api";
 import { app } from "./shared/state.svelte";
+import { applyPaintHint } from "./shared/appearance";
 // Self-hosted fonts + icons (bundled, no CDN — desktop app runs offline).
 import "@fontsource/inter/400.css";
 import "@fontsource/inter/500.css";
@@ -16,6 +17,14 @@ import "material-symbols/outlined.css";
 import "./styles.css";
 
 void attachConsole();
+
+// Paint the last known background before anything else, so a light theme does
+// not flash dark. A hint only — the real palette lands a moment later.
+applyPaintHint();
+
+// The one awaited load: the first painted frame should already be the
+// operator's theme, and the round trip is over a blob resident in Rust memory.
+await app.loadAppearance();
 
 mount(App, { target: document.getElementById("app")! });
 

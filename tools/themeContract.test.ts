@@ -3,7 +3,12 @@ import { join, relative, resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-const SRC = resolve(import.meta.dirname, "..", "src");
+const ROOT = resolve(import.meta.dirname, "..");
+const SRC = join(ROOT, "src");
+const TAURI = join(ROOT, "src-tauri");
+
+/** Colour tokens only: spacing, radius and fonts are deliberately not themeable. */
+const NOT_A_COLOUR = /^--(sp-|r$|r-|font-)/;
 
 /**
  * Colour literals: hex (3–8 digits), `rgb()`/`rgba()`, `hsl()`/`hsla()`.
@@ -50,6 +55,37 @@ describe("theme contract", () => {
     });
 
     expect(offenders).toEqual([]);
+  });
+
+  /**
+   * A colour token must exist in three places at once — the stylesheet, the
+   * Rust allowlist, and every built-in — or a theme can set something that
+   * paints nothing, or a built-in can have a hole for others to fall into.
+   */
+  it("agrees on the token contract across all three places", () => {
+    const root = styles.match(/^:root \{[\s\S]*?^\}/m)![0];
+    const css = [...root.matchAll(/^\s*(--[a-z0-9-]+):/gm)]
+      .map((m) => m[1])
+      .filter((token) => !NOT_A_COLOUR.test(token));
+
+    const rust = [
+      ...readFileSync(join(TAURI, "src/appearance/theme.rs"), "utf8")
+        .split("THEMEABLE_TOKENS")[1]
+        .split("];")[0]
+        .matchAll(/"(--[a-z0-9-]+)"/g),
+    ].map((m) => m[1]);
+
+    expect(new Set(rust)).toEqual(new Set(css));
+
+    for (const name of ["midnight", "daylight"]) {
+      const theme = JSON.parse(
+        readFileSync(join(TAURI, "themes", `${name}.json`), "utf8"),
+      ) as { tokens: Record<string, string> };
+      expect(
+        new Set(Object.keys(theme.tokens)),
+        `${name}.json must set every token — it is what others fall back to`,
+      ).toEqual(new Set(css));
+    }
   });
 
   it("catches a literal that slips in", () => {

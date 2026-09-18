@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type {
   AdminStatus,
+  Appearance,
   ContentType,
   CuePoints,
   DeckRoleEntry,
@@ -16,6 +17,7 @@ import type {
   ScanResult,
   SortColumn,
   SortDir,
+  ThemeListing,
   Track,
   TrackMetadataInput,
   TuningConfig,
@@ -406,6 +408,27 @@ export const api = {
     return listen<AdminStatus>("admin-state-changed", (e) =>
       callback(e.payload),
     );
+  },
+  /**
+   * The resolved appearance to paint. Called before the app mounts, so it must
+   * stay ungated — a launch starts locked.
+   */
+  getAppearance(): Promise<Appearance> {
+    return invoke<Appearance>("get_appearance");
+  },
+  listThemes(): Promise<ThemeListing[]> {
+    return invoke<ThemeListing[]>("list_themes");
+  },
+  /** Returns the resolved appearance the backend actually applied. */
+  setTheme(themeId: string): Promise<Appearance> {
+    return invoke<Appearance>("set_theme", { themeId });
+  },
+  /** Re-read the themes directory and re-resolve the active theme. */
+  reloadThemes(): Promise<Appearance> {
+    return invoke<Appearance>("reload_themes");
+  },
+  revealThemesDir(): Promise<void> {
+    return invoke<void>("reveal_themes_dir");
   },
   async pickDirectory(): Promise<string | null> {
     const dir = await open({ directory: true, multiple: false });

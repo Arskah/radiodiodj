@@ -1,5 +1,6 @@
 import type {
   AdminStatus,
+  Appearance,
   ContentType,
   CuePoints,
   DeviceInfo,
@@ -35,6 +36,7 @@ import { NativeBackend } from "../features/deck/nativeBackend";
 import { throttle, type Throttled } from "./throttle";
 import { isStrictNever } from "./isStrictNever";
 import { APP_NAME } from "./appName";
+import { savePaintHint } from "./appearance";
 import { healthAttention as attentionOf } from "./health";
 
 const logger = {
@@ -212,6 +214,13 @@ export class AppState {
   // config at startup. Read for auto-playlist/history/retry behaviour and
   // edited by the Settings → Advanced tab.
   tuning = $state<TuningConfig>(structuredClone(DEFAULT_TUNING));
+
+  // The resolved appearance. Replaced by `loadAppearance()` before the app
+  // mounts; until then the static :root palette in styles.css is what paints.
+  appearance = $state<Appearance | null>(null);
+
+  /** Token names currently set on <html>, so a theme switch can clear them. */
+  #appliedTokens: string[] = [];
 
   hoveredTrack = $state<Track | null>(null);
   hoverX = $state(0);
@@ -994,6 +1003,55 @@ export class AppState {
       () => void this.persistSession(),
       tuning.autoPlaylist.sessionSaveThrottleMs,
     );
+  }
+
+  /// Fetch and paint the appearance. Awaited before mount, so the first frame
+  /// is already the operator's theme. A failure is never fatal: the app starts
+  /// on the static :root palette and says so in the log.
+  async loadAppearance(): Promise<void> {
+    try {
+      this.applyAppearance(await api.getAppearance());
+    } catch (err) {
+      logger.error("Failed to load appearance", err);
+    }
+  }
+
+  /// Adopt the theme the backend resolved and return it, so a caller can read
+  /// `problem` off the result.
+  async setTheme(themeId: string): Promise<Appearance> {
+    const next = await api.setTheme(themeId);
+    this.applyAppearance(next);
+    return next;
+  }
+
+  /// Re-read the themes directory and re-resolve the active theme. A theme that
+  /// has become invalid leaves the colours on screen alone — the backend falls
+  /// back and reports it in `problem`, mid-show safety over freshness.
+  async reloadThemes(): Promise<Appearance> {
+    const next = await api.reloadThemes();
+    this.applyAppearance(next);
+    return next;
+  }
+
+  /// Paint a resolved appearance: the backend has already merged and validated
+  /// it, so this only writes it onto <html>.
+  private applyAppearance(next: Appearance): void {
+    const root = document.documentElement;
+    for (const token of this.#appliedTokens) {
+      if (!(token in next.tokens)) root.style.removeProperty(token);
+    }
+    for (const [token, value] of Object.entries(next.tokens)) {
+      root.style.setProperty(token, value);
+    }
+    this.#appliedTokens = Object.keys(next.tokens);
+
+    // `color-scheme` is the only thing native chrome follows — scrollbars, the
+    // select popup, form controls. No custom property reaches it.
+    root.dataset["themeBase"] = next.base;
+    root.style.colorScheme = next.base;
+
+    this.appearance = next;
+    savePaintHint(next);
   }
 
   async setMainDeviceConfig(device: DeviceRef | null): Promise<void> {
