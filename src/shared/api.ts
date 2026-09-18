@@ -17,6 +17,7 @@ import type {
   ScanResult,
   SortColumn,
   SortDir,
+  ImageSlot,
   ThemeListing,
   Track,
   TrackMetadataInput,
@@ -429,6 +430,27 @@ export const api = {
   },
   revealThemesDir(): Promise<void> {
     return invoke<void>("reveal_themes_dir");
+  },
+  /** Returns the stored name, which the backend trimmed and capped. */
+  setStationName(name: string | null): Promise<Appearance> {
+    return invoke<Appearance>("set_station_name", { name });
+  },
+  /** Copies the chosen file into the app's own branding directory. */
+  setStationImage(slot: ImageSlot, path: string): Promise<Appearance> {
+    return invoke<Appearance>("set_station_image", { slot, path });
+  },
+  clearStationImage(slot: ImageSlot): Promise<Appearance> {
+    return invoke<Appearance>("clear_station_image", { slot });
+  },
+  /** Pick an image file. The app copies it, so the chosen path is not kept. */
+  async pickImageFile(): Promise<string | null> {
+    const file = await open({
+      multiple: false,
+      filters: [
+        { name: "Images", extensions: ["svg", "png", "jpg", "jpeg", "webp"] },
+      ],
+    });
+    return typeof file === "string" ? file : null;
   },
   async pickDirectory(): Promise<string | null> {
     const dir = await open({ directory: true, multiple: false });

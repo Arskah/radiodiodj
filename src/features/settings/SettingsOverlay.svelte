@@ -6,9 +6,11 @@
     ContentType,
     DeviceInfo,
     DeviceRef,
+    ImageSlot,
     NowPlayingConfig,
     TuningConfig,
   } from "../../shared/types";
+  import { APP_NAME } from "../../shared/appName";
 
   const sections: { type: ContentType; label: string }[] = [
     { type: "music", label: "Music" },
@@ -54,6 +56,44 @@
       mainDeviceChanged = false;
     }
   });
+
+  // Draft of the station name, resynced whenever the backend hands back a new
+  // appearance — it trims and caps, so the input must adopt what was stored.
+  let stationName = $state("");
+  $effect(() => {
+    stationName = app.appearance?.stationName ?? "";
+  });
+
+  async function saveStationName(): Promise<void> {
+    const next = stationName.trim();
+    await app.setStationName(next === "" ? null : next);
+  }
+
+  async function pickImage(slot: ImageSlot): Promise<void> {
+    const path = await api.pickImageFile();
+    if (path) await app.setStationImage(slot, path);
+  }
+
+  // The two slots differ in shape, so one image cannot serve both: the toolbar
+  // wants wide and short, the record label is cropped to a circle.
+  const imageSlots = $derived([
+    {
+      slot: "logo" as ImageSlot,
+      label: "Toolbar logo",
+      src: app.appearance?.logo ?? null,
+      owned: app.appearance?.logo != null,
+      round: false,
+      hint: "Replaces the station name in the toolbar. Wide and short suits it best.",
+    },
+    {
+      slot: "label" as ImageSlot,
+      label: "Record label",
+      src: app.appearance?.label ?? null,
+      owned: app.appearance?.label != null,
+      round: true,
+      hint: "The centre of the deck's vinyl when a track has no cover art. Square, and keep anything important inside the circle — cover art wins when a track has it.",
+    },
+  ]);
 
   // Selecting a theme applies it immediately — the running app is the preview,
   // and reverting is picking the previous entry.
@@ -654,6 +694,63 @@
               Themes live in <code>themes/</code> in the app data folder. Copy
               the <code>example</code> folder, edit the values, then reload.
             </div>
+          </div>
+
+          <div class="settings-section">
+            <h4>Station Identity</h4>
+            <p class="settings-section-desc">
+              Your station's name and artwork. Kept separately from the theme,
+              so they survive every theme you try — a theme may ship its own,
+              and yours wins over it.
+            </p>
+
+            <div class="device-row">
+              <label for="appearance-station-name">Station name</label>
+              <input
+                id="appearance-station-name"
+                type="text"
+                maxlength="64"
+                placeholder={APP_NAME}
+                bind:value={stationName}
+                onchange={saveStationName}
+              />
+              <div class="hint">
+                Shown in the toolbar and the window title. Leave it empty to use
+                {APP_NAME}.
+              </div>
+            </div>
+
+            {#each imageSlots as slot (slot.slot)}
+              <div class="device-row">
+                <label for={`appearance-${slot.slot}-choose`}
+                  >{slot.label}</label
+                >
+                <div class="identity-row">
+                  <span class="identity-preview" class:round={slot.round}>
+                    {#if slot.src}
+                      <img src={slot.src} alt="" />
+                    {:else}
+                      <span class="material-symbols-outlined" aria-hidden="true"
+                        >image</span
+                      >
+                    {/if}
+                  </span>
+                  <button
+                    id={`appearance-${slot.slot}-choose`}
+                    class="np-browse"
+                    onclick={() => pickImage(slot.slot)}>Choose…</button
+                  >
+                  <button
+                    id={`appearance-${slot.slot}-clear`}
+                    class="np-browse"
+                    disabled={!slot.owned}
+                    onclick={() => void app.clearStationImage(slot.slot)}
+                    >Clear</button
+                  >
+                </div>
+                <div class="hint">{slot.hint}</div>
+              </div>
+            {/each}
           </div>
         {:else if app.settingsTab === "advanced"}
           <div

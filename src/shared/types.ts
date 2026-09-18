@@ -307,6 +307,9 @@ export interface Appearance {
   problem: string | null;
 }
 
+/** Which station image is being set. */
+export type ImageSlot = "logo" | "label";
+
 /** One row of the theme picker. A row with `error` set cannot be selected. */
 export interface ThemeListing {
   id: string;

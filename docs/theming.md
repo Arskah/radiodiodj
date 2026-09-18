@@ -104,13 +104,22 @@ array, which the parser ignores:
   "name": "Example (copy me)",
   "base": "dark",
   "notes": [
-    "Values are #rgb, #rrggbb, #rrggbbaa, rgb(), rgba(), hsl(), hsla(),",
-    "or the keyword transparent. Nothing else.",
-    "Delete any token you don't want to change — it comes from the base."
+    "A built-in theme. Every token in the contract is set, because a built-in is",
+    "what an incomplete theme falls back to.",
+    "Values are #rgb, #rrggbb, #rrggbbaa, rgb(), rgba(), hsl(), hsla(), or the",
+    "keyword transparent. Nothing else."
   ],
-  "tokens": {}
+  "tokens": {
+    "--surface": "#111317",
+    "--background": "#111317"
+    // … all 42, in contract order
+  }
 }
 ```
+
+The example is a full copy of Midnight rather than a skeleton, so every token is
+in front of the author with a working value beside it. Deleting the ones they do
+not want to change is the edit.
 
 Guidance cannot live inside `tokens`, whose keys are allowlisted; a comment
 there would be reported as an unknown token. JSONC was considered so the example
@@ -417,8 +426,11 @@ inside the `Appearance` payload rather than taking their own command — they ar
 small, they are needed at first paint, and a second round trip would reintroduce
 the flash.
 
-An operator's chosen image is **copied into `{app_data_dir}/branding/`**, and
-config stores only the file name, never a path. Nothing else in the app copies
+An operator's chosen image is **copied into `{app_data_dir}/branding/`** as
+`logo.<ext>` or `label.<ext>`, and config stores only that file name, never a
+path. Replacing a slot with a different file type clears the previous file, so a
+stale `logo.png` cannot outlive the `logo.svg` that replaced it. Clearing a slot
+leaves the file in place — deleting it buys nothing and loses an undo. Nothing else in the app copies
 an operator-chosen file in, so the reason is worth stating: a logo is a few
 kilobytes and must be present at every launch, unlike a library, so owning the
 copy is cheaper than depending on a path the operator may move. It also means a
@@ -521,7 +533,7 @@ and Advanced stays last as the tuning drawer.
 
 **Selecting a theme applies it immediately — the app _is_ the preview.** There
 is no preview pane: a swatch strip that disagrees with the running UI is a bug
-farm, and a 40-token palette cannot be honestly previewed in a thumbnail.
+farm, and a 42-token palette cannot be honestly previewed in a thumbnail.
 Reverting is selecting the previous entry.
 
 **Invalid themes are listed, never hidden.** A theme that "didn't show up" is
@@ -562,6 +574,8 @@ the reason turns it into a fixable message.
 - Data-URL images live in memory for the session.
 - `config.json` keeps a `themeId` whose folder is gone, so restoring the folder
   restores the theme.
+- A station image whose file has gone falls through to the theme's image, or to
+  the bundled default, rather than showing a broken picture.
 
 ## Why it is built this way
 
@@ -578,6 +592,6 @@ the reason turns it into a fixable message.
 - **Identity separate from the palette** — a palette does not know what the
   station is called.
 - **Instant apply instead of a preview** — the running app is the only honest
-  preview of a 40-token palette.
+  preview of a 42-token palette.
 - **No event** — every change is renderer-initiated, and the mutator's return
   value carries the result.

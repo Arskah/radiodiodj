@@ -687,6 +687,53 @@ fn set_theme(state: State<'_, AppState>, theme_id: String) -> Result<Appearance,
     Ok(resolved_appearance(&state))
 }
 
+/// Name the station. Trimmed and capped by the config layer, which returns what
+/// it stored; a blank name means the product name is used.
+#[tauri::command(rename_all = "camelCase")]
+fn set_station_name(
+    state: State<'_, AppState>,
+    name: Option<String>,
+) -> Result<Appearance, String> {
+    let mut config = state.config.get_appearance();
+    config.station_name = name;
+    state.config.set_appearance(config).map_err(err)?;
+    Ok(resolved_appearance(&state))
+}
+
+/// Adopt an operator-chosen image into `{app_data_dir}/branding` and point the
+/// slot at it. Only the file name is stored, never the path it came from.
+#[tauri::command(rename_all = "camelCase")]
+fn set_station_image(
+    state: State<'_, AppState>,
+    slot: appearance::ImageSlot,
+    path: String,
+) -> Result<Appearance, String> {
+    let name = appearance::adopt_image(&state.data_dir, slot, std::path::Path::new(&path))?;
+    let mut config = state.config.get_appearance();
+    match slot {
+        appearance::ImageSlot::Logo => config.logo = Some(name),
+        appearance::ImageSlot::Label => config.label = Some(name),
+    }
+    state.config.set_appearance(config).map_err(err)?;
+    Ok(resolved_appearance(&state))
+}
+
+/// Clear a slot, so the theme's image (or the bundled default) shows again. The
+/// file is left in `branding/` — deleting it buys nothing and loses an undo.
+#[tauri::command(rename_all = "camelCase")]
+fn clear_station_image(
+    state: State<'_, AppState>,
+    slot: appearance::ImageSlot,
+) -> Result<Appearance, String> {
+    let mut config = state.config.get_appearance();
+    match slot {
+        appearance::ImageSlot::Logo => config.logo = None,
+        appearance::ImageSlot::Label => config.label = None,
+    }
+    state.config.set_appearance(config).map_err(err)?;
+    Ok(resolved_appearance(&state))
+}
+
 /// Re-read the themes directory and re-resolve the active theme, so an edit to
 /// the theme on screen takes effect. A repaint is always an explicit ask —
 /// there is no filesystem watcher.
@@ -708,7 +755,7 @@ fn reveal_themes_dir(state: State<'_, AppState>) -> Result<(), String> {
 /// theme that cannot be loaded falls back to Midnight and says so.
 fn resolved_appearance(state: &AppState) -> Appearance {
     let config = state.config.get_appearance();
-    appearance::resolve(&state.data_dir, &config.theme_id, config.station_name)
+    appearance::resolve(&state.data_dir, &config)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -1074,6 +1121,9 @@ pub fn run() {
             get_appearance,
             list_themes,
             set_theme,
+            set_station_name,
+            set_station_image,
+            clear_station_image,
             reload_themes,
             reveal_themes_dir,
             now_playing_test,

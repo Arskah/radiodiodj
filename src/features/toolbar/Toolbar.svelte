@@ -33,7 +33,13 @@
 <!-- Row 2: production nav (brand, live badge, alert slot, stats, controls). -->
 <nav id="app-nav">
   <div class="nav-left">
-    <span class="brand">RadiodioDJ</span>
+    <!-- A logo replaces the name rather than sitting beside it; the name it
+         replaces survives as alt text and in the window title. -->
+    {#if app.appearance?.logo}
+      <img class="brand-logo" src={app.appearance.logo} alt={app.brandName} />
+    {:else}
+      <span class="brand">{app.brandName}</span>
+    {/if}
     <span class="live-badge">
       <span class="led"></span>
       Live On Air
