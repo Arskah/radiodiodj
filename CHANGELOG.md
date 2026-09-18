@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0](https://github.com/Arskah/radiodiodj/compare/v0.19.0...v0.20.0) (2026-09-18)
+
+
+### Features
+
+* **playlist:** airing log, and history moves to the backend ([#402](https://github.com/Arskah/radiodiodj/issues/402)) ([9220b81](https://github.com/Arskah/radiodiodj/commit/9220b81a0ea183ed906cc03d714cd572111d5691))
+
 ## [0.19.0](https://github.com/Arskah/radiodiodj/compare/v0.18.0...v0.19.0) (2026-09-18)
 
 
