@@ -184,6 +184,42 @@ _Avoid_: Buffer, preload
 Insertion of one Jingle library track every 4 music tracks and one Commercial library track every 8.
 _Avoid_: Rotation, scheduling
 
+### Appearance
+
+**Theme**:
+A named set of colour values the operator switches between: a built-in, or a
+folder dropped into `{app_data_dir}/themes/`. Repaints the whole player. Changes
+no layout, no wording and no behaviour.
+_Avoid_: Skin, style, stylesheet, mode, dark mode
+
+**Theme token**:
+One named colour in the **Theme** contract (`--surface`, `--cue-in-color`,
+`--scrim`), and the only kind of thing a **Theme** may set. Spacing, radius and
+font custom properties are deliberately not theme tokens.
+_Avoid_: Variable, CSS var, custom property, colour
+
+**Base**:
+Whether a **Theme** paints on light or dark. Declared by the theme, and used for
+two things: filling in the **Theme tokens** it left out, and telling the OS which
+chrome to draw for scrollbars, selects and form controls.
+_Avoid_: Mode, dark mode, appearance, scheme
+
+**Station identity**:
+The operator's own name and artwork for their station — a station name, a
+**Toolbar logo** and a **Record label**. Configured separately from the **Theme**
+and unaffected by it.
+_Avoid_: Branding, theming, white-label, customisation
+
+**Toolbar logo**:
+The **Station identity** image drawn in the toolbar in place of the station's
+name. Wide-friendly; scaled to the toolbar's height.
+_Avoid_: Brand, icon, app icon, wordmark
+
+**Record label**:
+The **Station identity** image drawn at the centre of a deck's vinyl when the
+track has no cover art. Square, and cropped to a circle.
+_Avoid_: Logo, artwork, cover, sleeve
+
 ### Persistence
 
 **Config**:
@@ -215,6 +251,13 @@ _Avoid_: Persist, sync
 - A **Dismissal** silences a **Library health** finding without hiding it
 - A **Track** is identified by its row, not its path: **Prune** makes it **Missing**, **Reattach** or a returning path restores it, and only **Purge** deletes it
 
+- A **Theme** sets some or all **Theme tokens**; the rest come from the built-in matching its **Base**
+- Exactly one **Theme** is active; `appearance.themeId` in **Config** names it
+- A **Theme** that fails validation is listed and cannot be selected; it is never partly applied
+- A **Theme** may ship a **Toolbar logo** and a **Record label**; the operator's **Station identity** wins over both
+- Cover art wins over the **Record label**, which wins over the shipped label
+- A **Theme** never sets the station name
+
 ## Example dialogue
 
 > **Dev:** "When I drop a folder of station IDs into a **Library path**, does the **Auto-playlist** start using them?"
@@ -245,6 +288,14 @@ _Avoid_: Persist, sync
 >
 > **Domain expert:** "At the outgoing track's **Next start** cue point. That triggers **Handover** — the arm **Deck** starts playing and takes the `main` **Deck role**, while the outgoing one plays on toward its **Cue out**. Both are summed on the **Program bus** meanwhile."
 >
+> **Dev:** "I dropped `station-red` into the themes folder and it isn't in the list."
+>
+> **Domain expert:** "It is — press _Reload themes_. If it shows greyed, the row says why: probably a **Theme token** name that isn't in the contract. A **Theme** with a bad token is refused whole, never half-applied, so you never end up with two palettes on screen at once."
+>
+> **Dev:** "If I switch to Daylight, do I lose my logo?"
+>
+> **Domain expert:** "No. The logo is **Station identity**, not part of the **Theme**. A theme can ship a default one, but yours wins over it. Only the colours change."
+>
 > **Dev:** "If a **Library path** is removed, what happens to **Now playing** if it points to a track from there?"
 >
 > **Domain expert:** "Playback continues — the **Main deck** holds the decoded source. After the next **Scan**, **Prune** marks the track **Missing**, so no **Auto-playlist** refill picks it. Add the path back and the next **Scan** brings it back with its cue points intact."
@@ -263,3 +314,8 @@ _Avoid_: Persist, sync
 - "Check" vs "Scan" → a **Library check** only reads the disk and reports; a **Scan** changes the library. Never call a check a "quick scan".
 - "Ignore" is not a domain term → a **Dismissal** silences a finding, and there is no ignored-track state. An unwanted **Duplicate** is removed by deleting its file.
 - "Content type" is a closed enum: `music | jingle | commercial`. New types require deliberate domain extension.
+- "Theme" is colours only. A change that needs different spacing, fonts or wording is a redesign, not a theme.
+- "Logo" alone is ambiguous → **Toolbar logo** and **Record label** are two images with different shapes and different fallbacks. The **app icon** is neither, and no theme touches it.
+- "Dark mode" is not a domain term → a **Theme** has a **Base**, and the operator picks a theme, not a mode. The app never follows the OS.
+- "Palette" is informal for the values inside a **Theme**; the term of art is **Theme token**.
+- "Branding" retired in favour of **Station identity**, so the config fields, the commands and the Settings heading all say the same word.

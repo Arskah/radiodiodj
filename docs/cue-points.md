@@ -7,7 +7,9 @@ auto-playlist or manual, without ever modifying the audio file.
 
 Implements [#279](https://github.com/Arskah/radiodiodj/issues/279). The segue
 marker (`next_start_ms`) is consumed by the program bus — see
-[program-bus.md](./program-bus.md).
+[program-bus.md](./program-bus.md). Each marker's colour is a theme
+token, shared by the waveform lines and the editor's swatches, so a theme
+retints the two together — see [theming.md](./theming.md).
 
 ## The five markers
 

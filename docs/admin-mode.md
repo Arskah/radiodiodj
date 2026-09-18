@@ -14,7 +14,9 @@ access to the data directory can edit `config.json` and remove the password.
 While locked:
 
 - The whole _Settings_ overlay: Audio, Library (paths, scan, library health,
-  purge), Now Playing and Advanced. The toolbar's Settings button is disabled.
+  purge), Now Playing, Appearance (picking a theme, reloading themes, the
+  station name and its images) and Advanced. The toolbar's Settings button is
+  disabled.
 - Metadata edits: the _Edit metadata…_ row action and the row's edit button are
   hidden. Revert, retry and dismiss for tag writes live in the metadata editor
   and the health view, so they are out of reach too.
@@ -25,6 +27,11 @@ While locked:
 Still open while locked: playback, the playlist, library search and browsing,
 the cue deck, _Show in folder_, and the cue-point editor's _Use once_ and
 auditioning, which only affect one airing.
+
+Reading the appearance is **not** gated, and cannot be: the renderer paints
+itself from `get_appearance` before it mounts, on a launch that starts locked.
+Only the commands that change it are in `ADMIN_COMMANDS`. See
+[theming.md](./theming.md).
 
 The library-health badge stays on the Settings button while locked. It tells
 whoever is at the desk that an admin should log in.
