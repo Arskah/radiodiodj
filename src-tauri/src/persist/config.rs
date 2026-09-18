@@ -280,6 +280,41 @@ impl Default for AdminConfig {
     }
 }
 
+/// Appearance: which theme is active, and the station's own name and images.
+/// A theme never sets the station name — see `docs/theming.md`.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AppearanceConfig {
+    /// Directory name under `{app_data_dir}/themes`, or a built-in id.
+    #[serde(default = "default_theme_id")]
+    pub theme_id: String,
+    #[serde(default)]
+    pub station_name: Option<String>,
+    /// File name inside `{app_data_dir}/branding`, never a path.
+    #[serde(default)]
+    pub logo: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+fn default_theme_id() -> String {
+    "midnight".to_string()
+}
+
+/// Longest station name kept, in characters.
+pub const STATION_NAME_MAX: usize = 64;
+
+impl Default for AppearanceConfig {
+    fn default() -> Self {
+        Self {
+            theme_id: default_theme_id(),
+            station_name: None,
+            logo: None,
+            label: None,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
@@ -297,6 +332,8 @@ pub struct AppConfig {
     pub now_playing: NowPlayingConfig,
     #[serde(default)]
     pub tuning: TuningConfig,
+    #[serde(default)]
+    pub appearance: AppearanceConfig,
     #[serde(default)]
     pub admin: AdminConfig,
 }
@@ -416,6 +453,20 @@ impl Config {
         Ok(cfg.tuning.clone())
     }
 
+    pub fn get_appearance(&self) -> AppearanceConfig {
+        self.inner.lock().appearance.clone()
+    }
+
+    /// Persist a new appearance section. The station name is trimmed and capped,
+    /// and an empty one is stored as `None`; the caller echoes the stored value
+    /// back to the UI the way `set_tuning` does.
+    pub fn set_appearance(&self, appearance: AppearanceConfig) -> Result<AppearanceConfig> {
+        let mut cfg = self.inner.lock();
+        cfg.appearance = normalize_appearance(appearance);
+        self.save_locked(&cfg)?;
+        Ok(cfg.appearance.clone())
+    }
+
     pub fn password_hash(&self) -> Option<String> {
         self.inner.lock().admin.password_hash.clone()
     }
@@ -465,6 +516,20 @@ impl Config {
 /// least one track can stay resident, and retry/backoff lists must be non-empty
 /// with non-zero delays. Defaults are already in range, so an untouched config
 /// is unchanged.
+/// Trim and cap the station name; an empty name means "use the product name".
+fn normalize_appearance(mut appearance: AppearanceConfig) -> AppearanceConfig {
+    appearance.station_name = appearance
+        .station_name
+        .map(|name| {
+            name.trim()
+                .chars()
+                .take(STATION_NAME_MAX)
+                .collect::<String>()
+        })
+        .filter(|name| !name.is_empty());
+    appearance
+}
+
 fn normalize_tuning(mut t: TuningConfig) -> TuningConfig {
     let il = &mut t.interleave;
     // 0 disables jingle/commercial insertion entirely.
@@ -616,6 +681,77 @@ mod tests {
         assert_eq!(np.webhook_url.as_deref(), Some("https://x"));
         assert!(np.file_enabled);
         assert!(np.webhook_enabled);
+    }
+
+    #[test]
+    fn appearance_defaults_when_missing() {
+        let dir = tempdir().unwrap();
+        let cfg = Config::open(dir.path()).unwrap();
+        assert_eq!(cfg.get_appearance(), AppearanceConfig::default());
+        assert_eq!(cfg.get_appearance().theme_id, "midnight");
+    }
+
+    #[test]
+    fn appearance_partial_json_fills_defaults() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("config.json"),
+            r#"{"appearance":{"themeId":"station-red"}}"#,
+        )
+        .unwrap();
+
+        let cfg = Config::open(dir.path()).unwrap();
+        let appearance = cfg.get_appearance();
+        assert_eq!(appearance.theme_id, "station-red");
+        assert_eq!(appearance.station_name, None);
+        assert_eq!(appearance.logo, None);
+    }
+
+    #[test]
+    fn set_appearance_round_trips_to_disk() {
+        let dir = tempdir().unwrap();
+        let cfg = Config::open(dir.path()).unwrap();
+        cfg.set_appearance(AppearanceConfig {
+            theme_id: "station-red".to_string(),
+            station_name: Some("Radio Foo".to_string()),
+            logo: Some("logo.svg".to_string()),
+            label: None,
+        })
+        .unwrap();
+        drop(cfg);
+
+        let reopened = Config::open(dir.path()).unwrap();
+        let appearance = reopened.get_appearance();
+        assert_eq!(appearance.theme_id, "station-red");
+        assert_eq!(appearance.station_name.as_deref(), Some("Radio Foo"));
+        assert_eq!(appearance.logo.as_deref(), Some("logo.svg"));
+    }
+
+    /// The station name is trimmed and capped, and an empty one means "use the
+    /// product name" — the caller echoes the stored value back to the UI.
+    #[test]
+    fn set_appearance_normalizes_the_station_name() {
+        let dir = tempdir().unwrap();
+        let cfg = Config::open(dir.path()).unwrap();
+
+        let stored = cfg
+            .set_appearance(AppearanceConfig {
+                station_name: Some("   ".to_string()),
+                ..AppearanceConfig::default()
+            })
+            .unwrap();
+        assert_eq!(stored.station_name, None, "a blank name is not a name");
+
+        let stored = cfg
+            .set_appearance(AppearanceConfig {
+                station_name: Some(format!("  {}  ", "x".repeat(100))),
+                ..AppearanceConfig::default()
+            })
+            .unwrap();
+        assert_eq!(
+            stored.station_name.unwrap().chars().count(),
+            STATION_NAME_MAX
+        );
     }
 
     #[test]

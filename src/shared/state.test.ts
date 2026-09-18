@@ -68,6 +68,11 @@ const { api } = vi.hoisted(() => {
     mainDeckFadeToNext: vi.fn(),
     getTuningConfig: vi.fn(),
     setTuningConfig: vi.fn(),
+    getAppearance: vi.fn(),
+    listThemes: vi.fn(),
+    setTheme: vi.fn(),
+    reloadThemes: vi.fn(),
+    revealThemesDir: vi.fn(),
     setCuePoints: vi.fn(),
     adminStatus: vi.fn(),
     adminUnlock: vi.fn(),
@@ -151,6 +156,7 @@ import {
   isTrackItem,
   stopMarker,
   trackItem,
+  type Appearance,
   type CuePoints,
   type HealthReport,
   type PlaylistItem,
@@ -275,6 +281,30 @@ function resetApi(): void {
   }));
   api.getTuningConfig.mockResolvedValue(defaultTuning());
   api.setTuningConfig.mockImplementation((c: unknown) => Promise.resolve(c));
+  api.getAppearance.mockResolvedValue(appearance());
+  api.setTheme.mockImplementation((id: unknown) =>
+    Promise.resolve(appearance({ themeId: id as string })),
+  );
+  api.reloadThemes.mockResolvedValue(appearance());
+  api.listThemes.mockResolvedValue([]);
+}
+
+/** A resolved appearance, as the backend would hand it over. */
+function appearance(over: Partial<Appearance> = {}): Appearance {
+  return {
+    themeId: "midnight",
+    base: "dark",
+    tokens: {
+      "--background": "#111317",
+      "--surface": "#111317",
+      "--primary": "#b8c3ff",
+    },
+    stationName: null,
+    logo: null,
+    label: null,
+    problem: null,
+    ...over,
+  };
 }
 
 interface TestApp {
@@ -1205,6 +1235,90 @@ describe("AppState tuning", () => {
     await app.saveTuning(requested);
     expect(api.setTuningConfig).toHaveBeenCalledWith(requested);
     expect(app.tuning.autoPlaylist.autoPlaylistThreshold).toBe(4);
+  });
+});
+
+describe("AppState appearance", () => {
+  let app: AppState;
+
+  beforeEach(() => {
+    resetApi();
+    app = makeApp().app;
+    document.documentElement.removeAttribute("style");
+    delete document.documentElement.dataset["themeBase"];
+    localStorage.clear();
+  });
+
+  it("paints the resolved tokens onto the document", async () => {
+    await app.loadAppearance();
+
+    const root = document.documentElement;
+    expect(root.style.getPropertyValue("--background")).toBe("#111317");
+    expect(root.style.getPropertyValue("--primary")).toBe("#b8c3ff");
+  });
+
+  // `color-scheme` is the only thing native chrome follows; no custom property
+  // can reach scrollbars or the select popup.
+  it("sets the base for native chrome to follow", async () => {
+    api.getAppearance.mockResolvedValueOnce(
+      appearance({ base: "light", themeId: "daylight" }),
+    );
+    await app.loadAppearance();
+
+    expect(document.documentElement.dataset["themeBase"]).toBe("light");
+    expect(document.documentElement.style.colorScheme).toBe("light");
+  });
+
+  it("clears tokens the incoming theme does not set", async () => {
+    await app.loadAppearance();
+    expect(document.documentElement.style.getPropertyValue("--primary")).toBe(
+      "#b8c3ff",
+    );
+
+    api.setTheme.mockResolvedValueOnce(
+      appearance({ themeId: "sparse", tokens: { "--background": "#fff" } }),
+    );
+    await app.setTheme("sparse");
+
+    expect(document.documentElement.style.getPropertyValue("--primary")).toBe(
+      "",
+    );
+    expect(
+      document.documentElement.style.getPropertyValue("--background"),
+    ).toBe("#fff");
+  });
+
+  it("adopts what the backend resolved, not what was asked for", async () => {
+    // A theme that cannot be loaded falls back, and says so.
+    api.setTheme.mockResolvedValueOnce(
+      appearance({ themeId: "midnight", problem: "gone could not be loaded" }),
+    );
+
+    const result = await app.setTheme("gone");
+    expect(api.setTheme).toHaveBeenCalledWith("gone");
+    expect(app.appearance?.themeId).toBe("midnight");
+    expect(result.problem).toContain("could not be loaded");
+  });
+
+  it("keeps the static palette when the backend fails", async () => {
+    api.getAppearance.mockRejectedValueOnce(new Error("boom"));
+    await app.loadAppearance();
+
+    expect(app.appearance).toBeNull();
+    expect(
+      document.documentElement.style.getPropertyValue("--background"),
+    ).toBe("");
+  });
+
+  it("saves a paint hint so the next launch does not flash", async () => {
+    await app.loadAppearance();
+
+    const hint = JSON.parse(localStorage.getItem("appearance-paint")!) as {
+      base: string;
+      background: string;
+    };
+    expect(hint.base).toBe("dark");
+    expect(hint.background).toBe("#111317");
   });
 });
 

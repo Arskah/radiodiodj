@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
 
 mod admin;
+mod appearance;
 mod audio;
 mod broadcast;
 mod library;
@@ -17,6 +18,7 @@ use audio::devices::{list_output_devices, DeviceInfo};
 pub const APP_NAME: &str = "RadiodioDJ";
 
 use admin::{AdminLock, AdminStatus};
+use appearance::{Appearance, ThemeListing};
 use audio::bus::ProgramBus;
 use audio::cue::CueDeck;
 use audio::cue_points::CuePoints;
@@ -93,6 +95,8 @@ pub struct AppState {
     /// Set when this launch replaced a database from an older epoch, so the
     /// renderer can say why the library is rescanning.
     library_reset: bool,
+    /// The per-user data directory, root of `themes/` and `branding/`.
+    data_dir: std::path::PathBuf,
     app_handle: AppHandle,
 }
 
@@ -661,6 +665,52 @@ fn set_tuning_config(
     state.config.set_tuning(config).map_err(err)
 }
 
+/// The resolved appearance the renderer paints. Ungated by necessity: the
+/// renderer asks for this before it mounts, on a launch that starts locked.
+#[tauri::command(rename_all = "camelCase")]
+fn get_appearance(state: State<'_, AppState>) -> Appearance {
+    resolved_appearance(&state)
+}
+
+/// Every theme the operator can pick, plus the ones that failed to load and
+/// why. Ungated for the same reason as `get_appearance`.
+#[tauri::command(rename_all = "camelCase")]
+fn list_themes(state: State<'_, AppState>) -> Vec<ThemeListing> {
+    appearance::store::list(&state.data_dir)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn set_theme(state: State<'_, AppState>, theme_id: String) -> Result<Appearance, String> {
+    let mut appearance = state.config.get_appearance();
+    appearance.theme_id = theme_id;
+    state.config.set_appearance(appearance).map_err(err)?;
+    Ok(resolved_appearance(&state))
+}
+
+/// Re-read the themes directory and re-resolve the active theme, so an edit to
+/// the theme on screen takes effect. A repaint is always an explicit ask —
+/// there is no filesystem watcher.
+#[tauri::command(rename_all = "camelCase")]
+fn reload_themes(state: State<'_, AppState>) -> Appearance {
+    resolved_appearance(&state)
+}
+
+/// Open the themes directory in the operator's file manager. Takes no argument
+/// and opens a directory the app owns, so it is narrower than `reveal_track`.
+#[tauri::command(rename_all = "camelCase")]
+fn reveal_themes_dir(state: State<'_, AppState>) -> Result<(), String> {
+    let dir = appearance::store::themes_dir(&state.data_dir);
+    appearance::store::seed_if_absent(&state.data_dir).map_err(err)?;
+    tauri_plugin_opener::reveal_item_in_dir(&dir).map_err(err)
+}
+
+/// Resolve the configured theme into what the renderer paints. Never fails: a
+/// theme that cannot be loaded falls back to Midnight and says so.
+fn resolved_appearance(state: &AppState) -> Appearance {
+    let config = state.config.get_appearance();
+    appearance::resolve(&state.data_dir, &config.theme_id, config.station_name)
+}
+
 #[tauri::command(rename_all = "camelCase")]
 fn now_playing_test(state: State<'_, AppState>) -> Result<u16, String> {
     state.broadcast.test_webhook_blocking()
@@ -860,6 +910,12 @@ pub fn run() {
             let library_reset = opened.reset_backup.is_some();
             let db = Arc::new(opened.db);
             let config = Arc::new(Config::open(&data_dir)?);
+
+            // Give a first-run operator something to copy. Only when themes/ is
+            // absent, so deleting the example does not bring it back.
+            if let Err(e) = appearance::store::seed_if_absent(&data_dir) {
+                log::warn!("could not seed the themes directory: {e}");
+            }
             let admin = Arc::new(AdminLock::new(
                 Arc::clone(&config),
                 Some(app.handle().clone()),
@@ -946,6 +1002,7 @@ pub fn run() {
                 cache,
                 broadcast,
                 app_handle: app.handle().clone(),
+                data_dir: data_dir.clone(),
                 library_reset,
             });
             Ok(())
@@ -1014,6 +1071,11 @@ pub fn run() {
             set_now_playing_config,
             get_tuning_config,
             set_tuning_config,
+            get_appearance,
+            list_themes,
+            set_theme,
+            reload_themes,
+            reveal_themes_dir,
             now_playing_test,
             broadcast_shutdown,
             update_track_metadata,

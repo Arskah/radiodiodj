@@ -286,6 +286,38 @@ export interface DeviceInfo {
   isDefault: boolean;
 }
 
+/** Whether a theme paints on light or dark. See `docs/theming.md`. */
+export type ThemeBase = "light" | "dark";
+
+/**
+ * What the renderer paints. The backend resolves it — `tokens` is always
+ * complete, already merged with the theme's base and already validated, so the
+ * renderer carries no palette of its own and no merge rule.
+ */
+export interface Appearance {
+  themeId: string;
+  base: ThemeBase;
+  tokens: Record<string, string>;
+  stationName: string | null;
+  /** Data URL, or null. */
+  logo: string | null;
+  /** Data URL, or null. */
+  label: string | null;
+  /** Set when the active theme could not be used, so the UI can say why. */
+  problem: string | null;
+}
+
+/** One row of the theme picker. A row with `error` set cannot be selected. */
+export interface ThemeListing {
+  id: string;
+  name: string;
+  author: string | null;
+  base: ThemeBase | null;
+  /** `"built-in"`, or the theme's path relative to the data directory. */
+  source: string;
+  error: string | null;
+}
+
 /** Admin mode as the backend reports it. See `docs/admin-mode.md`. */
 export interface AdminStatus {
   passwordSet: boolean;
