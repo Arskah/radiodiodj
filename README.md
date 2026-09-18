@@ -147,3 +147,10 @@ _1 moved_.
 but kept. _Settings → Library_ shows how many there are, and **Purge** deletes
 them for good; that is the only way a track is deleted. See
 [docs/track-identity.md](docs/track-identity.md) for the full design.
+
+## License
+
+[GNU General Public License v3.0 or later](LICENSE). Use it, run it at your
+station, sell it — but if you distribute a modified RadiodioDJ, ship its source
+under the same license. Patches back to
+[this repo](https://github.com/Arskah/radiodiodj) are welcome.

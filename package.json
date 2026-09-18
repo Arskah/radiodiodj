@@ -14,7 +14,7 @@
   "bugs": {
     "url": "https://github.com/Arskah/radiodiodj/issues"
   },
-  "license": "UNLICENSED",
+  "license": "GPL-3.0-or-later",
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",

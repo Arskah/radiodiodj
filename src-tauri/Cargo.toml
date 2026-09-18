@@ -3,6 +3,7 @@ name = "radiodiodj"
 version = "0.20.0"
 description = "Radio station music player"
 authors = ["Aarni Halinen"]
+license = "GPL-3.0-or-later"
 edition = "2021"
 rust-version = "1.95"
 
