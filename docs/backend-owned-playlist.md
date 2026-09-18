@@ -62,6 +62,9 @@ program:playlist-state { playlist, current, displaced }
 - `current` — the item now on the `main` deck
 - `displaced` — the item that just left `main`, if any
 
+`displaced` is superseded once the airing log lands: the snapshot carries
+`history` instead. See [What stays in the renderer](#what-stays-in-the-renderer).
+
 The renderer mirrors `playlist` and `current` for display, appends `displaced` to
 history, and persists the session from the snapshot. It stops computing
 advancement, refill, and prefetch entirely.
@@ -93,9 +96,15 @@ playlist_set_auto(active)           playlist_set_item_cue_points(index, cuePoint
 
 ### What stays in the renderer
 
-**History**, fed by `displaced`. It is a display log, not playback state, and
-keeping it renderer-side bounds the refactor. The renderer continues to persist
-it, along with its own UI state.
+Its own UI state, and nothing else of the playlist.
+
+**History** stayed renderer-side in this refactor, fed by `displaced`, on the
+grounds that a display log is not playback state and leaving it out bounded the
+scope. That held only until selection needed to know what had aired: rotation
+rules read a record of airings, and a renderer array capped at 100 and wiped by
+a Clear button is not one. The airing log in [rotation.md](./rotation.md) takes
+over, `Snapshot` carries `history`, and `displaced` — which exists solely to
+feed the renderer's copy — goes away with it.
 
 ## Item overrides
 

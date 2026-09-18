@@ -71,11 +71,6 @@
     app.movePlaylistItem(from, insertAt);
   }
 
-  function onClear(): void {
-    if (app.playlistTab === "playlist") app.clearPlaylist();
-    else app.clearHistory();
-  }
-
   const stopped = $derived(app.playlist.some(isStopMarker));
 
   function rowKey(item: PlaylistItem): string {
@@ -110,14 +105,12 @@
           title="Stop automatic play when reached"
           onclick={() => app.addStopMarker()}>+ Stop</button
         >
+        <button
+          id="btn-clear-playlist"
+          title="Clear playlist"
+          onclick={() => app.clearPlaylist()}>Clear</button
+        >
       {/if}
-      <button
-        id="btn-clear-playlist"
-        title={app.playlistTab === "playlist"
-          ? "Clear playlist"
-          : "Clear history"}
-        onclick={onClear}>Clear</button
-      >
     </div>
   </div>
   <div id="playlist-tabs" role="tablist">
@@ -332,17 +325,6 @@
                 >
               </div>
             </div>
-            <button
-              class="btn-remove"
-              title="Remove from history"
-              aria-label="Remove from history"
-              onclick={(e) => {
-                e.stopPropagation();
-                app.removeFromHistory(i);
-              }}
-            >
-              <span class="material-symbols-outlined">close</span>
-            </button>
           </div>
         {/each}
       {/if}

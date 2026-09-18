@@ -819,7 +819,7 @@
               </div>
             </div>
             <div class="device-row">
-              <label for="tune-history">History cap</label>
+              <label for="tune-history">History shown</label>
               <input
                 id="tune-history"
                 type="number"
@@ -830,8 +830,8 @@
                 onchange={saveTuning}
               />
               <div class="hint">
-                Recently played tracks remembered to avoid quick repeats.
-                Minimum 1.
+                How many aired tracks the History tab lists. Every airing is
+                kept on record regardless. Minimum 1.
               </div>
             </div>
             <div class="device-row">

@@ -106,9 +106,11 @@ pub struct Snapshot {
     pub playlist: Vec<PlaylistItem>,
     /// The track on the main deck.
     pub current: Option<Track>,
-    /// The track that just left the main deck, if any. The renderer appends it
-    /// to history; it is set on exactly the transition that displaced it.
-    pub displaced: Option<Track>,
+    /// What has aired, oldest first, capped by the stored tuning's
+    /// `historyCap`. Carried whole rather than as an append event: a snapshot
+    /// is idempotent, so a dropped or reordered one cannot leave the History
+    /// tab showing a different past than the log holds.
+    pub history: Vec<Track>,
     pub auto_playlist_active: bool,
     pub auto_advance: bool,
     /// The override the track on air is playing under, if it came off an item

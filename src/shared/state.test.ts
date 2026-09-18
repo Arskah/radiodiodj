@@ -239,7 +239,6 @@ function resetApi(): void {
     state: {
       playlistIds: [],
       playlistItems: [],
-      historyIds: [],
       currentTrackId: null,
       currentTime: 0,
       autoPlaylistActive: false,
@@ -330,9 +329,7 @@ function wirePlaylist(playlist: MockPlaylistBackend): void {
     ok(() => playlist.playNow(known(id))),
   );
   api.playlistNext.mockImplementation(() => ok(() => playlist.next()));
-  api.playlistPrev.mockImplementation((id: number) =>
-    ok(() => playlist.prev(known(id))),
-  );
+  api.playlistPrev.mockImplementation(() => ok(() => playlist.prev()));
   api.playlistStop.mockImplementation(() => ok(() => playlist.stop()));
   api.playlistSetAutoPlaylist.mockImplementation((active: boolean) =>
     ok(() => playlist.setAutoPlaylist(active)),
@@ -463,61 +460,41 @@ describe("AppState playlist mutations", () => {
 
 describe("AppState history view", () => {
   let app: AppState;
+  let playlist: MockPlaylistBackend;
   beforeEach(() => {
     resetApi();
-    app = makeApp().app;
+    ({ app, playlist } = makeApp());
   });
+
+  /** History is the backend's; the renderer only ever sees it in a snapshot. */
+  function aired(...tracks: Track[]): void {
+    playlist.restore({ history: tracks });
+    playlist.resync();
+  }
 
   it("playlistTab defaults to playlist", () => {
     expect(app.playlistTab).toBe("playlist");
   });
 
+  it("history mirrors the snapshot", () => {
+    aired(t(1), t(2));
+    expect(app.history.map((x) => x.id)).toEqual([1, 2]);
+  });
+
   it("historyDisplay reverses storage order (newest first)", () => {
-    app.history.push(t(1), t(2), t(3));
+    aired(t(1), t(2), t(3));
     expect(app.historyDisplay.map((x) => x.id)).toEqual([3, 2, 1]);
   });
 
-  it("history caps at 100 entries, dropping the oldest", () => {
-    for (let i = 0; i < 100; i++) app.history.push(t(i));
-    app.playNow(t(500));
-    app.playNow(t(999));
-    expect(app.history.length).toBe(100);
-    expect(app.history[0].id).toBe(1);
-    expect(app.history[99].id).toBe(500);
-  });
-
-  it("removeFromHistory uses display index (newest first)", () => {
-    app.history.push(t(1), t(2), t(3));
-    app.removeFromHistory(0);
-    expect(app.history.map((x) => x.id)).toEqual([1, 2]);
-    app.removeFromHistory(1);
-    expect(app.history.map((x) => x.id)).toEqual([2]);
-  });
-
-  it("removeFromHistory ignores out-of-range indices", () => {
-    app.history.push(t(1));
-    app.removeFromHistory(5);
-    app.removeFromHistory(-1);
-    expect(app.history.length).toBe(1);
-  });
-
-  it("clearHistory empties history without touching playback", () => {
-    app.history.push(t(1), t(2));
-    app.playNow(t(99));
-    app.clearHistory();
-    expect(app.history.length).toBe(0);
-    expect(app.currentTrack?.id).toBe(99);
-  });
-
   it("requeueFromHistory appends the chosen entry to the playlist tail", () => {
-    app.history.push(t(1), t(2), t(3));
+    aired(t(1), t(2), t(3));
     app.requeueFromHistory(2);
     expect(app.playlist.map(pid)).toEqual([1]);
     expect(app.history.map((x) => x.id)).toEqual([1, 2, 3]);
   });
 
   it("requeueFromHistory is a no-op for invalid indices", () => {
-    app.history.push(t(1));
+    aired(t(1));
     app.requeueFromHistory(5);
     expect(app.playlist.length).toBe(0);
   });
@@ -1250,7 +1227,6 @@ describe("AppState session persistence", () => {
       state: {
         playlistIds: [2, 3],
         playlistItems: [],
-        historyIds: [1],
         currentTrackId: 2,
         currentTime: 12.5,
         autoPlaylistActive: true,
@@ -1269,6 +1245,7 @@ describe("AppState session persistence", () => {
     playlist.restore({
       playlist: [trackItem(t(2)), trackItem(t(3))],
       current: t(2),
+      history: [t(1)],
       autoPlaylistActive: true,
       autoAdvance: false,
     });
@@ -1302,7 +1279,6 @@ describe("AppState session persistence", () => {
       state: {
         playlistIds: [],
         playlistItems: [],
-        historyIds: [],
         currentTrackId: null,
         currentTime: 0,
         autoPlaylistActive: false,
@@ -1328,7 +1304,6 @@ describe("AppState session persistence", () => {
       state: {
         playlistIds: [],
         playlistItems: [],
-        historyIds: [],
         currentTrackId: null,
         currentTime: 0,
         autoPlaylistActive: false,
@@ -1365,12 +1340,11 @@ describe("AppState session persistence", () => {
     expect(app.playlist.map(pid)).toEqual([1]);
   });
 
-  it("loadSession drops history ids the library no longer has", async () => {
+  it("loadSession mirrors a playlist the backend already cleaned", async () => {
     api.loadSession.mockResolvedValueOnce({
       state: {
         playlistIds: [1, 99, 2],
         playlistItems: [],
-        historyIds: [42, 1],
         currentTrackId: 7,
         currentTime: 0,
         autoPlaylistActive: false,
@@ -1384,7 +1358,10 @@ describe("AppState session persistence", () => {
     ({ app, mock, playlist } = makeApp());
     // The backend dropped id 99 and the missing current track when it resolved
     // the same file, so the snapshot is already clean.
-    playlist.restore({ playlist: [trackItem(t(1)), trackItem(t(2))] });
+    playlist.restore({
+      playlist: [trackItem(t(1)), trackItem(t(2))],
+      history: [t(1)],
+    });
     await app.loadSession();
 
     expect(app.playlist.map(pid)).toEqual([1, 2]);
@@ -1642,7 +1619,6 @@ describe("AppState session persistence with cue volume", () => {
       state: {
         playlistIds: [],
         playlistItems: [],
-        historyIds: [],
         currentTrackId: null,
         currentTime: 0,
         autoPlaylistActive: false,
@@ -2023,7 +1999,6 @@ describe("AppState cue points", () => {
     expect(
       app.playlist.filter(isTrackItem).map((i) => i.track.cue_points),
     ).toEqual([clamped, undefined]);
-    expect(app.history[0].cue_points).toEqual(clamped);
     expect(app.cueTrack?.cue_points).toEqual(clamped);
   });
 

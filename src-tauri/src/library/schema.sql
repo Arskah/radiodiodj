@@ -1,3 +1,5 @@
+CREATE INDEX play_log_aired ON play_log(aired_at);
+
 CREATE INDEX tracks_fingerprint ON tracks(fingerprint) WHERE fingerprint IS NOT NULL;
 
 CREATE UNIQUE INDEX tracks_path_present ON tracks(path) WHERE missing_since IS NULL;
@@ -7,6 +9,15 @@ CREATE TABLE health_dismissals (
   key   TEXT NOT NULL,
   value TEXT NOT NULL,
   PRIMARY KEY (kind, key)
+);
+
+CREATE TABLE play_log (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  track_id INTEGER,
+  aired_at INTEGER NOT NULL,
+  artist   TEXT,
+  title    TEXT,
+  duration REAL
 );
 
 CREATE TABLE tracks (

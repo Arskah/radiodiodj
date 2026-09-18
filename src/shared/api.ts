@@ -28,7 +28,6 @@ export type PersistedPlaylistItem =
 export interface SessionPersistState {
   playlistIds: number[];
   playlistItems: PersistedPlaylistItem[];
-  historyIds: number[];
   currentTrackId: number | null;
   currentTime: number;
   /** The override the track on air is playing under, if any. */
@@ -54,8 +53,8 @@ export interface SessionLoadResult {
 export interface PlaylistSnapshot {
   playlist: PlaylistItem[];
   current: Track | null;
-  /** The track that just left the main deck. The renderer appends it to history. */
-  displaced: Track | null;
+  /** What has aired, oldest first, capped by the stored `historyCap`. */
+  history: Track[];
   autoPlaylistActive: boolean;
   autoAdvance: boolean;
   /** The override the track on air came on air under, if it came off an item that carried one. */
@@ -222,9 +221,9 @@ export const api = {
   playlistNext(): Promise<void> {
     return invoke<void>("playlist_next");
   },
-  /** Step back to a track taken off the renderer's own history. */
-  playlistPrev(id: number): Promise<void> {
-    return invoke<void>("playlist_prev", { id });
+  /** Step back to the last track that aired. */
+  playlistPrev(): Promise<void> {
+    return invoke<void>("playlist_prev");
   },
   playlistStop(): Promise<void> {
     return invoke<void>("playlist_stop");

@@ -28,8 +28,6 @@ pub struct SessionState {
     #[serde(default)]
     pub playlist_items: Vec<SessionPlaylistItem>,
     #[serde(default)]
-    pub history_ids: Vec<i64>,
-    #[serde(default)]
     pub current_track_id: Option<i64>,
     #[serde(default)]
     pub current_time: f64,
@@ -59,7 +57,6 @@ impl Default for SessionState {
         Self {
             playlist_ids: vec![],
             playlist_items: vec![],
-            history_ids: vec![],
             current_track_id: None,
             current_time: 0.0,
             current_cue_override: None,
@@ -289,7 +286,6 @@ mod tests {
         session
             .save(SessionState {
                 playlist_ids: vec![1, 2],
-                history_ids: vec![3],
                 current_track_id: Some(4),
                 current_time: 12.0,
                 volume: 0.4,
@@ -302,7 +298,6 @@ mod tests {
 
         let loaded = Session::open(dir.path()).load();
         assert!(loaded.playlist_ids.is_empty());
-        assert!(loaded.history_ids.is_empty());
         assert_eq!(loaded.current_track_id, None);
         assert_eq!(loaded.current_time, 0.0);
         assert_eq!(loaded.volume, 0.4);

@@ -42,6 +42,15 @@ The library lives in SQLite (`radiodiodj.db`, WAL mode) and is opened by
   touches only tag-derived columns, and it only overwrites the fingerprint with
   a non-null value. It also clears the recorded analysis failure, since it runs
   only for a file that changed.
+- **No foreign keys.** `PRAGMA foreign_keys` is off (SQLite's default, never
+  set here), so an `ON DELETE` clause would be decoration that silently never
+  fires. A table referencing `tracks(id)` declares the column plain and the
+  deleting code cleans up explicitly: `purge_tracks` nulls `play_log.track_id`
+  in the same transaction as the delete.
+- **A table that records what happened keeps its own snapshot** of the fields it
+  reports on. `play_log` stores the artist, title and duration as they read at
+  air time, so a purge or a later tag fix cannot rewrite the record. See
+  [rotation.md](./rotation.md).
 - **Index only what search needs.** `tracks_au` fires on
   `UPDATE OF title, artist, album, genre`, so writing a waveform or bumping a
   play count does not rewrite the FTS row.
