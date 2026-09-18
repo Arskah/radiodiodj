@@ -204,7 +204,15 @@ describe("library", () => {
 
     const menu = browser.$(sel.contextMenu);
     await menu.waitForDisplayed({ timeout: 5_000 });
-    // The first item takes focus, so Enter activates it without a pointer.
+    // The first item takes focus a frame after the menu is placed; waiting for
+    // it keeps a failure here about the binding rather than about timing.
+    await browser.waitUntil(
+      async () =>
+        browser.execute(
+          () => document.activeElement?.classList.contains("ctx-item") ?? false,
+        ),
+      { timeout: 5_000, timeoutMsg: "no context menu item took focus" },
+    );
     await browser.keys("Enter");
     await menu.waitForExist({ timeout: 5_000, reverse: true });
 

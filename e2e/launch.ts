@@ -58,14 +58,20 @@ export async function captureArtifacts(specName: string): Promise<void> {
   } catch {
     /* session may already be gone */
   }
-  // Snapshot the app data dir for forensics.
+  // Snapshot the app data dir for forensics. `logs/` holds RadiodioDJ.log,
+  // which carries the renderer console too (`attachConsole()` in main.ts).
+  await copyFiles(E2E_APP_DATA_DIR, resultsDir);
+  await copyFiles(path.join(E2E_APP_DATA_DIR, "logs"), resultsDir);
+}
+
+async function copyFiles(from: string, to: string): Promise<void> {
   try {
-    const entries = await fs.readdir(E2E_APP_DATA_DIR);
+    const entries = await fs.readdir(from);
     for (const entry of entries) {
-      const src = path.join(E2E_APP_DATA_DIR, entry);
+      const src = path.join(from, entry);
       const stat = await fs.stat(src);
       if (stat.isFile()) {
-        await fs.copyFile(src, path.join(resultsDir, entry));
+        await fs.copyFile(src, path.join(to, entry));
       }
     }
   } catch {

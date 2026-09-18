@@ -29,6 +29,7 @@
   // between mount and measurement rather than flashing at the cursor point.
   let pos = $state({ x: 0, y: 0 });
   let placed = $state(false);
+  let opened = $state(false);
 
   function itemButtons(): HTMLButtonElement[] {
     if (!el) return [];
@@ -46,7 +47,13 @@
     placed = true;
     // Focus waits for that flush: the menu is `visibility: hidden` until it is
     // placed, and a hidden element cannot take focus.
-    void tick().then(() => itemButtons()[0]?.focus());
+    void tick().then(() => {
+      itemButtons()[0]?.focus();
+      // Two frames, not a microtask: a scroll that `focus()` caused is
+      // dispatched at the next rendering opportunity, and arming the dismiss
+      // listeners before it lands would close the menu as it opens.
+      requestAnimationFrame(() => requestAnimationFrame(() => (opened = true)));
+    });
   });
 
   function move(delta: number): void {
@@ -89,6 +96,20 @@
         e.preventDefault();
         onclose(true);
         break;
+      case "Enter":
+      case " ": {
+        // Focus lands on the first item a microtask after the menu renders, so
+        // a keystroke that arrives in between would otherwise fall through to
+        // whatever opened the menu.
+        const buttons = itemButtons();
+        if (buttons.length === 0) break;
+        if (!buttons.includes(document.activeElement as HTMLButtonElement)) {
+          e.preventDefault();
+          e.stopPropagation();
+          buttons[0].click();
+        }
+        break;
+      }
     }
   }
 
@@ -96,18 +117,31 @@
     const onPointerDown = (e: PointerEvent): void => {
       if (el && !el.contains(e.target as Node)) onclose(false);
     };
-    // Anything that moves the content under the menu leaves it pointing at a
-    // row it no longer covers, so dismiss rather than try to follow.
-    const dismiss = (): void => onclose(false);
     document.addEventListener("pointerdown", onPointerDown, true);
     document.addEventListener("keydown", onKeyDown, true);
-    document.addEventListener("scroll", dismiss, true);
-    window.addEventListener("resize", dismiss);
-    window.addEventListener("blur", dismiss);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown, true);
       document.removeEventListener("keydown", onKeyDown, true);
-      document.removeEventListener("scroll", dismiss, true);
+    };
+  });
+
+  // Anything that moves the content under the menu leaves it pointing at a row
+  // it no longer covers, so dismiss rather than try to follow. These wait for
+  // the menu to finish opening: focusing the first item can itself scroll an
+  // ancestor, and a menu must not be dismissed by the act of opening it. A
+  // scroll inside the menu is its own, and never a dismissal.
+  $effect(() => {
+    if (!opened) return;
+    const dismiss = (): void => onclose(false);
+    const onScroll = (e: Event): void => {
+      if (el && el.contains(e.target as Node)) return;
+      dismiss();
+    };
+    document.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", dismiss);
+    window.addEventListener("blur", dismiss);
+    return () => {
+      document.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", dismiss);
       window.removeEventListener("blur", dismiss);
     };
