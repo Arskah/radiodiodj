@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.1](https://github.com/Arskah/radiodiodj/compare/v0.21.0...v0.21.1) (2026-09-19)
+
+
+### Bug Fixes
+
+* **ci:** send macOS notarization down the API key route ([#417](https://github.com/Arskah/radiodiodj/issues/417)) ([9d4c001](https://github.com/Arskah/radiodiodj/commit/9d4c001e40a69961e5d42bb16a0b1612c533d72d))
+
 ## [0.21.0](https://github.com/Arskah/radiodiodj/compare/v0.20.0...v0.21.0) (2026-09-19)
 
 
