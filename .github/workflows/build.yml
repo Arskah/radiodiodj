@@ -40,11 +40,8 @@ jobs:
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-      # Staged under _IN names and exported to the real APPLE_* variables only when
-      # non-empty. A missing secret still *defines* the variable as an empty string, and
-      # the bundler picks its notarization route by presence, not by value: an empty
-      # APPLE_ID + APPLE_PASSWORD next to a real APPLE_TEAM_ID sends it down the Apple ID
-      # route with blank credentials, which fails 401 without ever trying the API key.
+      # _IN names: an absent secret still defines an empty variable, and the bundler
+      # picks its notarization route by presence. See docs/signing.md.
       APPLE_CERTIFICATE_IN: ${{ secrets.APPLE_CERTIFICATE }}
       APPLE_CERTIFICATE_PASSWORD_IN: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
       APPLE_SIGNING_IDENTITY_IN: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -91,11 +88,8 @@ jobs:
           } >> "$GITHUB_ENV"
           [ -n "$GPG_KEY_ID" ] && echo "SIGN_KEY=$GPG_KEY_ID" >> "$GITHUB_ENV"
 
-      # macOS Developer ID signing and notarization. No-op unless the secrets are set, in
-      # which case an overlay replaces the ad-hoc identity from tauri.conf.json — a
-      # signingIdentity in the config file wins over APPLE_SIGNING_IDENTITY, so the env
-      # var alone would be ignored. The bundler imports APPLE_CERTIFICATE into a
-      # temporary keychain itself. See docs/signing.md.
+      # macOS Developer ID signing. The overlay is required because a signingIdentity in
+      # tauri.conf.json wins over APPLE_SIGNING_IDENTITY. See docs/signing.md.
       - name: Configure macOS signing and notarization
         id: macos-signing
         if: startsWith(inputs.platform, 'macos') && env.APPLE_SIGNING_IDENTITY_IN != ''
@@ -112,8 +106,7 @@ jobs:
             echo "APPLE_CERTIFICATE_PASSWORD=$APPLE_CERTIFICATE_PASSWORD_IN"
           } >> "$GITHUB_ENV"
 
-          # Exactly one notarization route, API key first. Exporting a variable from the
-          # other route — even empty — would change which one the bundler picks.
+          # Export exactly one route; the other must stay undefined.
           if [ -n "$APPLE_API_KEY_P8_IN" ]; then
             : "${APPLE_API_KEY_IN:?set APPLE_API_KEY alongside APPLE_API_KEY_P8}"
             : "${APPLE_API_ISSUER_IN:?set APPLE_API_ISSUER alongside APPLE_API_KEY_P8}"
@@ -144,9 +137,7 @@ jobs:
       - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         id: tauri
         with:
-          # Two config overlays, each appended only when its platform is being signed:
-          # the Authenticode signCommand when sign-windows is set, and the generated
-          # macOS identity from the step above. See docs/signing.md.
+          # Each signing overlay is appended only when its platform is being signed.
           args: ${{ format('{0} {1}', inputs.sign-windows && format('{0} --config src-tauri/signing.windows.conf.json', inputs.args) || inputs.args, steps.macos-signing.outputs.config-arg) }}
           tauriScript: pnpm tauri
 
