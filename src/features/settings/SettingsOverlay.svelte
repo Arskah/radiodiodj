@@ -396,6 +396,30 @@
                 </div>
               </div>
             {/if}
+
+            <div class="device-row">
+              <label for="setting-replay-gain">Track levelling</label>
+              <span class="select-wrap">
+                <select
+                  id="setting-replay-gain"
+                  value={tuning.player.replayGain}
+                  onchange={(e) => {
+                    tuning.player.replayGain = e.currentTarget
+                      .value as ReplayGainMode;
+                    saveTuning();
+                  }}
+                >
+                  <option value="track">Level every track</option>
+                  <option value="off">Play as mastered</option>
+                </select>
+              </span>
+              <div class="hint">
+                Brings every track to the same loudness, so a quiet song does
+                not disappear after a loud one and crossfades mix at the levels
+                you hear. Applies to both outputs. Measured during the waveform
+                pass — a track stays unlevelled until that reaches it.
+              </div>
+            </div>
           </div>
         {:else if app.settingsTab === "library"}
           <div class="settings-section">
@@ -1108,29 +1132,6 @@
               <div class="hint">
                 How long the outgoing track takes to fade under the incoming
                 one. Usually shorter than a fade to silence.
-              </div>
-            </div>
-
-            <h5 class="tuning-group-title">Levelling</h5>
-            <div class="device-row">
-              <label for="tune-replay-gain">Track levelling</label>
-              <select
-                id="tune-replay-gain"
-                value={tuning.player.replayGain}
-                onchange={(e) => {
-                  tuning.player.replayGain = e.currentTarget
-                    .value as ReplayGainMode;
-                  saveTuning();
-                }}
-              >
-                <option value="track">Level every track</option>
-                <option value="off">Play as mastered</option>
-              </select>
-              <div class="hint">
-                Brings every track to the same loudness, so a quiet song does
-                not disappear after a loud one and crossfades mix at the levels
-                you hear. Measured during the waveform pass — a track stays
-                unlevelled until that reaches it.
               </div>
             </div>
 
