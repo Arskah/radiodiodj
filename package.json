@@ -55,7 +55,7 @@
     "@sveltejs/vite-plugin-svelte": "7.3.0",
     "@tauri-apps/cli": "2.11.4",
     "@types/mocha": "10.0.10",
-    "@types/node": "25.9.6",
+    "@types/node": "25.9.7",
     "@vitest/coverage-v8": "5.0.1",
     "@wdio/cli": "9.31.9",
     "@wdio/globals": "9.31.3",
