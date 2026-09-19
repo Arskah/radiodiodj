@@ -323,7 +323,7 @@ impl Db {
 
         let fts_q = trimmed
             .split_whitespace()
-            .map(|t| format!("\"{}\"*", t))
+            .map(|t| format!("\"{}\"*", t.replace('"', "\"\"")))
             .collect::<Vec<_>>()
             .join(" ");
         let order_sql = order.unwrap_or_else(|| "rank".to_string());
@@ -2525,6 +2525,22 @@ mod tests {
         let r = db.search("hel", None, None, None).unwrap();
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].title, "Hello World");
+    }
+
+    #[test]
+    fn search_tolerates_double_quotes_in_query() {
+        let db = Db::open_in_memory().unwrap();
+        insert(&db, "/a.mp3", "12\" Disco Mix", "Band", "Album", "music");
+        insert(&db, "/b.mp3", "Other", "Band", "Album", "music");
+
+        let r = db.search("12\"", None, None, None).unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].title, "12\" Disco Mix");
+
+        for q in ["\"", "\"\"\"", "a\"b\"", "\" \""] {
+            db.search(q, None, None, None)
+                .unwrap_or_else(|e| panic!("search({q:?}) errored: {e}"));
+        }
     }
 
     #[test]
