@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.21.0](https://github.com/Arskah/radiodiodj/compare/v0.20.0...v0.21.0) (2026-09-19)
+
+
+### Features
+
+* **settings:** pick a theme from an Appearance tab ([#408](https://github.com/Arskah/radiodiodj/issues/408)) ([790389d](https://github.com/Arskah/radiodiodj/commit/790389d28c69fe3718b55a6c3330471575dc9f01))
+* **theming:** resolve and paint operator themes ([#407](https://github.com/Arskah/radiodiodj/issues/407)) ([7c5c290](https://github.com/Arskah/radiodiodj/commit/7c5c290cab245ce3b8af679f695a2b3fb55d6b3d))
+* **theming:** station name, toolbar logo and record label ([#409](https://github.com/Arskah/radiodiodj/issues/409)) ([d6d548a](https://github.com/Arskah/radiodiodj/commit/d6d548a77fecb7d4fcbaa033775f217a7fc5857b))
+
+
+### Miscellaneous Chores
+
+* add buy me a coffee ([4bd678c](https://github.com/Arskah/radiodiodj/commit/4bd678c491a23423e1c5e7b4fd4359847e77f18b))
+* add GNU GPL v3 license ([f8d02a1](https://github.com/Arskah/radiodiodj/commit/f8d02a1e74eeecffbd4cab28566ef4cdd7f3bcf8))
+
+
+### Documentation
+
+* **theming:** design record for theming support ([#403](https://github.com/Arskah/radiodiodj/issues/403)) ([e34b3c3](https://github.com/Arskah/radiodiodj/commit/e34b3c358c0c6caaf989379cf2c0454b695c38ef))
+* **theming:** design record for theming support ([#405](https://github.com/Arskah/radiodiodj/issues/405)) ([e34b3c3](https://github.com/Arskah/radiodiodj/commit/e34b3c358c0c6caaf989379cf2c0454b695c38ef))
+
+
+### Code Refactoring
+
+* **styles:** put every colour behind a theme token ([#406](https://github.com/Arskah/radiodiodj/issues/406)) ([408bf51](https://github.com/Arskah/radiodiodj/commit/408bf512b76f24f127030490594926bab6f9743d))
+
+
+### Continuous Integration
+
+* **macos:** wire Developer ID signing and notarization ([#416](https://github.com/Arskah/radiodiodj/issues/416)) ([a34458c](https://github.com/Arskah/radiodiodj/commit/a34458c74939bc3db0084db23bf664fabb08c487))
+
 ## [0.20.0](https://github.com/Arskah/radiodiodj/compare/v0.19.0...v0.20.0) (2026-09-18)
 
 
