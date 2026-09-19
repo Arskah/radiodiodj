@@ -82,7 +82,10 @@ jobs:
       - build-macos-x64
       - build-linux-x64
       - build-windows-x64
-    if: needs.release-please.outputs.release_created == 'true'
+    # Runs once the builds finish whatever their outcome, so a platform that fails to
+    # build does not hold back the bundles that did. The release itself is already
+    # public by then: release-please publishes the tag before any build starts.
+    if: ${{ !cancelled() && needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -117,3 +120,22 @@ jobs:
             exit 1
           fi
           gh release upload "$TAG" "${files[@]}" --clobber
+
+      - name: Fail on incomplete release
+        if: contains(needs.*.result, 'failure')
+        shell: bash
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          {
+            echo "### Incomplete release"
+            echo
+            echo "Uploaded what built. These platforms are missing from the release:"
+            echo
+            jq -r 'to_entries[]
+              | select(.key | startswith("build-"))
+              | select(.value.result != "success")
+              | "- \(.key): \(.value.result)"' <<<"$NEEDS"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::release is missing platform bundles"
+          exit 1
