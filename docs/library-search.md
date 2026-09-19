@@ -4,7 +4,8 @@ How the library panel's search box finds tracks, what it cannot find today, and
 the shape of the fuzzy matching that fixes it.
 
 The operator-facing description lives in [library.md](./library.md#the-library-panel);
-this document is the design behind it.
+this document is the design behind it. Tracked as
+[#426](https://github.com/Arskah/radiodiodj/issues/426).
 
 ## Today
 
