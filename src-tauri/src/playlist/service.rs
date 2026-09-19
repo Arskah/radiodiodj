@@ -170,6 +170,16 @@ impl PlaylistService {
             Inner::apply(&tail_ended, |p, _| p.on_tail_ended());
         });
 
+        // The airing is counted here, not when the load was issued: a read
+        // that fails over a dead share never put anything on air.
+        let loaded = Arc::clone(&self.inner);
+        app.listen("main-deck:loaded", move |event| {
+            let Ok(id) = serde_json::from_str::<i64>(event.payload()) else {
+                return;
+            };
+            Inner::apply(&loaded, move |p, _| p.on_loaded(id));
+        });
+
         let failed = Arc::clone(&self.inner);
         app.listen("main-deck:load-failed", move |_| {
             Inner::apply(&failed, |p, r| p.on_load_failed(r));

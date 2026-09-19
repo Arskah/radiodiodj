@@ -782,6 +782,10 @@ fn apply_load(
             }
             let _ = app.emit(&events.topics.time, air_start);
             set_pause_state(app, events, !msg.autoplay);
+            // The bytes reached the deck: the counterpart of `:load-failed`,
+            // and what tells the playlist a track actually went on rather than
+            // merely having been asked for.
+            let _ = app.emit(&events.topics.loaded, msg.id);
         }
         Err(e) => {
             log::error!("player: decode failed: {}", e);

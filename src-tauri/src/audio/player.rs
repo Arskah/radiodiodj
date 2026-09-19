@@ -153,6 +153,7 @@ pub(super) struct Topics {
     pub ended: String,
     pub error: String,
     pub buffering: String,
+    pub loaded: String,
     pub load_failed: String,
     pub output_unavailable: String,
 }
@@ -166,6 +167,7 @@ impl Topics {
             ended: format!("{prefix}:ended"),
             error: format!("{prefix}:error"),
             buffering: format!("{prefix}:buffering"),
+            loaded: format!("{prefix}:loaded"),
             load_failed: format!("{prefix}:load-failed"),
             output_unavailable: format!("{prefix}:output-unavailable"),
         }
@@ -514,6 +516,7 @@ mod tests {
         let t = Topics::new("main-deck");
         assert_eq!(t.time, "main-deck:time");
         assert_eq!(t.ended, "main-deck:ended");
+        assert_eq!(t.loaded, "main-deck:loaded");
         assert_eq!(t.load_failed, "main-deck:load-failed");
         assert_eq!(t.output_unavailable, "main-deck:output-unavailable");
     }
