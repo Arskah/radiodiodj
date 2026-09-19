@@ -133,6 +133,9 @@ _Commercials_ or _Jingles_.
 - **Search** matches title, artist, album and genre. Each word is a prefix, so
   `beat abb` finds _Abbey Road_ by _The Beatles_. The search runs a quarter of a
   second after typing stops, and shows at most 200 tracks, best match first.
+  It does not match inside a word or forgive a typo — see
+  [library-search.md](./library-search.md) for why, and the fuzzy matching
+  planned to fix it.
 - **Sort** by title, artist, album or plays by clicking a column header; click
   again to reverse. Text sorts ignore case. With no sort and no search, the list
   is ordered by artist, album and title.
@@ -252,6 +255,7 @@ pre-1.0 resets are in [database.md](./database.md).
 | health report                      | `library/health.rs`                                            |
 | library check                      | `library/check.rs`                                             |
 | queries and schema                 | `library/db.rs`, `library/schema.sql`                          |
+| search design                      | [library-search.md](./library-search.md)                       |
 | auto-playlist selection            | `playlist/generate.rs`                                         |
 | library panel                      | `src/features/library/LibraryPanel.svelte`                     |
 | hover card                         | `src/features/track/TrackTooltip.svelte`                       |
