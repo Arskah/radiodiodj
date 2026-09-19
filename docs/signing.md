@@ -2,85 +2,62 @@
 
 Status of code signing across the three release platforms.
 
-| Platform | State                                          | OS warning removed?                                                       |
-| -------- | ---------------------------------------------- | ------------------------------------------------------------------------- |
-| macOS    | Developer ID + notarization **wired, dormant** | Yes, once the secrets are set. Ad-hoc signing stays the fallback.         |
-| Linux    | GPG AppImage signing **wired, dormant**        | N/A — Linux has no Gatekeeper; signature is for manual verification only. |
-| Windows  | Authenticode **scaffolded, dormant**           | No — needs a real certificate before SmartScreen goes away.               |
+| Platform | State                                | OS warning removed?                                                       |
+| -------- | ------------------------------------ | ------------------------------------------------------------------------- |
+| macOS    | Developer ID + notarization **live** | Yes — releases are notarized and stapled since v0.21.1.                   |
+| Linux    | GPG AppImage signing **live**        | N/A — Linux has no Gatekeeper; signature is for manual verification only. |
+| Windows  | Authenticode **scaffolded, dormant** | No — needs a real certificate before SmartScreen goes away.               |
 
-Nothing is active by default: every platform stays inert until its secrets are added. No
-secret means the build behaves exactly as before — ad-hoc signed on macOS, unsigned
-elsewhere.
+macOS and Linux signing are configured and run on every release; their secrets are set in
+the repo and no workflow edit is needed. The setup steps below are kept as the reference
+for rotating or re-creating those credentials. Windows is the only platform still inert —
+it needs a certificate before anything signs.
+
+Every platform is gated on the presence of its secrets, so a fork or a repo without them
+builds exactly as before: ad-hoc signed on macOS, unsigned elsewhere.
 
 ---
 
-## macOS — Developer ID + notarization (wired, needs secrets)
+## macOS — Developer ID + notarization (live)
 
-Notarization is what actually removes the Gatekeeper warning. It needs a paid Apple
-Developer Program membership ($99/yr) and a **Developer ID Application** certificate;
-nothing free gets there.
+Notarized through the **App Store Connect API key** route: `APPLE_API_KEY`,
+`APPLE_API_ISSUER`, `APPLE_API_KEY_P8`. `APPLE_TEAM_ID` is set but unread — it only counts
+on the Apple ID route. Adds 2–10 min per architecture.
 
-`build.yml` signs and notarizes only when `APPLE_SIGNING_IDENTITY` is present. Without it
-the build falls back to the ad-hoc identity pinned in `src-tauri/tauri.conf.json`:
+Mechanics worth knowing before touching `build.yml`:
 
-```json
-"bundle": { "macOS": { "signingIdentity": "-" } }
-```
+- **Overlay, not env.** A `signingIdentity` in `tauri.conf.json` outranks
+  `APPLE_SIGNING_IDENTITY`, so the workflow generates `src-tauri/signing.macos.conf.json`
+  (gitignored) and passes it as `--config`.
+- **Ad-hoc fallback.** `"signingIdentity": "-"` stays in `tauri.conf.json` for local and
+  unconfigured builds: valid signature, required to launch on Apple Silicon, not
+  notarized. Past the resulting quarantine via Privacy & Security → **Open Anyway**, or
+  `xattr -dr com.apple.quarantine /Applications/RadiodioDJ.app`.
+- **One notarization route, never both.** The bundler picks by _presence_: `APPLE_ID` +
+  `APPLE_PASSWORD` + `APPLE_TEAM_ID` if all three are defined, otherwise the API key. An
+  absent GitHub secret still defines an empty variable, so credentials are staged as
+  `APPLE_*_IN` and only the live route is exported. Do not add plain `APPLE_*` entries
+  back to the job `env` block.
+- **No keychain step, no entitlements.** The bundler imports `APPLE_CERTIFICATE` into a
+  temporary keychain itself. Hardened runtime is Tauri's default, the app is unsandboxed,
+  and `cpal` is output-only.
 
-`"-"` is the ad-hoc identity. It gives the `.app` a valid signature — required for the
-binary to launch at all on Apple Silicon — but does **not** notarize it, so a downloaded
-`.dmg` stays quarantined and first launch shows "unidentified developer". Users get past
-it once via **System Settings → Privacy & Security → Open Anyway**, or with:
+### Rotate
 
-```sh
-xattr -dr com.apple.quarantine /Applications/RadiodioDJ.app
-```
+The certificate lasts five years; builds signed before expiry keep validating because the
+signature is timestamped. Create the key material yourself — it must never come from an
+agent or land in the repo.
 
-The ad-hoc value has to stay in the config file so local and unconfigured builds keep it.
-Because a `signingIdentity` in the config outranks the `APPLE_SIGNING_IDENTITY` env var,
-the workflow writes a generated `src-tauri/signing.macos.conf.json` overlay (gitignored)
-and passes it as `--config`. The bundler imports `APPLE_CERTIFICATE` into a temporary
-keychain on its own — no separate keychain action is needed.
-
-No entitlements file: hardened runtime is Tauri's default, the app is not sandboxed
-(Developer ID distribution never is), and `cpal` is output-only, so there is no
-microphone usage description to declare.
-
-Notarization credentials reach the bundler through one route or the other, never both.
-The bundler picks by _presence_: if `APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID` are
-all defined it uses them, otherwise it uses the API key. A GitHub expression for a secret
-that does not exist still defines the variable as an empty string, so the workflow stages
-every credential under an `APPLE_*_IN` name and exports only the route it actually has.
-Do not add plain `APPLE_*` entries back to the job `env` block.
-
-### Activate
-
-1. Create the certificate (do this yourself — the private key must never come from an
-   agent or land in the repo). Xcode → Settings → Accounts → **Manage Certificates** →
-   **+** → **Developer ID Application**. Then confirm it:
-
-   ```sh
-   security find-identity -v -p codesigning
-   ```
-
-   The full `Developer ID Application: Name (TEAMID)` string is the signing identity;
-   `TEAMID` is the team ID. "Apple Development" and "Mac App Distribution" certificates
-   do not work for direct `.dmg` distribution.
-
-2. Export it from Keychain Access (right-click the private key → Export → `.p12`, set a
-   password) and encode it:
-
-   ```sh
-   base64 -i certificate.p12 | pbcopy
-   ```
-
-   Delete the `.p12` afterwards.
-
-3. Create an App Store Connect API key for notarization: appstoreconnect.apple.com →
-   Users and Access → Integrations → Keys → **+**, role **Developer**. The `.p8`
-   downloads exactly once. Encode it the same way: `base64 -i AuthKey_XXXX.p8 | pbcopy`.
-
-4. Add repo secrets (Settings → Secrets and variables → Actions):
+1. Xcode → Settings → Accounts → **Manage Certificates** → **+** → **Developer ID
+   Application**. `security find-identity -v -p codesigning` prints the
+   `Developer ID Application: Name (TEAMID)` string — that is the signing identity.
+   "Apple Development" and "Mac App Distribution" certificates do not work for `.dmg`
+   distribution.
+2. Keychain Access → right-click the private key → Export as `.p12` with a password →
+   `base64 -i certificate.p12 | pbcopy`. Delete the `.p12`.
+3. appstoreconnect.apple.com → Users and Access → Integrations → Keys → **+**, role
+   **Developer**. The `.p8` downloads exactly once: `base64 -i AuthKey_XXXX.p8 | pbcopy`.
+4. Replace the secrets (Settings → Secrets and variables → Actions):
 
    | Secret                       | Value                                     |
    | ---------------------------- | ----------------------------------------- |
@@ -92,20 +69,14 @@ Do not add plain `APPLE_*` entries back to the job `env` block.
    | `APPLE_API_KEY_P8`           | base64 of the `.p8`                       |
 
    The workflow decodes `APPLE_API_KEY_P8` into `$RUNNER_TEMP` and points
-   `APPLE_API_KEY_PATH` at it.
-
-   Alternative to the API key: set `APPLE_ID` (account email), `APPLE_PASSWORD` (an
-   [app-specific password]) and `APPLE_TEAM_ID` instead of the three `APPLE_API_*`
-   secrets. Both routes are already read as env by `build.yml`; the API key is preferred
-   because it survives Apple ID password changes.
-
-Next release signs and notarizes both macOS bundles automatically. No workflow edit
-needed. Notarization adds roughly 2–10 minutes per architecture.
+   `APPLE_API_KEY_PATH` at it. The alternative is `APPLE_ID` + `APPLE_PASSWORD` (an
+   [app-specific password]) + `APPLE_TEAM_ID`; the API key survives Apple ID password
+   changes.
 
 ### Verify a release build
 
-Download the `.dmg` from the release on a machine that has never held the certificate —
-the quarantine attribute only exists on real downloads.
+Download the `.dmg` on a machine that has never held the certificate — the quarantine
+attribute only exists on real downloads.
 
 ```sh
 codesign -dv --verbose=4 RadiodioDJ.app     # Authority: Developer ID Application…, flags=runtime
@@ -114,46 +85,40 @@ spctl -a -vvv -t install RadiodioDJ.app     # source=Notarized Developer ID
 xcrun stapler validate RadiodioDJ.app
 ```
 
-A notarization failure reports a submission ID; read the reason with
+A notarization failure reports a submission ID:
 `xcrun notarytool log <id> --key <p8> --key-id <APPLE_API_KEY> --issuer <APPLE_API_ISSUER>`.
-The usual causes are an unsigned nested binary or a missing hardened runtime.
-
-The certificate expires in five years. Builds notarized before then keep validating,
-because the signature is timestamped.
+Usual causes: an unsigned nested binary, or a missing hardened runtime.
 
 [app-specific password]: https://support.apple.com/en-ca/HT204397
 
 ---
 
-## Linux — GPG AppImage signing (wired, needs secrets)
+## Linux — GPG AppImage signing (live)
 
-The build workflow imports a GPG key and enables signing only when `GPG_PRIVATE_KEY` is
-present. Signature covers the AppImage target; users verify it manually with the AppImage
-validate tool, so it only adds value if you publish the key ID on a trusted channel.
+`build.yml` imports `GPG_PRIVATE_KEY` and signs the AppImage target only; verification is
+manual, via the AppImage validate tool. `release.yml` writes the `GPG_PUBLIC_KEY` repo
+**variable** (not a secret) out as `radiodiodj-signing-key.asc` and uploads it with the
+bundles.
 
-### Activate
+### Rotate
 
-1. Generate a signing key (do this yourself — the private key must never come from an
-   agent or land in the repo):
+Generate the key yourself — the private key must never come from an agent or land in the
+repo.
 
-   ```sh
-   gpg --full-generate-key            # pick RSA 4096, set a passphrase
-   gpg --list-secret-keys --keyid-format=long   # note the long key ID
-   gpg --armor --export-secret-keys <KEY_ID> > private.asc
-   ```
+```sh
+gpg --full-generate-key                      # RSA 4096, set a passphrase
+gpg --list-secret-keys --keyid-format=long   # note the long key ID
+gpg --armor --export-secret-keys <KEY_ID> > private.asc
+```
 
-2. Add repo secrets (Settings → Secrets and variables → Actions):
+Replace the secrets, then delete `private.asc` and update the `GPG_PUBLIC_KEY` variable
+with `gpg --armor --export <KEY_ID>` so releases ship the matching public key.
 
-   | Secret            | Value                                                         |
-   | ----------------- | ------------------------------------------------------------- |
-   | `GPG_PRIVATE_KEY` | contents of `private.asc`                                     |
-   | `GPG_KEY_ID`      | the long key ID (optional; picks the key if you hold several) |
-   | `GPG_PASSPHRASE`  | the key passphrase (maps to `APPIMAGETOOL_SIGN_PASSPHRASE`)   |
-
-3. Delete `private.asc` locally and publish the **public** key + key ID somewhere
-   authenticated (README / site) so users can verify.
-
-Next release signs the AppImage automatically. No workflow edit needed.
+| Secret            | Value                                                         |
+| ----------------- | ------------------------------------------------------------- |
+| `GPG_PRIVATE_KEY` | contents of `private.asc`                                     |
+| `GPG_KEY_ID`      | the long key ID (optional; picks the key if you hold several) |
+| `GPG_PASSPHRASE`  | the key passphrase (maps to `APPIMAGETOOL_SIGN_PASSPHRASE`)   |
 
 ---
 
