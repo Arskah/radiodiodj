@@ -96,7 +96,7 @@ export const EMPTY_HEALTH: HealthReport = {
 
 export type PlaylistTab = "playlist" | "history";
 export type SettingsTab =
-  "audio" | "library" | "now-playing" | "appearance" | "advanced";
+  "audio" | "library" | "playlist" | "now-playing" | "appearance" | "advanced";
 
 /**
  * What the cue deck was showing when a surface borrowed it. `previewing` rather

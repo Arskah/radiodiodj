@@ -35,7 +35,7 @@ Tauri 2 app. Two process boundaries: a Rust backend and a Svelte 5 / Vite render
 - `main.ts` — app entry; mounts Svelte, hooks Tauri `onCloseRequested` to await `flushSave()` before `win.destroy()`
 - `App.svelte` — top-level UI tree
 - `shared/` — `types.ts`, `api.ts` (typed `invoke()` wrapper, folder picker via `@tauri-apps/plugin-dialog`), `state.svelte.ts` (Svelte 5 `$state` store; deck transport via `DeckTransport`, playlist state mirrored from backend snapshots), colocated `state.test.ts` + `mockBackend.ts` + `mockPlaylist.ts`
-- `features/<feature>/` — one folder per UI feature: `library/`, `playlist/`, `deck/` (NowPlaying.svelte + CueDeck.svelte + Waveform.svelte + backend.ts + nativeBackend.ts), `scan/`, `settings/` (SettingsOverlay.svelte — Audio, Library (paths, scan and library health), Now Playing, Appearance, Advanced tabs), `health/` (LibraryHealth.svelte), `admin/` (UnlockDialog.svelte + idleLock.ts), `toolbar/`, `track/` (TrackTooltip.svelte + MetadataOverlay.svelte + CuePointOverlay.svelte)
+- `features/<feature>/` — one folder per UI feature: `library/`, `playlist/`, `deck/` (NowPlaying.svelte + CueDeck.svelte + Waveform.svelte + backend.ts + nativeBackend.ts), `scan/`, `settings/` (SettingsOverlay.svelte — Audio, Library (paths, scan and library health), Playlist (interleave, rotation, auto-playlist), Now Playing, Appearance, Advanced tabs), `health/` (LibraryHealth.svelte), `admin/` (UnlockDialog.svelte + idleLock.ts), `toolbar/`, `track/` (TrackTooltip.svelte + MetadataOverlay.svelte + CuePointOverlay.svelte)
 
 ## Key Patterns
 
