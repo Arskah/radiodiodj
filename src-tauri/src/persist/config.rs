@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::audio::auto_cue::Thresholds;
+
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceRef {
@@ -45,7 +47,7 @@ impl Default for NowPlayingConfig {
 /// User-tunable playback behaviour. Each field carries `serde(default)` so a
 /// `config.json` missing the section (or any single field) still loads. Values
 /// are clamped to sane ranges by `normalize_tuning` whenever they are written.
-#[derive(Serialize, Deserialize, Default, Clone, PartialEq, Eq, Debug)]
+#[derive(Serialize, Deserialize, Default, Clone, PartialEq, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct TuningConfig {
     #[serde(default)]
@@ -60,6 +62,56 @@ pub struct TuningConfig {
     pub player: PlayerConfig,
     #[serde(default)]
     pub library: LibraryConfig,
+    #[serde(default)]
+    pub auto_cue: AutoCueConfig,
+}
+
+/// Levels the automatic cue analyser works to, in dBFS. Changing either affects
+/// later analyses only: nothing already stored is cleared, invalidated or
+/// re-decoded. See `docs/cue-auto-analysis.md`.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoCueConfig {
+    /// Below this there is no programme audio, so Cue In and Cue Out trim it.
+    #[serde(default = "default_silence_dbfs")]
+    pub silence_dbfs: f64,
+    /// Below this a music track is quiet enough for the next item to begin.
+    #[serde(default = "default_segue_dbfs")]
+    pub segue_dbfs: f64,
+}
+
+fn default_silence_dbfs() -> f64 {
+    -70.0
+}
+fn default_segue_dbfs() -> f64 {
+    -20.0
+}
+
+/// Range both thresholds are held to. The floor is below any mastering noise
+/// floor; the ceiling keeps a mis-typed value from trimming audible programme.
+pub const AUTO_CUE_DB_RANGE: std::ops::RangeInclusive<f64> = -100.0..=-3.0;
+
+/// How far the segue threshold is pushed above the silence threshold when a
+/// value would put it at or below one. The two answer different questions, and
+/// a segue threshold under the silence threshold can never fire.
+const AUTO_CUE_DB_GAP: f64 = 1.0;
+
+impl Default for AutoCueConfig {
+    fn default() -> Self {
+        Self {
+            silence_dbfs: default_silence_dbfs(),
+            segue_dbfs: default_segue_dbfs(),
+        }
+    }
+}
+
+impl AutoCueConfig {
+    pub fn thresholds(&self) -> Thresholds {
+        Thresholds {
+            silence_dbfs: self.silence_dbfs,
+            segue_dbfs: self.segue_dbfs,
+        }
+    }
 }
 
 /// Playlist interleave cadence — how often jingles/commercials are woven into a
@@ -633,7 +685,33 @@ fn normalize_tuning(mut t: TuningConfig) -> TuningConfig {
 
     t.library.tag_write_timeout_sec = t.library.tag_write_timeout_sec.clamp(5, 300);
 
+    let ac = &mut t.auto_cue;
+    let (lo, hi) = (*AUTO_CUE_DB_RANGE.start(), *AUTO_CUE_DB_RANGE.end());
+    ac.silence_dbfs = clamp_db(
+        ac.silence_dbfs,
+        default_silence_dbfs(),
+        lo,
+        hi - AUTO_CUE_DB_GAP,
+    );
+    ac.segue_dbfs = clamp_db(
+        ac.segue_dbfs,
+        default_segue_dbfs(),
+        ac.silence_dbfs + AUTO_CUE_DB_GAP,
+        hi,
+    );
+
     t
+}
+
+/// Clamp a dBFS setting, falling back to `fallback` for a value that is not a
+/// number at all — `clamp` panics on NaN, and `config.json` is a text file an
+/// operator may have edited by hand.
+fn clamp_db(v: f64, fallback: f64, lo: f64, hi: f64) -> f64 {
+    if v.is_nan() {
+        fallback
+    } else {
+        v.clamp(lo, hi)
+    }
 }
 
 fn canonicalize_lossy(p: &str) -> String {
@@ -742,6 +820,70 @@ mod tests {
         assert_eq!(np.webhook_url.as_deref(), Some("https://x"));
         assert!(np.file_enabled);
         assert!(np.webhook_enabled);
+    }
+
+    #[test]
+    fn auto_cue_thresholds_default_to_the_documented_levels() {
+        let dir = tempdir().unwrap();
+        let cfg = Config::open(dir.path()).unwrap();
+        let ac = cfg.get_tuning().auto_cue;
+        assert_eq!(ac.silence_dbfs, -70.0);
+        assert_eq!(ac.segue_dbfs, -20.0);
+    }
+
+    /// The two thresholds answer different questions, and a segue threshold at
+    /// or below the silence threshold could never fire.
+    #[test]
+    fn a_segue_threshold_under_the_silence_threshold_is_lifted_above_it() {
+        let dir = tempdir().unwrap();
+        let cfg = Config::open(dir.path()).unwrap();
+        let stored = cfg
+            .set_tuning(TuningConfig {
+                auto_cue: AutoCueConfig {
+                    silence_dbfs: -40.0,
+                    segue_dbfs: -55.0,
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(stored.auto_cue.silence_dbfs, -40.0);
+        assert_eq!(stored.auto_cue.segue_dbfs, -39.0);
+    }
+
+    #[test]
+    fn auto_cue_thresholds_are_held_to_their_range() {
+        let dir = tempdir().unwrap();
+        let cfg = Config::open(dir.path()).unwrap();
+        let stored = cfg
+            .set_tuning(TuningConfig {
+                auto_cue: AutoCueConfig {
+                    silence_dbfs: -400.0,
+                    segue_dbfs: 12.0,
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(stored.auto_cue.silence_dbfs, *AUTO_CUE_DB_RANGE.start());
+        assert_eq!(stored.auto_cue.segue_dbfs, *AUTO_CUE_DB_RANGE.end());
+    }
+
+    /// `config.json` is a text file an operator may edit by hand, and `clamp`
+    /// panics on NaN.
+    #[test]
+    fn a_non_numeric_threshold_falls_back_to_the_default() {
+        let dir = tempdir().unwrap();
+        let cfg = Config::open(dir.path()).unwrap();
+        let stored = cfg
+            .set_tuning(TuningConfig {
+                auto_cue: AutoCueConfig {
+                    silence_dbfs: f64::NAN,
+                    segue_dbfs: f64::NAN,
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(stored.auto_cue.silence_dbfs, -70.0);
+        assert_eq!(stored.auto_cue.segue_dbfs, -20.0);
     }
 
     #[test]

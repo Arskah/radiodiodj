@@ -1110,8 +1110,8 @@
           <div class="settings-section settings-section--tuning">
             <h4>Advanced Tuning</h4>
             <p class="settings-section-desc">
-              Fine-tune library checks, fades, buffering and network resilience.
-              Out-of-range values are clamped on save.
+              Fine-tune library checks, cue analysis, fades, buffering and
+              network resilience. Out-of-range values are clamped on save.
             </p>
 
             <h5 class="tuning-group-title">Library</h5>
@@ -1151,6 +1151,46 @@
               <div class="hint">
                 How long writing an edit into a file may take before it is
                 reported as failed.
+              </div>
+            </div>
+
+            <h5 class="tuning-group-title">Automatic cue analysis</h5>
+            <div class="device-row">
+              <label for="tune-silence-db">Silence threshold (dBFS)</label>
+              <input
+                id="tune-silence-db"
+                type="number"
+                min="-100"
+                max="-4"
+                step="1"
+                value={tuning.autoCue.silenceDbfs}
+                oninput={(e) =>
+                  numInput(e, (v) => (tuning.autoCue.silenceDbfs = v))}
+                onchange={saveTuning}
+              />
+              <div class="hint">
+                Below this there is no programme audio, so Cue in and Cue out
+                trim it off each end of a track. Changing it affects later
+                analyses only — nothing already analysed is recalculated.
+              </div>
+            </div>
+            <div class="device-row">
+              <label for="tune-segue-db">Segue threshold (dBFS)</label>
+              <input
+                id="tune-segue-db"
+                type="number"
+                min="-99"
+                max="-3"
+                step="1"
+                value={tuning.autoCue.segueDbfs}
+                oninput={(e) =>
+                  numInput(e, (v) => (tuning.autoCue.segueDbfs = v))}
+                onchange={saveTuning}
+              />
+              <div class="hint">
+                How quiet a music track has to get before the next item may
+                start. Always kept above the silence threshold. Music only —
+                commercials and jingles get no automatic Next start.
               </div>
             </div>
 

@@ -5,9 +5,12 @@
 //! track's amplitude curve requires a full audio decode, which is far heavier —
 //! so it runs here, on its own worker thread, after the scan. The same pass
 //! backfills [fingerprints](super::fingerprint): from the bytes already read
-//! when a waveform is due, from the head of the file otherwise. Waveforms land in
-//! the DB one at a time and a `waveform-ready` event is emitted per track so the
-//! renderer can refresh a curve for the deck that is currently showing it.
+//! when a waveform is due, from the head of the file otherwise. The same decode
+//! also yields the [automatic cue points](crate::audio::auto_cue), so an
+//! unprepped track airs trimmed without a second pass over the file. Waveforms
+//! land in the DB one at a time and a `waveform-ready` event is emitted per
+//! track so the renderer can refresh a curve for the deck that is currently
+//! showing it.
 //!
 //! Progress is surfaced separately from the metadata scan via
 //! `waveform-progress` / `waveform-state-changed` so the UI can show a second
@@ -35,7 +38,8 @@ use tauri::{AppHandle, Emitter};
 use super::db::{AnalysisJob, Db};
 use super::fingerprint;
 use super::scanner::now_ms;
-use crate::audio::{loudness, waveform};
+use crate::audio::{auto_cue, loudness, waveform};
+use crate::persist::config::Config;
 
 type Bytes = Arc<[u8]>;
 
@@ -94,14 +98,14 @@ impl WaveformJob {
     /// Kick the worker. No-op if one is already running (single-flight): the
     /// running worker re-drains the work list on each pass, so it will observe
     /// any tracks a concurrent scan just added.
-    pub fn start(self: Arc<Self>, app: AppHandle, db: Arc<Db>) {
+    pub fn start(self: Arc<Self>, app: AppHandle, db: Arc<Db>, config: Arc<Config>) {
         // Claim the single-flight slot; bail if a worker already holds it.
         if self.running.swap(true, Ordering::SeqCst) {
             return;
         }
         self.cancel.store(false, Ordering::SeqCst);
         std::thread::spawn(move || {
-            run(&self, &app, &db);
+            run(&self, &app, &db, &config);
             self.running.store(false, Ordering::SeqCst);
         });
     }
@@ -112,7 +116,7 @@ impl WaveformJob {
     }
 }
 
-fn run(job: &WaveformJob, app: &AppHandle, db: &Db) {
+fn run(job: &WaveformJob, app: &AppHandle, db: &Db, config: &Config) {
     // Ids that could not be read or stored this run — skipped on subsequent
     // passes so the drain loop cannot spin on them. Shared across the decode
     // threads.
@@ -184,7 +188,7 @@ fn run(job: &WaveformJob, app: &AppHandle, db: &Db) {
                     let Some(track) = pending.get(i) else {
                         break;
                     };
-                    match analyse(track, db, app) {
+                    match analyse(track, db, app, config) {
                         Outcome::Done => {}
                         Outcome::Retry => {
                             failed.lock().insert(track.id);
@@ -234,11 +238,11 @@ enum Outcome {
 }
 
 /// Fill whatever `job` is missing and store it.
-fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle) -> Outcome {
+fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle, config: &Config) -> Outcome {
     let path = Path::new(&job.path);
     let mut retry = false;
     let mut errors: Vec<String> = Vec::new();
-    let fingerprint = if job.needs_waveform || job.needs_loudness {
+    let fingerprint = if job.needs_waveform || job.needs_loudness || job.needs_auto_cue {
         let start = Instant::now();
         let bytes: Bytes = match std::fs::read(path) {
             Ok(v) => Arc::from(v.into_boxed_slice()),
@@ -281,6 +285,9 @@ fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle) -> Outcome {
                         );
                     }
                 }
+                if job.needs_auto_cue {
+                    store_auto_cue(job, db, config, &analysis.windows, &mut retry);
+                }
             }
             Err(e) => {
                 log::warn!("waveform: decode {} failed: {:#}", job.path, e);
@@ -317,5 +324,31 @@ fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle) -> Outcome {
         Outcome::Done
     } else {
         Outcome::Unreadable(errors.join("; "))
+    }
+}
+
+/// Derive and commit this track's automatic cue points. The commit is refused
+/// outright if the operator took ownership while the decode ran, which is the
+/// whole race the ownership state exists for — a discarded result is not a
+/// failure and leaves nothing to retry.
+fn store_auto_cue(
+    job: &AnalysisJob,
+    db: &Db,
+    config: &Config,
+    windows: &auto_cue::RmsWindows,
+    retry: &mut bool,
+) {
+    // Read per track rather than once per run: a threshold changed mid-backfill
+    // then applies from the next file, matching "future analyses only".
+    let thresholds = config.get_tuning().auto_cue.thresholds();
+    let music = job.content_type == "music";
+    let cue = auto_cue::detect(windows, music, thresholds);
+    match db.set_auto_cue(job.id, cue, thresholds, music, now_ms()) {
+        Ok(true) => log::debug!("auto cue: {} {:?}", job.path, cue),
+        Ok(false) => log::debug!("auto cue: {} kept the operator's edit", job.path),
+        Err(e) => {
+            log::error!("auto cue: store {} failed: {}", job.id, e);
+            *retry = true;
+        }
     }
 }

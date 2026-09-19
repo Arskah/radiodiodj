@@ -79,6 +79,7 @@ const DEFAULT_TUNING: TuningConfig = {
     replayGain: "track",
   },
   library: { checkIntervalMin: 15, writeTags: false, tagWriteTimeoutSec: 30 },
+  autoCue: { silenceDbfs: -70, segueDbfs: -20 },
 };
 
 export const EMPTY_HEALTH: HealthReport = {

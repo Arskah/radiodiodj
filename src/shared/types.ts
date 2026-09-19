@@ -284,6 +284,15 @@ export interface LibraryConfig {
   tagWriteTimeoutSec: number;
 }
 
+/// Levels the automatic cue analyser works to, in dBFS. Changing either
+/// affects later analyses only. See `docs/cue-auto-analysis.md`.
+export interface AutoCueConfig {
+  /** Below this there is no programme audio, so Cue In and Cue Out trim it. */
+  silenceDbfs: number;
+  /** Below this a music track is quiet enough for the next item to begin. */
+  segueDbfs: number;
+}
+
 /// User-tunable playback behaviour, persisted in `config.json`.
 export interface TuningConfig {
   interleave: InterleaveConfig;
@@ -292,6 +301,7 @@ export interface TuningConfig {
   cache: CacheConfig;
   player: PlayerConfig;
   library: LibraryConfig;
+  autoCue: AutoCueConfig;
 }
 
 export interface DeviceInfo {

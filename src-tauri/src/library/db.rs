@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::audio::auto_cue::{AutoCue, Thresholds};
 use crate::audio::cue_points::CuePoints;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -262,9 +263,12 @@ pub struct TrackInsert {
 pub struct AnalysisJob {
     pub id: i64,
     pub path: String,
+    /// Decides whether an automatic Next Start is derived at all.
+    pub content_type: String,
     pub needs_waveform: bool,
     pub needs_fingerprint: bool,
     pub needs_loudness: bool,
+    pub needs_auto_cue: bool,
 }
 
 /// One row as the scanner sees it.
@@ -603,19 +607,40 @@ impl Db {
     /// The authoritative clamp runs again at load time, against the decoded
     /// duration — the tag duration this clamps against is nullable and wrong on
     /// VBR MP3.
+    ///
+    /// A write that moves any of Cue In, Cue Out or Next Start — clearing one
+    /// to `NULL` included — takes the trio away from automatic analysis for
+    /// good. Editing only a fade does not: fades are never inferred, so
+    /// touching one says nothing about the markers that are.
     pub fn set_cue_points(&self, id: i64, points: CuePoints) -> Result<CuePoints> {
         let conn = self.conn.lock();
-        let duration: Option<f64> = conn
-            .query_row("SELECT duration FROM tracks WHERE id = ?", [id], |r| {
-                r.get(0)
-            })
-            .optional()?
-            .flatten();
+        let current: Option<(Option<f64>, CuePoints)> = conn
+            .query_row(
+                "SELECT duration, cue_in_ms, fade_in_ms, fade_out_ms, cue_out_ms, \
+                        next_start_ms \
+                 FROM tracks WHERE id = ?",
+                [id],
+                |r| Ok((r.get(0)?, row_to_cue_points(r)?)),
+            )
+            .optional()?;
+        let Some((duration, stored)) = current else {
+            anyhow::bail!("track {} is no longer in the library", id);
+        };
         let clamped = points.clamp(duration);
+        let owns = clamped.cue_in_ms != stored.cue_in_ms
+            || clamped.cue_out_ms != stored.cue_out_ms
+            || clamped.next_start_ms != stored.next_start_ms;
+        let state = if owns {
+            ", auto_cue_state = 'manual'"
+        } else {
+            ""
+        };
         let changed = conn.execute(
-            "UPDATE tracks SET cue_in_ms = ?, fade_in_ms = ?, fade_out_ms = ?, \
-                    cue_out_ms = ?, next_start_ms = ? \
-             WHERE id = ?",
+            &format!(
+                "UPDATE tracks SET cue_in_ms = ?, fade_in_ms = ?, fade_out_ms = ?, \
+                        cue_out_ms = ?, next_start_ms = ?{state} \
+                 WHERE id = ?"
+            ),
             params![
                 clamped.cue_in_ms,
                 clamped.fade_in_ms,
@@ -631,28 +656,69 @@ impl Db {
         Ok(clamped)
     }
 
-    /// Every present track still missing a waveform, a fingerprint or a
-    /// loudness measurement, ordered by id. Drives the background analysis
-    /// worker (backfill included). A track whose analysis failed is left out
-    /// until its file changes.
+    /// Commit one automatic analysis: the trio, the ownership state and the
+    /// provenance in a single statement, and only while the track is still
+    /// automatic. An operator save that landed while the decode ran therefore
+    /// wins and the result is discarded — reported as `false`.
+    ///
+    /// Unlike [`Db::set_cue_points`] this does not clamp against the stored
+    /// duration: the positions come from the decode itself, whereas the stored
+    /// duration is the tag's and is wrong on VBR MP3. The load-time clamp
+    /// remains authoritative either way.
+    pub fn set_auto_cue(
+        &self,
+        id: i64,
+        cue: AutoCue,
+        thresholds: Thresholds,
+        music: bool,
+        at_ms: i64,
+    ) -> Result<bool> {
+        let conn = self.conn.lock();
+        let changed = conn.execute(
+            "UPDATE tracks SET cue_in_ms = ?1, cue_out_ms = ?2, next_start_ms = ?3, \
+                    auto_cue_state = 'auto', auto_cue_version = ?4, \
+                    auto_cue_silence_db = ?5, auto_cue_segue_db = ?6, auto_cue_at = ?7 \
+             WHERE id = ?8 AND auto_cue_state <> 'manual'",
+            params![
+                cue.cue_in_ms,
+                cue.cue_out_ms,
+                cue.next_start_ms,
+                crate::audio::auto_cue::ALGORITHM_VERSION,
+                thresholds.silence_dbfs,
+                // A commercial or jingle got no automatic Next Start, so no
+                // segue threshold was used on it.
+                music.then_some(thresholds.segue_dbfs),
+                at_ms,
+                id
+            ],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Every present track still missing a waveform, a fingerprint, a loudness
+    /// measurement or an automatic cue, ordered by id. Drives the background
+    /// analysis worker (backfill included). A track whose analysis failed is
+    /// left out until its file changes.
     pub fn tracks_needing_analysis(&self) -> Result<Vec<AnalysisJob>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, path, waveform IS NULL, fingerprint IS NULL, \
-                    rg_measured_at IS NULL \
+            "SELECT id, path, content_type, waveform IS NULL, fingerprint IS NULL, \
+                    rg_measured_at IS NULL, auto_cue_state = 'pending' \
              FROM tracks \
              WHERE missing_since IS NULL AND analysis_failed_at IS NULL \
                AND (waveform IS NULL OR fingerprint IS NULL \
-                    OR rg_measured_at IS NULL) \
+                    OR rg_measured_at IS NULL OR auto_cue_state = 'pending') \
              ORDER BY id",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(AnalysisJob {
                 id: r.get(0)?,
                 path: r.get(1)?,
-                needs_waveform: r.get(2)?,
-                needs_fingerprint: r.get(3)?,
-                needs_loudness: r.get(4)?,
+                content_type: r.get(2)?,
+                needs_waveform: r.get(3)?,
+                needs_fingerprint: r.get(4)?,
+                needs_loudness: r.get(5)?,
+                needs_auto_cue: r.get(6)?,
             })
         })?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
@@ -818,7 +884,12 @@ impl Db {
                         next_start_ms = s.next_start_ms, \
                         edited_fields = s.edited_fields, \
                         rg_gain = s.rg_gain, rg_peak = s.rg_peak, \
-                        rg_measured_at = s.rg_measured_at \
+                        rg_measured_at = s.rg_measured_at, \
+                        auto_cue_state = s.auto_cue_state, \
+                        auto_cue_version = s.auto_cue_version, \
+                        auto_cue_silence_db = s.auto_cue_silence_db, \
+                        auto_cue_segue_db = s.auto_cue_segue_db, \
+                        auto_cue_at = s.auto_cue_at \
                  FROM (SELECT * FROM tracks WHERE id = ?1) AS s \
                  WHERE tracks.id = ?2",
             )?;
@@ -1109,13 +1180,32 @@ impl Db {
                 edited |= EditedFields::YEAR;
             }
         }
+        // A reclassification changes what automatic analysis would infer — a
+        // music Next Start has no business surviving a move to jingle — so an
+        // automatically owned track goes back in the queue. Its current markers
+        // stay until the fresh result lands, and a manually owned one is left
+        // alone entirely.
+        let mut reclassified = false;
         if let Some(v) = &updates.content_type {
+            let was: String = tx.query_row(
+                "SELECT content_type FROM tracks WHERE id = ?",
+                [updates.id],
+                |r| r.get(0),
+            )?;
+            reclassified = *v != was;
             setters.push("content_type=?");
             params.push(Value::Text(v.clone()));
         }
 
         if setters.is_empty() {
             return Ok(current);
+        }
+        if reclassified {
+            tx.execute(
+                "UPDATE tracks SET auto_cue_state = 'pending' \
+                 WHERE id = ? AND auto_cue_state = 'auto'",
+                [updates.id],
+            )?;
         }
 
         setters.push("edited_fields = edited_fields | ?");
@@ -1455,6 +1545,7 @@ const MIGRATION_STEPS: &[M] = &[
     M::up(ANALYSIS_FAILURES),
     M::up(PLAY_LOG),
     M::up(LOUDNESS),
+    M::up(AUTO_CUE),
 ];
 const MIGRATIONS: Migrations = Migrations::from_slice(MIGRATION_STEPS);
 
@@ -1590,6 +1681,32 @@ ALTER TABLE tracks ADD COLUMN rg_peak REAL;
 ALTER TABLE tracks ADD COLUMN rg_measured_at INTEGER;
 "#;
 
+/// Step 7: who owns Cue In / Cue Out / Next Start, and how an automatic
+/// result was produced.
+///
+/// `auto_cue_state` is the whole ownership model: `pending` has never been
+/// analysed, `auto` was written by the analysis pass and may be replaced by it,
+/// `manual` was authored by the operator and is never touched again. Existing
+/// rows that already carry one of the three markers start `manual` — they can
+/// only have got them from the operator, and analysis must not overwrite that
+/// work. A row with only fades set stays `pending`, since a fade edit does not
+/// take ownership of the trio.
+///
+/// The provenance columns exist for inspection and for a future *explicit*
+/// recalculation. Reading them never schedules work: changing a threshold
+/// affects later analyses and nothing already stored.
+const AUTO_CUE: &str = r#"
+ALTER TABLE tracks ADD COLUMN auto_cue_state TEXT NOT NULL DEFAULT 'pending'
+  CHECK (auto_cue_state IN ('pending', 'auto', 'manual'));
+ALTER TABLE tracks ADD COLUMN auto_cue_version INTEGER;
+ALTER TABLE tracks ADD COLUMN auto_cue_silence_db REAL;
+ALTER TABLE tracks ADD COLUMN auto_cue_segue_db REAL;
+ALTER TABLE tracks ADD COLUMN auto_cue_at INTEGER;
+
+UPDATE tracks SET auto_cue_state = 'manual'
+ WHERE cue_in_ms IS NOT NULL OR cue_out_ms IS NOT NULL OR next_start_ms IS NOT NULL;
+"#;
+
 /// Upsert one present track's metadata by path. The operator-work columns are
 /// deliberately absent: the waveform is filled asynchronously by the waveform
 /// worker (`set_waveform`), and cue points and play counts are operator work a
@@ -1611,6 +1728,8 @@ const UPSERT_TRACK_SQL: &str = "INSERT INTO tracks \
         bpm=excluded.bpm, sample_rate=excluded.sample_rate, \
         bitrate=excluded.bitrate, format=excluded.format, mtime=excluded.mtime, \
         fingerprint=COALESCE(excluded.fingerprint, fingerprint), \
+        auto_cue_state=CASE auto_cue_state WHEN 'auto' THEN 'pending' \
+                       ELSE auto_cue_state END, \
         analysis_error=NULL, analysis_failed_at=NULL";
 
 /// A database this build must not touch.
@@ -1721,6 +1840,12 @@ fn backup(conn: &Connection, path: &Path, version: usize) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::auto_cue;
+
+    const THRESHOLDS: Thresholds = Thresholds {
+        silence_dbfs: -70.0,
+        segue_dbfs: -20.0,
+    };
     use rusqlite::params;
 
     fn insert(db: &Db, path: &str, title: &str, artist: &str, album: &str, content_type: &str) {
@@ -1850,6 +1975,19 @@ mod tests {
                 "UPDATE tracks SET edited_fields = 1, \
                         analysis_error = 'bad', analysis_failed_at = 5, \
                         rg_gain = -6.5, rg_peak = 0.98, rg_measured_at = 7; \
+                 INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
+                 SELECT id, 1000, artist, title, duration FROM tracks",
+            )
+            .unwrap();
+        },
+        |conn| {
+            seed_track(conn);
+            seed_dismissal(conn);
+            conn.execute_batch(
+                "UPDATE tracks SET edited_fields = 1, \
+                        analysis_error = 'bad', analysis_failed_at = 5, \
+                        rg_gain = -6.5, rg_peak = 0.98, rg_measured_at = 7, \
+                        auto_cue_state = 'manual'; \
                  INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
                  SELECT id, 1000, artist, title, duration FROM tracks",
             )
@@ -2338,6 +2476,215 @@ mod tests {
         assert_eq!(db.get_track(id).unwrap().unwrap().cue_points, stored);
     }
 
+    /// Reads the ownership state and provenance the public API deliberately
+    /// does not expose — nothing outside the analysis pass acts on them.
+    fn auto_cue_row(db: &Db, id: i64) -> (String, Option<i64>, Option<f64>, Option<f64>) {
+        let conn = db.conn.lock();
+        conn.query_row(
+            "SELECT auto_cue_state, auto_cue_version, auto_cue_silence_db, \
+                    auto_cue_segue_db FROM tracks WHERE id = ?",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap()
+    }
+
+    fn music_track(db: &Db, path: &str) -> i64 {
+        db.insert_track(&TrackInsert {
+            path: path.into(),
+            content_type: "music".into(),
+            duration: Some(200.0),
+            ..Default::default()
+        })
+        .unwrap();
+        only_id(db)
+    }
+
+    const AUTO: AutoCue = AutoCue {
+        cue_in_ms: Some(100),
+        cue_out_ms: Some(190_000),
+        next_start_ms: Some(189_000),
+    };
+
+    #[test]
+    fn an_automatic_result_lands_with_its_provenance() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/a.mp3");
+        assert!(db.set_auto_cue(id, AUTO, THRESHOLDS, true, 7).unwrap());
+
+        let points = db.get_track(id).unwrap().unwrap().cue_points;
+        assert_eq!(points.cue_in_ms, AUTO.cue_in_ms);
+        assert_eq!(points.cue_out_ms, AUTO.cue_out_ms);
+        assert_eq!(points.next_start_ms, AUTO.next_start_ms);
+        assert_eq!(
+            auto_cue_row(&db, id),
+            (
+                "auto".into(),
+                Some(auto_cue::ALGORITHM_VERSION),
+                Some(THRESHOLDS.silence_dbfs),
+                Some(THRESHOLDS.segue_dbfs)
+            )
+        );
+    }
+
+    /// No automatic Next Start was derived, so no segue threshold was used.
+    #[test]
+    fn a_commercial_records_no_segue_threshold() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/ad.mp3");
+        db.set_auto_cue(id, AUTO, THRESHOLDS, false, 7).unwrap();
+        assert_eq!(auto_cue_row(&db, id).3, None);
+    }
+
+    #[test]
+    fn an_operator_edit_takes_the_trio_off_automatic() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/a.mp3");
+        db.set_auto_cue(id, AUTO, THRESHOLDS, true, 7).unwrap();
+
+        db.set_cue_points(
+            id,
+            CuePoints {
+                cue_in_ms: Some(2_000),
+                cue_out_ms: AUTO.cue_out_ms,
+                next_start_ms: AUTO.next_start_ms,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(auto_cue_row(&db, id).0, "manual");
+    }
+
+    /// `NULL` may be a deliberate operator decision, so clearing a marker takes
+    /// ownership exactly as moving one does.
+    #[test]
+    fn clearing_a_marker_takes_the_trio_off_automatic() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/a.mp3");
+        db.set_auto_cue(id, AUTO, THRESHOLDS, true, 7).unwrap();
+
+        db.set_cue_points(
+            id,
+            CuePoints {
+                cue_in_ms: AUTO.cue_in_ms,
+                cue_out_ms: AUTO.cue_out_ms,
+                next_start_ms: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(auto_cue_row(&db, id).0, "manual");
+    }
+
+    #[test]
+    fn a_fade_edit_leaves_the_trio_automatic() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/a.mp3");
+        db.set_auto_cue(id, AUTO, THRESHOLDS, true, 7).unwrap();
+
+        db.set_cue_points(
+            id,
+            CuePoints {
+                cue_in_ms: AUTO.cue_in_ms,
+                fade_out_ms: Some(180_000),
+                cue_out_ms: AUTO.cue_out_ms,
+                next_start_ms: AUTO.next_start_ms,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(auto_cue_row(&db, id).0, "auto");
+        assert_eq!(
+            db.get_track(id).unwrap().unwrap().cue_points.fade_out_ms,
+            Some(180_000)
+        );
+    }
+
+    /// The race the ownership state exists for: the operator saves while the
+    /// decode runs, and the completed analysis is thrown away.
+    #[test]
+    fn an_analysis_that_finishes_after_an_operator_save_is_discarded() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/a.mp3");
+        let manual = CuePoints {
+            cue_in_ms: Some(5_000),
+            ..Default::default()
+        };
+        db.set_cue_points(id, manual).unwrap();
+
+        assert!(!db.set_auto_cue(id, AUTO, THRESHOLDS, true, 7).unwrap());
+        assert_eq!(db.get_track(id).unwrap().unwrap().cue_points, manual);
+        assert_eq!(auto_cue_row(&db, id).0, "manual");
+    }
+
+    #[test]
+    fn a_reclassification_requeues_an_automatic_track() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/a.mp3");
+        db.set_auto_cue(id, AUTO, THRESHOLDS, true, 7).unwrap();
+
+        db.update_track_metadata(&TrackMetadataUpdate {
+            id,
+            content_type: Some("jingle".into()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(auto_cue_row(&db, id).0, "pending");
+        let points = db.get_track(id).unwrap().unwrap().cue_points;
+        assert_eq!(
+            points.next_start_ms, AUTO.next_start_ms,
+            "the old values stand until the fresh result lands"
+        );
+        assert!(db.tracks_needing_analysis().unwrap()[0].needs_auto_cue);
+    }
+
+    #[test]
+    fn a_reclassification_leaves_a_manual_track_alone() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/a.mp3");
+        db.set_cue_points(
+            id,
+            CuePoints {
+                next_start_ms: Some(1_000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        db.update_track_metadata(&TrackMetadataUpdate {
+            id,
+            content_type: Some("jingle".into()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(auto_cue_row(&db, id).0, "manual");
+        assert_eq!(
+            db.get_track(id).unwrap().unwrap().cue_points.next_start_ms,
+            Some(1_000)
+        );
+    }
+
+    /// An edit that does not touch the content type must not put the track
+    /// back in the queue.
+    #[test]
+    fn a_tag_edit_leaves_an_automatic_track_analysed() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/a.mp3");
+        db.set_auto_cue(id, AUTO, THRESHOLDS, true, 7).unwrap();
+
+        db.update_track_metadata(&TrackMetadataUpdate {
+            id,
+            title: Some("New".into()),
+            content_type: Some("music".into()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(auto_cue_row(&db, id).0, "auto");
+    }
+
     /// Cue points ride along on the one query a deck load already runs.
     #[test]
     fn load_info_carries_the_cue_points() {
@@ -2596,15 +2943,18 @@ mod tests {
         }
         let jobs = db.tracks_needing_analysis().unwrap();
         assert_eq!(jobs.len(), 2);
-        assert!(jobs
-            .iter()
-            .all(|j| j.needs_waveform && j.needs_fingerprint && j.needs_loudness));
+        assert!(jobs.iter().all(|j| j.needs_waveform
+            && j.needs_fingerprint
+            && j.needs_loudness
+            && j.needs_auto_cue));
 
         let (a, b) = (jobs[0].id, jobs[1].id);
         db.set_waveform(a, &[9]).unwrap();
         db.set_waveform(b, &[9]).unwrap();
         db.set_fingerprint(b, "v1:b").unwrap();
         db.set_loudness(b, Some(-6.0), Some(0.9), 1).unwrap();
+        db.set_auto_cue(b, AutoCue::default(), THRESHOLDS, true, 1)
+            .unwrap();
 
         let jobs = db.tracks_needing_analysis().unwrap();
         assert_eq!(jobs.len(), 1);
@@ -2612,6 +2962,7 @@ mod tests {
         assert!(!jobs[0].needs_waveform);
         assert!(jobs[0].needs_fingerprint);
         assert!(jobs[0].needs_loudness);
+        assert!(jobs[0].needs_auto_cue);
     }
 
     /// A silent or very short file measures successfully with no gain to
@@ -2630,6 +2981,8 @@ mod tests {
         db.set_waveform(id, &[0]).unwrap();
         db.set_fingerprint(id, "v1:s").unwrap();
         db.set_loudness(id, None, None, 42).unwrap();
+        db.set_auto_cue(id, AutoCue::default(), THRESHOLDS, true, 42)
+            .unwrap();
 
         assert!(db.tracks_needing_analysis().unwrap().is_empty());
     }

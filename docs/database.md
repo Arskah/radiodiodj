@@ -46,8 +46,10 @@ The library lives in SQLite (`radiodiodj.db`, WAL mode) and is opened by
   count, waveform, fingerprint and the loudness measurement must survive a
   rescan. `UPSERT_TRACK_SQL`
   touches only tag-derived columns, and it only overwrites the fingerprint with
-  a non-null value. It also clears the recorded analysis failure, since it runs
-  only for a file that changed.
+  a non-null value. It also clears the recorded analysis failure and puts an
+  _automatic_ cue point set back in the queue (`auto_cue_state`, never the
+  markers themselves), since it runs only for a file that changed — a manual
+  set is left alone, and the old automatic values stand until fresh ones land.
 - **No foreign keys.** `PRAGMA foreign_keys` is off (SQLite's default, never
   set here), so an `ON DELETE` clause would be decoration that silently never
   fires. A table referencing `tracks(id)` declares the column plain and the
