@@ -1,0 +1,121 @@
+name: Release
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag the bundles are uploaded to
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to rebuild and upload to (e.g. v0.21.0)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-macos-arm64:
+    uses: ./.github/workflows/build.yml
+    with:
+      platform: macos-14
+      target: aarch64-apple-darwin
+      args: --target aarch64-apple-darwin
+      artifact-name: bundle-macos-arm64
+    secrets: inherit
+
+  build-macos-x64:
+    uses: ./.github/workflows/build.yml
+    with:
+      platform: macos-14
+      target: x86_64-apple-darwin
+      args: --target x86_64-apple-darwin
+      artifact-name: bundle-macos-x64
+    secrets: inherit
+
+  build-linux-x64:
+    uses: ./.github/workflows/build.yml
+    with:
+      platform: ubuntu-24.04
+      target: x86_64-unknown-linux-gnu
+      args: ""
+      artifact-name: bundle-linux-x64
+    secrets: inherit
+
+  build-windows-x64:
+    uses: ./.github/workflows/build.yml
+    with:
+      platform: windows-latest
+      target: x86_64-pc-windows-msvc
+      args: ""
+      artifact-name: bundle-windows-x64
+      # Flip to true once a Windows signing cert + secrets exist. See docs/signing.md.
+      sign-windows: false
+    secrets: inherit
+
+  upload-release:
+    needs:
+      - build-macos-arm64
+      - build-macos-x64
+      - build-linux-x64
+      - build-windows-x64
+    # Runs once the builds finish whatever their outcome, so a platform that fails to
+    # build does not hold back the bundles that did. The release itself is already
+    # public by then: release-please publishes the tag before any build starts.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: artifacts
+          merge-multiple: false
+
+      # Publish the GPG public key so users can verify the signed Linux
+      # AppImage. The key is public by definition; no-op if the var is unset.
+      - name: Stage GPG public key
+        if: vars.GPG_PUBLIC_KEY != ''
+        shell: bash
+        env:
+          GPG_PUBLIC_KEY: ${{ vars.GPG_PUBLIC_KEY }}
+        run: |
+          printf '%s\n' "$GPG_PUBLIC_KEY" > radiodiodj-signing-key.asc
+
+      - name: Upload bundles to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          shopt -s nullglob globstar
+          files=(artifacts/**/*.dmg artifacts/**/*.app.tar.gz artifacts/**/*.AppImage artifacts/**/*.deb artifacts/**/*.rpm artifacts/**/*.msi artifacts/**/*.exe artifacts/**/*.nsis.zip radiodiodj-signing-key.asc)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No bundle artifacts found" >&2
+            find artifacts -type f >&2
+            exit 1
+          fi
+          gh release upload "$TAG" "${files[@]}" --clobber
+
+      - name: Fail on incomplete release
+        if: contains(needs.*.result, 'failure')
+        shell: bash
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          {
+            echo "### Incomplete release"
+            echo
+            echo "Uploaded what built. These platforms are missing from the release:"
+            echo
+            jq -r 'to_entries[]
+              | select(.key | startswith("build-"))
+              | select(.value.result != "success")
+              | "- \(.key): \(.value.result)"' <<<"$NEEDS"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::release is missing platform bundles"
+          exit 1
