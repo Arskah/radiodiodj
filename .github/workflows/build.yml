@@ -40,15 +40,20 @@ jobs:
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-      APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      # Staged under _IN names and exported to the real APPLE_* variables only when
+      # non-empty. A missing secret still *defines* the variable as an empty string, and
+      # the bundler picks its notarization route by presence, not by value: an empty
+      # APPLE_ID + APPLE_PASSWORD next to a real APPLE_TEAM_ID sends it down the Apple ID
+      # route with blank credentials, which fails 401 without ever trying the API key.
+      APPLE_CERTIFICATE_IN: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD_IN: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY_IN: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_API_ISSUER_IN: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_KEY_IN: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_KEY_P8_IN: ${{ secrets.APPLE_API_KEY_P8 }}
+      APPLE_ID_IN: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD_IN: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID_IN: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
@@ -91,27 +96,50 @@ jobs:
       # signingIdentity in the config file wins over APPLE_SIGNING_IDENTITY, so the env
       # var alone would be ignored. The bundler imports APPLE_CERTIFICATE into a
       # temporary keychain itself. See docs/signing.md.
-      - name: Configure macOS signing identity
+      - name: Configure macOS signing and notarization
         id: macos-signing
-        if: startsWith(inputs.platform, 'macos') && env.APPLE_SIGNING_IDENTITY != ''
+        if: startsWith(inputs.platform, 'macos') && env.APPLE_SIGNING_IDENTITY_IN != ''
         shell: bash
         run: |
-          jq -n --arg identity "$APPLE_SIGNING_IDENTITY" \
+          jq -n --arg identity "$APPLE_SIGNING_IDENTITY_IN" \
             '{bundle: {macOS: {signingIdentity: $identity}}}' \
             > src-tauri/signing.macos.conf.json
           echo "config-arg=--config src-tauri/signing.macos.conf.json" >> "$GITHUB_OUTPUT"
 
-      # The bundler reads the App Store Connect key from disk, so materialize it outside
-      # the workspace. Skipped when the APPLE_ID / APPLE_PASSWORD route is used instead.
-      - name: Write App Store Connect API key
-        if: startsWith(inputs.platform, 'macos') && env.APPLE_API_KEY_P8 != ''
-        shell: bash
-        run: |
-          : "${APPLE_API_KEY:?set APPLE_API_KEY alongside APPLE_API_KEY_P8}"
-          key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
-          printf '%s' "$APPLE_API_KEY_P8" | openssl base64 -d -A > "$key_path"
-          chmod 600 "$key_path"
-          echo "APPLE_API_KEY_PATH=$key_path" >> "$GITHUB_ENV"
+          {
+            echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY_IN"
+            echo "APPLE_CERTIFICATE=$APPLE_CERTIFICATE_IN"
+            echo "APPLE_CERTIFICATE_PASSWORD=$APPLE_CERTIFICATE_PASSWORD_IN"
+          } >> "$GITHUB_ENV"
+
+          # Exactly one notarization route, API key first. Exporting a variable from the
+          # other route — even empty — would change which one the bundler picks.
+          if [ -n "$APPLE_API_KEY_P8_IN" ]; then
+            : "${APPLE_API_KEY_IN:?set APPLE_API_KEY alongside APPLE_API_KEY_P8}"
+            : "${APPLE_API_ISSUER_IN:?set APPLE_API_ISSUER alongside APPLE_API_KEY_P8}"
+            key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_IN}.p8"
+            printf '%s' "$APPLE_API_KEY_P8_IN" | openssl base64 -d -A > "$key_path"
+            chmod 600 "$key_path"
+            head -n 1 "$key_path" | grep -q 'BEGIN PRIVATE KEY' \
+              || { echo "::error::APPLE_API_KEY_P8 did not decode to a PEM private key"; exit 1; }
+            {
+              echo "APPLE_API_KEY=$APPLE_API_KEY_IN"
+              echo "APPLE_API_ISSUER=$APPLE_API_ISSUER_IN"
+              echo "APPLE_API_KEY_PATH=$key_path"
+            } >> "$GITHUB_ENV"
+            echo "Notarizing with App Store Connect API key"
+          elif [ -n "$APPLE_ID_IN" ]; then
+            : "${APPLE_PASSWORD_IN:?set APPLE_PASSWORD alongside APPLE_ID}"
+            : "${APPLE_TEAM_ID_IN:?set APPLE_TEAM_ID alongside APPLE_ID}"
+            {
+              echo "APPLE_ID=$APPLE_ID_IN"
+              echo "APPLE_PASSWORD=$APPLE_PASSWORD_IN"
+              echo "APPLE_TEAM_ID=$APPLE_TEAM_ID_IN"
+            } >> "$GITHUB_ENV"
+            echo "Notarizing with Apple ID and app-specific password"
+          else
+            echo "::warning::Signing without notarization — no notarization credentials set"
+          fi
 
       - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         id: tauri

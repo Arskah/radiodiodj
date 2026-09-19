@@ -46,6 +46,13 @@ No entitlements file: hardened runtime is Tauri's default, the app is not sandbo
 (Developer ID distribution never is), and `cpal` is output-only, so there is no
 microphone usage description to declare.
 
+Notarization credentials reach the bundler through one route or the other, never both.
+The bundler picks by _presence_: if `APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID` are
+all defined it uses them, otherwise it uses the API key. A GitHub expression for a secret
+that does not exist still defines the variable as an empty string, so the workflow stages
+every credential under an `APPLE_*_IN` name and exports only the route it actually has.
+Do not add plain `APPLE_*` entries back to the job `env` block.
+
 ### Activate
 
 1. Create the certificate (do this yourself — the private key must never come from an
