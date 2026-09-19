@@ -188,6 +188,6 @@ targets **Azure Trusted Signing** via [`trusted-signing-cli`].
 4. Ensure `trusted-signing-cli` is installed on the Windows runner (add an install step
    to `build.yml`, e.g. `cargo install trusted-signing-cli`).
 5. Set `sign-windows: true` on the `build-windows-x64` job in
-   `.github/workflows/release-please.yml`.
+   `.github/workflows/release.yml`.
 
 [`trusted-signing-cli`]: https://github.com/Levminer/trusted-signing-cli
