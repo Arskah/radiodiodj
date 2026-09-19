@@ -92,7 +92,9 @@ pub enum Effect {
         id: i64,
         cue_override: Option<CuePoints>,
     },
-    /// Count the airing against the track's play count.
+    /// Count the airing against the track's play count. Issued when the track
+    /// actually reached the deck, never when a load was merely asked for — a
+    /// read that fails over a dead share is not an airing.
     TrackPlayed(i64),
     /// Arm the outage retry timer. The index selects a delay from the backoff
     /// schedule, saturating at its last entry.
@@ -127,6 +129,9 @@ enum Plan {
     Play(usize),
     /// Cache membership is known but nothing upcoming is in it — an outage.
     Wait,
+    /// The track on air never loaded and its bytes are resident again: put it
+    /// back on rather than advancing past it.
+    RetryCurrent,
 }
 
 #[derive(Default)]
@@ -168,6 +173,15 @@ pub struct Playlist {
     /// A retry timer is pending. Guards against shortening the backoff by
     /// re-arming on every failure that arrives while one is already running.
     retry_armed: bool,
+    /// The track on air never reached the deck: its read failed. It has not
+    /// aired, so a recovering share must put *it* back on rather than
+    /// advancing past it to the next queued track.
+    retry_current: bool,
+    /// The track on air has been counted as an airing. Set where the airing
+    /// becomes real — a successful load, or a handover onto a deck that is
+    /// already playing — so a load that never lands writes nothing to the log,
+    /// and a retry of it counts once when it finally goes on.
+    current_aired: bool,
 }
 
 impl Playlist {
@@ -412,6 +426,8 @@ impl Playlist {
         if !self.auto_advance {
             return self.stop();
         }
+        // Whatever is on air played to its end, so there is nothing to retry.
+        self.retry_current = false;
         self.refill(r);
         self.advance(false, r)
     }
@@ -441,6 +457,9 @@ impl Playlist {
         self.clear_retry();
         let aired = self.current.replace(track);
         self.current_override = cue_override;
+        // The incoming deck is already playing, so this airing is real the
+        // moment the role moves — there is no load to wait on.
+        self.current_aired = true;
         self.armed = None;
         self.overlapping = aired.is_some();
         self.push_history(aired);
@@ -468,7 +487,31 @@ impl Playlist {
         if !self.auto_advance {
             return Transition::default();
         }
+        if let Some(id) = self.current.as_ref().map(|t| t.id) {
+            // The read just proved the bytes are not playable from RAM, so the
+            // stale membership must not trigger an instant retry loop: only a
+            // fresh cache-state naming the track makes it a candidate again.
+            self.cached_ids.remove(&id);
+            self.retry_current = true;
+        }
         self.advance(true, r)
+    }
+
+    /// A load landed on the main deck: `id` is on air (or parked there by a
+    /// session restore). This is where an airing is counted, rather than when
+    /// the load was issued — over a dead share a read can fail or time out
+    /// minutes later, and a track that never reached the deck must not show up
+    /// in the play log or against the rotation rules.
+    ///
+    /// Only the track the playlist believes is on air counts, and only once: a
+    /// restored track aired before the restart, and a deck reloading the same
+    /// track (an audition, a retried read) is still the one airing.
+    pub fn on_loaded(&mut self, id: i64) -> Transition {
+        if self.current_aired || self.current.as_ref().map(|t| t.id) != Some(id) {
+            return Transition::default();
+        }
+        self.current_aired = true;
+        Transition::effects(vec![Effect::TrackPlayed(id)])
     }
 
     /// Cache membership changed. If playback is stalled waiting for the share, a
@@ -561,6 +604,9 @@ impl Playlist {
         self.trim_history();
         self.current = current;
         self.current_override = current_override;
+        // The restored track aired before the restart — the log already has it,
+        // and the resume load must not count it again.
+        self.current_aired = true;
         match &self.current {
             // Clamped rather than trusted: a negative position from a mangled
             // session file would seek out of range and silently skip the track
@@ -616,15 +662,14 @@ impl Playlist {
         let id = track.id;
         self.current = Some(track);
         self.current_override = cue_override;
+        // Nothing has aired until the deck reports the load landed; see
+        // [`Playlist::on_loaded`].
+        self.current_aired = false;
         // The load this returns cuts the tail on its way through the bus, so
         // the deck it was on is free to arm again.
         self.overlapping = false;
         self.refill(r);
-        Transition::effects(vec![
-            Effect::CancelRetry,
-            Effect::Play { id, cue_override },
-            Effect::TrackPlayed(id),
-        ])
+        Transition::effects(vec![Effect::CancelRetry, Effect::Play { id, cue_override }])
     }
 
     /// Drop missing tracks up to the next stop marker: advancement would pass
@@ -653,6 +698,7 @@ impl Playlist {
                 self.clear_retry();
                 Transition::effects(vec![Effect::CancelRetry])
             }
+            Plan::RetryCurrent => self.replay_current(r),
             // A cold offline start has no cache knowledge. After a failure that
             // means "wait for the share" — blindly retrying the head would burn
             // through the whole playlist.
@@ -664,6 +710,25 @@ impl Playlist {
     }
 
     fn plan(&self) -> Plan {
+        // A track whose read failed is still `current` and has not aired. It
+        // leads the prefetch window, so on a recovering share it is the first
+        // thing the cache announces — take it back before the queue. If some
+        // other track returns first (the file itself is unreadable, not the
+        // share), the ordinary skip-to-cached below keeps air alive.
+        if let Some(id) = self
+            .retry_current
+            .then(|| self.current.as_ref().map(|t| t.id))
+            .flatten()
+        {
+            if self.cached_ids.contains(&id) {
+                return Plan::RetryCurrent;
+            }
+            // Nothing queued to fall back to, so the wait *is* the plan:
+            // treating it as an empty playlist would abandon the track.
+            if self.items.is_empty() {
+                return Plan::Wait;
+            }
+        }
         if self.items.is_empty() {
             return Plan::Empty;
         }
@@ -707,6 +772,29 @@ impl Playlist {
             .extend(tracks.into_iter().map(PlaylistItem::track));
     }
 
+    /// Load the track on air again after its read failed. The airing is
+    /// counted when this load lands, exactly as the first attempt would have
+    /// been — see [`Playlist::on_loaded`].
+    ///
+    /// The backoff index deliberately survives — a retry is itself a load that
+    /// can fail, and resetting it here would turn a persistent failure into a
+    /// tight loop at the shortest delay.
+    fn replay_current(&mut self, r: &dyn Refiller) -> Transition {
+        let Some(id) = self.current.as_ref().map(|t| t.id) else {
+            return Transition::default();
+        };
+        self.retry_current = false;
+        self.end_wait();
+        self.refill(r);
+        Transition::effects(vec![
+            Effect::CancelRetry,
+            Effect::Play {
+                id,
+                cue_override: self.current_override,
+            },
+        ])
+    }
+
     fn arm_retry(&mut self) -> Transition {
         self.awaiting_network = true;
         if self.retry_armed {
@@ -719,8 +807,15 @@ impl Playlist {
     }
 
     fn clear_retry(&mut self) {
-        self.retry_armed = false;
+        self.end_wait();
         self.retry_attempt = 0;
+        self.retry_current = false;
+    }
+
+    /// Stop waiting for the share, keeping the backoff index for a retry that
+    /// may yet fail.
+    fn end_wait(&mut self) {
+        self.retry_armed = false;
         self.awaiting_network = false;
     }
 }
@@ -968,11 +1063,10 @@ mod tests {
         let t = p.play_index(1, &NoRefill);
         assert_eq!(queued(&p), vec![Some(1)]);
         assert_eq!(current_id(&p), Some(2));
-        assert_eq!(
-            t.effects,
-            vec![Effect::CancelRetry, play(2), Effect::TrackPlayed(2)]
-        );
+        assert_eq!(t.effects, vec![Effect::CancelRetry, play(2)]);
         assert!(history(&p).is_empty());
+        // The airing is counted when the load lands, not when it is asked for.
+        assert_eq!(p.on_loaded(2).effects, vec![Effect::TrackPlayed(2)]);
     }
 
     #[test]
@@ -1300,6 +1394,104 @@ mod tests {
         assert_eq!(current_id(&p), Some(2));
     }
 
+    /// The reported outage defect: the share drops while the track on air is
+    /// still loading, and when it comes back the queue moves on instead of the
+    /// interrupted track going on (#432).
+    #[test]
+    fn a_track_whose_read_failed_goes_on_when_the_share_returns() {
+        let mut p = with(&[Some(1)]);
+        p.play_now(track(9), &NoRefill);
+        p.on_cache_state(vec![9], &NoRefill);
+        let t = p.on_load_failed(&NoRefill);
+        assert_eq!(t.effects, vec![Effect::ArmRetry(0)]);
+        assert!(p.snapshot().awaiting_network);
+
+        // The share is back: the window's head — the interrupted track — is
+        // what the cache lands first.
+        let t = p.on_cache_state(vec![9], &NoRefill);
+        assert_eq!(t.effects, vec![Effect::CancelRetry, play(9)]);
+        assert_eq!(current_id(&p), Some(9));
+        assert_eq!(queued(&p), vec![Some(1)]);
+        assert!(!p.snapshot().awaiting_network);
+        // Retried, not re-aired: the airing was recorded when it first went on.
+        assert!(!t
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::TrackPlayed(_))));
+    }
+
+    /// A retry the operator auditioned keeps the markers it went on air under.
+    #[test]
+    fn a_retried_track_keeps_its_override() {
+        let mut p = Playlist::new();
+        p.add_front(track(9), Some(points(500)));
+        p.play_index(0, &NoRefill);
+        p.on_load_failed(&NoRefill);
+        let t = p.on_cache_state(vec![9], &NoRefill);
+        assert!(t.effects.contains(&Effect::Play {
+            id: 9,
+            cue_override: Some(points(500)),
+        }));
+    }
+
+    /// The wait is for the share, not for one file. A track whose own file
+    /// stays unreadable must not hold air once something queued is playable.
+    #[test]
+    fn a_failure_that_is_not_the_share_still_skips_to_a_cached_track() {
+        let mut p = with(&[Some(1)]);
+        p.play_now(track(9), &NoRefill);
+        p.on_cache_state(vec![9], &NoRefill);
+        p.on_load_failed(&NoRefill);
+
+        let t = p.on_cache_state(vec![1], &FakeRefiller::new());
+        assert!(t.effects.contains(&play(1)));
+        assert_eq!(current_id(&p), Some(1));
+    }
+
+    /// A stale cache membership must not turn a failed read into a retry loop:
+    /// the failure itself is proof the bytes are not there.
+    #[test]
+    fn a_failed_read_does_not_retry_off_the_membership_it_already_had() {
+        let mut p = with(&[]);
+        p.play_now(track(9), &NoRefill);
+        p.on_cache_state(vec![9], &NoRefill);
+        let t = p.on_load_failed(&NoRefill);
+        assert_eq!(t.effects, vec![Effect::ArmRetry(0)]);
+        assert_eq!(current_id(&p), Some(9));
+    }
+
+    /// Repeated failures keep walking the backoff schedule rather than
+    /// restarting it, so a track that cannot be loaded at all retries slower
+    /// and slower instead of hammering the share.
+    #[test]
+    fn a_retry_that_fails_again_lengthens_the_backoff() {
+        let mut p = with(&[]);
+        p.play_now(track(9), &NoRefill);
+        assert_eq!(
+            p.on_load_failed(&NoRefill).effects,
+            vec![Effect::ArmRetry(0)]
+        );
+        p.on_cache_state(vec![9], &NoRefill);
+        assert_eq!(
+            p.on_load_failed(&NoRefill).effects,
+            vec![Effect::ArmRetry(1)]
+        );
+    }
+
+    /// A track that played to its end is not a failed load, even if one
+    /// happened earlier on the same deck.
+    #[test]
+    fn a_track_that_ends_is_never_replayed() {
+        let mut p = with(&[Some(1)]);
+        p.play_now(track(9), &NoRefill);
+        p.on_load_failed(&NoRefill);
+        p.on_cache_state(vec![9, 1], &FakeRefiller::new());
+        // 9 went back on; when it ends, 1 follows it.
+        assert_eq!(current_id(&p), Some(9));
+        p.on_ended(&FakeRefiller::new());
+        assert_eq!(current_id(&p), Some(1));
+    }
+
     #[test]
     fn load_failed_with_no_cache_knowledge_waits_instead_of_burning_the_queue() {
         let mut p = with(&[Some(1), Some(2)]);
@@ -1307,6 +1499,69 @@ mod tests {
         assert_eq!(t.effects, vec![Effect::ArmRetry(0)]);
         assert_eq!(queued(&p), vec![Some(1), Some(2)]);
         assert_eq!(current_id(&p), None);
+    }
+
+    // ----- airings are counted when the load lands -----
+
+    #[test]
+    fn a_load_that_never_lands_is_not_an_airing() {
+        let mut p = with(&[Some(1), Some(2)]);
+        let t = p.play_index(0, &NoRefill);
+        assert!(!t
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::TrackPlayed(_))));
+        // The read failed, so nothing went on air and nothing is counted.
+        let t = p.on_load_failed(&NoRefill);
+        assert!(!t
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::TrackPlayed(_))));
+    }
+
+    #[test]
+    fn a_retried_track_is_counted_once_when_it_finally_lands() {
+        let mut p = with(&[]);
+        p.play_now(track(9), &NoRefill);
+        p.on_load_failed(&NoRefill);
+        p.on_cache_state(vec![9], &NoRefill);
+        assert_eq!(current_id(&p), Some(9));
+        assert_eq!(p.on_loaded(9).effects, vec![Effect::TrackPlayed(9)]);
+        // A second report of the same load counts nothing more.
+        assert_eq!(p.on_loaded(9), Transition::default());
+    }
+
+    /// A restored track aired before the restart: the resume load must not put
+    /// a second row in the log.
+    #[test]
+    fn a_resumed_track_is_not_counted_again() {
+        let mut p = Playlist::new();
+        p.hydrate(vec![], Some(track(9)), None, 12.0, false, true, vec![]);
+        assert_eq!(p.on_loaded(9), Transition::default());
+    }
+
+    /// A load landing for something other than what is on air — a stale read
+    /// from a superseded track change — counts nothing.
+    #[test]
+    fn a_load_for_a_track_that_is_not_on_air_counts_nothing() {
+        let mut p = with(&[Some(1)]);
+        p.play_index(0, &NoRefill);
+        assert_eq!(p.on_loaded(7), Transition::default());
+    }
+
+    /// A handover needs no load: the incoming deck is already playing, so the
+    /// airing is counted as the role moves.
+    #[test]
+    fn a_handover_counts_the_airing_without_a_load() {
+        let r = FakeRefiller::new();
+        let mut p = with(&[Some(2)]);
+        p.play_now(track(1), &r);
+        p.on_loaded(1);
+        let t = p.on_handover(2, &r);
+        assert!(t.effects.contains(&Effect::TrackPlayed(2)));
+        // The deck reports its own load under the arm role, so nothing else
+        // arrives for it; a stray report must not double-count.
+        assert_eq!(p.on_loaded(2), Transition::default());
     }
 
     // ----- missing tracks -----
@@ -2146,10 +2401,7 @@ mod tests {
 
         let t = p.on_ended(&r);
 
-        assert_eq!(
-            t.effects,
-            vec![Effect::CancelRetry, play(2), Effect::TrackPlayed(2)]
-        );
+        assert_eq!(t.effects, vec![Effect::CancelRetry, play(2)]);
     }
 
     /// A handover refills, as any advance does: the queue it consumed from is
