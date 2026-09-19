@@ -241,25 +241,6 @@ body {
   color: var(--primary);
 }
 
-.live-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-sm);
-  padding: var(--sp-xs) var(--sp-md);
-  border-radius: var(--r-lg);
-  background: color-mix(in srgb, var(--error-container) 20%, transparent);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--error);
-}
-
-.live-badge .led {
-  animation: led-pulse 2s ease-in-out infinite;
-}
-
 /* Nav stats cluster */
 .nav-stats {
   display: flex;
@@ -1153,9 +1134,6 @@ body {
   #progress-bar.buffering::after {
     animation: none;
     background-position: 50% 0;
-  }
-  .live-badge .led {
-    animation: none;
   }
 }
 
