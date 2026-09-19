@@ -571,6 +571,11 @@ fn cue_load(
         .get_media_track(id)
         .map_err(err)?
         .ok_or_else(|| "track not found".to_string())?;
+    let gain = audio::loudness::factor(
+        state.config.get_tuning().player.replay_gain,
+        track.loudness.gain_db,
+        track.loudness.peak,
+    );
     with_cue(&state, |h| {
         h.send(Cmd::Load {
             id,
@@ -590,6 +595,7 @@ fn cue_load(
             // every Absolute/Preview toggle. The cue editor's transport is the
             // explicit ask, and sets this.
             autoplay: autoplay.unwrap_or(false),
+            gain,
         });
     })
 }

@@ -15,9 +15,12 @@
 //! scaling is what matters.
 
 use anyhow::{Context, Result};
+use ebur128::{EbuR128, Mode};
 use rodio::{Decoder, Source};
 use std::io::Cursor;
 use std::sync::Arc;
+
+use super::loudness::Loudness;
 
 /// Number of buckets a track is reduced to. 400 gives enough horizontal
 /// resolution for a seek bar a few hundred pixels wide while keeping the stored
@@ -57,17 +60,111 @@ impl Cell {
     }
 }
 
-/// Compute the quantised RMS curve for an in-memory audio file.
+/// How many samples are buffered before being handed to the loudness meter.
+/// Trimmed to a whole number of frames before each flush, so the meter never
+/// sees a partial frame.
+const METER_CHUNK: usize = 8192;
+
+/// One decode of a track, giving both things the analysis pass needs from it.
+pub struct Analysis {
+    /// Exactly [`WAVEFORM_BUCKETS`] bytes.
+    pub curve: Vec<u8>,
+    /// `None` when the file is silent, empty, or shorter than the one 400 ms
+    /// block integrated loudness needs.
+    pub loudness: Option<Loudness>,
+}
+
+/// Decode an in-memory audio file once, measuring both the waveform curve and
+/// the track's loudness from the one pass.
 ///
-/// Single decode pass: samples are accumulated into an overflow-merging mip
-/// buffer (so no upfront sample total is needed and RAM stays bounded), then
-/// downsampled to [`WAVEFORM_BUCKETS`] via a float ratio and normalised.
+/// The two share the decode because it dominates the cost of either — the same
+/// reason the fingerprint pass reuses these bytes rather than reading the file
+/// again.
 ///
-/// Returns exactly [`WAVEFORM_BUCKETS`] bytes. Silent or empty tracks yield an
-/// all-zero curve rather than an error.
-pub fn compute_peaks(bytes: Bytes) -> Result<Vec<u8>> {
+/// The curve is accumulated into an overflow-merging mip buffer (so no upfront
+/// sample total is needed and RAM stays bounded), then downsampled to
+/// [`WAVEFORM_BUCKETS`] via a float ratio and normalised. It is always exactly
+/// [`WAVEFORM_BUCKETS`] bytes; a silent or empty track yields an all-zero curve
+/// rather than an error.
+///
+/// Sample rate and channel count are read from the decoder once, up front. A
+/// file that changes either mid-stream is measured as though it had not; such
+/// files are rare, and the alternative is resetting the meter's integration
+/// state partway through, which would bias the result far more than the span
+/// change itself does.
+pub fn analyze(bytes: Bytes) -> Result<Analysis> {
     let decoder = new_decoder(bytes)?;
-    Ok(fill_buckets(decoder))
+    let channels = u32::from(decoder.channels());
+    let rate = decoder.sample_rate();
+    // A degenerate header leaves the meter unbuilt; the curve is still worth
+    // computing, so this is not an error.
+    let meter = (channels > 0 && rate > 0)
+        .then(|| EbuR128::new(channels, rate, Mode::I).ok())
+        .flatten();
+    let mut meter = Meter {
+        meter,
+        buf: Vec::with_capacity(METER_CHUNK),
+        channels: channels.max(1) as usize,
+        peak: 0.0,
+    };
+    let curve = fill_buckets(decoder.inspect(|s| meter.push(*s)));
+    Ok(Analysis {
+        curve,
+        loudness: meter.finish(),
+    })
+}
+
+/// Feeds the loudness meter in whole frames while the waveform pass walks the
+/// same sample stream, and tracks the peak alongside.
+struct Meter {
+    meter: Option<EbuR128>,
+    buf: Vec<f32>,
+    channels: usize,
+    peak: f32,
+}
+
+impl Meter {
+    fn push(&mut self, sample: f32) {
+        let a = sample.abs();
+        if a > self.peak {
+            self.peak = a;
+        }
+        if self.meter.is_none() {
+            return;
+        }
+        self.buf.push(sample);
+        if self.buf.len() >= METER_CHUNK {
+            self.flush();
+        }
+    }
+
+    /// Hand the meter every whole frame buffered so far, keeping any trailing
+    /// partial frame for the next flush.
+    fn flush(&mut self) {
+        let whole = self.buf.len() - self.buf.len() % self.channels;
+        if whole > 0 {
+            if let Some(m) = self.meter.as_mut() {
+                // A meter that rejects a chunk cannot be trusted for the
+                // integrated figure, so drop it and keep only the peak.
+                if m.add_frames_f32(&self.buf[..whole]).is_err() {
+                    self.meter = None;
+                }
+            }
+            self.buf.drain(..whole);
+        }
+    }
+
+    /// The measurement, or `None` when there was nothing to measure. A file
+    /// too short for one integration block reports `-inf` LUFS rather than
+    /// failing, which is not a gain this can act on.
+    fn finish(mut self) -> Option<Loudness> {
+        self.flush();
+        let lufs = self.meter.as_ref()?.loudness_global().ok()?;
+        lufs.is_finite().then_some(Loudness {
+            lufs,
+            peak: self.peak,
+        })
+    }
 }
 
 /// Decode the source once into an overflow-merging mip buffer, downsample that
@@ -142,7 +239,7 @@ pub const DETAIL_BUCKET_MS: u32 = 10;
 
 /// Compute a fixed-time-resolution RMS curve for the cue editor's zoomed strip:
 /// one byte per [`DETAIL_BUCKET_MS`] of audio, normalised like
-/// [`compute_peaks`]. Unlike the stored curve its length follows the track, so
+/// [`analyze`]'s curve. Unlike the stored curve its length follows the track, so
 /// a 20-minute file yields about 120 kB — computed on demand, never stored.
 pub fn compute_detail(bytes: Bytes) -> Result<Vec<u8>> {
     let decoder = new_decoder(bytes)?;
@@ -245,14 +342,14 @@ mod tests {
     #[test]
     fn returns_fixed_bucket_count() {
         let wav = bytes_of(synth_wav(8000, 8000));
-        let peaks = compute_peaks(wav).expect("compute");
+        let peaks = analyze(wav).expect("compute").curve;
         assert_eq!(peaks.len(), WAVEFORM_BUCKETS);
     }
 
     #[test]
     fn silent_half_is_quieter_than_loud_half() {
         let wav = bytes_of(synth_wav(8000, 8000));
-        let peaks = compute_peaks(wav).expect("compute");
+        let peaks = analyze(wav).expect("compute").curve;
         let first = &peaks[..WAVEFORM_BUCKETS / 2];
         let second = &peaks[WAVEFORM_BUCKETS / 2..];
         let max_first = *first.iter().max().unwrap();
@@ -266,7 +363,7 @@ mod tests {
     #[test]
     fn loud_half_reaches_full_scale() {
         let wav = bytes_of(synth_wav(8000, 8000));
-        let peaks = compute_peaks(wav).expect("compute");
+        let peaks = analyze(wav).expect("compute").curve;
         // The loudest bucket normalises to 255.
         assert_eq!(*peaks.iter().max().unwrap(), 255, "loudest bucket → 255");
     }
@@ -277,7 +374,7 @@ mod tests {
         // final window. The old integer-division bucketing left the last
         // buckets starved (blank outro); the float ratio must fill bucket 399.
         let wav = bytes_of(synth_wav(8000, 8001));
-        let peaks = compute_peaks(wav).expect("compute");
+        let peaks = analyze(wav).expect("compute").curve;
         assert!(
             peaks[WAVEFORM_BUCKETS - 1] > 0,
             "last bucket must not be starved"
@@ -289,14 +386,14 @@ mod tests {
         // Constant full-scale track: every bucket has the same RMS, so after
         // normalisation the whole curve is flat at the top.
         let wav = bytes_of(synth_wav_with(8000, 8000, |_| i16::MAX));
-        let peaks = compute_peaks(wav).expect("compute");
+        let peaks = analyze(wav).expect("compute").curve;
         assert!(peaks.iter().all(|&p| p == 255), "uniform → all 255");
     }
 
     #[test]
     fn garbage_bytes_error() {
         let bad = bytes_of(vec![0u8, 1, 2, 3, 4, 5]);
-        assert!(compute_peaks(bad).is_err());
+        assert!(analyze(bad).is_err());
     }
 
     #[test]
@@ -335,5 +432,60 @@ mod tests {
     #[test]
     fn detail_of_garbage_errors() {
         assert!(compute_detail(bytes_of(vec![0u8, 1, 2, 3])).is_err());
+    }
+
+    /// One second of a 1 kHz sine at `amp` of full scale — long enough for the
+    /// 400 ms block integrated loudness needs, and a waveform whose loudness is
+    /// a known function of its amplitude.
+    fn synth_tone(amp: f64) -> Bytes {
+        let rate = 44_100u32;
+        bytes_of(synth_wav_with(rate, rate, |i| {
+            let t = i as f64 / rate as f64;
+            (amp * i16::MAX as f64 * (2.0 * std::f64::consts::PI * 1000.0 * t).sin()) as i16
+        }))
+    }
+
+    #[test]
+    fn measures_loudness_and_peak_in_the_waveform_pass() {
+        let a = analyze(synth_tone(1.0)).expect("analyze");
+        assert_eq!(a.curve.len(), WAVEFORM_BUCKETS);
+        let l = a.loudness.expect("a full-scale tone is measurable");
+        // A full-scale sine sits near -3 LUFS; the K-weighting filter shifts it
+        // a little, so this only pins the order of magnitude.
+        assert!((-6.0..0.0).contains(&l.lufs), "{}", l.lufs);
+        assert!(l.peak > 0.99, "{}", l.peak);
+    }
+
+    #[test]
+    fn a_quieter_track_measures_quieter_by_the_amplitude_ratio() {
+        let loud = analyze(synth_tone(1.0)).expect("analyze").loudness.unwrap();
+        let quiet = analyze(synth_tone(0.1)).expect("analyze").loudness.unwrap();
+        // A tenth of the amplitude is 20 dB down, and loudness is a dB scale.
+        assert!(
+            (loud.lufs - quiet.lufs - 20.0).abs() < 0.5,
+            "{loud:?} {quiet:?}"
+        );
+        assert!((quiet.peak - 0.1).abs() < 0.01, "{}", quiet.peak);
+    }
+
+    #[test]
+    fn silence_is_not_measurable() {
+        let a = analyze(bytes_of(synth_wav_with(44_100, 44_100, |_| 0))).expect("analyze");
+        assert_eq!(a.curve, vec![0u8; WAVEFORM_BUCKETS]);
+        assert!(a.loudness.is_none());
+    }
+
+    #[test]
+    fn a_track_too_short_to_integrate_is_not_measurable() {
+        // 100 ms, well under the 400 ms block.
+        let a = analyze(bytes_of(synth_wav_with(44_100, 4_410, |i| {
+            if i % 2 == 0 {
+                i16::MAX
+            } else {
+                i16::MIN
+            }
+        })))
+        .expect("analyze");
+        assert!(a.loudness.is_none());
     }
 }

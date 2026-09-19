@@ -75,6 +75,7 @@ const DEFAULT_TUNING: TuningConfig = {
     readRetryBackoffsMs: [500, 1000, 2000],
     fadeOutMs: 4000,
     fadeToNextMs: 2500,
+    replayGain: "track",
   },
   library: { checkIntervalMin: 15, writeTags: false, tagWriteTimeoutSec: 30 },
 };

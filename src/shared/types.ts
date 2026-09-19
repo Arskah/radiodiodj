@@ -259,7 +259,12 @@ export interface PlayerConfig {
   fadeOutMs: number;
   /** How long the outgoing track takes to fade under the incoming one. */
   fadeToNextMs: number;
+  /** Whether a track is levelled to the ReplayGain reference on load. */
+  replayGain: ReplayGainMode;
 }
+
+/** How much levelling the player applies to a loaded track. */
+export type ReplayGainMode = "off" | "track";
 
 /// Library health tuning.
 export interface LibraryConfig {

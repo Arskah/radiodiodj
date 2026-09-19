@@ -46,7 +46,7 @@ CREATE TABLE tracks (
   next_start_ms INTEGER,
   fingerprint   TEXT,
   missing_since INTEGER
-, edited_fields INTEGER NOT NULL DEFAULT 0, analysis_error TEXT, analysis_failed_at INTEGER);
+, edited_fields INTEGER NOT NULL DEFAULT 0, analysis_error TEXT, analysis_failed_at INTEGER, rg_gain REAL, rg_peak REAL, rg_measured_at INTEGER);
 
 CREATE VIRTUAL TABLE tracks_fts USING fts5(
   title, artist, album, genre,

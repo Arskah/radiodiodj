@@ -173,6 +173,7 @@ pub struct AnalysisJob {
     pub path: String,
     pub needs_waveform: bool,
     pub needs_fingerprint: bool,
+    pub needs_loudness: bool,
 }
 
 /// One row as the scanner sees it.
@@ -211,6 +212,16 @@ pub struct Reconciled {
 pub struct MediaTrack {
     pub path: String,
     pub duration: f64,
+    pub loudness: StoredLoudness,
+}
+
+/// A track's stored ReplayGain measurement, as the load path reads it back.
+/// Both fields are `None` until the analysis pass has measured the file, and
+/// stay `None` for one it measured as silent.
+#[derive(Clone, Copy, Default)]
+pub struct StoredLoudness {
+    pub gain_db: Option<f64>,
+    pub peak: Option<f64>,
 }
 
 /// Everything one `Load` needs, in a single query: where the audio is, how the
@@ -228,6 +239,7 @@ pub struct TrackLoadInfo {
     pub content_type: String,
     pub path: String,
     pub cue_points: CuePoints,
+    pub loudness: StoredLoudness,
 }
 
 pub struct Db {
@@ -359,11 +371,16 @@ impl Db {
 
     pub fn get_media_track(&self, id: i64) -> Result<Option<MediaTrack>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT path, duration FROM tracks WHERE id = ?")?;
+        let mut stmt =
+            conn.prepare("SELECT path, duration, rg_gain, rg_peak FROM tracks WHERE id = ?")?;
         let mut rows = stmt.query_map([id], |r| {
             Ok(MediaTrack {
                 path: r.get(0)?,
                 duration: r.get::<_, Option<f64>>(1)?.unwrap_or(0.0),
+                loudness: StoredLoudness {
+                    gain_db: r.get(2)?,
+                    peak: r.get(3)?,
+                },
             })
         })?;
         match rows.next() {
@@ -378,7 +395,8 @@ impl Db {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id, title, artist, album, genre, duration, content_type, path, \
-                    cue_in_ms, fade_in_ms, fade_out_ms, cue_out_ms, next_start_ms \
+                    cue_in_ms, fade_in_ms, fade_out_ms, cue_out_ms, next_start_ms, \
+                    rg_gain, rg_peak \
              FROM tracks WHERE id = ?",
         )?;
         let mut rows = stmt.query_map([id], |r| {
@@ -392,6 +410,10 @@ impl Db {
                 content_type: r.get(6)?,
                 path: r.get(7)?,
                 cue_points: row_to_cue_points(r)?,
+                loudness: StoredLoudness {
+                    gain_db: r.get("rg_gain")?,
+                    peak: r.get("rg_peak")?,
+                },
             })
         })?;
         match rows.next() {
@@ -518,15 +540,19 @@ impl Db {
         Ok(clamped)
     }
 
-    /// Every present track still missing a waveform or a fingerprint, ordered
-    /// by id. Drives the background analysis worker (backfill included). A
-    /// track whose analysis failed is left out until its file changes.
+    /// Every present track still missing a waveform, a fingerprint or a
+    /// loudness measurement, ordered by id. Drives the background analysis
+    /// worker (backfill included). A track whose analysis failed is left out
+    /// until its file changes.
     pub fn tracks_needing_analysis(&self) -> Result<Vec<AnalysisJob>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, path, waveform IS NULL, fingerprint IS NULL FROM tracks \
+            "SELECT id, path, waveform IS NULL, fingerprint IS NULL, \
+                    rg_measured_at IS NULL \
+             FROM tracks \
              WHERE missing_since IS NULL AND analysis_failed_at IS NULL \
-               AND (waveform IS NULL OR fingerprint IS NULL) \
+               AND (waveform IS NULL OR fingerprint IS NULL \
+                    OR rg_measured_at IS NULL) \
              ORDER BY id",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -535,9 +561,29 @@ impl Db {
                 path: r.get(1)?,
                 needs_waveform: r.get(2)?,
                 needs_fingerprint: r.get(3)?,
+                needs_loudness: r.get(4)?,
             })
         })?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+    }
+
+    /// Store a completed loudness measurement. `gain`/`peak` are `None` for a
+    /// file that decoded but held nothing measurable — silence, or less audio
+    /// than one integration block — which still counts as measured, so the
+    /// pass does not pick the track up again.
+    pub fn set_loudness(
+        &self,
+        id: i64,
+        gain: Option<f64>,
+        peak: Option<f64>,
+        at_ms: i64,
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE tracks SET rg_gain = ?, rg_peak = ?, rg_measured_at = ? WHERE id = ?",
+            params![gain, peak, at_ms, id],
+        )?;
+        Ok(())
     }
 
     pub fn set_fingerprint(&self, id: i64, fingerprint: &str) -> Result<()> {
@@ -679,7 +725,9 @@ impl Db {
                         cue_in_ms = s.cue_in_ms, fade_in_ms = s.fade_in_ms, \
                         fade_out_ms = s.fade_out_ms, cue_out_ms = s.cue_out_ms, \
                         next_start_ms = s.next_start_ms, \
-                        edited_fields = s.edited_fields \
+                        edited_fields = s.edited_fields, \
+                        rg_gain = s.rg_gain, rg_peak = s.rg_peak, \
+                        rg_measured_at = s.rg_measured_at \
                  FROM (SELECT * FROM tracks WHERE id = ?1) AS s \
                  WHERE tracks.id = ?2",
             )?;
@@ -1301,6 +1349,7 @@ const MIGRATION_STEPS: &[M] = &[
     M::up(EDITED_FIELDS),
     M::up(ANALYSIS_FAILURES),
     M::up(PLAY_LOG),
+    M::up(LOUDNESS),
 ];
 const MIGRATIONS: Migrations = Migrations::from_slice(MIGRATION_STEPS);
 
@@ -1420,6 +1469,20 @@ CREATE TABLE play_log (
 );
 
 CREATE INDEX play_log_aired ON play_log(aired_at);
+"#;
+
+/// Step 6: what the track measured, for ReplayGain. Written only by the
+/// analysis pass, never by the metadata scan, so `UPSERT_TRACK_SQL` does not
+/// mention them and a rescan cannot clear a measurement.
+///
+/// `rg_measured_at` (unix ms) is what "already measured" means, not a non-null
+/// gain: a silent or very short file measures successfully and legitimately
+/// has no gain, and keying off the gain alone would put it back in the queue
+/// on every pass forever.
+const LOUDNESS: &str = r#"
+ALTER TABLE tracks ADD COLUMN rg_gain REAL;
+ALTER TABLE tracks ADD COLUMN rg_peak REAL;
+ALTER TABLE tracks ADD COLUMN rg_measured_at INTEGER;
 "#;
 
 /// Upsert one present track's metadata by path. The operator-work columns are
@@ -1670,6 +1733,18 @@ mod tests {
             conn.execute_batch(
                 "UPDATE tracks SET edited_fields = 1, \
                         analysis_error = 'bad', analysis_failed_at = 5; \
+                 INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
+                 SELECT id, 1000, artist, title, duration FROM tracks",
+            )
+            .unwrap();
+        },
+        |conn| {
+            seed_track(conn);
+            seed_dismissal(conn);
+            conn.execute_batch(
+                "UPDATE tracks SET edited_fields = 1, \
+                        analysis_error = 'bad', analysis_failed_at = 5, \
+                        rg_gain = -6.5, rg_peak = 0.98, rg_measured_at = 7; \
                  INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
                  SELECT id, 1000, artist, title, duration FROM tracks",
             )
@@ -2401,7 +2476,7 @@ mod tests {
     }
 
     #[test]
-    fn analysis_lists_tracks_until_both_waveform_and_fingerprint_are_filled() {
+    fn analysis_lists_tracks_until_every_result_is_filled() {
         let db = Db::open_in_memory().unwrap();
         for path in ["/a.mp3", "/b.mp3"] {
             db.insert_track(&TrackInsert {
@@ -2413,18 +2488,63 @@ mod tests {
         }
         let jobs = db.tracks_needing_analysis().unwrap();
         assert_eq!(jobs.len(), 2);
-        assert!(jobs.iter().all(|j| j.needs_waveform && j.needs_fingerprint));
+        assert!(jobs
+            .iter()
+            .all(|j| j.needs_waveform && j.needs_fingerprint && j.needs_loudness));
 
         let (a, b) = (jobs[0].id, jobs[1].id);
         db.set_waveform(a, &[9]).unwrap();
         db.set_waveform(b, &[9]).unwrap();
         db.set_fingerprint(b, "v1:b").unwrap();
+        db.set_loudness(b, Some(-6.0), Some(0.9), 1).unwrap();
 
         let jobs = db.tracks_needing_analysis().unwrap();
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].id, a);
         assert!(!jobs[0].needs_waveform);
         assert!(jobs[0].needs_fingerprint);
+        assert!(jobs[0].needs_loudness);
+    }
+
+    /// A silent or very short file measures successfully with no gain to
+    /// store. It must still count as measured, or the pass decodes it again on
+    /// every run forever.
+    #[test]
+    fn a_track_with_nothing_to_measure_is_not_queued_again() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&TrackInsert {
+            path: "/silent.mp3".into(),
+            content_type: "music".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let id = only_id(&db);
+        db.set_waveform(id, &[0]).unwrap();
+        db.set_fingerprint(id, "v1:s").unwrap();
+        db.set_loudness(id, None, None, 42).unwrap();
+
+        assert!(db.tracks_needing_analysis().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_measurement_reaches_both_load_paths() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&TrackInsert {
+            path: "/a.mp3".into(),
+            content_type: "music".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let id = only_id(&db);
+        db.set_loudness(id, Some(-6.5), Some(0.98), 1).unwrap();
+
+        let media = db.get_media_track(id).unwrap().unwrap();
+        assert_eq!(media.loudness.gain_db, Some(-6.5));
+        assert_eq!(media.loudness.peak, Some(0.98));
+
+        let info = db.get_track_load_info(id).unwrap().unwrap();
+        assert_eq!(info.loudness.gain_db, Some(-6.5));
+        assert_eq!(info.loudness.peak, Some(0.98));
     }
 
     #[test]

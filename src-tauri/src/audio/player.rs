@@ -87,6 +87,14 @@ pub enum Cmd {
         /// which is what restoring a session needs: a restart must not put
         /// audio on air by itself.
         autoplay: bool,
+        /// Linear factor levelling this track to the ReplayGain reference,
+        /// already resolved against the setting and the track's measurement.
+        /// `1.0` leaves the track as mastered — the setting is off, or nothing
+        /// has been measured for it yet.
+        ///
+        /// Resolved by the caller for the same reason `cue_points` is: the
+        /// worker applies what it is given and never consults the library.
+        gain: f32,
     },
     Play,
     Pause,
@@ -172,31 +180,47 @@ impl Topics {
 const SEEK_PREROLL: Duration = Duration::from_millis(200);
 
 /// Hand the sink the track as `cue` shapes it, starting from the absolute file
-/// position `start`: seek in, apply the fade envelope, stop at the out-point.
+/// position `start`: seek in, level to `gain`, apply the fade envelope, stop at
+/// the out-point.
 ///
 /// Running the sink dry at the out-point is what ends a trimmed track: the
 /// existing `sink.empty()` → `:ended` path fires naturally, with no second
 /// termination rule to keep in step.
+///
+/// `gain` is applied here, at the source, rather than through
+/// `sink.set_volume()`, for the reason `envelope` gives for the fades: sink
+/// gain belongs to the live fade-out and the segue ramps, and a second writer
+/// on it would fight them. It also has to land before the bus mixer sums the
+/// two decks, or a handover between tracks mastered at different levels
+/// crossfades wrong — and nothing downstream of the mixer can unpick that.
+/// This one function serves both program decks and the cue deck, so the
+/// headphone feed is levelled by the same code.
 pub(super) fn append_span(
     sink: &Sink,
     source: Decoder<Cursor<Bytes>>,
     start: Duration,
     cue: &Resolved,
+    gain: f32,
 ) {
     let take = cue
         .take_from(start.as_secs_f64())
         .map(Duration::from_secs_f64);
     let source = seek_to(source, start);
-    // A track with no ramps is handed to the sink unwrapped rather than
-    // multiplied by 1.0 for its whole length.
-    if cue.has_fades() {
-        append_take(
+    // A track with neither ramps nor levelling is handed to the sink unwrapped
+    // rather than multiplied by 1.0 for its whole length.
+    match (cue.has_fades(), gain != 1.0) {
+        (true, true) => append_take(
+            sink,
+            Enveloped::new(source, start.as_secs_f64(), *cue).amplify(gain),
+            take,
+        ),
+        (true, false) => append_take(
             sink,
             Enveloped::new(source, start.as_secs_f64(), *cue),
             take,
-        );
-    } else {
-        append_take(sink, source, take);
+        ),
+        (false, true) => append_take(sink, source.amplify(gain), take),
+        (false, false) => append_take(sink, source, take),
     }
 }
 

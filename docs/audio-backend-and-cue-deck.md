@@ -18,7 +18,7 @@ own output device, exactly as described below. The `Exclusive output` analysis
 also stands, with the caveat that an exclusive program output would be
 negotiated once for the bus rather than per deck.
 
-**Status update (2026-05-05):** the platform pivoted from Electron → Tauri 2 in PR #76. The chromium `<audio>` pipeline was replaced not by an mpv subprocess but by an in-process rodio + symphonia player living in `src-tauri/src/player.rs`. PR-1 and PR-2 are shipped; PR-3 (cue deck) is reframed for the rodio path and tracked as [#81](https://github.com/Arskah/radiodiodj/issues/81). ReplayGain + LAME-tag gapless trim moved to a separate audio-polish track [#80](https://github.com/Arskah/radiodiodj/issues/80).
+**Status update (2026-05-05):** the platform pivoted from Electron → Tauri 2 in PR #76. The chromium `<audio>` pipeline was replaced not by an mpv subprocess but by an in-process rodio + symphonia player living in `src-tauri/src/player.rs`. PR-1 and PR-2 are shipped; PR-3 (cue deck) is reframed for the rodio path and tracked as [#81](https://github.com/Arskah/radiodiodj/issues/81). ReplayGain moved to a separate audio-polish track [#80](https://github.com/Arskah/radiodiodj/issues/80); the LAME-tag gapless trim that shared that issue was dropped on 2026-09-19 — see [Gapless](#gapless) below.
 
 ## Goals
 
@@ -86,7 +86,7 @@ ALSA dev headers needed at build time on Linux (`libasound2-dev`); already wired
 ### Gapless
 
 - **PR-3 implementation note:** rodio's `Sink::append` accepts queueing — the next source can be appended while the current is still playing. Plan is to maintain a 1-track lookahead by listening to renderer playlist mutations and calling a new `Cmd::SetNext { path }` that pre-decodes and appends the source so EOF flows seamlessly into the next sample stream. (Replaces Q15b/G1 mpv-`loadfile`-append.)
-- LAME-tag encoder delay/padding trim is on the audio-polish issue (#80) and is what unlocks _true_ click-free transitions. Plain rodio queueing without trim still has small gaps for MP3.
+- **LAME-tag trim dropped (2026-09-19).** This line used to claim encoder delay/padding trim was what unlocked _true_ click-free transitions, tracked on #80. Automatic cue analysis ([cue-auto-analysis.md](./cue-auto-analysis.md), #358) supersedes it: LAME delay and padding are exact digital zeros, so the analyzer's `-70 dBFS` silence detection places Cue In past them and Cue Out before them without parsing a tag, for every supported format rather than MP3 alone. What remains is 50 ms window quantization against sample-exact tag counts, which only shows up in butt-spliced album playback — the bus overlaps via Next Start instead — and a track that has not been analyzed yet, which plays with `NULL` cues and no trim at all.
 - Cue is single-track; no gapless concern.
 
 ## Devices

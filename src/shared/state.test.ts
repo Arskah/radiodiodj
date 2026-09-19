@@ -112,6 +112,7 @@ function defaultTuning() {
       readRetryBackoffsMs: [500, 1000, 2000],
       fadeOutMs: 4000,
       fadeToNextMs: 2500,
+      replayGain: "track" as const,
     },
     library: { checkIntervalMin: 15, writeTags: false, tagWriteTimeoutSec: 30 },
   };

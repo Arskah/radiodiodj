@@ -185,6 +185,26 @@ pub struct PlayerConfig {
     /// buries the track that just started.
     #[serde(default = "default_fade_to_next_ms")]
     pub fade_to_next_ms: u64,
+    /// Whether a track is levelled to the ReplayGain reference on load.
+    #[serde(default)]
+    pub replay_gain: ReplayGainMode,
+}
+
+/// How much levelling the player applies to a loaded track.
+///
+/// There is deliberately no album mode. Album gain keeps a record's internal
+/// level relationships, which is right for front-to-back listening and wrong
+/// for radio: tracks air out of context from rotation, so it would reintroduce
+/// exactly the variation this levels out. Airing a record in full is a
+/// per-airing decision, not a station-wide setting.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum ReplayGainMode {
+    /// Play every track at the level it was mastered.
+    Off,
+    /// Level each track to the reference on its own measurement.
+    #[default]
+    Track,
 }
 
 fn default_read_watchdog_timeout_ms() -> u64 {
@@ -216,6 +236,7 @@ impl Default for PlayerConfig {
             read_retry_backoffs_ms: default_read_retry_backoffs_ms(),
             fade_out_ms: default_fade_out_ms(),
             fade_to_next_ms: default_fade_to_next_ms(),
+            replay_gain: ReplayGainMode::default(),
         }
     }
 }
