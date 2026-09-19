@@ -323,7 +323,7 @@ impl Db {
 
         let fts_q = trimmed
             .split_whitespace()
-            .map(|t| format!("\"{}\"*", t))
+            .map(fts5_prefix_term)
             .collect::<Vec<_>>()
             .join(" ");
         let order_sql = order.unwrap_or_else(|| "rank".to_string());
@@ -1195,6 +1195,22 @@ fn upsert_params(t: &TrackInsert) -> [&dyn rusqlite::ToSql; 14] {
         &t.mtime,
         &t.fingerprint,
     ]
+}
+
+/// Wrap one operator-typed word as an FTS5 prefix term.
+///
+/// The word is quoted so that punctuation inside it is tokenised rather than
+/// read as query syntax — `AC/DC` becomes the phrase `ac dc` rather than a
+/// syntax error. Embedded double quotes are doubled, which is the escape the
+/// FTS5 string grammar defines: left alone, a quote closes the phrase early
+/// and strands the trailing `*` inside an unterminated string, which SQLite
+/// rejects. Inside a quoted string no other character carries meaning, so this
+/// is the whole escape.
+///
+/// The result is bound as a parameter, so SQL quoting is a separate concern
+/// handled by rusqlite; this escapes only the FTS5 query language.
+fn fts5_prefix_term(word: &str) -> String {
+    format!("\"{}\"*", word.replace('"', "\"\""))
 }
 
 /// Build a ` AND id NOT IN (?, ?, ...)` fragment with one placeholder per
@@ -2525,6 +2541,30 @@ mod tests {
         let r = db.search("hel", None, None, None).unwrap();
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].title, "Hello World");
+    }
+
+    #[test]
+    fn fts5_prefix_term_doubles_embedded_quotes() {
+        assert_eq!(fts5_prefix_term("beat"), r#""beat"*"#);
+        assert_eq!(fts5_prefix_term(r#"12""#), r#""12"""*"#);
+        assert_eq!(fts5_prefix_term(r#"""#), r#"""""*"#);
+        assert_eq!(fts5_prefix_term("AC/DC"), r#""AC/DC"*"#);
+    }
+
+    #[test]
+    fn search_tolerates_double_quotes_in_query() {
+        let db = Db::open_in_memory().unwrap();
+        insert(&db, "/a.mp3", "12\" Disco Mix", "Band", "Album", "music");
+        insert(&db, "/b.mp3", "Other", "Band", "Album", "music");
+
+        let r = db.search("12\"", None, None, None).unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].title, "12\" Disco Mix");
+
+        for q in ["\"", "\"\"\"", "a\"b\"", "\" \""] {
+            db.search(q, None, None, None)
+                .unwrap_or_else(|e| panic!("search({q:?}) errored: {e}"));
+        }
     }
 
     #[test]

@@ -459,13 +459,20 @@ export class AppState {
     this.scheduleSave();
   }
 
+  /// Re-query the library. Keeps the current rows on error rather than
+  /// rejecting into a void call, so a query the backend refuses leaves the
+  /// listing usable instead of silently frozen.
   async search(): Promise<void> {
-    this.tracks = await api.search(
-      this.searchQuery,
-      this.activeTab,
-      this.sortBy ?? undefined,
-      this.sortDir,
-    );
+    try {
+      this.tracks = await api.search(
+        this.searchQuery,
+        this.activeTab,
+        this.sortBy ?? undefined,
+        this.sortDir,
+      );
+    } catch (err) {
+      logger.error("Search failed:", err);
+    }
   }
 
   setTab(tab: ContentType): void {

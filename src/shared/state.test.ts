@@ -1090,6 +1090,15 @@ describe("AppState library + paths", () => {
     expect(app.tracks.length).toBe(2);
   });
 
+  it("a rejected search keeps the rows already listed", async () => {
+    await app.search();
+    expect(app.tracks.length).toBe(2);
+
+    api.search.mockRejectedValueOnce(new Error("unterminated string"));
+    await expect(app.search()).resolves.toBeUndefined();
+    expect(app.tracks.length).toBe(2);
+  });
+
   it("setTab updates activeTab and triggers a search for it", () => {
     app.setTab("jingle");
     expect(app.activeTab).toBe("jingle");
