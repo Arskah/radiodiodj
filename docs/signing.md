@@ -168,14 +168,20 @@ targets **Azure Trusted Signing** via [`trusted-signing-cli`].
 
 ### Certificate options
 
+- **SignPath Foundation** — free for approved OSS projects, and the repo is
+  `GPL-3.0-or-later`, so it qualifies. SignPath signs artifacts **after** the build via
+  its own GitHub Action, so it does _not_ use the `signCommand` overlay — it needs a
+  post-build signing step and the upload job has to take the signed files rather than the
+  raw `staging/` upload. Approval is an application with a review queue; it signs only
+  public CI builds.
 - **Azure Trusted Signing** — ~$10/mo, individual identity now allowed (needs a few years
-  of verifiable history). Works with the scaffolded `signCommand` below.
-- **SignPath Foundation** — free for approved OSS projects. Note: SignPath signs artifacts
-  **after** the build via its own GitHub Action, so it does _not_ use this `signCommand`
-  overlay — you would add a post-build signing step instead. The repo is currently
-  `UNLICENSED`, which likely disqualifies it until relicensed as OSS.
-- **OV/EV certificate** — $100–400/yr from a CA; use `certificateThumbprint` +
-  `digestAlgorithm` + `timestampUrl` under `bundle.windows` instead of `signCommand`.
+  of verifiable history). Certificate stays in Azure, never on the runner, and signatures
+  are timestamped for you. Works with the scaffolded `signCommand` below.
+- **OV certificate** — $100–400/yr from a CA. Since June 2023 the private key must live on
+  a hardware token or HSM, so CI signing needs a CA that offers a cloud HSM. Configure with
+  `certificateThumbprint` + `digestAlgorithm` + `timestampUrl` under `bundle.windows`
+  instead of `signCommand`. It buys a real publisher identity but not instant SmartScreen
+  trust — reputation still accrues over downloads (the old EV shortcut is gone).
 
 ### Activate (Azure Trusted Signing route)
 
@@ -185,9 +191,23 @@ targets **Azure Trusted Signing** via [`trusted-signing-cli`].
    (`REPLACE_WITH_CERTIFICATE_PROFILE`).
 3. Add repo secrets: `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`
    (already read as env by the build workflow).
-4. Ensure `trusted-signing-cli` is installed on the Windows runner (add an install step
-   to `build.yml`, e.g. `cargo install trusted-signing-cli`).
+4. Add a step to `build.yml` that installs `trusted-signing-cli` on the Windows runner
+   (`cargo install trusted-signing-cli`). **This step does not exist yet** — flipping the
+   flag without it fails the build with `cmd not found`.
 5. Set `sign-windows: true` on the `build-windows-x64` job in
    `.github/workflows/release.yml`.
 
+### Activate (SignPath route)
+
+Not scaffolded — this route bypasses `signing.windows.conf.json` entirely. Leave
+`sign-windows: false` and instead:
+
+1. Apply to the [SignPath Foundation] OSS programme; get the project, signing policy and
+   CI user approved.
+2. Add a signing step after the Windows build that submits the unsigned `.msi` / `.exe`
+   to SignPath and writes the signed artifacts back over the staged ones, so the existing
+   upload job picks them up.
+3. Add the `SIGNPATH_API_TOKEN` secret and the organization / project / policy slugs.
+
+[SignPath Foundation]: https://about.signpath.io/product/open-source
 [`trusted-signing-cli`]: https://github.com/Levminer/trusted-signing-cli
