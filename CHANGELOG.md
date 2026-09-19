@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.22.0](https://github.com/Arskah/radiodiodj/compare/v0.21.2...v0.22.0) (2026-09-19)
+
+
+### Features
+
+* **audio:** level every track to the ReplayGain reference ([#429](https://github.com/Arskah/radiodiodj/issues/429)) ([990f7bc](https://github.com/Arskah/radiodiodj/commit/990f7bcced7dc50d365e52719b8c1b88f4838aad)), closes [#80](https://github.com/Arskah/radiodiodj/issues/80)
+* **playlist:** keep the auto-playlist off recent titles and artists ([#430](https://github.com/Arskah/radiodiodj/issues/430)) ([bbb083d](https://github.com/Arskah/radiodiodj/commit/bbb083ddf5edc345c56d2659491166f8ebfc78c9)), closes [#282](https://github.com/Arskah/radiodiodj/issues/282)
+
+
+### Bug Fixes
+
+* **library:** escape quotes in search queries ([#424](https://github.com/Arskah/radiodiodj/issues/424)) ([c5b9e53](https://github.com/Arskah/radiodiodj/commit/c5b9e538d1c4f3534a857031ad4443f2ebe25c2a))
+* **playlist:** put the interrupted track back on when the share returns ([#432](https://github.com/Arskah/radiodiodj/issues/432)) ([874370f](https://github.com/Arskah/radiodiodj/commit/874370fe3033799ed81789d61f66c56b516fc49a))
+
+
+### Miscellaneous Chores
+
+* **ui:** remove the decorative Live On Air badge ([#428](https://github.com/Arskah/radiodiodj/issues/428)) ([23994ef](https://github.com/Arskah/radiodiodj/commit/23994ef78bbd27e58e6c97d4af678b8965a47fff)), closes [#287](https://github.com/Arskah/radiodiodj/issues/287)
+
+
+### Documentation
+
+* design for fuzzy library search ([#425](https://github.com/Arskah/radiodiodj/issues/425)) ([cf6fa6f](https://github.com/Arskah/radiodiodj/commit/cf6fa6f3bda931e4d73362807091e44ebc5a9576))
+
 ## [0.21.2](https://github.com/Arskah/radiodiodj/compare/v0.21.1...v0.21.2) (2026-09-19)
 
 
