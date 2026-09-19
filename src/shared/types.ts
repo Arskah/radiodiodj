@@ -245,6 +245,14 @@ export interface AutoPlaylistConfig {
   netRetryBackoffsMs: number[];
 }
 
+/// Auto-playlist no-repeat windows, in minutes. Music only; 0 disables a rule.
+export interface RotationConfig {
+  /** A track that aired inside this window is not selected. */
+  titleWindowMin: number;
+  /** A track whose artist aired inside this window is not selected. */
+  artistWindowMin: number;
+}
+
 /// Prefetch byte-cache tuning (bytes).
 export interface CacheConfig {
   maxCacheBytes: number;
@@ -280,6 +288,7 @@ export interface LibraryConfig {
 export interface TuningConfig {
   interleave: InterleaveConfig;
   autoPlaylist: AutoPlaylistConfig;
+  rotation: RotationConfig;
   cache: CacheConfig;
   player: PlayerConfig;
   library: LibraryConfig;

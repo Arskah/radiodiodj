@@ -68,6 +68,7 @@ const DEFAULT_TUNING: TuningConfig = {
     // cached (network outage). The last value repeats until recovery.
     netRetryBackoffsMs: [1000, 2000, 5000],
   },
+  rotation: { titleWindowMin: 180, artistWindowMin: 45 },
   cache: { maxCacheBytes: 150 * 1024 * 1024 },
   player: {
     readWatchdogTimeoutMs: 10000,

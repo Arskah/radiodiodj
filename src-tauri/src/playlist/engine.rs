@@ -19,8 +19,10 @@ use crate::library::db::Track;
 /// sizes are read per call so a settings change takes effect on the next refill
 /// without a restart, matching how the interleave cadence already behaves.
 pub trait Refiller {
-    /// An interleaved block of `count` tracks, excluding ids already queued.
-    fn generate(&self, count: i64, exclude: &[i64]) -> Vec<Track>;
+    /// An interleaved block of `count` tracks, given everything already
+    /// queued. The whole track is passed, not just its id, because the
+    /// rotation rules constrain on artist as well (see `docs/rotation.md`).
+    fn generate(&self, count: i64, queued: &[&Track]) -> Vec<Track>;
     /// Target number of upcoming tracks the auto-playlist keeps queued.
     fn buffer(&self) -> i64;
     /// Refill once fewer than this many remain.
@@ -693,12 +695,14 @@ impl Playlist {
         if queued >= r.threshold() {
             return;
         }
-        let exclude: Vec<i64> = self
-            .items
-            .iter()
-            .filter_map(|i| i.as_track().map(|t| t.id))
-            .collect();
-        let tracks = r.generate(r.buffer() - queued, &exclude);
+        let tracks = {
+            let in_queue: Vec<&Track> = self
+                .items
+                .iter()
+                .filter_map(PlaylistItem::as_track)
+                .collect();
+            r.generate(r.buffer() - queued, &in_queue)
+        };
         self.items
             .extend(tracks.into_iter().map(PlaylistItem::track));
     }
@@ -782,8 +786,10 @@ mod tests {
     }
 
     impl Refiller for FakeRefiller {
-        fn generate(&self, count: i64, exclude: &[i64]) -> Vec<Track> {
-            self.calls.borrow_mut().push((count, exclude.to_vec()));
+        fn generate(&self, count: i64, queued: &[&Track]) -> Vec<Track> {
+            self.calls
+                .borrow_mut()
+                .push((count, queued.iter().map(|t| t.id).collect()));
             if !self.generating {
                 return vec![];
             }
@@ -831,7 +837,7 @@ mod tests {
     struct NoRefill;
 
     impl Refiller for NoRefill {
-        fn generate(&self, _count: i64, _exclude: &[i64]) -> Vec<Track> {
+        fn generate(&self, _count: i64, _queued: &[&Track]) -> Vec<Track> {
             panic!("refill must not be requested here");
         }
         fn buffer(&self) -> i64 {

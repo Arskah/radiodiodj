@@ -1007,6 +1007,42 @@
               </div>
             </div>
 
+            <h5 class="tuning-group-title">Rotation</h5>
+            <div class="device-row">
+              <label for="tune-title-window">No-repeat title (minutes)</label>
+              <input
+                id="tune-title-window"
+                type="number"
+                min="0"
+                max="10080"
+                value={tuning.rotation.titleWindowMin}
+                oninput={(e) =>
+                  numInput(e, (v) => (tuning.rotation.titleWindowMin = v))}
+                onchange={saveTuning}
+              />
+              <div class="hint">
+                The auto-playlist will not pick a track that aired this
+                recently. Music only. 0 turns it off.
+              </div>
+            </div>
+            <div class="device-row">
+              <label for="tune-artist-window">No-repeat artist (minutes)</label>
+              <input
+                id="tune-artist-window"
+                type="number"
+                min="0"
+                max="10080"
+                value={tuning.rotation.artistWindowMin}
+                oninput={(e) =>
+                  numInput(e, (v) => (tuning.rotation.artistWindowMin = v))}
+                onchange={saveTuning}
+              />
+              <div class="hint">
+                The auto-playlist will not pick a track whose artist aired this
+                recently. Queued tracks count as aired. 0 turns it off.
+              </div>
+            </div>
+
             <h5 class="tuning-group-title">Auto-playlist</h5>
             <div class="device-row">
               <label for="tune-buffer">Buffer (tracks kept queued)</label>

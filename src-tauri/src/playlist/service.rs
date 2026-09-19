@@ -62,14 +62,23 @@ const DEFAULT_BACKOFF_MS: u64 = 1000;
 struct DbRefiller<'a> {
     db: &'a Db,
     interleave: generate::Interleave,
+    rotation: generate::Rotation,
     buffer: i64,
     threshold: i64,
     history_cap: usize,
 }
 
 impl Refiller for DbRefiller<'_> {
-    fn generate(&self, count: i64, exclude: &[i64]) -> Vec<Track> {
-        generate::generate(self.db, count, exclude, &self.interleave).unwrap_or_else(|e| {
+    fn generate(&self, count: i64, queued: &[&Track]) -> Vec<Track> {
+        generate::generate(
+            self.db,
+            count,
+            queued,
+            &self.interleave,
+            &self.rotation,
+            now_ms(),
+        )
+        .unwrap_or_else(|e| {
             log::error!("auto-playlist refill failed: {}", e);
             vec![]
         })
@@ -349,6 +358,7 @@ impl Inner {
         DbRefiller {
             db: &self.db,
             interleave: generate::Interleave::from_config(&tuning),
+            rotation: generate::Rotation::from_config(&tuning),
             buffer: tuning.auto_playlist.auto_playlist_buffer as i64,
             threshold: tuning.auto_playlist.auto_playlist_threshold as i64,
             history_cap: tuning.auto_playlist.history_cap,

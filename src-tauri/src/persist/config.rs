@@ -53,6 +53,8 @@ pub struct TuningConfig {
     #[serde(default)]
     pub auto_playlist: AutoPlaylistConfig,
     #[serde(default)]
+    pub rotation: RotationConfig,
+    #[serde(default)]
     pub cache: CacheConfig,
     #[serde(default)]
     pub player: PlayerConfig,
@@ -141,6 +143,40 @@ impl Default for AutoPlaylistConfig {
             history_cap: default_history_cap(),
             session_save_throttle_ms: default_session_save_throttle_ms(),
             net_retry_backoffs_ms: default_net_retry_backoffs_ms(),
+        }
+    }
+}
+
+/// Auto-playlist no-repeat windows, in minutes of wall clock against the airing
+/// log. Music only. See `docs/rotation.md`.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct RotationConfig {
+    /// A track that aired inside this window is not selected. 0 disables.
+    #[serde(default = "default_title_window_min")]
+    pub title_window_min: i64,
+    /// A track whose artist aired inside this window is not selected. 0
+    /// disables.
+    #[serde(default = "default_artist_window_min")]
+    pub artist_window_min: i64,
+}
+
+/// A week. A window longer than this cannot be honoured by any library the app
+/// is likely to see, and would only turn every refill into a relaxation.
+const ROTATION_WINDOW_MAX_MIN: i64 = 7 * 24 * 60;
+
+fn default_title_window_min() -> i64 {
+    180
+}
+fn default_artist_window_min() -> i64 {
+    45
+}
+
+impl Default for RotationConfig {
+    fn default() -> Self {
+        Self {
+            title_window_min: default_title_window_min(),
+            artist_window_min: default_artist_window_min(),
         }
     }
 }
@@ -571,6 +607,10 @@ fn normalize_tuning(mut t: TuningConfig) -> TuningConfig {
         }
     }
 
+    let rot = &mut t.rotation;
+    rot.title_window_min = rot.title_window_min.clamp(0, ROTATION_WINDOW_MAX_MIN);
+    rot.artist_window_min = rot.artist_window_min.clamp(0, ROTATION_WINDOW_MAX_MIN);
+
     // Floor of 16 MiB: enough for at least one whole track to stay resident.
     t.cache.max_cache_bytes = t.cache.max_cache_bytes.max(16 * 1024 * 1024);
 
@@ -807,12 +847,16 @@ mod tests {
         t.auto_playlist.auto_playlist_threshold = 99; // -> clamped to buffer (4)
         t.cache.max_cache_bytes = 1; // -> 16 MiB floor
         t.player.read_retry_backoffs_ms = vec![0, 5]; // 0 -> 1
+        t.rotation.title_window_min = 99_999; // -> 7 days
+        t.rotation.artist_window_min = -5; // -> 0 (rule off)
         let clamped = cfg.set_tuning(t).unwrap();
         assert_eq!(clamped.interleave.jingle_every, 0);
         assert_eq!(clamped.interleave.commercial_every, 0);
         assert_eq!(clamped.auto_playlist.auto_playlist_threshold, 4);
         assert_eq!(clamped.cache.max_cache_bytes, 16 * 1024 * 1024);
         assert_eq!(clamped.player.read_retry_backoffs_ms, vec![1, 5]);
+        assert_eq!(clamped.rotation.title_window_min, 7 * 24 * 60);
+        assert_eq!(clamped.rotation.artist_window_min, 0);
 
         // Reopen reads the persisted (clamped) values.
         drop(cfg);

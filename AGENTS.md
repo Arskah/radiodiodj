@@ -73,6 +73,8 @@ Tauri 2 app. Two process boundaries: a Rust backend and a Svelte 5 / Vite render
 
 **Auto-playlist:** Toggle mode that keeps a lookahead buffer queued, refilling from random DB selection when it drops below the threshold. Runs in `playlist::engine` alongside advancement, so a refill and the track change that triggered it are one transition.
 
+**Rotation rules:** music selection will not reselect a track that aired inside `tuning.rotation.titleWindowMin`, nor one whose artist aired inside `artistWindowMin` — minutes of wall clock against `play_log.aired_at`, `0` disabling either rule. Both predicates run in SQL (`SelectionFilter` in `library/db.rs`), so a query still returns exactly the count asked for. The queue counts as already aired, because a queued track has no log row yet; so does the block being generated, which is why music is picked one slot at a time, each pick joining the next one's blocklist. A slot that cannot be filled steps down a three-rung ladder for itself alone — both rules, then title only, then neither — warning once per refill; the id exclusion is never relaxed. Jingles and commercials are untouched: they share one artist string apiece, so an artist rule would block the pool after one airing. See `docs/rotation.md`.
+
 **Seek:** `audio/player.rs` reloads the source on seek. `append_span` seeks in two stages — `try_seek` (container-level binary search) to ~200 ms short of the target, then `skip_duration` (sample iteration) for the remainder — so a stored marker lands sample-exactly even where symphonia estimates the seek by bitrate. A failing `try_seek` falls back to `skip_duration` from zero. `seek_offset + sink.get_pos()`, less `cue_in`, keeps `{role}:time` accurate.
 
 ## Gotchas

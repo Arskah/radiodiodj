@@ -148,10 +148,30 @@ This changes two signatures. `Refiller::generate` passes the queued _tracks_,
 not just their ids, so the service can read their artists; and `generate()`
 takes a rotation parameter object rather than a bare `exclude_ids` slice.
 
+### And so does the block being generated
+
+One query asked for fifteen music rows can only exclude what it was told about
+up front, so it will happily return the same artist three times inside the very
+block the rules exist to spread out. The queue constraint does not reach it: the
+block is not queued yet.
+
+So music is picked **a slot at a time**, each pick joining the id exclusion and
+the artist blocklist for the next one. Jingles and commercials are still one
+query each — their selection is unchanged. A refill therefore costs one small
+`ORDER BY RANDOM() LIMIT 1` per music slot, roughly fifteen indexed queries
+against a few thousand rows, once a song.
+
 ### Matching artists
 
-In SQL, on `lower(trim(artist))`, with the blocklist normalised the same way in
-Rust so both sides agree.
+In SQL, on `lower(trim(artist))` — both against the log's snapshot artists and
+against the blocklist, which `db::artist_key` normalises in Rust with
+`trim().to_ascii_lowercase()`. ASCII on purpose: lowering _more_ than SQLite
+does would make the two sides disagree.
+
+A blank artist is never a constraint. An untagged library shares one empty
+artist string, and one airing of it would otherwise take the whole pool out, so
+blank keys are dropped from the blocklist and blank log rows are skipped by the
+subquery.
 
 SQLite's `lower()` is ASCII-only, as is `NOCASE`, so `Ämmä` and `ämmä` do not
 match. On a Finnish station that is a real if narrow gap. It is accepted for now
@@ -167,20 +187,24 @@ Selection must degrade, never stall: a fresh install with 80 tracks cannot
 satisfy a 3-hour title window, and `refill` silently extends the queue with
 however few rows came back.
 
-Staged, refetching only the deficit:
+Staged, and per slot — since slots are what selection deals in:
 
-1. Ask for `n` with both rules.
-2. Short by `k`? Ask for `k` with the artist rule dropped, excluding what stage
-   1 picked.
-3. Still short? Ask for the remainder with the title rule dropped too.
+1. Ask for one track with both rules.
+2. Nothing? Ask again with the artist rule dropped.
+3. Still nothing? Ask again with the title rule dropped too.
 
-`exclude_ids` — the queued tracks — is never relaxed at any stage. A duplicate
-inside the queue is a bug, not a degradation.
+The next slot starts back at the top, so only the slots that actually had to
+degrade are compromised, rather than one scarce slot disabling the rule for the
+whole block. A slot that comes back empty even unconstrained means the pool is
+spent: the block ends short, and `refill` extends the queue with however few
+tracks came back.
 
-Deficit-only means the block is as constrained as the library allows and only
-its tail is compromised, rather than one scarce slot disabling the rule for
-everything. Each relaxation logs at `warn` once per refill, so an operator
-learns their library is too small instead of merely hearing repeats.
+`exclude_ids` — the queue, plus everything picked so far in this block — is
+never relaxed at any stage. A duplicate inside the queue is a bug, not a
+degradation.
+
+Each relaxation logs at `warn` once per refill, so an operator learns their
+library is too small instead of merely hearing repeats.
 
 On the live library (4295 music tracks, 1002 distinct artists) the ladder should
 never run. If it does, something is wrong.
