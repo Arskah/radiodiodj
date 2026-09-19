@@ -158,6 +158,7 @@ struct PendingLoad {
     cue_points: CuePoints,
     start_at: f64,
     autoplay: bool,
+    replay_gain: f32,
 }
 
 /// Result of a background file read, routed back to the worker thread.
@@ -174,6 +175,7 @@ struct LoadMsg {
     cue_points: CuePoints,
     start_at: f64,
     autoplay: bool,
+    replay_gain: f32,
     bytes: Result<Bytes>,
 }
 
@@ -213,6 +215,11 @@ pub(super) struct Deck {
     gain: f32,
     /// The ramp currently stepping `gain`, if any.
     ramp: Option<Ramp>,
+    /// The loaded track's ReplayGain factor, kept so a re-decode on seek
+    /// levels it the same way the original load did. Distinct from `gain`,
+    /// which is the live ramp: this one is a property of the track, set once
+    /// per load and never stepped.
+    replay_gain: f32,
     /// A load deferred because no audio output could be opened. The idle loop
     /// retries the open and replays this load once a device is available (#259).
     pending_load: Option<PendingLoad>,
@@ -239,6 +246,7 @@ impl Deck {
             volume: 1.0,
             gain: 1.0,
             ramp: None,
+            replay_gain: 1.0,
             pending_load: None,
             last_time_emit: Instant::now()
                 .checked_sub(TIME_EMIT_INTERVAL)
@@ -450,6 +458,7 @@ fn start_load(
     cue_points: CuePoints,
     start_at: f64,
     autoplay: bool,
+    replay_gain: f32,
 ) {
     let Some((mixer, generation)) = ensure_output(output, app, events) else {
         // No device yet: remember the intent and let the idle loop retry the
@@ -462,6 +471,7 @@ fn start_load(
             cue_points,
             start_at,
             autoplay,
+            replay_gain,
         });
         output.mark_retry_now();
         deck.current_id = Some(id);
@@ -501,6 +511,7 @@ fn start_load(
             cue_points,
             start_at,
             autoplay,
+            replay_gain,
             bytes: Ok(bytes),
         });
     } else {
@@ -522,6 +533,7 @@ fn start_load(
                 cue_points,
                 start_at,
                 autoplay,
+                replay_gain,
                 bytes,
             });
         });
@@ -551,6 +563,7 @@ fn apply(
             cue_points,
             start_at,
             autoplay,
+            gain,
         } => {
             start_load(
                 app,
@@ -567,6 +580,7 @@ fn apply(
                 cue_points,
                 start_at,
                 autoplay,
+                gain,
             );
         }
         Cmd::Play => {
@@ -610,7 +624,13 @@ fn apply(
             };
             match decode_bytes(bytes) {
                 Ok((source, _)) => {
-                    append_span(sink, source, Duration::from_secs_f64(target), &deck.cue);
+                    append_span(
+                        sink,
+                        source,
+                        Duration::from_secs_f64(target),
+                        &deck.cue,
+                        deck.replay_gain,
+                    );
                     deck.seek_offset = target;
                     deck.active = true;
                     if was_paused {
@@ -736,7 +756,13 @@ fn apply_load(
             // alongside the Load would have found none and been dropped.
             let air_start = clamp_start(msg.start_at, air_duration);
             let start_at = cue.file_pos(air_start);
-            append_span(sink, source, Duration::from_secs_f64(start_at), &cue);
+            append_span(
+                sink,
+                source,
+                Duration::from_secs_f64(start_at),
+                &cue,
+                msg.replay_gain,
+            );
             if msg.autoplay {
                 sink.play();
             } else {
@@ -745,6 +771,7 @@ fn apply_load(
             deck.current_bytes = Some(bytes);
             deck.current_duration = final_duration;
             deck.cue = cue;
+            deck.replay_gain = msg.replay_gain;
             deck.seek_offset = start_at;
             deck.active = true;
             // Air time, so a trimmed track is simply a shorter track to every
@@ -1112,6 +1139,7 @@ pub(super) fn run(
                         p.cue_points,
                         p.start_at,
                         p.autoplay,
+                        p.replay_gain,
                     );
                 }
             }
@@ -1238,6 +1266,7 @@ mod tests {
             cue_points: CuePoints::default(),
             start_at: 0.0,
             autoplay: true,
+            replay_gain: 1.0,
             bytes: Ok(Arc::from(Vec::new().into_boxed_slice())),
         };
         let fresh = LoadMsg {
@@ -1248,6 +1277,7 @@ mod tests {
             cue_points: CuePoints::default(),
             start_at: 0.0,
             autoplay: true,
+            replay_gain: 1.0,
             bytes: Ok(Arc::from(Vec::new().into_boxed_slice())),
         };
         assert_ne!(stale.generation, latest);
@@ -1306,6 +1336,7 @@ mod tests {
             cue_points: CuePoints::default(),
             start_at: 0.0,
             autoplay: true,
+            replay_gain: 1.0,
             bytes: Ok(Arc::from(Vec::new().into_boxed_slice())),
         };
         let decks = [
@@ -1371,6 +1402,7 @@ mod tests {
                 cue_points: CuePoints::default(),
                 start_at: 0.0,
                 autoplay: true,
+                gain: 1.0,
             }),
             Some(TailAction::Cut)
         );
@@ -1448,6 +1480,7 @@ mod tests {
             cue_points: CuePoints::default(),
             start_at: 0.0,
             autoplay: true,
+            gain: 1.0,
         }));
         assert!(!cancels_ramp(&Cmd::SetVolume(0.5)));
         assert!(!cancels_ramp(&fade(3000)));

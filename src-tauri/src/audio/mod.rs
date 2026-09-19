@@ -6,6 +6,7 @@ pub mod deck;
 pub mod devices;
 pub mod envelope;
 pub mod formats;
+pub mod loudness;
 pub mod output;
 pub mod player;
 pub mod waveform;

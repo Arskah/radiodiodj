@@ -31,6 +31,11 @@ The library lives in SQLite (`radiodiodj.db`, WAL mode) and is opened by
   with the library, or reads audio files, belongs in a background pass. The
   fingerprint backfill in `library/waveform_scan.rs` is the pattern: a nullable
   column, filled after launch, with the code tolerating `NULL`.
+- **A backfilled column needs its own "done" marker** when `NULL` is a valid
+  result. `rg_gain IS NULL` cannot mean "not yet measured", because a silent
+  file measures successfully and has no gain — so `rg_measured_at` carries that,
+  and the analysis queue keys off it. Without the marker such a file is decoded
+  again on every pass forever.
 - **New columns are nullable or have a default**, so the step is a plain
   `ALTER TABLE ... ADD COLUMN`.
 - **Anything SQLite cannot `ALTER`** (dropping a constraint, changing a column)
@@ -38,7 +43,8 @@ The library lives in SQLite (`radiodiodj.db`, WAL mode) and is opened by
   `INSERT INTO tracks_fts(tracks_fts) VALUES('rebuild')`, and recreate the
   triggers and partial indexes. Use `M::up_with_hook` if Rust code is needed.
 - **Operator work is never in the upsert's `SET` list.** Cue points, play
-  count, waveform and fingerprint must survive a rescan. `UPSERT_TRACK_SQL`
+  count, waveform, fingerprint and the loudness measurement must survive a
+  rescan. `UPSERT_TRACK_SQL`
   touches only tag-derived columns, and it only overwrites the fingerprint with
   a non-null value. It also clears the recorded analysis failure, since it runs
   only for a file that changed.

@@ -35,7 +35,7 @@ use tauri::{AppHandle, Emitter};
 use super::db::{AnalysisJob, Db};
 use super::fingerprint;
 use super::scanner::now_ms;
-use crate::audio::waveform;
+use crate::audio::{loudness, waveform};
 
 type Bytes = Arc<[u8]>;
 
@@ -238,7 +238,7 @@ fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle) -> Outcome {
     let path = Path::new(&job.path);
     let mut retry = false;
     let mut errors: Vec<String> = Vec::new();
-    let fingerprint = if job.needs_waveform {
+    let fingerprint = if job.needs_waveform || job.needs_loudness {
         let start = Instant::now();
         let bytes: Bytes = match std::fs::read(path) {
             Ok(v) => Arc::from(v.into_boxed_slice()),
@@ -247,21 +247,39 @@ fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle) -> Outcome {
                 return Outcome::Retry;
             }
         };
-        match waveform::compute_peaks(Arc::clone(&bytes)) {
-            Ok(peaks) => {
+        match waveform::analyze(Arc::clone(&bytes)) {
+            Ok(analysis) => {
                 let decode_ms = start.elapsed().as_millis();
                 let store_start = Instant::now();
-                if let Err(e) = db.set_waveform(job.id, &peaks) {
-                    log::error!("waveform: store {} failed: {}", job.id, e);
-                    retry = true;
-                } else {
-                    log::debug!(
-                        "waveform: {} decode {}ms write {}ms",
-                        job.path,
-                        decode_ms,
-                        store_start.elapsed().as_millis()
-                    );
-                    let _ = app.emit(WAVEFORM_READY_EVENT, job.id);
+                if job.needs_waveform {
+                    if let Err(e) = db.set_waveform(job.id, &analysis.curve) {
+                        log::error!("waveform: store {} failed: {}", job.id, e);
+                        retry = true;
+                    } else {
+                        log::debug!(
+                            "waveform: {} decode {}ms write {}ms",
+                            job.path,
+                            decode_ms,
+                            store_start.elapsed().as_millis()
+                        );
+                        let _ = app.emit(WAVEFORM_READY_EVENT, job.id);
+                    }
+                }
+                if job.needs_loudness {
+                    let m = analysis.loudness;
+                    let gain = m.map(|l| loudness::gain_db(l.lufs));
+                    let peak = m.map(|l| f64::from(l.peak));
+                    if let Err(e) = db.set_loudness(job.id, gain, peak, now_ms()) {
+                        log::error!("loudness: store {} failed: {}", job.id, e);
+                        retry = true;
+                    } else {
+                        log::debug!(
+                            "loudness: {} {:?} LUFS gain {:?} dB",
+                            job.path,
+                            m.map(|l| l.lufs),
+                            gain
+                        );
+                    }
                 }
             }
             Err(e) => {

@@ -21,6 +21,7 @@ use super::model::{PlaylistItem, Snapshot};
 use crate::audio::bus::{ProgramBus, FADED_OUT_EVENT, HANDOVER_EVENT};
 use crate::audio::cache::Cache;
 use crate::audio::cue_points::CuePoints;
+use crate::audio::loudness;
 use crate::audio::player::Cmd;
 use crate::broadcast::BroadcastService;
 use crate::library::db::{Db, Track, TrackLoadInfo};
@@ -447,7 +448,8 @@ impl Inner {
         let Some(info) = self.load_info(id, cue_override) else {
             return;
         };
-        self.bus.send_arm(Self::load_cmd(&info, 0.0, false));
+        let gain = self.replay_gain(&info);
+        self.bus.send_arm(Self::load_cmd(&info, 0.0, false, gain));
     }
 
     /// Resolve a track's row and fold in the markers this airing plays under.
@@ -481,7 +483,7 @@ impl Inner {
     /// a Seek sent straight after a Load arrives before there is anything to
     /// seek in, and a Play would override a restore that is meant to stay
     /// parked.
-    fn load_cmd(info: &TrackLoadInfo, start_at: f64, autoplay: bool) -> Cmd {
+    fn load_cmd(info: &TrackLoadInfo, start_at: f64, autoplay: bool, gain: f32) -> Cmd {
         Cmd::Load {
             id: info.id,
             path: PathBuf::from(info.path.clone()),
@@ -489,7 +491,17 @@ impl Inner {
             cue_points: info.cue_points,
             start_at,
             autoplay,
+            gain,
         }
+    }
+
+    /// What levelling this track loads at, under the current setting.
+    fn replay_gain(&self, info: &TrackLoadInfo) -> f32 {
+        loudness::factor(
+            self.config.get_tuning().player.replay_gain,
+            info.loudness.gain_db,
+            info.loudness.peak,
+        )
     }
 
     /// Hand a track to the main deck. Reports whether the load was actually
@@ -505,7 +517,7 @@ impl Inner {
         let Some(info) = self.load_info(id, cue_override) else {
             return false;
         };
-        let cmd = Self::load_cmd(&info, start_at, autoplay);
+        let cmd = Self::load_cmd(&info, start_at, autoplay, self.replay_gain(&info));
         self.broadcast.set_pending_track(info.into());
         self.bus.send_main(cmd);
         true
