@@ -116,6 +116,7 @@ function defaultTuning() {
       replayGain: "track" as const,
     },
     library: { checkIntervalMin: 15, writeTags: false, tagWriteTimeoutSec: 30 },
+    autoCue: { silenceDbfs: -70, segueDbfs: -20 },
   };
 }
 

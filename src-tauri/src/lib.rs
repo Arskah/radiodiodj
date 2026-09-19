@@ -450,12 +450,19 @@ fn audio_list_devices() -> Vec<DeviceInfo> {
 
 #[tauri::command(rename_all = "camelCase")]
 fn update_track_metadata(
+    app: AppHandle,
     state: State<'_, AppState>,
     updates: TrackMetadataUpdate,
 ) -> Result<Track, String> {
     let track = state.db.update_track_metadata(&updates).map_err(err)?;
     if track.edited_fields != 0 {
         state.tag_writer.request(track.id);
+    }
+    // The update itself requeued the track if a reclassification changed what
+    // automatic analysis would infer; this kicks the pass that drains the
+    // queue. Single-flight, and nothing is queued when nothing changed.
+    if updates.content_type.is_some() {
+        Arc::clone(&state.waveform).start(app, Arc::clone(&state.db), Arc::clone(&state.config));
     }
     // Artist and title decide possible duplicates.
     state.health.refresh();
@@ -1012,9 +1019,10 @@ pub fn run() {
             playlist.attach_to_app(app.handle());
             playlist.hydrate(&session.load());
             let waveform = Arc::new(WaveformJob::default());
-            // Backfill waveforms for any already-indexed tracks that lack one,
-            // without waiting for the next scan. No-op on an empty library.
-            Arc::clone(&waveform).start(app.handle().clone(), Arc::clone(&db));
+            // Backfill waveforms, loudness and automatic cue points for any
+            // already-indexed track that lacks one, without waiting for the
+            // next scan. No-op on an empty library.
+            Arc::clone(&waveform).start(app.handle().clone(), Arc::clone(&db), Arc::clone(&config));
             let tag_writer = TagWriter::new(Arc::clone(&db), Arc::clone(&config));
             let health = Health::new(
                 app.handle().clone(),

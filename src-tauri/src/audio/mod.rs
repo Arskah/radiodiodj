@@ -1,3 +1,4 @@
+pub mod auto_cue;
 pub mod bus;
 pub mod cache;
 pub mod cue;

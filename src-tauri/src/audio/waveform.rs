@@ -20,6 +20,7 @@ use rodio::{Decoder, Source};
 use std::io::Cursor;
 use std::sync::Arc;
 
+use super::auto_cue::{Collector, RmsWindows};
 use super::loudness::Loudness;
 
 /// Number of buckets a track is reduced to. 400 gives enough horizontal
@@ -65,21 +66,23 @@ impl Cell {
 /// sees a partial frame.
 const METER_CHUNK: usize = 8192;
 
-/// One decode of a track, giving both things the analysis pass needs from it.
+/// One decode of a track, giving everything the analysis pass needs from it.
 pub struct Analysis {
     /// Exactly [`WAVEFORM_BUCKETS`] bytes.
     pub curve: Vec<u8>,
     /// `None` when the file is silent, empty, or shorter than the one 400 ms
     /// block integrated loudness needs.
     pub loudness: Option<Loudness>,
+    /// Fixed-width RMS windows, for [`super::auto_cue::detect`].
+    pub windows: RmsWindows,
 }
 
-/// Decode an in-memory audio file once, measuring both the waveform curve and
-/// the track's loudness from the one pass.
+/// Decode an in-memory audio file once, measuring the waveform curve, the
+/// track's loudness and the automatic-cue RMS windows from the one pass.
 ///
-/// The two share the decode because it dominates the cost of either — the same
-/// reason the fingerprint pass reuses these bytes rather than reading the file
-/// again.
+/// The three share the decode because it dominates the cost of any of them —
+/// the same reason the fingerprint pass reuses these bytes rather than reading
+/// the file again.
 ///
 /// The curve is accumulated into an overflow-merging mip buffer (so no upfront
 /// sample total is needed and RAM stays bounded), then downsampled to
@@ -107,10 +110,15 @@ pub fn analyze(bytes: Bytes) -> Result<Analysis> {
         channels: channels.max(1) as usize,
         peak: 0.0,
     };
-    let curve = fill_buckets(decoder.inspect(|s| meter.push(*s)));
+    let mut windows = Collector::new(rate, decoder.channels());
+    let curve = fill_buckets(decoder.inspect(|s| {
+        meter.push(*s);
+        windows.push(*s);
+    }));
     Ok(Analysis {
         curve,
         loudness: meter.finish(),
+        windows: windows.finish(),
     })
 }
 
@@ -466,6 +474,29 @@ mod tests {
             "{loud:?} {quiet:?}"
         );
         assert!((quiet.peak - 0.1).abs() < 0.01, "{}", quiet.peak);
+    }
+
+    /// The automatic cue points ride on the waveform decode, so the windows
+    /// must come back from the same `analyze` call the curve does.
+    #[test]
+    fn the_same_decode_yields_the_automatic_cue_windows() {
+        use crate::audio::auto_cue::{detect, Thresholds, WINDOW_MS};
+
+        // 1 s at 8 kHz: silent first half, full-scale second.
+        let a = analyze(bytes_of(synth_wav(8_000, 8_000))).expect("analyze");
+        assert_eq!(a.windows.duration_ms, 1_000);
+        assert_eq!(a.windows.rms.len(), 1_000 / WINDOW_MS as usize);
+
+        let cue = detect(
+            &a.windows,
+            true,
+            Thresholds {
+                silence_dbfs: -70.0,
+                segue_dbfs: -20.0,
+            },
+        );
+        assert_eq!(cue.cue_in_ms, Some(500), "the silent half is trimmed");
+        assert_eq!(cue.cue_out_ms, None, "audio runs to EOF");
     }
 
     #[test]
