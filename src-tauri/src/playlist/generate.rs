@@ -171,17 +171,15 @@ pub fn generate(
     Ok(interleave_evenly(music, jingles, commercials))
 }
 
-/// The music half of a block, picked one slot at a time under the rotation
-/// rules.
+/// The music half of a block.
 ///
-/// A slot at a time because a single query can only exclude artists it is told
-/// about up front: asked for fifteen rows in one go, SQL would happily return
-/// the same artist three times inside the block it is supposed to be spreading
-/// out. Each pick therefore joins the blocklist for the next one.
+/// One query per rung of [`LADDER`], each asking only for what the rung above
+/// it could not supply, and each spreading its own rows across artists — a
+/// plain `LIMIT 13` would otherwise hand back the same artist three times
+/// inside the very block the rules exist to spread out.
 ///
-/// A slot that cannot be filled under both rules steps down [`LADDER`] for
-/// itself alone, so only the tail of a block is ever compromised. `exclude_ids`
-/// is never relaxed: a duplicate inside the queue is a bug, not a degradation.
+/// `exclude_ids` grows with every pick and is never relaxed: a duplicate inside
+/// the queue is a bug, not a degradation.
 fn pick_music(
     db: &Db,
     count: i64,
@@ -206,48 +204,31 @@ fn pick_music(
     artist_keys.dedup();
 
     let mut picked: Vec<Track> = Vec::with_capacity(count as usize);
-    let mut warned = [false; LADDER.len()];
-
-    while (picked.len() as i64) < count {
-        let mut filled = false;
-        for (i, rung) in LADDER.iter().enumerate() {
-            let filter = SelectionFilter {
-                exclude_ids: &exclude_ids,
-                title_since: title_since.filter(|_| rung.title),
-                artist_since: artist_since.filter(|_| rung.artist),
-                artist_keys: if rung.artist {
-                    &artist_keys
-                } else {
-                    NO_ARTISTS
-                },
-            };
-            let Some(track) = db
-                .get_random_tracks(ContentType::Music.as_ref(), 1, &filter)?
-                .pop()
-            else {
-                continue;
-            };
-            if let Some(dropped) = rung.dropped {
-                if !warned[i] {
-                    warned[i] = true;
-                    log::warn!(
-                        "auto-playlist: not enough music to honour the {} rule — relaxing it for this refill",
-                        dropped
-                    );
-                }
-            }
-            exclude_ids.push(track.id);
-            let key = artist_key(&track.artist);
-            if !key.is_empty() {
-                artist_keys.push(key);
-            }
-            picked.push(track);
-            filled = true;
+    for rung in &LADDER {
+        let deficit = count - picked.len() as i64;
+        if deficit <= 0 {
             break;
         }
-        if !filled {
-            break;
+        if let Some(dropped) = rung.dropped {
+            log::warn!(
+                "auto-playlist: not enough music to honour the {} rule — relaxing it for this refill",
+                dropped
+            );
         }
+        let filter = SelectionFilter {
+            exclude_ids: &exclude_ids,
+            title_since: title_since.filter(|_| rung.title),
+            artist_since: artist_since.filter(|_| rung.artist),
+            artist_keys: if rung.artist {
+                &artist_keys
+            } else {
+                NO_ARTISTS
+            },
+            spread_artists: rung.artist,
+        };
+        let got = db.get_random_tracks(ContentType::Music.as_ref(), deficit, &filter)?;
+        exclude_ids.extend(got.iter().map(|t| t.id));
+        picked.extend(got);
     }
 
     Ok(picked)

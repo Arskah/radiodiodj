@@ -124,6 +124,9 @@ pub struct SelectionFilter<'a> {
     pub artist_since: Option<i64>,
     /// Reject a track whose artist key is in this list.
     pub artist_keys: &'a [String],
+    /// Return at most one track per artist, so the rows of one block spread
+    /// across the library instead of stacking up on one act.
+    pub spread_artists: bool,
 }
 
 impl<'a> SelectionFilter<'a> {
@@ -140,6 +143,14 @@ impl<'a> SelectionFilter<'a> {
     ///
     /// `NOT IN ()` is a syntax error in SQLite, so a clause appears only when
     /// it has something to say.
+    /// How rows are grouped when [`Self::spread_artists`] is on: by artist, but
+    /// with every blank artist its own group — an untagged library shares one
+    /// empty string, and one group for all of it would cap a block at a single
+    /// untagged track.
+    const SPREAD_KEY: &'static str =
+        "CASE WHEN trim(coalesce(artist, '')) = '' THEN '\u{1}' || id \
+         ELSE lower(trim(artist)) END";
+
     fn sql(&self) -> String {
         let mut sql = exclude_sql(self.exclude_ids);
         if self.title_since.is_some() {
@@ -1206,8 +1217,9 @@ impl Db {
 
     /// Random tracks of one content type, honouring `filter`.
     ///
-    /// Filtering happens in SQL, so the query returns exactly `count` rows of
-    /// eligible material — no over-fetch, no post-filter.
+    /// Filtering happens in SQL, so one query returns exactly `count` rows of
+    /// eligible material — no over-fetch, no post-filter, and with
+    /// `spread_artists` no artist twice inside the block it returns.
     pub fn get_random_tracks(
         &self,
         content_type: &str,
@@ -1219,10 +1231,25 @@ impl Db {
         }
         let conn = self.conn.lock();
         let where_clause = filter.sql();
-        let sql = format!(
-            "SELECT * FROM tracks WHERE missing_since IS NULL AND content_type = ?{where_clause} \
-             ORDER BY RANDOM() LIMIT ?"
-        );
+        let sql = if filter.spread_artists {
+            // One row per artist, and that row picked at random rather than by
+            // rowid, or an artist's first-added track would be the only one
+            // this path ever returns.
+            format!(
+                "SELECT * FROM tracks WHERE id IN ( \
+                   SELECT id FROM ( \
+                     SELECT id, ROW_NUMBER() OVER (PARTITION BY {key} ORDER BY RANDOM()) AS rn \
+                     FROM tracks WHERE missing_since IS NULL AND content_type = ?{where_clause} \
+                   ) WHERE rn = 1 ORDER BY RANDOM() LIMIT ? \
+                 ) ORDER BY RANDOM()",
+                key = SelectionFilter::SPREAD_KEY
+            )
+        } else {
+            format!(
+                "SELECT * FROM tracks WHERE missing_since IS NULL AND content_type = ?{where_clause} \
+                 ORDER BY RANDOM() LIMIT ?"
+            )
+        };
         let mut stmt = conn.prepare(&sql)?;
         let params = rusqlite::params_from_iter(
             std::iter::once(rusqlite::types::Value::Text(content_type.to_owned()))
@@ -3022,6 +3049,45 @@ mod tests {
                 .is_empty(),
             "the snapshot artist outlives the track"
         );
+    }
+
+    #[test]
+    fn spreading_artists_returns_one_track_per_artist() {
+        let db = Db::open_in_memory().unwrap();
+        for (i, artist) in ["A", "A", "A", "B", "C"].iter().enumerate() {
+            insert(&db, &format!("/m{i}.mp3"), "t", artist, "al", "music");
+        }
+        let f = SelectionFilter {
+            spread_artists: true,
+            ..Default::default()
+        };
+        let mut seen_first: std::collections::HashSet<i64> = Default::default();
+        for _ in 0..50 {
+            let picked = db.get_random_tracks("music", 10, &f).unwrap();
+            let mut keys: Vec<String> = picked.iter().map(|t| artist_key(&t.artist)).collect();
+            keys.sort();
+            assert_eq!(keys, vec!["a", "b", "c"]);
+            seen_first.extend(picked.iter().filter(|t| t.artist == "A").map(|t| t.id));
+        }
+        assert!(
+            seen_first.len() > 1,
+            "the artist's representative is random, not the lowest rowid: {seen_first:?}"
+        );
+    }
+
+    /// An untagged library shares one blank artist. Grouping them together
+    /// would cap every block at a single track.
+    #[test]
+    fn spreading_artists_treats_each_untagged_track_as_its_own() {
+        let db = Db::open_in_memory().unwrap();
+        for i in 0..5 {
+            insert(&db, &format!("/m{i}.mp3"), "t", "", "al", "music");
+        }
+        let f = SelectionFilter {
+            spread_artists: true,
+            ..Default::default()
+        };
+        assert_eq!(db.get_random_tracks("music", 10, &f).unwrap().len(), 5);
     }
 
     #[test]

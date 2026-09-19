@@ -150,16 +150,33 @@ takes a rotation parameter object rather than a bare `exclude_ids` slice.
 
 ### And so does the block being generated
 
-One query asked for fifteen music rows can only exclude what it was told about
-up front, so it will happily return the same artist three times inside the very
-block the rules exist to spread out. The queue constraint does not reach it: the
-block is not queued yet.
+One query asked for thirteen music rows can only exclude what it was told about
+up front, so a plain `LIMIT 13` will happily return the same artist three times
+inside the very block the rules exist to spread out. The queue constraint does
+not reach it: the block is not queued yet.
 
-So music is picked **a slot at a time**, each pick joining the id exclusion and
-the artist blocklist for the next one. Jingles and commercials are still one
-query each — their selection is unchanged. A refill therefore costs one small
-`ORDER BY RANDOM() LIMIT 1` per music slot, roughly fifteen indexed queries
-against a few thousand rows, once a song.
+Rather than pick a slot at a time — thirteen queries a refill, measured at 41 ms
+on a live-size library — the spreading happens inside the one query:
+
+```sql
+SELECT * FROM tracks WHERE id IN (
+  SELECT id FROM (
+    SELECT id, ROW_NUMBER() OVER (
+      PARTITION BY <artist key> ORDER BY RANDOM()) AS rn
+    FROM tracks WHERE ...
+  ) WHERE rn = 1 ORDER BY RANDOM() LIMIT ?
+) ORDER BY RANDOM()
+```
+
+One row per artist, that row drawn at random rather than by rowid — otherwise an
+artist's first-added track would be the only one this path ever returns — and
+the window pass carries ids alone, so the sorter never moves whole rows
+(selecting `*` inside it costs 11 ms instead of 3). Every untagged track is its
+own group, or an untagged library would be capped at one track per block.
+
+Measured on 4295 music tracks over 1002 artists with a week of airings: **5 ms
+per refill**, against 0.6 ms for the unspread query it replaces, once every
+sixteen items.
 
 ### Matching artists
 
@@ -187,21 +204,21 @@ Selection must degrade, never stall: a fresh install with 80 tracks cannot
 satisfy a 3-hour title window, and `refill` silently extends the queue with
 however few rows came back.
 
-Staged, and per slot — since slots are what selection deals in:
+Staged, refetching only the deficit:
 
-1. Ask for one track with both rules.
-2. Nothing? Ask again with the artist rule dropped.
-3. Still nothing? Ask again with the title rule dropped too.
+1. Ask for `n` with both rules.
+2. Short by `k`? Ask for `k` with the artist rule dropped, excluding what stage
+   1 picked.
+3. Still short? Ask for the remainder with the title rule dropped too.
 
-The next slot starts back at the top, so only the slots that actually had to
-degrade are compromised, rather than one scarce slot disabling the rule for the
-whole block. A slot that comes back empty even unconstrained means the pool is
-spent: the block ends short, and `refill` extends the queue with however few
-tracks came back.
+`exclude_ids` — the queue, plus everything picked by an earlier stage — is never
+relaxed. A duplicate inside the queue is a bug, not a degradation.
 
-`exclude_ids` — the queue, plus everything picked so far in this block — is
-never relaxed at any stage. A duplicate inside the queue is a bug, not a
-degradation.
+Deficit-only means the block is as constrained as the library allows and only
+its tail is compromised, rather than one scarce slot disabling the rule for
+everything. Dropping the artist rule drops the artist spread with it, so a stage
+that has to relax may repeat an artist the stage above already used — that is
+what relaxation means.
 
 Each relaxation logs at `warn` once per refill, so an operator learns their
 library is too small instead of merely hearing repeats.
