@@ -148,10 +148,47 @@ This changes two signatures. `Refiller::generate` passes the queued _tracks_,
 not just their ids, so the service can read their artists; and `generate()`
 takes a rotation parameter object rather than a bare `exclude_ids` slice.
 
+### And so does the block being generated
+
+One query asked for thirteen music rows can only exclude what it was told about
+up front, so a plain `LIMIT 13` will happily return the same artist three times
+inside the very block the rules exist to spread out. The queue constraint does
+not reach it: the block is not queued yet.
+
+Rather than pick a slot at a time — thirteen queries a refill, measured at 41 ms
+on a live-size library — the spreading happens inside the one query:
+
+```sql
+SELECT * FROM tracks WHERE id IN (
+  SELECT id FROM (
+    SELECT id, ROW_NUMBER() OVER (
+      PARTITION BY <artist key> ORDER BY RANDOM()) AS rn
+    FROM tracks WHERE ...
+  ) WHERE rn = 1 ORDER BY RANDOM() LIMIT ?
+) ORDER BY RANDOM()
+```
+
+One row per artist, that row drawn at random rather than by rowid — otherwise an
+artist's first-added track would be the only one this path ever returns — and
+the window pass carries ids alone, so the sorter never moves whole rows
+(selecting `*` inside it costs 11 ms instead of 3). Every untagged track is its
+own group, or an untagged library would be capped at one track per block.
+
+Measured on 4295 music tracks over 1002 artists with a week of airings: **5 ms
+per refill**, against 0.6 ms for the unspread query it replaces, once every
+sixteen items.
+
 ### Matching artists
 
-In SQL, on `lower(trim(artist))`, with the blocklist normalised the same way in
-Rust so both sides agree.
+In SQL, on `lower(trim(artist))` — both against the log's snapshot artists and
+against the blocklist, which `db::artist_key` normalises in Rust with
+`trim().to_ascii_lowercase()`. ASCII on purpose: lowering _more_ than SQLite
+does would make the two sides disagree.
+
+A blank artist is never a constraint. An untagged library shares one empty
+artist string, and one airing of it would otherwise take the whole pool out, so
+blank keys are dropped from the blocklist and blank log rows are skipped by the
+subquery.
 
 SQLite's `lower()` is ASCII-only, as is `NOCASE`, so `Ämmä` and `ämmä` do not
 match. On a Finnish station that is a real if narrow gap. It is accepted for now
@@ -174,13 +211,17 @@ Staged, refetching only the deficit:
    1 picked.
 3. Still short? Ask for the remainder with the title rule dropped too.
 
-`exclude_ids` — the queued tracks — is never relaxed at any stage. A duplicate
-inside the queue is a bug, not a degradation.
+`exclude_ids` — the queue, plus everything picked by an earlier stage — is never
+relaxed. A duplicate inside the queue is a bug, not a degradation.
 
 Deficit-only means the block is as constrained as the library allows and only
 its tail is compromised, rather than one scarce slot disabling the rule for
-everything. Each relaxation logs at `warn` once per refill, so an operator
-learns their library is too small instead of merely hearing repeats.
+everything. Dropping the artist rule drops the artist spread with it, so a stage
+that has to relax may repeat an artist the stage above already used — that is
+what relaxation means.
+
+Each relaxation logs at `warn` once per refill, so an operator learns their
+library is too small instead of merely hearing repeats.
 
 On the live library (4295 music tracks, 1002 distinct artists) the ladder should
 never run. If it does, something is wrong.

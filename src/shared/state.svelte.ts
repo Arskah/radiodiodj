@@ -68,6 +68,7 @@ const DEFAULT_TUNING: TuningConfig = {
     // cached (network outage). The last value repeats until recovery.
     netRetryBackoffsMs: [1000, 2000, 5000],
   },
+  rotation: { titleWindowMin: 180, artistWindowMin: 45 },
   cache: { maxCacheBytes: 150 * 1024 * 1024 },
   player: {
     readWatchdogTimeoutMs: 10000,
@@ -95,7 +96,7 @@ export const EMPTY_HEALTH: HealthReport = {
 
 export type PlaylistTab = "playlist" | "history";
 export type SettingsTab =
-  "audio" | "library" | "now-playing" | "appearance" | "advanced";
+  "audio" | "library" | "playlist" | "now-playing" | "appearance" | "advanced";
 
 /**
  * What the cue deck was showing when a surface borrowed it. `previewing` rather

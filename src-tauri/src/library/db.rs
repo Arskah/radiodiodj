@@ -108,6 +108,97 @@ pub struct TracksByType {
     pub jingle: i64,
 }
 
+/// What a random pick may not return: the ids already queued, plus the rotation
+/// constraints music selection adds on top of them.
+///
+/// The windows are instants, not durations, so every rung of one relaxation
+/// ladder measures against the same `now`. `None` disables that rule, and
+/// `artist_keys` is empty unless the artist rule is on. Keys are normalised by
+/// [`artist_key`], which matches what the SQL side does to the stored column.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct SelectionFilter<'a> {
+    pub exclude_ids: &'a [i64],
+    /// Reject a track that aired at or after this instant (unix ms).
+    pub title_since: Option<i64>,
+    /// Reject a track whose artist aired at or after this instant (unix ms).
+    pub artist_since: Option<i64>,
+    /// Reject a track whose artist key is in this list.
+    pub artist_keys: &'a [String],
+    /// Return at most one track per artist, so the rows of one block spread
+    /// across the library instead of stacking up on one act.
+    pub spread_artists: bool,
+}
+
+impl<'a> SelectionFilter<'a> {
+    /// The plain exclusion every content type gets: nothing but the queue.
+    pub fn excluding(exclude_ids: &'a [i64]) -> Self {
+        Self {
+            exclude_ids,
+            ..Self::default()
+        }
+    }
+
+    /// How rows are grouped when [`Self::spread_artists`] is on: by artist, but
+    /// with every blank artist its own group — an untagged library shares one
+    /// empty string, and one group for all of it would cap a block at a single
+    /// untagged track.
+    const SPREAD_KEY: &'static str =
+        "CASE WHEN trim(coalesce(artist, '')) = '' THEN '\u{1}' || id \
+         ELSE lower(trim(artist)) END";
+
+    /// The `AND` clauses this filter contributes, in the order
+    /// [`Self::params`] binds their placeholders.
+    ///
+    /// `NOT IN ()` is a syntax error in SQLite, so a clause appears only when
+    /// it has something to say.
+    fn sql(&self) -> String {
+        let mut sql = exclude_sql(self.exclude_ids);
+        if self.title_since.is_some() {
+            sql.push_str(
+                " AND id NOT IN (SELECT track_id FROM play_log \
+                  WHERE track_id IS NOT NULL AND aired_at >= ?)",
+            );
+        }
+        if self.artist_since.is_some() {
+            // Blank log artists are skipped, or one untagged airing would block
+            // every untagged track in the library.
+            sql.push_str(
+                " AND lower(trim(artist)) NOT IN (SELECT lower(trim(artist)) FROM play_log \
+                  WHERE artist IS NOT NULL AND trim(artist) <> '' AND aired_at >= ?)",
+            );
+        }
+        if !self.artist_keys.is_empty() {
+            let placeholders = vec!["?"; self.artist_keys.len()].join(", ");
+            sql.push_str(&format!(" AND lower(trim(artist)) NOT IN ({placeholders})"));
+        }
+        sql
+    }
+
+    fn params(&self) -> impl Iterator<Item = rusqlite::types::Value> + '_ {
+        self.exclude_ids
+            .iter()
+            .map(|&id| rusqlite::types::Value::Integer(id))
+            .chain(self.title_since.map(rusqlite::types::Value::Integer))
+            .chain(self.artist_since.map(rusqlite::types::Value::Integer))
+            .chain(
+                self.artist_keys
+                    .iter()
+                    .map(|k| rusqlite::types::Value::Text(k.clone())),
+            )
+    }
+}
+
+/// Normalise an artist for rotation matching.
+///
+/// ASCII-only on purpose: SQLite's `lower()` is ASCII-only, and the blocklist
+/// is compared against `lower(trim(artist))` evaluated in SQL, so lowering more
+/// than SQLite does in Rust would make the two sides disagree. The cost is that
+/// `Ämmä` and `ämmä` count as different artists — a missed constraint, never a
+/// wrong result. See `docs/rotation.md`.
+pub fn artist_key(artist: &str) -> String {
+    artist.trim().to_ascii_lowercase()
+}
+
 /// Deserialize a nullable, optionally-present field into a "double option".
 ///
 /// Serde's default `Option<Option<T>>` deserialize collapses an explicit JSON
@@ -1124,31 +1215,45 @@ impl Db {
         Ok(n > 0)
     }
 
+    /// Random tracks of one content type, honouring `filter`.
+    ///
+    /// Filtering happens in SQL, so one query returns exactly `count` rows of
+    /// eligible material — no over-fetch, no post-filter, and with
+    /// `spread_artists` no artist twice inside the block it returns.
     pub fn get_random_tracks(
         &self,
         content_type: &str,
         count: i64,
-        exclude_ids: &[i64],
+        filter: &SelectionFilter,
     ) -> Result<Vec<Track>> {
         if count <= 0 {
             return Ok(vec![]);
         }
         let conn = self.conn.lock();
-        // `NOT IN ()` is a syntax error in SQLite, so only add the clause when
-        // there is something to exclude.
-        let exclude_clause = exclude_sql(exclude_ids);
-        let sql = format!(
-            "SELECT * FROM tracks WHERE missing_since IS NULL AND content_type = ?{exclude_clause} \
-             ORDER BY RANDOM() LIMIT ?"
-        );
+        let where_clause = filter.sql();
+        let sql = if filter.spread_artists {
+            // One row per artist, and that row picked at random rather than by
+            // rowid, or an artist's first-added track would be the only one
+            // this path ever returns.
+            format!(
+                "SELECT * FROM tracks WHERE id IN ( \
+                   SELECT id FROM ( \
+                     SELECT id, ROW_NUMBER() OVER (PARTITION BY {key} ORDER BY RANDOM()) AS rn \
+                     FROM tracks WHERE missing_since IS NULL AND content_type = ?{where_clause} \
+                   ) WHERE rn = 1 ORDER BY RANDOM() LIMIT ? \
+                 ) ORDER BY RANDOM()",
+                key = SelectionFilter::SPREAD_KEY
+            )
+        } else {
+            format!(
+                "SELECT * FROM tracks WHERE missing_since IS NULL AND content_type = ?{where_clause} \
+                 ORDER BY RANDOM() LIMIT ?"
+            )
+        };
         let mut stmt = conn.prepare(&sql)?;
         let params = rusqlite::params_from_iter(
             std::iter::once(rusqlite::types::Value::Text(content_type.to_owned()))
-                .chain(
-                    exclude_ids
-                        .iter()
-                        .map(|&id| rusqlite::types::Value::Integer(id)),
-                )
+                .chain(filter.params())
                 .chain(std::iter::once(rusqlite::types::Value::Integer(count))),
         );
         let rows = stmt.query_map(params, row_to_track)?;
@@ -1946,7 +2051,10 @@ mod tests {
             [here]
         );
         assert_eq!(
-            only_here(db.get_random_tracks("music", 10, &[]).unwrap()),
+            only_here(
+                db.get_random_tracks("music", 10, &SelectionFilter::default())
+                    .unwrap()
+            ),
             [here]
         );
         assert_eq!(
@@ -2799,7 +2907,9 @@ mod tests {
         }
         // Exclude everything but id 3 — it must be the only row ever returned.
         for _ in 0..50 {
-            let picked = db.get_random_tracks("music", 5, &[1, 2, 4, 5]).unwrap();
+            let picked = db
+                .get_random_tracks("music", 5, &SelectionFilter::excluding(&[1, 2, 4, 5]))
+                .unwrap();
             assert_eq!(picked.len(), 1);
             assert_eq!(picked[0].id, 3);
         }
@@ -2811,8 +2921,173 @@ mod tests {
         insert(&db, "/m1.mp3", "M", "X", "Y", "music");
         insert(&db, "/m2.mp3", "M", "X", "Y", "music");
         // Empty slice must not produce `NOT IN ()` (a SQLite syntax error).
-        let picked = db.get_random_tracks("music", 5, &[]).unwrap();
+        let picked = db
+            .get_random_tracks("music", 5, &SelectionFilter::default())
+            .unwrap();
         assert_eq!(picked.len(), 2);
+    }
+
+    #[test]
+    fn the_title_window_hides_a_track_that_aired_inside_it() {
+        let db = Db::open_in_memory().unwrap();
+        insert(&db, "/old.mp3", "Old", "A", "Y", "music");
+        insert(&db, "/new.mp3", "New", "B", "Y", "music");
+        let (old, new) = (1, 2);
+        db.record_airing(old, 1_000).unwrap();
+        db.record_airing(new, 5_000).unwrap();
+
+        let picked = |since| {
+            let f = SelectionFilter {
+                title_since: Some(since),
+                ..Default::default()
+            };
+            let mut ids: Vec<i64> = db
+                .get_random_tracks("music", 10, &f)
+                .unwrap()
+                .iter()
+                .map(|t| t.id)
+                .collect();
+            ids.sort();
+            ids
+        };
+        assert_eq!(picked(6_000), vec![old, new], "window opened after both");
+        assert_eq!(picked(5_000), vec![old], "the newer airing is inside it");
+        assert_eq!(picked(1_000), Vec::<i64>::new(), "both inside it");
+    }
+
+    #[test]
+    fn the_artist_window_hides_every_track_by_an_artist_that_aired() {
+        let db = Db::open_in_memory().unwrap();
+        insert(&db, "/a1.mp3", "One", " Band ", "Y", "music");
+        insert(&db, "/a2.mp3", "Two", "BAND", "Y", "music");
+        insert(&db, "/b1.mp3", "Three", "Other", "Y", "music");
+        db.record_airing(1, 5_000).unwrap();
+
+        let f = SelectionFilter {
+            artist_since: Some(4_000),
+            ..Default::default()
+        };
+        let ids: Vec<i64> = db
+            .get_random_tracks("music", 10, &f)
+            .unwrap()
+            .iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(ids, vec![3], "the other spelling of the same artist too");
+    }
+
+    /// An untagged library shares one blank artist, so a blank airing must not
+    /// take the whole pool out.
+    #[test]
+    fn a_blank_artist_airing_blocks_nothing() {
+        let db = Db::open_in_memory().unwrap();
+        insert(&db, "/a1.mp3", "One", "", "Y", "music");
+        insert(&db, "/a2.mp3", "Two", "  ", "Y", "music");
+        db.record_airing(1, 5_000).unwrap();
+
+        let f = SelectionFilter {
+            artist_since: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(db.get_random_tracks("music", 10, &f).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn the_artist_blocklist_hides_matching_tracks() {
+        let db = Db::open_in_memory().unwrap();
+        insert(&db, "/a1.mp3", "One", "Band", "Y", "music");
+        insert(&db, "/b1.mp3", "Two", "Other", "Y", "music");
+        let keys = vec![artist_key(" BAND ")];
+        let f = SelectionFilter {
+            artist_keys: &keys,
+            ..Default::default()
+        };
+        let ids: Vec<i64> = db
+            .get_random_tracks("music", 10, &f)
+            .unwrap()
+            .iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(ids, vec![2]);
+    }
+
+    /// A purged track keeps its log row with a NULL id; the title rule must not
+    /// read that as "no track aired" and blow up or match everything.
+    #[test]
+    fn a_purged_airing_constrains_by_artist_but_not_by_title() {
+        let db = Db::open_in_memory().unwrap();
+        insert(&db, "/gone.mp3", "Gone", "Band", "Y", "music");
+        insert(&db, "/kept.mp3", "Kept", "Band", "Y", "music");
+        db.record_airing(1, 5_000).unwrap();
+        db.reconcile(&Reconcile {
+            gone: vec![1],
+            now_ms: 6_000,
+            ..Default::default()
+        })
+        .unwrap();
+        db.purge_tracks(&[1]).unwrap();
+
+        let by_title = SelectionFilter {
+            title_since: Some(1),
+            ..Default::default()
+        };
+        let ids: Vec<i64> = db
+            .get_random_tracks("music", 10, &by_title)
+            .unwrap()
+            .iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(ids, vec![2], "the surviving track is still selectable");
+
+        let by_artist = SelectionFilter {
+            artist_since: Some(1),
+            ..Default::default()
+        };
+        assert!(
+            db.get_random_tracks("music", 10, &by_artist)
+                .unwrap()
+                .is_empty(),
+            "the snapshot artist outlives the track"
+        );
+    }
+
+    #[test]
+    fn spreading_artists_returns_one_track_per_artist() {
+        let db = Db::open_in_memory().unwrap();
+        for (i, artist) in ["A", "A", "A", "B", "C"].iter().enumerate() {
+            insert(&db, &format!("/m{i}.mp3"), "t", artist, "al", "music");
+        }
+        let f = SelectionFilter {
+            spread_artists: true,
+            ..Default::default()
+        };
+        let mut seen_first: std::collections::HashSet<i64> = Default::default();
+        for _ in 0..50 {
+            let picked = db.get_random_tracks("music", 10, &f).unwrap();
+            let mut keys: Vec<String> = picked.iter().map(|t| artist_key(&t.artist)).collect();
+            keys.sort();
+            assert_eq!(keys, vec!["a", "b", "c"]);
+            seen_first.extend(picked.iter().filter(|t| t.artist == "A").map(|t| t.id));
+        }
+        assert!(
+            seen_first.len() > 1,
+            "the artist's representative is random, not the lowest rowid: {seen_first:?}"
+        );
+    }
+
+    /// An untagged library shares one blank artist. Grouping them together
+    /// would cap every block at a single track.
+    #[test]
+    fn spreading_artists_treats_each_untagged_track_as_its_own() {
+        let db = Db::open_in_memory().unwrap();
+        for i in 0..5 {
+            insert(&db, &format!("/m{i}.mp3"), "t", "", "al", "music");
+        }
+        let f = SelectionFilter {
+            spread_artists: true,
+            ..Default::default()
+        };
+        assert_eq!(db.get_random_tracks("music", 10, &f).unwrap().len(), 5);
     }
 
     #[test]
