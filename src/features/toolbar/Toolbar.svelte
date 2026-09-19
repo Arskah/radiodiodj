@@ -30,7 +30,7 @@
   <div id="toolbar-spacer"></div>
 </header>
 
-<!-- Row 2: production nav (brand, live badge, alert slot, stats, controls). -->
+<!-- Row 2: production nav (brand, alert slot, stats, controls). -->
 <nav id="app-nav">
   <div class="nav-left">
     <!-- A logo replaces the name rather than sitting beside it; the name it
@@ -40,10 +40,6 @@
     {:else}
       <span class="brand">{app.brandName}</span>
     {/if}
-    <span class="live-badge">
-      <span class="led"></span>
-      Live On Air
-    </span>
   </div>
 
   <div class="nav-center">
