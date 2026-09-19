@@ -9,3 +9,4 @@ src-tauri/target/
 src-tauri/gen/
 *.db
 *.tgz
+src-tauri/signing.macos.conf.json
