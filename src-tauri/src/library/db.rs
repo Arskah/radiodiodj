@@ -138,11 +138,6 @@ impl<'a> SelectionFilter<'a> {
         }
     }
 
-    /// The `AND` clauses this filter contributes, in the order
-    /// [`Self::params`] binds their placeholders.
-    ///
-    /// `NOT IN ()` is a syntax error in SQLite, so a clause appears only when
-    /// it has something to say.
     /// How rows are grouped when [`Self::spread_artists`] is on: by artist, but
     /// with every blank artist its own group — an untagged library shares one
     /// empty string, and one group for all of it would cap a block at a single
@@ -151,6 +146,11 @@ impl<'a> SelectionFilter<'a> {
         "CASE WHEN trim(coalesce(artist, '')) = '' THEN '\u{1}' || id \
          ELSE lower(trim(artist)) END";
 
+    /// The `AND` clauses this filter contributes, in the order
+    /// [`Self::params`] binds their placeholders.
+    ///
+    /// `NOT IN ()` is a syntax error in SQLite, so a clause appears only when
+    /// it has something to say.
     fn sql(&self) -> String {
         let mut sql = exclude_sql(self.exclude_ids);
         if self.title_since.is_some() {
