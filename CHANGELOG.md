@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.21.2](https://github.com/Arskah/radiodiodj/compare/v0.21.1...v0.21.2) (2026-09-19)
+
+
+### Bug Fixes
+
+* **deps:** update dependency material-symbols to v0.47.3 ([#412](https://github.com/Arskah/radiodiodj/issues/412)) ([a95290c](https://github.com/Arskah/radiodiodj/commit/a95290cd0b03f4b9ab41604ea105f799ac7c6363))
+
+
+### Miscellaneous Chores
+
+* **deps:** update dependency @types/node to v25.9.7 ([#414](https://github.com/Arskah/radiodiodj/issues/414)) ([6ef4056](https://github.com/Arskah/radiodiodj/commit/6ef405627a6dab364a4da2d25972bd756a614324))
+* **deps:** update dependency prettier to v3.9.7 ([#419](https://github.com/Arskah/radiodiodj/issues/419)) ([0447dfb](https://github.com/Arskah/radiodiodj/commit/0447dfbb47b2f38d9eccf96004e78f407e07c331))
+* **deps:** update pnpm to v12.4.2 ([#415](https://github.com/Arskah/radiodiodj/issues/415)) ([da04c62](https://github.com/Arskah/radiodiodj/commit/da04c62cfe280dbad187d23bf81dfad0383d7118))
+* **deps:** update vitest monorepo to v5.0.1 ([#413](https://github.com/Arskah/radiodiodj/issues/413)) ([89c3651](https://github.com/Arskah/radiodiodj/commit/89c3651350c8f5286e2089d185d0a31cbcda2a01))
+* update funding ([3ba6aa6](https://github.com/Arskah/radiodiodj/commit/3ba6aa681a106bbea92c4b544d1c29b082887966))
+
+
+### Documentation
+
+* update signing doc ([1d4aac0](https://github.com/Arskah/radiodiodj/commit/1d4aac04b83d1c3bbf94b1afdbfe02839ae92372))
+* update signing doc ([ac9713d](https://github.com/Arskah/radiodiodj/commit/ac9713deaf59c4beca69cf8613f5fd583cf48a9e))
+
+
+### Continuous Integration
+
+* extract building and publishing into release.yml ([#421](https://github.com/Arskah/radiodiodj/issues/421)) ([d69fe51](https://github.com/Arskah/radiodiodj/commit/d69fe5105a6f961e7aeab8f7432c4a09560b669b))
+* upload bundles from the platforms that did build ([#420](https://github.com/Arskah/radiodiodj/issues/420)) ([407de0c](https://github.com/Arskah/radiodiodj/commit/407de0c3e8689390b33ca72473e416d27d7c09ed))
+
 ## [0.21.1](https://github.com/Arskah/radiodiodj/compare/v0.21.0...v0.21.1) (2026-09-19)
 
 
