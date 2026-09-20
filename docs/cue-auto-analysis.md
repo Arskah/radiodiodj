@@ -457,6 +457,12 @@ For a manually owned Radio edit, a content-type change leaves Cue In, Cue Out an
 
 A manually authored Next Start therefore survives a later reclassification to jingle or commercial.
 
+A Track's content type changes in three ways, and all three requeue an automatically owned trio:
+
+- the operator edits it in the metadata overlay;
+- a missing Track reattaches by fingerprint under a Library path of another content type — the operator moved the file from `/music` to `/jingles`;
+- the same file appears under a second Library path of another content type, which inserts a new Track that copies the twin's row. The copy is a Track of its own class, so it is queued for its own analysis rather than inheriting the twin's result — including when the twin is manually owned, since that was a decision about the other Track.
+
 ## Source-file changes
 
 If the scanner detects that the underlying audio file has changed:
@@ -474,14 +480,16 @@ An automatic analysis result is one logical update.
 
 Cue In, Cue Out, Next Start, provenance and analysis version must be committed together rather than as independent writes.
 
-Before committing, the backend must re-check that the Track is still automatically owned.
+Before committing, the backend must re-check that the Track is still automatically owned **and still the content type the analysis ran under** — a reclassification mid-decode would otherwise land a music Next Start on a jingle and mark it analysed.
+
+A result discarded because the content type moved leaves the Track queued, so the pass takes it again under its new class.
 
 Example race:
 
 ```text
 background analysis starts
         ↓
-operator saves a Radio edit
+operator saves a Radio edit, or reclassifies the Track
         ↓
 background analysis finishes
 ```

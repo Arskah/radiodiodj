@@ -80,6 +80,8 @@ struct WaveformProgress {
 #[derive(Default)]
 pub struct WaveformJob {
     running: AtomicBool,
+    /// Work arrived while a worker was running. See [`WaveformJob::start`].
+    kicked: AtomicBool,
     cancel: AtomicBool,
     status: Mutex<WaveformStatus>,
 }
@@ -98,16 +100,37 @@ impl WaveformJob {
     /// Kick the worker. No-op if one is already running (single-flight): the
     /// running worker re-drains the work list on each pass, so it will observe
     /// any tracks a concurrent scan just added.
+    ///
+    /// A kick that arrives after the running worker's last drain found nothing
+    /// is recorded rather than dropped — otherwise work queued in that window
+    /// (a reclassification, say) would wait for the next scan or restart.
     pub fn start(self: Arc<Self>, app: AppHandle, db: Arc<Db>, config: Arc<Config>) {
-        // Claim the single-flight slot; bail if a worker already holds it.
+        // Claim the single-flight slot, or leave a note for the worker holding
+        // it, which may be past the point of noticing on its own.
         if self.running.swap(true, Ordering::SeqCst) {
+            self.kicked.store(true, Ordering::SeqCst);
             return;
         }
         self.cancel.store(false, Ordering::SeqCst);
-        std::thread::spawn(move || {
+        std::thread::spawn(move || loop {
+            // Cleared before the drain, so a kick during it is never lost.
+            self.kicked.store(false, Ordering::SeqCst);
             run(&self, &app, &db, &config);
             self.running.store(false, Ordering::SeqCst);
+            if !self.claim_rerun() {
+                break;
+            }
         });
+    }
+
+    /// Whether the worker that has just released the slot should take it back
+    /// and drain again: only for a kick it has not already served, and only if
+    /// it is not cancelled and no other kick claimed the free slot first —
+    /// that one owns the work from here.
+    fn claim_rerun(&self) -> bool {
+        self.kicked.swap(false, Ordering::SeqCst)
+            && !self.cancel.load(Ordering::SeqCst)
+            && !self.running.swap(true, Ordering::SeqCst)
     }
 
     fn set_status(&self, app: &AppHandle, next: WaveformStatus) {
@@ -328,9 +351,11 @@ fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle, config: &Config) -> Outc
 }
 
 /// Derive and commit this track's automatic cue points. The commit is refused
-/// outright if the operator took ownership while the decode ran, which is the
-/// whole race the ownership state exists for — a discarded result is not a
-/// failure and leaves nothing to retry.
+/// outright if the row moved on while the decode ran — the operator took
+/// ownership, or a reclassification changed what should have been derived —
+/// which is the whole race the ownership state exists for. A discarded result
+/// is not a failure and leaves nothing to retry: a reclassified track is still
+/// `pending`, so the drain loop takes it again under its new class.
 fn store_auto_cue(
     job: &AnalysisJob,
     db: &Db,
@@ -343,12 +368,58 @@ fn store_auto_cue(
     let thresholds = config.get_tuning().auto_cue.thresholds();
     let music = job.content_type == "music";
     let cue = auto_cue::detect(windows, music, thresholds);
-    match db.set_auto_cue(job.id, cue, thresholds, music, now_ms()) {
+    match db.set_auto_cue(job.id, cue, thresholds, &job.content_type, now_ms()) {
         Ok(true) => log::debug!("auto cue: {} {:?}", job.path, cue),
-        Ok(false) => log::debug!("auto cue: {} kept the operator's edit", job.path),
+        Ok(false) => log::debug!("auto cue: {} moved on under us", job.path),
         Err(e) => {
             log::error!("auto cue: store {} failed: {}", job.id, e);
             *retry = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The lost wakeup: a track queued after the worker's last drain found
+    /// nothing, while it is still tidying up, must not wait for the next scan.
+    #[test]
+    fn a_kick_during_the_last_drain_runs_the_worker_again() {
+        let job = WaveformJob::default();
+        job.running.store(true, Ordering::SeqCst);
+        job.kicked.store(true, Ordering::SeqCst);
+        job.running.store(false, Ordering::SeqCst);
+
+        assert!(job.claim_rerun());
+        assert!(job.running.load(Ordering::SeqCst), "the slot is held again");
+        assert!(!job.kicked.load(Ordering::SeqCst), "the kick is served");
+    }
+
+    #[test]
+    fn a_worker_nobody_kicked_stops() {
+        let job = WaveformJob::default();
+        assert!(!job.claim_rerun());
+        assert!(!job.running.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_cancelled_worker_stops_despite_a_kick() {
+        let job = WaveformJob::default();
+        job.kicked.store(true, Ordering::SeqCst);
+        job.cancel();
+
+        assert!(!job.claim_rerun());
+        assert!(!job.running.load(Ordering::SeqCst));
+    }
+
+    /// A fresh kick claimed the slot the instant it was released; it drains.
+    #[test]
+    fn a_worker_that_lost_the_slot_stops() {
+        let job = WaveformJob::default();
+        job.kicked.store(true, Ordering::SeqCst);
+        job.running.store(true, Ordering::SeqCst);
+
+        assert!(!job.claim_rerun());
     }
 }

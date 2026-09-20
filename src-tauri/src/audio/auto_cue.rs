@@ -62,8 +62,11 @@ pub struct RmsWindows {
 
 /// Accumulates [`RmsWindows`] from a sample stream.
 pub struct Collector {
-    per_window: u64,
-    frames_per_ms: f64,
+    /// Interleaved samples per millisecond: `rate × channels / 1000`. Kept as a
+    /// float because it is not whole at every rate.
+    samples_per_ms: f64,
+    /// Sample count at which the window being filled closes.
+    boundary: u64,
     samples: u64,
     sum_sq: f64,
     count: u64,
@@ -75,29 +78,41 @@ impl Collector {
     /// (either zero) yields a collector that produces no windows, so the caller
     /// simply gets no automatic cue rather than a bogus one.
     pub fn new(rate: u32, channels: u16) -> Self {
-        let interleaved_per_ms = f64::from(rate) * f64::from(channels) / 1000.0;
-        Self {
-            per_window: (interleaved_per_ms * WINDOW_MS as f64) as u64,
-            frames_per_ms: interleaved_per_ms,
+        let mut c = Self {
+            samples_per_ms: f64::from(rate) * f64::from(channels) / 1000.0,
+            boundary: 0,
             samples: 0,
             sum_sq: 0.0,
             count: 0,
             rms: Vec::new(),
-        }
+        };
+        c.boundary = c.next_boundary();
+        c
+    }
+
+    /// Where the next window ends, computed from the window index rather than
+    /// by adding a fixed width. 22.05 kHz puts 1102.5 samples in a 50 ms
+    /// window; a fixed width would have to round that, and the grid would then
+    /// slide against the clock until a marker is reported a whole window away
+    /// from the audio it was found in.
+    fn next_boundary(&self) -> u64 {
+        let windows = self.rms.len() as f64 + 1.0;
+        (((windows * WINDOW_MS as f64 * self.samples_per_ms).round()) as u64).max(self.samples + 1)
     }
 
     pub fn push(&mut self, sample: f32) {
-        if self.per_window == 0 {
+        if self.samples_per_ms <= 0.0 {
             return;
         }
         self.samples += 1;
         let s = f64::from(sample);
         self.sum_sq += s * s;
         self.count += 1;
-        if self.count == self.per_window {
+        if self.samples >= self.boundary {
             self.rms.push(self.window_rms());
             self.sum_sq = 0.0;
             self.count = 0;
+            self.boundary = self.next_boundary();
         }
     }
 
@@ -105,8 +120,8 @@ impl Collector {
         if self.count > 0 {
             self.rms.push(self.window_rms());
         }
-        let duration_ms = if self.frames_per_ms > 0.0 {
-            (self.samples as f64 / self.frames_per_ms).round() as i64
+        let duration_ms = if self.samples_per_ms > 0.0 {
+            (self.samples as f64 / self.samples_per_ms).round() as i64
         } else {
             0
         };
@@ -388,6 +403,28 @@ mod tests {
         let w = c.finish();
         assert_eq!(w.rms.len(), 21);
         assert_eq!(w.duration_ms, 1_025);
+    }
+
+    /// 22.05 kHz mono puts 1102.5 interleaved samples in a 50 ms window. A
+    /// window of whole samples has to round that, and the grid then slides
+    /// against the clock — after two minutes by a whole window, so a marker is
+    /// reported later than the audio it was found in and trims the head off
+    /// the track.
+    #[test]
+    fn an_odd_sample_rate_does_not_drift_the_window_grid() {
+        let mut c = Collector::new(22_050, 1);
+        let onset = 2_430_000; // 110.204 s in
+        for i in 0..2_450_000 {
+            c.push(if i < onset { 0.0 } else { 1.0 });
+        }
+        let w = c.finish();
+
+        let cue_in = detect(&w, false, DEFAULTS).cue_in_ms.unwrap();
+        assert_eq!(cue_in, 110_200);
+        assert!(
+            f64::from(cue_in as i32) <= f64::from(onset) / 22.05,
+            "a marker may never be reported past the audio it was found in"
+        );
     }
 
     #[test]

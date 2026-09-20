@@ -627,9 +627,22 @@ impl Db {
             anyhow::bail!("track {} is no longer in the library", id);
         };
         let clamped = points.clamp(duration);
-        let owns = clamped.cue_in_ms != stored.cue_in_ms
-            || clamped.cue_out_ms != stored.cue_out_ms
-            || clamped.next_start_ms != stored.next_start_ms;
+        // Compared before the clamp, and written back unclamped when unchanged:
+        // an automatic Cue Out legitimately sits past the tag duration on a VBR
+        // MP3, and clamping it here would read as an operator edit.
+        let owns = points.cue_in_ms != stored.cue_in_ms
+            || points.cue_out_ms != stored.cue_out_ms
+            || points.next_start_ms != stored.next_start_ms;
+        let written = if owns {
+            clamped
+        } else {
+            CuePoints {
+                cue_in_ms: stored.cue_in_ms,
+                cue_out_ms: stored.cue_out_ms,
+                next_start_ms: stored.next_start_ms,
+                ..clamped
+            }
+        };
         let state = if owns {
             ", auto_cue_state = 'manual'"
         } else {
@@ -642,24 +655,30 @@ impl Db {
                  WHERE id = ?"
             ),
             params![
-                clamped.cue_in_ms,
-                clamped.fade_in_ms,
-                clamped.fade_out_ms,
-                clamped.cue_out_ms,
-                clamped.next_start_ms,
+                written.cue_in_ms,
+                written.fade_in_ms,
+                written.fade_out_ms,
+                written.cue_out_ms,
+                written.next_start_ms,
                 id
             ],
         )?;
         if changed == 0 {
             anyhow::bail!("track {} is no longer in the library", id);
         }
-        Ok(clamped)
+        Ok(written)
     }
 
     /// Commit one automatic analysis: the trio, the ownership state and the
-    /// provenance in a single statement, and only while the track is still
-    /// automatic. An operator save that landed while the decode ran therefore
-    /// wins and the result is discarded — reported as `false`.
+    /// provenance in a single statement, and only while the row still matches
+    /// what was analysed. An operator save that landed while the decode ran
+    /// therefore wins and the result is discarded — reported as `false`.
+    ///
+    /// `content_type` is the class the analysis ran under, and the commit
+    /// checks it: a reclassification during the decode would otherwise land a
+    /// music-derived Next Start on a jingle and mark it analysed. A refusal on
+    /// that ground leaves the row `pending`, so the drain loop picks it up
+    /// again and re-derives it under the new class.
     ///
     /// Unlike [`Db::set_cue_points`] this does not clamp against the stored
     /// duration: the positions come from the decode itself, whereas the stored
@@ -670,15 +689,16 @@ impl Db {
         id: i64,
         cue: AutoCue,
         thresholds: Thresholds,
-        music: bool,
+        content_type: &str,
         at_ms: i64,
     ) -> Result<bool> {
+        let music = content_type == "music";
         let conn = self.conn.lock();
         let changed = conn.execute(
             "UPDATE tracks SET cue_in_ms = ?1, cue_out_ms = ?2, next_start_ms = ?3, \
                     auto_cue_state = 'auto', auto_cue_version = ?4, \
                     auto_cue_silence_db = ?5, auto_cue_segue_db = ?6, auto_cue_at = ?7 \
-             WHERE id = ?8 AND auto_cue_state <> 'manual'",
+             WHERE id = ?8 AND auto_cue_state <> 'manual' AND content_type = ?9",
             params![
                 cue.cue_in_ms,
                 cue.cue_out_ms,
@@ -689,7 +709,8 @@ impl Db {
                 // segue threshold was used on it.
                 music.then_some(thresholds.segue_dbfs),
                 at_ms,
-                id
+                id,
+                content_type
             ],
         )?;
         Ok(changed > 0)
@@ -864,10 +885,16 @@ impl Db {
                 "SELECT id FROM tracks WHERE fingerprint = ?1 AND missing_since IS NOT NULL \
                  ORDER BY missing_since DESC, id DESC LIMIT 1",
             )?;
+            // A file back under a root of another content type is a different
+            // class of material, so its automatic trio is requeued — the rule
+            // a metadata reclassification applies.
             let mut reattach = tx.prepare(
                 "UPDATE tracks SET path = ?1, content_type = ?2, mtime = ?3, \
                         missing_since = NULL, \
-                        analysis_error = NULL, analysis_failed_at = NULL \
+                        analysis_error = NULL, analysis_failed_at = NULL, \
+                        auto_cue_state = CASE \
+                          WHEN content_type <> ?2 AND auto_cue_state <> 'manual' \
+                          THEN 'pending' ELSE auto_cue_state END \
                  WHERE id = ?4",
             )?;
             let mut present_twin = tx.prepare(
@@ -875,6 +902,8 @@ impl Db {
                  ORDER BY id LIMIT 1",
             )?;
             let mut insert = tx.prepare(&format!("{UPSERT_TRACK_SQL} RETURNING id"))?;
+            // The twin's analysis carries over only within one content type:
+            // the same file under /music and /jingles is two separate jobs.
             let mut copy_state = tx.prepare(
                 "UPDATE tracks SET title = s.title, artist = s.artist, album = s.album, \
                         genre = s.genre, year = s.year, bpm = s.bpm, \
@@ -885,7 +914,9 @@ impl Db {
                         edited_fields = s.edited_fields, \
                         rg_gain = s.rg_gain, rg_peak = s.rg_peak, \
                         rg_measured_at = s.rg_measured_at, \
-                        auto_cue_state = s.auto_cue_state, \
+                        auto_cue_state = CASE \
+                          WHEN s.content_type = tracks.content_type \
+                          THEN s.auto_cue_state ELSE 'pending' END, \
                         auto_cue_version = s.auto_cue_version, \
                         auto_cue_silence_db = s.auto_cue_silence_db, \
                         auto_cue_segue_db = s.auto_cue_segue_db, \
@@ -1203,7 +1234,7 @@ impl Db {
         if reclassified {
             tx.execute(
                 "UPDATE tracks SET auto_cue_state = 'pending' \
-                 WHERE id = ? AND auto_cue_state = 'auto'",
+                 WHERE id = ? AND auto_cue_state <> 'manual'",
                 [updates.id],
             )?;
         }
@@ -2490,14 +2521,18 @@ mod tests {
     }
 
     fn music_track(db: &Db, path: &str) -> i64 {
+        typed_track(db, path, "music")
+    }
+
+    fn typed_track(db: &Db, path: &str, content_type: &str) -> i64 {
         db.insert_track(&TrackInsert {
             path: path.into(),
-            content_type: "music".into(),
+            content_type: content_type.into(),
             duration: Some(200.0),
             ..Default::default()
         })
         .unwrap();
-        only_id(db)
+        db.search("", Some(content_type), None, None).unwrap()[0].id
     }
 
     const AUTO: AutoCue = AutoCue {
@@ -2510,7 +2545,7 @@ mod tests {
     fn an_automatic_result_lands_with_its_provenance() {
         let db = Db::open_in_memory().unwrap();
         let id = music_track(&db, "/a.mp3");
-        assert!(db.set_auto_cue(id, AUTO, THRESHOLDS, true, 7).unwrap());
+        assert!(db.set_auto_cue(id, AUTO, THRESHOLDS, "music", 7).unwrap());
 
         let points = db.get_track(id).unwrap().unwrap().cue_points;
         assert_eq!(points.cue_in_ms, AUTO.cue_in_ms);
@@ -2531,8 +2566,9 @@ mod tests {
     #[test]
     fn a_commercial_records_no_segue_threshold() {
         let db = Db::open_in_memory().unwrap();
-        let id = music_track(&db, "/ad.mp3");
-        db.set_auto_cue(id, AUTO, THRESHOLDS, false, 7).unwrap();
+        let id = typed_track(&db, "/ad.mp3", "commercial");
+        db.set_auto_cue(id, AUTO, THRESHOLDS, "commercial", 7)
+            .unwrap();
         assert_eq!(auto_cue_row(&db, id).3, None);
     }
 
@@ -2540,7 +2576,7 @@ mod tests {
     fn an_operator_edit_takes_the_trio_off_automatic() {
         let db = Db::open_in_memory().unwrap();
         let id = music_track(&db, "/a.mp3");
-        db.set_auto_cue(id, AUTO, THRESHOLDS, true, 7).unwrap();
+        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", 7).unwrap();
 
         db.set_cue_points(
             id,
@@ -2561,7 +2597,7 @@ mod tests {
     fn clearing_a_marker_takes_the_trio_off_automatic() {
         let db = Db::open_in_memory().unwrap();
         let id = music_track(&db, "/a.mp3");
-        db.set_auto_cue(id, AUTO, THRESHOLDS, true, 7).unwrap();
+        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", 7).unwrap();
 
         db.set_cue_points(
             id,
@@ -2580,7 +2616,7 @@ mod tests {
     fn a_fade_edit_leaves_the_trio_automatic() {
         let db = Db::open_in_memory().unwrap();
         let id = music_track(&db, "/a.mp3");
-        db.set_auto_cue(id, AUTO, THRESHOLDS, true, 7).unwrap();
+        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", 7).unwrap();
 
         db.set_cue_points(
             id,
@@ -2612,7 +2648,7 @@ mod tests {
         };
         db.set_cue_points(id, manual).unwrap();
 
-        assert!(!db.set_auto_cue(id, AUTO, THRESHOLDS, true, 7).unwrap());
+        assert!(!db.set_auto_cue(id, AUTO, THRESHOLDS, "music", 7).unwrap());
         assert_eq!(db.get_track(id).unwrap().unwrap().cue_points, manual);
         assert_eq!(auto_cue_row(&db, id).0, "manual");
     }
@@ -2621,7 +2657,7 @@ mod tests {
     fn a_reclassification_requeues_an_automatic_track() {
         let db = Db::open_in_memory().unwrap();
         let id = music_track(&db, "/a.mp3");
-        db.set_auto_cue(id, AUTO, THRESHOLDS, true, 7).unwrap();
+        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", 7).unwrap();
 
         db.update_track_metadata(&TrackMetadataUpdate {
             id,
@@ -2672,7 +2708,7 @@ mod tests {
     fn a_tag_edit_leaves_an_automatic_track_analysed() {
         let db = Db::open_in_memory().unwrap();
         let id = music_track(&db, "/a.mp3");
-        db.set_auto_cue(id, AUTO, THRESHOLDS, true, 7).unwrap();
+        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", 7).unwrap();
 
         db.update_track_metadata(&TrackMetadataUpdate {
             id,
@@ -2683,6 +2719,239 @@ mod tests {
         .unwrap();
 
         assert_eq!(auto_cue_row(&db, id).0, "auto");
+    }
+
+    /// The other side of the same race: the operator reclassifies while the
+    /// decode runs, so the result was derived under a class the row no longer
+    /// has. The row stays `pending` and the pass takes it again.
+    #[test]
+    fn an_analysis_that_finishes_after_a_reclassification_is_discarded() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/a.mp3");
+        db.update_track_metadata(&TrackMetadataUpdate {
+            id,
+            content_type: Some("jingle".into()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        // The in-flight decode reports what it analysed: the old class.
+        assert!(!db.set_auto_cue(id, AUTO, THRESHOLDS, "music", 7).unwrap());
+        assert_eq!(auto_cue_row(&db, id).0, "pending");
+        assert_eq!(
+            db.get_track(id).unwrap().unwrap().cue_points.next_start_ms,
+            None,
+            "a jingle never takes a music Next Start"
+        );
+        assert!(db.tracks_needing_analysis().unwrap()[0].needs_auto_cue);
+
+        assert!(db.set_auto_cue(id, AUTO, THRESHOLDS, "jingle", 8).unwrap());
+    }
+
+    /// A VBR MP3 whose tag duration undersells the file: automatic analysis
+    /// stores a Cue Out past it, and a fade-only save must not pull that back.
+    #[test]
+    fn a_fade_edit_leaves_a_marker_past_the_tag_duration_alone() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/vbr.mp3"); // tag duration 200 s
+        let decoded = AutoCue {
+            cue_in_ms: Some(100),
+            cue_out_ms: Some(204_000),
+            next_start_ms: Some(203_000),
+        };
+        db.set_auto_cue(id, decoded, THRESHOLDS, "music", 7)
+            .unwrap();
+
+        let saved = db
+            .set_cue_points(
+                id,
+                CuePoints {
+                    cue_in_ms: decoded.cue_in_ms,
+                    fade_out_ms: Some(180_000),
+                    cue_out_ms: decoded.cue_out_ms,
+                    next_start_ms: decoded.next_start_ms,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(auto_cue_row(&db, id).0, "auto");
+        assert_eq!(saved.cue_out_ms, decoded.cue_out_ms);
+        assert_eq!(saved.fade_out_ms, Some(180_000));
+        let points = db.get_track(id).unwrap().unwrap().cue_points;
+        assert_eq!(points.cue_out_ms, decoded.cue_out_ms);
+        assert_eq!(points.next_start_ms, decoded.next_start_ms);
+    }
+
+    /// Moving a marker still takes ownership, and is still bounded by the
+    /// duration the library holds.
+    #[test]
+    fn an_edit_past_the_tag_duration_is_still_clamped() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/a.mp3");
+        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", 7).unwrap();
+
+        let saved = db
+            .set_cue_points(
+                id,
+                CuePoints {
+                    cue_in_ms: AUTO.cue_in_ms,
+                    cue_out_ms: Some(500_000),
+                    next_start_ms: AUTO.next_start_ms,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(saved.cue_out_ms, Some(200_000));
+        assert_eq!(auto_cue_row(&db, id).0, "manual");
+    }
+
+    /// A file that comes back under a different root is a different class of
+    /// material, so its automatic trio is re-derived.
+    #[test]
+    fn a_reattach_under_another_root_requeues_the_analysis() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&new_file("/music/a.mp3", "v1:x")).unwrap();
+        let id = only_id(&db);
+        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", 7).unwrap();
+        db.reconcile(&Reconcile {
+            gone: vec![id],
+            now_ms: 1,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let done = db
+            .reconcile(&Reconcile {
+                new_files: vec![TrackInsert {
+                    content_type: "jingle".into(),
+                    ..new_file("/jingles/a.mp3", "v1:x")
+                }],
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(done.reattached, 1);
+        assert_eq!(auto_cue_row(&db, id).0, "pending");
+        assert_eq!(
+            db.get_track(id).unwrap().unwrap().cue_points.next_start_ms,
+            AUTO.next_start_ms,
+            "the old values stand until the fresh result lands"
+        );
+    }
+
+    #[test]
+    fn a_reattach_under_the_same_root_keeps_the_analysis() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&new_file("/music/a.mp3", "v1:x")).unwrap();
+        let id = only_id(&db);
+        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", 7).unwrap();
+        db.reconcile(&Reconcile {
+            gone: vec![id],
+            now_ms: 1,
+            ..Default::default()
+        })
+        .unwrap();
+
+        db.reconcile(&Reconcile {
+            new_files: vec![new_file("/music/moved.mp3", "v1:x")],
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(auto_cue_row(&db, id).0, "auto");
+    }
+
+    /// The operator's markers survive the move: a reclassification never
+    /// overrides a manual trio, here as anywhere else.
+    #[test]
+    fn a_reattach_under_another_root_leaves_a_manual_trio_alone() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&new_file("/music/a.mp3", "v1:x")).unwrap();
+        let id = only_id(&db);
+        db.set_cue_points(
+            id,
+            CuePoints {
+                cue_in_ms: Some(1_000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        db.reconcile(&Reconcile {
+            gone: vec![id],
+            now_ms: 1,
+            ..Default::default()
+        })
+        .unwrap();
+
+        db.reconcile(&Reconcile {
+            new_files: vec![TrackInsert {
+                content_type: "jingle".into(),
+                ..new_file("/jingles/a.mp3", "v1:x")
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(auto_cue_row(&db, id).0, "manual");
+        assert_eq!(
+            db.get_track(id).unwrap().unwrap().cue_points.cue_in_ms,
+            Some(1_000)
+        );
+    }
+
+    /// The same file filed under two roots is two jobs: the jingle copy is
+    /// analysed as a jingle rather than inheriting the music row's result.
+    #[test]
+    fn a_duplicate_in_another_root_is_analysed_for_itself() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&new_file("/music/a.mp3", "v1:x")).unwrap();
+        let id = only_id(&db);
+        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", 7).unwrap();
+
+        let done = db
+            .reconcile(&Reconcile {
+                new_files: vec![TrackInsert {
+                    content_type: "jingle".into(),
+                    ..new_file("/jingles/a.mp3", "v1:x")
+                }],
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(done.duplicated, 1);
+        let copy = db
+            .search("", None, None, None)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id != id)
+            .unwrap();
+        assert_eq!(auto_cue_row(&db, copy.id).0, "pending");
+        assert_eq!(auto_cue_row(&db, id).0, "auto", "the twin is untouched");
+    }
+
+    #[test]
+    fn a_duplicate_in_the_same_root_inherits_the_analysis() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&new_file("/music/a.mp3", "v1:x")).unwrap();
+        let id = only_id(&db);
+        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", 7).unwrap();
+
+        db.reconcile(&Reconcile {
+            new_files: vec![new_file("/music/copy.mp3", "v1:x")],
+            ..Default::default()
+        })
+        .unwrap();
+
+        let copy = db
+            .search("", None, None, None)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id != id)
+            .unwrap();
+        assert_eq!(auto_cue_row(&db, copy.id).0, "auto");
+        assert_eq!(copy.cue_points.next_start_ms, AUTO.next_start_ms);
     }
 
     /// Cue points ride along on the one query a deck load already runs.
@@ -2953,7 +3222,7 @@ mod tests {
         db.set_waveform(b, &[9]).unwrap();
         db.set_fingerprint(b, "v1:b").unwrap();
         db.set_loudness(b, Some(-6.0), Some(0.9), 1).unwrap();
-        db.set_auto_cue(b, AutoCue::default(), THRESHOLDS, true, 1)
+        db.set_auto_cue(b, AutoCue::default(), THRESHOLDS, "music", 1)
             .unwrap();
 
         let jobs = db.tracks_needing_analysis().unwrap();
@@ -2981,7 +3250,7 @@ mod tests {
         db.set_waveform(id, &[0]).unwrap();
         db.set_fingerprint(id, "v1:s").unwrap();
         db.set_loudness(id, None, None, 42).unwrap();
-        db.set_auto_cue(id, AutoCue::default(), THRESHOLDS, true, 42)
+        db.set_auto_cue(id, AutoCue::default(), THRESHOLDS, "music", 42)
             .unwrap();
 
         assert!(db.tracks_needing_analysis().unwrap().is_empty());

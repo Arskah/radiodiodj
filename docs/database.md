@@ -50,6 +50,9 @@ The library lives in SQLite (`radiodiodj.db`, WAL mode) and is opened by
   _automatic_ cue point set back in the queue (`auto_cue_state`, never the
   markers themselves), since it runs only for a file that changed — a manual
   set is left alone, and the old automatic values stand until fresh ones land.
+  `reconcile` applies the same rule wherever a Track's content type moves —
+  a reattach under a Library path of another type, or a duplicate inserted
+  under one — so an automatic trio is never inherited across classes.
 - **No foreign keys.** `PRAGMA foreign_keys` is off (SQLite's default, never
   set here), so an `ON DELETE` clause would be decoration that silently never
   fires. A table referencing `tracks(id)` declares the column plain and the
