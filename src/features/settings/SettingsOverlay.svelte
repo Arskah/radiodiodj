@@ -118,7 +118,13 @@
   // Parse a number input, ignoring empty/NaN so a mid-edit blank doesn't wipe
   // the field; the min-clamp is enforced by the backend on save.
   function numInput(e: Event, apply: (v: number) => void): void {
-    const v = Number((e.currentTarget as HTMLInputElement).value);
+    // `Number("")` is 0, which is finite: without the blank check a cleared
+    // field reads as a deliberate zero on blur. Harmless where 0 clamps toward
+    // a floor, not on a range that excludes it — the dBFS levels would clamp
+    // to their *ceiling* and trim every later analysis to nothing.
+    const raw = (e.currentTarget as HTMLInputElement).value.trim();
+    if (raw === "") return;
+    const v = Number(raw);
     if (Number.isFinite(v)) apply(v);
   }
 

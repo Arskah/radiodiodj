@@ -1177,12 +1177,6 @@ impl Db {
         self.get_tracks_by_ids(&ids)
     }
 
-    /// Update metadata fields for a track. Only non-None fields are included
-    /// in the UPDATE. A tag field whose value actually changes is flagged in
-    /// `edited_fields`, so a rescan keeps it; the renderer sends every field, so
-    /// an unchanged one must not be flagged. Returns the updated [`Track`] so
-    /// the caller can push it to the renderer as a fast-forward replacement; the
-    /// update path never touches `play_count`, `waveform`, or `added_at`.
     /// A track's content type, which [`Track`] does not carry — the class is a
     /// property of the Library path the file sits under, not of its tags.
     pub fn track_content_type(&self, id: i64) -> Result<Option<String>> {
@@ -1194,6 +1188,12 @@ impl Db {
             .optional()?)
     }
 
+    /// Update metadata fields for a track. Only non-None fields are included
+    /// in the UPDATE. A tag field whose value actually changes is flagged in
+    /// `edited_fields`, so a rescan keeps it; the renderer sends every field, so
+    /// an unchanged one must not be flagged. Returns the updated [`Track`] so
+    /// the caller can push it to the renderer as a fast-forward replacement; the
+    /// update path never touches `play_count`, `waveform`, or `added_at`.
     pub fn update_track_metadata(&self, updates: &TrackMetadataUpdate) -> Result<Track> {
         use rusqlite::types::Value;
 
@@ -1579,7 +1579,6 @@ fn row_to_track(row: &Row) -> rusqlite::Result<Track> {
     })
 }
 
-/// Read the five marker columns off a row that selected them by name.
 /// The furthest marker a set holds, as a lower bound on the file's length.
 fn furthest(points: &CuePoints) -> Option<i64> {
     [
@@ -1594,6 +1593,7 @@ fn furthest(points: &CuePoints) -> Option<i64> {
     .max()
 }
 
+/// Read the five marker columns off a row that selected them by name.
 fn row_to_cue_points(row: &Row) -> rusqlite::Result<CuePoints> {
     Ok(CuePoints {
         cue_in_ms: row.get("cue_in_ms")?,

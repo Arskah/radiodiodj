@@ -550,15 +550,6 @@ impl Playlist {
         self.advance(true, r)
     }
 
-    /// A radio edit was saved for `id`. Queued items carry a copy of the track
-    /// for display, so the copies are refreshed here — otherwise the next
-    /// snapshot would hand the renderer the duration the track had before the
-    /// edit. Items with an override are copied into as well: what they *air*
-    /// is their own markers, but the track underneath them still changed.
-    ///
-    /// The track on air is deliberately left alone. A radio edit saved
-    /// mid-broadcast applies from the next airing, so its numbers must not move
-    /// under the operator while it is playing.
     /// Whether any copy of this track is held here. The analysis pass reports
     /// every automatic result, one per track in the library on a backfill, and
     /// applying one costs a full snapshot to the renderer and an arm reconcile
@@ -570,6 +561,15 @@ impl Playlist {
             || self.history.iter().any(|t| t.id == id)
     }
 
+    /// A radio edit was saved for `id`. Queued items carry a copy of the track
+    /// for display, so the copies are refreshed here — otherwise the next
+    /// snapshot would hand the renderer the duration the track had before the
+    /// edit. Items with an override are copied into as well: what they *air*
+    /// is their own markers, but the track underneath them still changed.
+    ///
+    /// The track on air is deliberately left alone. A radio edit saved
+    /// mid-broadcast applies from the next airing, so its numbers must not move
+    /// under the operator while it is playing.
     pub fn on_cue_points_saved(&mut self, id: i64, points: CuePoints) -> Transition {
         for item in &mut self.items {
             if let PlaylistItem::Track { track, .. } = item {

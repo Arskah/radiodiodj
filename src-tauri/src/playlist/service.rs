@@ -204,9 +204,7 @@ impl PlaylistService {
             let Ok(ready) = serde_json::from_str::<CuePointsReady>(event.payload()) else {
                 return;
             };
-            Inner::apply(&auto_cue, move |p, _| {
-                p.on_cue_points_saved(ready.id, ready.cue_points)
-            });
+            Inner::adopt_cue_points(&auto_cue, ready.id, ready.cue_points);
         });
 
         let cache_state = Arc::clone(&self.inner);
@@ -269,10 +267,7 @@ impl PlaylistService {
     /// A radio edit was stored for `id`; refresh the queued copies of it so the
     /// operator's next snapshot shows what was just saved.
     pub fn on_cue_points_saved(&self, id: i64, points: CuePoints) {
-        if !self.inner.playlist.lock().holds(id) {
-            return;
-        }
-        Inner::apply(&self.inner, move |p, _| p.on_cue_points_saved(id, points));
+        Inner::adopt_cue_points(&self.inner, id, points);
     }
 
     pub fn set_item_cue_points(&self, index: usize, cue_override: Option<CuePoints>) {
@@ -405,6 +400,19 @@ impl Inner {
     /// effects, so the nested transition's snapshot lands *after* this one:
     /// emitting last would have the outer call overwrite the renderer with the
     /// state as it was before the nested advance.
+    /// Take new markers into the copies of a track held here, if any are. The
+    /// analysis pass reports every result it commits — one per track in the
+    /// library on a backfill — and [`Inner::apply`] is not cheap: it takes the
+    /// playlist lock, reconciles the arm deck, serializes a whole snapshot to
+    /// the renderer and re-pushes the prefetch window. A track nobody queued
+    /// is dropped before any of that.
+    fn adopt_cue_points(inner: &Arc<Inner>, id: i64, points: CuePoints) {
+        if !inner.playlist.lock().holds(id) {
+            return;
+        }
+        Inner::apply(inner, move |p, _| p.on_cue_points_saved(id, points));
+    }
+
     fn apply<F>(inner: &Arc<Inner>, f: F)
     where
         F: FnOnce(&mut Playlist, &dyn Refiller) -> Transition,

@@ -2290,9 +2290,8 @@ describe("AppState cue points", () => {
     expect(app.cueTrack?.cue_points).toEqual(trimmed);
   });
 
-  it("an automatic cue result leaves the on-air track and an open editor alone", () => {
+  it("an automatic cue result leaves the on-air track alone", () => {
     app.currentTrack = t(1);
-    app.editingCuePoints = t(1);
 
     const onReady = api.onCuePointsReady.mock.calls[0][0] as (
       id: number,
@@ -2301,6 +2300,33 @@ describe("AppState cue points", () => {
     onReady(1, trimmed);
 
     expect(app.currentTrack?.cue_points).toBeUndefined();
+  });
+
+  /// The editor's draft was built before the analysis existed. Saving it would
+  /// write those nulls back over the result and take the trio off automatic.
+  it("an automatic cue result refreshes an untouched editor", () => {
+    app.editingCuePoints = t(1);
+    app.cueEditorDirty = false;
+
+    const onReady = api.onCuePointsReady.mock.calls[0][0] as (
+      id: number,
+      points: CuePoints,
+    ) => void;
+    onReady(1, trimmed);
+
+    expect(app.editingCuePoints?.cue_points).toEqual(trimmed);
+  });
+
+  it("an automatic cue result leaves an edited draft alone", () => {
+    app.editingCuePoints = t(1);
+    app.cueEditorDirty = true;
+
+    const onReady = api.onCuePointsReady.mock.calls[0][0] as (
+      id: number,
+      points: CuePoints,
+    ) => void;
+    onReady(1, trimmed);
+
     expect(app.editingCuePoints?.cue_points).toBeUndefined();
   });
 

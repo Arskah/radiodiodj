@@ -154,6 +154,13 @@
       : null,
   );
 
+  // The editor owns the draft; the store owns what lands from the analysis
+  // pass, and needs to know whether refreshing the markers would take work
+  // away from the operator.
+  $effect(() => {
+    app.cueEditorDirty = dirty;
+  });
+
   // ----- Opening and closing -----
 
   $effect(() => {

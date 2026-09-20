@@ -249,6 +249,12 @@ export class AppState {
   editingMetadata = $state<Track | null>(null);
   // Track whose cue points are open in the cue-point editor.
   editingCuePoints = $state<Track | null>(null);
+  /**
+   * Set by the cue editor: its draft differs from the stored markers. Read when
+   * an automatic result lands for the track being edited — see
+   * {@link AppState.adoptCuePoints}.
+   */
+  cueEditorDirty = $state(false);
 
   // Admin mode, mirrored from the backend. With no password set the app is
   // always admin. See docs/admin-mode.md.
@@ -929,20 +935,38 @@ export class AppState {
    * Take new markers into every copy of the track the UI holds. Not
    * `currentTrack`: markers apply from the track's next airing, and rewriting
    * them here would make the on-air deck's bar disagree with the audio still
-   * coming out of it. Not `editingCuePoints` either unless the operator is the
-   * one who saved — an automatic result must not move an open editor under
-   * them.
+   * coming out of it. An open editor is refreshed only while its draft is
+   * untouched.
    */
   private adoptCuePoints(id: number, points: CuePoints): void {
-    this.tracks = this.tracks.map(
-      (t) => this.applyCuePoints(t, id, points) as Track,
-    );
-    this.playlist = this.playlist.map((i) =>
-      isTrackItem(i) && i.track.id === id
-        ? { ...i, track: { ...i.track, cue_points: points } }
-        : i,
-    );
+    // The analysis pass reports every result it commits — one per track in the
+    // library on a backfill — and rebuilding the rows re-renders the list. A
+    // track that is nowhere on screen is dropped before that.
+    if (this.tracks.some((t) => t.id === id)) {
+      this.tracks = this.tracks.map(
+        (t) => this.applyCuePoints(t, id, points) as Track,
+      );
+    }
+    if (this.playlist.some((i) => isTrackItem(i) && i.track.id === id)) {
+      this.playlist = this.playlist.map((i) =>
+        isTrackItem(i) && i.track.id === id
+          ? { ...i, track: { ...i.track, cue_points: points } }
+          : i,
+      );
+    }
     this.cueTrack = this.applyCuePoints(this.cueTrack, id, points);
+    // A result landing for the track being edited refreshes a pristine editor.
+    // Its draft was built before the analysis existed, so saving it would write
+    // those `null`s back over the result and take the trio off automatic for
+    // good — from an edit that may only have touched a fade. A draft the
+    // operator has already changed stands: what they see is what they save.
+    if (!this.cueEditorDirty) {
+      this.editingCuePoints = this.applyCuePoints(
+        this.editingCuePoints,
+        id,
+        points,
+      );
+    }
   }
 
   cueTogglePlay(): void {
