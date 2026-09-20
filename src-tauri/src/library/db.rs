@@ -5,6 +5,7 @@ use rusqlite_migration::{Migrations, M};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::audio::auto_cue::{AutoCue, Thresholds};
 use crate::audio::cue_points::CuePoints;
@@ -339,6 +340,10 @@ pub struct TrackLoadInfo {
 
 pub struct Db {
     conn: Mutex<Connection>,
+    /// Whether an automatically derived cue set takes effect. Held here rather
+    /// than read from the config per query: every row the library hands out
+    /// passes this, and the answer changes only when the operator flips it.
+    apply_auto_cue: AtomicBool,
 }
 
 impl Db {
@@ -375,6 +380,7 @@ impl Db {
         Ok(Opened {
             db: Self {
                 conn: Mutex::new(conn),
+                apply_auto_cue: AtomicBool::new(true),
             },
             reset_backup,
         })
@@ -386,6 +392,7 @@ impl Db {
         MIGRATIONS.to_latest(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
+            apply_auto_cue: AtomicBool::new(true),
         })
     }
 
@@ -396,6 +403,7 @@ impl Db {
         sort_by: Option<&str>,
         sort_dir: Option<&str>,
     ) -> Result<Vec<Track>> {
+        let apply = self.apply_auto_cue();
         let conn = self.conn.lock();
         let order = order_clause(sort_by, sort_dir);
         let trimmed = query.trim();
@@ -424,7 +432,8 @@ impl Db {
                 )
             };
             let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map(params_from_iter(params.iter()), row_to_track)?;
+            let rows =
+                stmt.query_map(params_from_iter(params.iter()), |r| row_to_track(r, apply))?;
             return rows.collect::<rusqlite::Result<_>>().map_err(Into::into);
         }
 
@@ -460,7 +469,7 @@ impl Db {
             )
         };
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params_from_iter(params.iter()), row_to_track)?;
+        let rows = stmt.query_map(params_from_iter(params.iter()), |r| row_to_track(r, apply))?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
 
@@ -487,11 +496,12 @@ impl Db {
     /// The one query a deck load runs: path and markers for playback, plus the
     /// fields the now-playing broadcast announces.
     pub fn get_track_load_info(&self, id: i64) -> Result<Option<TrackLoadInfo>> {
+        let apply = self.apply_auto_cue();
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id, title, artist, album, genre, duration, content_type, path, \
                     cue_in_ms, fade_in_ms, fade_out_ms, cue_out_ms, next_start_ms, \
-                    rg_gain, rg_peak \
+                    auto_cue_state, rg_gain, rg_peak \
              FROM tracks WHERE id = ?",
         )?;
         let mut rows = stmt.query_map([id], |r| {
@@ -504,7 +514,7 @@ impl Db {
                 duration: r.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
                 content_type: r.get(6)?,
                 path: r.get(7)?,
-                cue_points: row_to_cue_points(r)?,
+                cue_points: effective_cue_points(r, apply)?,
                 loudness: StoredLoudness {
                     gain_db: r.get("rg_gain")?,
                     peak: r.get("rg_peak")?,
@@ -518,9 +528,10 @@ impl Db {
     }
 
     pub fn get_track(&self, id: i64) -> Result<Option<Track>> {
+        let apply = self.apply_auto_cue();
         let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT * FROM tracks WHERE id = ?")?;
-        let mut rows = stmt.query_map([id], row_to_track)?;
+        let mut rows = stmt.query_map([id], |r| row_to_track(r, apply))?;
         match rows.next() {
             Some(r) => r.map(Some).map_err(Into::into),
             None => Ok(None),
@@ -528,6 +539,7 @@ impl Db {
     }
 
     pub fn get_tracks_by_ids(&self, ids: &[i64]) -> Result<Vec<Track>> {
+        let apply = self.apply_auto_cue();
         if ids.is_empty() {
             return Ok(vec![]);
         }
@@ -537,7 +549,7 @@ impl Db {
             .join(",");
         let sql = format!("SELECT * FROM tracks WHERE id IN ({})", placeholders);
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params_from_iter(ids.iter()), row_to_track)?;
+        let rows = stmt.query_map(params_from_iter(ids.iter()), |r| row_to_track(r, apply))?;
         let by_id: HashMap<i64, Track> = rows
             .collect::<rusqlite::Result<Vec<Track>>>()?
             .into_iter()
@@ -612,18 +624,30 @@ impl Db {
     /// to `NULL` included — takes the trio away from automatic analysis for
     /// good. Editing only a fade does not: fades are never inferred, so
     /// touching one says nothing about the markers that are.
+    ///
+    /// Ownership is judged against what the caller was shown, which is not the
+    /// stored row while automatic cue points are switched off. Nobody can clear
+    /// markers they were never given: an edit made with the feature off leaves
+    /// the derived trio intact for when it goes back on.
     pub fn set_cue_points(&self, id: i64, points: CuePoints) -> Result<CuePoints> {
+        let apply = self.apply_auto_cue();
         let conn = self.conn.lock();
-        let current: Option<(Option<f64>, CuePoints)> = conn
+        let current: Option<(Option<f64>, CuePoints, CuePoints)> = conn
             .query_row(
                 "SELECT duration, cue_in_ms, fade_in_ms, fade_out_ms, cue_out_ms, \
-                        next_start_ms \
+                        next_start_ms, auto_cue_state \
                  FROM tracks WHERE id = ?",
                 [id],
-                |r| Ok((r.get(0)?, row_to_cue_points(r)?)),
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        row_to_cue_points(r)?,
+                        effective_cue_points(r, apply)?,
+                    ))
+                },
             )
             .optional()?;
-        let Some((duration, stored)) = current else {
+        let Some((duration, stored, shown)) = current else {
             anyhow::bail!("track {} is no longer in the library", id);
         };
         // The stored duration is the tag's, and the tag is wrong on VBR MP3:
@@ -637,11 +661,25 @@ impl Db {
             .max()
             .map(|ms| ms as f64 / 1000.0);
         let clamped = points.clamp(end_of_file);
-        // Ownership is decided on what came in, not on what the clamp made of
-        // it: only a marker the operator moved takes the trio off automatic.
-        let owns = points.cue_in_ms != stored.cue_in_ms
-            || points.cue_out_ms != stored.cue_out_ms
-            || points.next_start_ms != stored.next_start_ms;
+        // Ownership is decided on what came in against what went out, not on
+        // what the clamp made of it: only a marker the operator moved takes the
+        // trio off automatic.
+        let owns = points.cue_in_ms != shown.cue_in_ms
+            || points.cue_out_ms != shown.cue_out_ms
+            || points.next_start_ms != shown.next_start_ms;
+        // An untouched trio is written back as stored — which is not what came
+        // in when the feature is off, and not the clamped value when the tag
+        // duration undersells the file.
+        let written = if owns {
+            clamped
+        } else {
+            CuePoints {
+                cue_in_ms: stored.cue_in_ms,
+                cue_out_ms: stored.cue_out_ms,
+                next_start_ms: stored.next_start_ms,
+                ..clamped
+            }
+        };
         let state = if owns {
             ", auto_cue_state = 'manual'"
         } else {
@@ -654,18 +692,29 @@ impl Db {
                  WHERE id = ?"
             ),
             params![
-                clamped.cue_in_ms,
-                clamped.fade_in_ms,
-                clamped.fade_out_ms,
-                clamped.cue_out_ms,
-                clamped.next_start_ms,
+                written.cue_in_ms,
+                written.fade_in_ms,
+                written.fade_out_ms,
+                written.cue_out_ms,
+                written.next_start_ms,
                 id
             ],
         )?;
         if changed == 0 {
             anyhow::bail!("track {} is no longer in the library", id);
         }
-        Ok(clamped)
+        // What the caller adopts is what it will be shown next, so an untouched
+        // derived trio stays hidden while the feature is off.
+        Ok(if owns || apply {
+            written
+        } else {
+            CuePoints {
+                cue_in_ms: None,
+                cue_out_ms: None,
+                next_start_ms: None,
+                ..written
+            }
+        })
     }
 
     /// Commit one automatic analysis: the trio, the ownership state and the
@@ -721,10 +770,11 @@ impl Db {
         }
         Ok(conn
             .query_row(
-                "SELECT cue_in_ms, fade_in_ms, fade_out_ms, cue_out_ms, next_start_ms \
+                "SELECT cue_in_ms, fade_in_ms, fade_out_ms, cue_out_ms, next_start_ms, \
+                        auto_cue_state \
                  FROM tracks WHERE id = ?",
                 [id],
-                row_to_cue_points,
+                |r| effective_cue_points(r, self.apply_auto_cue()),
             )
             .optional()?)
     }
@@ -799,6 +849,7 @@ impl Db {
 
     /// Present tracks the analysis pass could not decode, oldest failure first.
     pub fn unreadable_tracks(&self) -> Result<Vec<UnreadableRow>> {
+        let apply = self.apply_auto_cue();
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(&format!(
             "SELECT {TRACK_COLUMNS}, path, content_type, fingerprint, \
@@ -810,7 +861,7 @@ impl Db {
         let rows = stmt.query_map([], |r| {
             Ok(UnreadableRow {
                 row: HealthRow {
-                    track: row_to_track(r)?,
+                    track: row_to_track(r, apply)?,
                     path: r.get("path")?,
                     content_type: r.get("content_type")?,
                     fingerprint: r.get("fingerprint")?,
@@ -1024,13 +1075,14 @@ impl Db {
     }
 
     fn health_rows(&self, filter: &str) -> Result<Vec<HealthRow>> {
+        let apply = self.apply_auto_cue();
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(&format!(
             "SELECT {TRACK_COLUMNS}, path, content_type, fingerprint FROM tracks WHERE {filter}"
         ))?;
         let rows = stmt.query_map([], |r| {
             Ok(HealthRow {
-                track: row_to_track(r)?,
+                track: row_to_track(r, apply)?,
                 path: r.get("path")?,
                 content_type: r.get("content_type")?,
                 fingerprint: r.get("fingerprint")?,
@@ -1177,6 +1229,17 @@ impl Db {
         self.get_tracks_by_ids(&ids)
     }
 
+    /// Whether a derived cue set takes effect. Set from the tuning config at
+    /// startup and whenever the operator flips it; analysis runs and stores its
+    /// result either way, so switching back on costs no second pass.
+    pub fn set_apply_auto_cue(&self, apply: bool) {
+        self.apply_auto_cue.store(apply, Ordering::Relaxed);
+    }
+
+    fn apply_auto_cue(&self) -> bool {
+        self.apply_auto_cue.load(Ordering::Relaxed)
+    }
+
     /// A track's content type, which [`Track`] does not carry — the class is a
     /// property of the Library path the file sits under, not of its tags.
     pub fn track_content_type(&self, id: i64) -> Result<Option<String>> {
@@ -1195,6 +1258,7 @@ impl Db {
     /// the caller can push it to the renderer as a fast-forward replacement; the
     /// update path never touches `play_count`, `waveform`, or `added_at`.
     pub fn update_track_metadata(&self, updates: &TrackMetadataUpdate) -> Result<Track> {
+        let apply = self.apply_auto_cue();
         use rusqlite::types::Value;
 
         let mut conn = self.conn.lock();
@@ -1203,7 +1267,7 @@ impl Db {
             .query_row(
                 &format!("SELECT {TRACK_COLUMNS} FROM tracks WHERE id = ?"),
                 [updates.id],
-                row_to_track,
+                |r| row_to_track(r, apply),
             )
             .optional()?
             .ok_or_else(|| anyhow::anyhow!("track not found"))?;
@@ -1286,7 +1350,7 @@ impl Db {
         let track = tx.query_row(
             &format!("SELECT {TRACK_COLUMNS} FROM tracks WHERE id = ?"),
             [updates.id],
-            row_to_track,
+            |r| row_to_track(r, apply),
         )?;
         tx.commit()?;
         Ok(track)
@@ -1295,6 +1359,7 @@ impl Db {
     /// Replace the flagged tag columns with `parsed`, the file's own tags, and
     /// clear the flags.
     pub fn revert_track_tags(&self, id: i64, parsed: &TrackInsert) -> Result<Track> {
+        let apply = self.apply_auto_cue();
         let conn = self.conn.lock();
         let n = conn.execute(
             "UPDATE tracks SET \
@@ -1321,7 +1386,7 @@ impl Db {
         Ok(conn.query_row(
             &format!("SELECT {TRACK_COLUMNS} FROM tracks WHERE id = ?"),
             [id],
-            row_to_track,
+            |r| row_to_track(r, apply),
         )?)
     }
 
@@ -1384,6 +1449,7 @@ impl Db {
         count: i64,
         filter: &SelectionFilter,
     ) -> Result<Vec<Track>> {
+        let apply = self.apply_auto_cue();
         if count <= 0 {
             return Ok(vec![]);
         }
@@ -1414,7 +1480,7 @@ impl Db {
                 .chain(filter.params())
                 .chain(std::iter::once(rusqlite::types::Value::Integer(count))),
         );
-        let rows = stmt.query_map(params, row_to_track)?;
+        let rows = stmt.query_map(params, |r| row_to_track(r, apply))?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
 
@@ -1425,6 +1491,7 @@ impl Db {
         bucket_size: i64,
         exclude_ids: &[i64],
     ) -> Result<Vec<Track>> {
+        let apply = self.apply_auto_cue();
         if bucket_size <= 0 || count <= 0 {
             return Ok(vec![]);
         }
@@ -1450,7 +1517,7 @@ impl Db {
                     rusqlite::types::Value::Integer(count),
                 ]),
         );
-        let rows = stmt.query_map(params, row_to_track)?;
+        let rows = stmt.query_map(params, |r| row_to_track(r, apply))?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
 
@@ -1558,9 +1625,27 @@ fn order_clause(sort_by: Option<&str>, sort_dir: Option<&str>) -> Option<String>
 /// blob along with `SELECT *`.
 const TRACK_COLUMNS: &str = "id, title, artist, album, duration, play_count, genre, year, bpm, \
      sample_rate, bitrate, format, cue_in_ms, fade_in_ms, fade_out_ms, cue_out_ms, next_start_ms, \
-     edited_fields";
+     auto_cue_state, edited_fields";
 
-fn row_to_track(row: &Row) -> rusqlite::Result<Track> {
+/// The markers as they take effect. A derived trio is held back while the
+/// feature is switched off — the row keeps its result, and nothing downstream
+/// sees it — so the station airs the whole file until it is switched on again.
+/// A manually prepared trio is never held back, and neither are the fades:
+/// nothing infers those, so they are the operator's either way.
+fn effective_cue_points(row: &Row, apply: bool) -> rusqlite::Result<CuePoints> {
+    let points = row_to_cue_points(row)?;
+    if apply || row.get::<_, String>("auto_cue_state")? != "auto" {
+        return Ok(points);
+    }
+    Ok(CuePoints {
+        cue_in_ms: None,
+        cue_out_ms: None,
+        next_start_ms: None,
+        ..points
+    })
+}
+
+fn row_to_track(row: &Row, apply_auto_cue: bool) -> rusqlite::Result<Track> {
     Ok(Track {
         id: row.get("id")?,
         title: row.get::<_, Option<String>>("title")?.unwrap_or_default(),
@@ -1574,7 +1659,7 @@ fn row_to_track(row: &Row) -> rusqlite::Result<Track> {
         sample_rate: row.get("sample_rate")?,
         bitrate: row.get("bitrate")?,
         format: row.get("format")?,
-        cue_points: row_to_cue_points(row)?,
+        cue_points: effective_cue_points(row, apply_auto_cue)?,
         edited_fields: row.get("edited_fields")?,
     })
 }
@@ -2092,6 +2177,7 @@ mod tests {
             MIGRATIONS.to_latest(&mut conn).unwrap();
             let db = Db {
                 conn: Mutex::new(conn),
+                apply_auto_cue: AtomicBool::new(true),
             };
             let id = only_id(&db);
             let track = db.get_track(id).unwrap().unwrap();
@@ -2777,6 +2863,96 @@ mod tests {
         .unwrap();
 
         assert_eq!(auto_cue_row(&db, id).0, "auto");
+    }
+
+    /// Switched off, a derived set is held back everywhere a track is read —
+    /// the row keeps it, so switching back on costs no second pass.
+    #[test]
+    fn an_automatic_set_is_held_back_while_the_feature_is_off() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/a.mp3");
+        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", 7).unwrap();
+
+        db.set_apply_auto_cue(false);
+        assert_eq!(
+            db.get_track(id).unwrap().unwrap().cue_points,
+            CuePoints::default()
+        );
+        assert_eq!(
+            db.get_track_load_info(id).unwrap().unwrap().cue_points,
+            CuePoints::default(),
+            "the deck airs the whole file"
+        );
+        assert_eq!(
+            db.search("", None, None, None).unwrap()[0].cue_points,
+            CuePoints::default()
+        );
+        assert_eq!(
+            db.get_tracks_by_ids(&[id]).unwrap()[0].cue_points,
+            CuePoints::default()
+        );
+        assert_eq!(auto_cue_row(&db, id).0, "auto", "the result is still there");
+
+        db.set_apply_auto_cue(true);
+        assert_eq!(
+            db.get_track(id).unwrap().unwrap().cue_points.cue_out_ms,
+            AUTO.cue_out_ms,
+            "and comes straight back"
+        );
+    }
+
+    /// The switch is about automatic analysis. A radio edit the operator made
+    /// is theirs, and airs either way.
+    #[test]
+    fn a_manual_set_is_never_held_back() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/a.mp3");
+        let manual = CuePoints {
+            cue_in_ms: Some(5_000),
+            ..Default::default()
+        };
+        db.set_cue_points(id, manual).unwrap();
+
+        db.set_apply_auto_cue(false);
+        assert_eq!(db.get_track(id).unwrap().unwrap().cue_points, manual);
+        assert_eq!(
+            db.get_track_load_info(id).unwrap().unwrap().cue_points,
+            manual
+        );
+    }
+
+    /// Nobody can clear markers they were never shown: with the feature off the
+    /// editor offers no trio, so saving a fade must not read as clearing one.
+    #[test]
+    fn a_save_made_with_the_feature_off_keeps_the_derived_trio() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/a.mp3");
+        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", 7).unwrap();
+        db.set_apply_auto_cue(false);
+
+        // What the editor shows while the feature is off: no markers at all.
+        db.set_cue_points(
+            id,
+            CuePoints {
+                fade_out_ms: Some(180_000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(auto_cue_row(&db, id).0, "auto", "a fade owns nothing");
+        assert_eq!(
+            db.get_track(id).unwrap().unwrap().cue_points.fade_out_ms,
+            Some(180_000),
+            "the fade is theirs, and applies either way"
+        );
+
+        db.set_apply_auto_cue(true);
+        assert_eq!(
+            db.get_track(id).unwrap().unwrap().cue_points.cue_out_ms,
+            AUTO.cue_out_ms,
+            "and the analysis is still there when it comes back on"
+        );
     }
 
     /// The other side of the same race: the operator reclassifies while the

@@ -1161,6 +1161,30 @@
             </div>
 
             <h5 class="tuning-group-title">Automatic cue analysis</h5>
+            <div class="np-group" class:disabled={!tuning.autoCue.apply}>
+              <div class="np-group-header">
+                <span class="material-symbols-outlined" aria-hidden="true"
+                  >content_cut</span
+                >
+                <span class="np-group-title">Apply automatic cue points</span>
+                <label class="np-toggle" title="Apply automatic cue points">
+                  <input
+                    id="setting-apply-auto-cue"
+                    type="checkbox"
+                    bind:checked={tuning.autoCue.apply}
+                    onchange={saveTuning}
+                  />
+                  <span class="np-toggle-track"></span>
+                </label>
+              </div>
+              <p class="settings-section-desc">
+                Trims and segues derived from the audio are used on air and in
+                every duration the app shows. Switched off, every track plays
+                whole — but the analysis still runs and keeps its results, so
+                switching back on takes effect immediately with no second pass
+                over the library. Radio edits you made by hand always apply.
+              </p>
+            </div>
             <div class="device-row">
               <label for="tune-silence-db">Silence threshold (dBFS)</label>
               <input

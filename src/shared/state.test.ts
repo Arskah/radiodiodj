@@ -117,7 +117,7 @@ function defaultTuning() {
       replayGain: "track" as const,
     },
     library: { checkIntervalMin: 15, writeTags: false, tagWriteTimeoutSec: 30 },
-    autoCue: { silenceDbfs: -70, segueDbfs: -20 },
+    autoCue: { apply: true, silenceDbfs: -70, segueDbfs: -20 },
   };
 }
 
@@ -1256,6 +1256,29 @@ describe("AppState tuning", () => {
     await app.saveTuning(requested);
     expect(api.setTuningConfig).toHaveBeenCalledWith(requested);
     expect(app.tuning.autoPlaylist.autoPlaylistThreshold).toBe(4);
+  });
+
+  it("re-reads the library when automatic cue points are switched off", async () => {
+    // Every derived duration the rows show has just changed meaning.
+    const next = defaultTuning();
+    next.autoCue.apply = false;
+    api.setTuningConfig.mockResolvedValueOnce(next);
+    api.search.mockClear();
+
+    await app.saveTuning(next);
+
+    expect(api.search).toHaveBeenCalled();
+  });
+
+  it("leaves the library alone when the switch did not move", async () => {
+    const next = defaultTuning();
+    next.autoCue.silenceDbfs = -65;
+    api.setTuningConfig.mockResolvedValueOnce(next);
+    api.search.mockClear();
+
+    await app.saveTuning(next);
+
+    expect(api.search).not.toHaveBeenCalled();
   });
 });
 

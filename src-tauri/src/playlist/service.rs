@@ -5,7 +5,7 @@
 //! transition ends with a [`Snapshot`] on `program:playlist-state`, which is the
 //! renderer's only source of playlist truth.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -266,6 +266,24 @@ impl PlaylistService {
 
     /// A radio edit was stored for `id`; refresh the queued copies of it so the
     /// operator's next snapshot shows what was just saved.
+    /// The automatic-cue policy changed, so every copy held here is stale at
+    /// once. Re-reads them from the library, which applies the policy, in one
+    /// transition rather than one per track.
+    pub fn reload_cue_points(&self) {
+        let ids = self.inner.playlist.lock().held_ids();
+        if ids.is_empty() {
+            return;
+        }
+        let fresh: HashMap<i64, CuePoints> = match self.inner.db.get_tracks_by_ids(&ids) {
+            Ok(tracks) => tracks.into_iter().map(|t| (t.id, t.cue_points)).collect(),
+            Err(e) => {
+                log::error!("playlist: re-reading cue points failed: {}", e);
+                return;
+            }
+        };
+        Inner::apply(&self.inner, move |p, _| p.refresh_cue_points(&fresh));
+    }
+
     pub fn on_cue_points_saved(&self, id: i64, points: CuePoints) {
         Inner::adopt_cue_points(&self.inner, id, points);
     }

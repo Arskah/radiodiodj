@@ -284,9 +284,16 @@ export interface LibraryConfig {
   tagWriteTimeoutSec: number;
 }
 
-/// Levels the automatic cue analyser works to, in dBFS. Changing either
-/// affects later analyses only. See `docs/cue-auto-analysis.md`.
+/// Whether derived cue points are applied, and the levels the analyser works
+/// to, in dBFS. Changing a level affects later analyses only. See
+/// `docs/cue-auto-analysis.md`.
 export interface AutoCueConfig {
+  /**
+   * Whether a derived set takes effect. Off, the analysis still runs and still
+   * stores its result — every track simply airs whole — so switching back on
+   * costs no second pass over the library.
+   */
+  apply: boolean;
   /** Below this there is no programme audio, so Cue In and Cue Out trim it. */
   silenceDbfs: number;
   /** Below this a music track is quiet enough for the next item to begin. */

@@ -66,12 +66,18 @@ pub struct TuningConfig {
     pub auto_cue: AutoCueConfig,
 }
 
-/// Levels the automatic cue analyser works to, in dBFS. Changing either affects
-/// later analyses only: nothing already stored is cleared, invalidated or
-/// re-decoded. See `docs/cue-auto-analysis.md`.
+/// Whether derived cue points are applied, and the levels the analyser works
+/// to, in dBFS. Changing a level affects later analyses only: nothing already
+/// stored is cleared, invalidated or re-decoded. See `docs/cue-auto-analysis.md`.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoCueConfig {
+    /// Whether a derived set takes effect. Switched off, analysis still runs
+    /// and still stores its result — the station simply airs every track
+    /// whole, so switching back on costs no second pass over the library. A
+    /// manually prepared track is unaffected either way.
+    #[serde(default = "default_apply")]
+    pub apply: bool,
     /// Below this there is no programme audio, so Cue In and Cue Out trim it.
     #[serde(default = "default_silence_dbfs")]
     pub silence_dbfs: f64,
@@ -80,6 +86,9 @@ pub struct AutoCueConfig {
     pub segue_dbfs: f64,
 }
 
+fn default_apply() -> bool {
+    true
+}
 fn default_silence_dbfs() -> f64 {
     -70.0
 }
@@ -99,6 +108,7 @@ const AUTO_CUE_DB_GAP: f64 = 1.0;
 impl Default for AutoCueConfig {
     fn default() -> Self {
         Self {
+            apply: default_apply(),
             silence_dbfs: default_silence_dbfs(),
             segue_dbfs: default_segue_dbfs(),
         }
@@ -843,6 +853,7 @@ mod tests {
         let stored = cfg
             .set_tuning(TuningConfig {
                 auto_cue: AutoCueConfig {
+                    apply: true,
                     silence_dbfs: -40.0,
                     segue_dbfs: -55.0,
                 },
@@ -860,6 +871,7 @@ mod tests {
         let stored = cfg
             .set_tuning(TuningConfig {
                 auto_cue: AutoCueConfig {
+                    apply: true,
                     silence_dbfs: -400.0,
                     segue_dbfs: 12.0,
                 },
@@ -900,6 +912,7 @@ mod tests {
         let stored = cfg
             .set_tuning(TuningConfig {
                 auto_cue: AutoCueConfig {
+                    apply: true,
                     silence_dbfs: f64::NAN,
                     segue_dbfs: f64::NAN,
                 },

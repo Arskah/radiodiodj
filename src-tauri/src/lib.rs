@@ -685,7 +685,17 @@ fn set_tuning_config(
     state: State<'_, AppState>,
     config: TuningConfig,
 ) -> Result<TuningConfig, String> {
-    state.config.set_tuning(config).map_err(err)
+    let was = state.config.get_tuning().auto_cue.apply;
+    let stored = state.config.set_tuning(config).map_err(err)?;
+    // Switching the automatic cue points on or off changes what every derived
+    // set means, so the library's answer changes and the copies the playlist
+    // holds have to be re-read. Analysis is untouched: it runs and stores its
+    // results either way, which is what makes the switch instant both ways.
+    if stored.auto_cue.apply != was {
+        state.db.set_apply_auto_cue(stored.auto_cue.apply);
+        state.playlist.reload_cue_points();
+    }
+    Ok(stored)
 }
 
 /// The resolved appearance the renderer paints. Ungated by necessity: the
@@ -980,6 +990,9 @@ pub fn run() {
             let library_reset = opened.reset_backup.is_some();
             let db = Arc::new(opened.db);
             let config = Arc::new(Config::open(&data_dir)?);
+            // The library applies the automatic-cue policy on the way out, so
+            // it has to know it before anything reads a track.
+            db.set_apply_auto_cue(config.get_tuning().auto_cue.apply);
 
             // Give a first-run operator something to copy. Only when themes/ is
             // absent, so deleting the example does not bring it back.

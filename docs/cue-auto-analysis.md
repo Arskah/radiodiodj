@@ -8,7 +8,21 @@ The intended operating assumption is that **almost all library tracks will never
 
 No source audio file is modified.
 
-**Status: landed (2026-09-19, [#372](https://github.com/Arskah/radiodiodj/issues/372)).** The detector is `src-tauri/src/audio/auto_cue.rs`, fed by the RMS windows `audio/waveform.rs` collects during the existing waveform decode and committed by `library/waveform_scan.rs`. Ownership and provenance live on the track row as `auto_cue_state` (`pending` / `auto` / `manual`), `auto_cue_version`, `auto_cue_silence_db`, `auto_cue_segue_db` and `auto_cue_at`. The thresholds are `tuning.autoCue` in `config.json`, under _Settings → Advanced_.
+**Status: landed (2026-09-19, [#372](https://github.com/Arskah/radiodiodj/issues/372)).** The detector is `src-tauri/src/audio/auto_cue.rs`, fed by the RMS windows `audio/waveform.rs` collects during the existing waveform decode and committed by `library/waveform_scan.rs`. Ownership and provenance live on the track row as `auto_cue_state` (`pending` / `auto` / `manual`), `auto_cue_version`, `auto_cue_silence_db`, `auto_cue_segue_db` and `auto_cue_at`. The switch and the thresholds are `tuning.autoCue` in `config.json`, under _Settings → Advanced_.
+
+## The switch
+
+`tuning.autoCue.apply` decides whether a derived trio takes effect. It is on by default.
+
+Switched off, **analysis still runs and still stores its result**. What changes is the answer the library gives: a row whose `auto_cue_state` is `auto` reports no Cue In, Cue Out or Next Start, so the deck airs the whole file and every duration in the app — queue rows, tab totals, the waveform crop, the cue editor — measures the whole file with it. Nothing is cleared, invalidated or re-decoded, so switching back on takes effect immediately.
+
+Three things are never held back:
+
+- a manually owned trio. The switch is about automatic analysis; a radio edit the operator made is theirs either way;
+- the fades. Nothing infers them, so `fadeIn` and `fadeOut` apply whether the switch is on or off;
+- an item's own Cue point override, which is a per-airing decision the operator made.
+
+Ownership is judged against what the caller was shown, not against the stored row (`Db::set_cue_points`). Nobody can clear markers they were never given: saving a fade while the switch is off leaves the derived trio intact for when it comes back on. To clear a derived trio deliberately, switch the feature on first.
 
 ## What is inferred
 

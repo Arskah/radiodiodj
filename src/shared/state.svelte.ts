@@ -79,7 +79,7 @@ const DEFAULT_TUNING: TuningConfig = {
     replayGain: "track",
   },
   library: { checkIntervalMin: 15, writeTags: false, tagWriteTimeoutSec: 30 },
-  autoCue: { silenceDbfs: -70, segueDbfs: -20 },
+  autoCue: { apply: true, silenceDbfs: -70, segueDbfs: -20 },
 };
 
 export const EMPTY_HEALTH: HealthReport = {
@@ -1082,7 +1082,12 @@ export class AppState {
   /// fields only take effect on restart (their worker threads capture them at
   /// startup); the renderer-side fields applied here take effect immediately.
   async saveTuning(next: TuningConfig): Promise<void> {
+    const wasApplying = this.tuning?.autoCue?.apply;
     this.applyTuning(await api.setTuningConfig(next));
+    // Switching automatic cue points on or off changes every derived duration
+    // the library reports, so the rows on screen are stale. The queue arrives
+    // on its own: the backend re-reads what it holds and pushes a snapshot.
+    if (this.tuning.autoCue.apply !== wasApplying) await this.search();
   }
 
   /// Adopt a tuning config: store it and rebuild the session-save throttle,

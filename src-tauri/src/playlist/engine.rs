@@ -6,7 +6,7 @@
 //! — ordering, outage skip-to-cached, refill sizing, stop markers — is therefore
 //! testable here, which is where it moved to from the renderer.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::model::{PlaylistItem, Snapshot};
 use crate::audio::cue_points::CuePoints;
@@ -559,6 +559,38 @@ impl Playlist {
             .iter()
             .any(|i| matches!(i, PlaylistItem::Track { track, .. } if track.id == id))
             || self.history.iter().any(|t| t.id == id)
+    }
+
+    /// Every track held here, queued or aired. Read when the automatic-cue
+    /// policy changes and every copy held here has gone stale at once.
+    pub fn held_ids(&self) -> Vec<i64> {
+        self.items
+            .iter()
+            .filter_map(|i| match i {
+                PlaylistItem::Track { track, .. } => Some(track.id),
+                _ => None,
+            })
+            .chain(self.history.iter().map(|t| t.id))
+            .collect()
+    }
+
+    /// Replace the markers on the copies held here with what the library now
+    /// reports. The track on air is left alone for the same reason a radio edit
+    /// leaves it alone: its numbers must not move while it is playing.
+    pub fn refresh_cue_points(&mut self, fresh: &HashMap<i64, CuePoints>) -> Transition {
+        for item in &mut self.items {
+            if let PlaylistItem::Track { track, .. } = item {
+                if let Some(points) = fresh.get(&track.id) {
+                    track.cue_points = *points;
+                }
+            }
+        }
+        for track in &mut self.history {
+            if let Some(points) = fresh.get(&track.id) {
+                track.cue_points = *points;
+            }
+        }
+        Transition::default()
     }
 
     /// A radio edit was saved for `id`. Queued items carry a copy of the track
