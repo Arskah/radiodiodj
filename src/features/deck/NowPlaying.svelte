@@ -207,6 +207,7 @@
         peaks={app.waveform}
         progressPct={app.progressPct}
         {hoverPct}
+        crop={app.airCrop}
         id="main"
       />
       <div id="progress-fill" style:width="{app.progressPct}%"></div>

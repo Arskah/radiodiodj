@@ -2170,6 +2170,35 @@ describe("AppState cue points", () => {
     expect(app.cueDuration).toBe(20);
   });
 
+  it("crops the main waveform to what the deck is airing", () => {
+    // The deck reports air time, so the bar measures the trimmed track. The
+    // curve under it has to measure the same region or the fill starts where
+    // no audio does.
+    app.currentTrack = t(1, { cue_points: trimmed });
+    expect(app.airCrop).toEqual({ from: 0.1, to: 0.3 });
+  });
+
+  it("an untrimmed track fills the whole main waveform", () => {
+    app.currentTrack = t(2);
+    expect(app.airCrop).toEqual({ from: 0, to: 1 });
+  });
+
+  it("the main waveform follows the item's override, not the track's edit", () => {
+    app.currentTrack = t(1, { cue_points: trimmed });
+    app.currentCueOverride = {
+      cue_in_ms: 50_000,
+      fade_in_ms: null,
+      fade_out_ms: null,
+      cue_out_ms: 60_000,
+      next_start_ms: null,
+    };
+    expect(app.airCrop).toEqual({ from: 0.5, to: 0.6 });
+  });
+
+  it("nothing on air crops nothing", () => {
+    expect(app.airCrop).toBeNull();
+  });
+
   it("Preview crops the waveform to the aired region", async () => {
     app.cueLoad(t(1, { cue_points: trimmed }), trimmed);
     await flushAsync();

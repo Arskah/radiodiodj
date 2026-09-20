@@ -881,6 +881,26 @@ export class AppState {
   }
 
   /**
+   * The sub-range of the file the main deck is airing, as fractions — `null`
+   * with nothing on air or no duration to divide by.
+   *
+   * The deck reports air time, so the bar already measures what plays; without
+   * this the curve under it still spanned the whole file, putting the trimmed
+   * head and tail on screen and starting the fill somewhere the audio never
+   * does.
+   */
+  get airCrop(): { from: number; to: number } | null {
+    const track = this.currentTrack;
+    if (!track?.duration) return null;
+    const aired = airedTrack(track, this.currentCueOverride);
+    const cue = resolveCuePoints(aired.cue_points, track.duration);
+    return {
+      from: cue.cueIn / track.duration,
+      to: cue.cueOut / track.duration,
+    };
+  }
+
+  /**
    * Persist a track's cue points and adopt the clamped value the backend
    * returns — the one rule lives there, so whatever comes back is the truth.
    * Every copy of the track the UI holds is refreshed, since durations
