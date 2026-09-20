@@ -713,15 +713,17 @@ impl Db {
         if changed == 0 {
             anyhow::bail!("track {} is no longer in the library", id);
         }
-        // What the caller adopts is what it will be shown next, so an untouched
-        // derived trio stays hidden while the feature is off.
-        Ok(if owns || apply {
+        // What the caller adopts is what it will be shown next. An untouched
+        // trio therefore goes back exactly as it came out — hidden for a
+        // derived one while the feature is off, and intact for a manual one,
+        // which the feature never hides.
+        Ok(if owns {
             written
         } else {
             CuePoints {
-                cue_in_ms: None,
-                cue_out_ms: None,
-                next_start_ms: None,
+                cue_in_ms: shown.cue_in_ms,
+                cue_out_ms: shown.cue_out_ms,
+                next_start_ms: shown.next_start_ms,
                 ..written
             }
         })
@@ -991,11 +993,18 @@ impl Db {
             )?;
             // A file back under a root of another content type is a different
             // class of material, so its automatic trio is requeued — the rule
-            // a metadata reclassification applies.
+            // a metadata reclassification applies. The trims stand until the
+            // fresh result lands, being the same audio either way, but the
+            // Next Start does not: it is derived only for music, and a jingle
+            // carrying one hands over early on every airing until the pass
+            // reaches it — for good, if its decode fails.
             let mut reattach = tx.prepare(
                 "UPDATE tracks SET path = ?1, content_type = ?2, mtime = ?3, \
                         missing_since = NULL, \
                         analysis_error = NULL, analysis_failed_at = NULL, \
+                        next_start_ms = CASE \
+                          WHEN content_type <> ?2 AND auto_cue_state <> 'manual' \
+                          THEN NULL ELSE next_start_ms END, \
                         auto_cue_state = CASE \
                           WHEN content_type <> ?2 AND auto_cue_state <> 'manual' \
                           THEN 'pending' ELSE auto_cue_state END \
@@ -3003,6 +3012,51 @@ mod tests {
         );
     }
 
+    /// A hand-made radio edit is never hidden, so a fade save while the feature
+    /// is off must hand it straight back. Handing back an empty trio would take
+    /// it off every copy the app holds — and the next save, made against that,
+    /// would read as clearing it and wipe it from the row.
+    #[test]
+    fn a_manual_trio_survives_a_fade_save_with_the_feature_off() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/a.mp3");
+        let edit = CuePoints {
+            cue_in_ms: Some(10_000),
+            cue_out_ms: Some(180_000),
+            ..Default::default()
+        };
+        db.set_cue_points(id, edit).unwrap();
+        db.set_apply_auto_cue(false);
+
+        let returned = db
+            .set_cue_points(
+                id,
+                CuePoints {
+                    fade_out_ms: Some(170_000),
+                    ..edit
+                },
+            )
+            .unwrap();
+
+        assert_eq!(returned.cue_in_ms, edit.cue_in_ms, "still theirs");
+        assert_eq!(returned.cue_out_ms, edit.cue_out_ms);
+        assert_eq!(returned.fade_out_ms, Some(170_000));
+        assert_eq!(db.get_track(id).unwrap().unwrap().cue_points, returned);
+
+        // And the save made against what came back changes nothing.
+        db.set_cue_points(
+            id,
+            CuePoints {
+                fade_out_ms: Some(160_000),
+                ..returned
+            },
+        )
+        .unwrap();
+        let points = db.get_track(id).unwrap().unwrap().cue_points;
+        assert_eq!(points.cue_out_ms, edit.cue_out_ms);
+        assert_eq!(auto_cue_row(&db, id).0, "manual");
+    }
+
     /// The purge warning is about work the operator would have to do again. A
     /// derived trio comes back from the next analysis; a fade never does, and
     /// setting one leaves the track automatic — so the state alone cannot
@@ -3397,10 +3451,14 @@ mod tests {
 
         assert_eq!(done.reattached, 1);
         assert_eq!(auto_cue_row(&db, id).0, "pending");
+        let points = db.get_track(id).unwrap().unwrap().cue_points;
         assert_eq!(
-            db.get_track(id).unwrap().unwrap().cue_points.next_start_ms,
-            AUTO.next_start_ms,
-            "the old values stand until the fresh result lands"
+            points.cue_out_ms, AUTO.cue_out_ms,
+            "the trims stand until the fresh result lands: same audio"
+        );
+        assert_eq!(
+            points.next_start_ms, None,
+            "but a music Next Start has no business on a jingle"
         );
     }
 

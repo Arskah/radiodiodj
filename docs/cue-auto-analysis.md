@@ -24,7 +24,7 @@ Three things are never held back:
 - the fades. Nothing infers them, so `fadeIn` and `fadeOut` apply whether the switch is on or off;
 - an item's own Cue point override, which is a per-airing decision the operator made.
 
-Ownership is judged against what the caller was shown, not against the stored row (`Db::set_cue_points`). Nobody can clear markers they were never given: saving a fade while the switch is off leaves the derived trio intact for when it comes back on. To clear a derived trio deliberately, switch the feature on first. A fade saved while the switch is off is still bounded by the Cue Out it is stored against, hidden or not, so it does not end up past it where the load-time resolve would drop it.
+Ownership is judged against what the caller was shown, not against the stored row (`Db::set_cue_points`), and a save hands back what the caller will be shown next — the derived trio stays hidden, a manual one comes straight back. Nobody can clear markers they were never given: saving a fade while the switch is off leaves the derived trio intact for when it comes back on. To clear a derived trio deliberately, switch the feature on first. A fade saved while the switch is off is still bounded by the Cue Out it is stored against, hidden or not, so it does not end up past it where the load-time resolve would drop it.
 
 Flipping the switch re-reads every copy of a track the app holds — the library rows, the queue, the library-health report, the cue deck and an open editor — and re-arms the next track — markers are applied at load time, so the deck already holding it has to load it again. The track on air keeps what it started with, exactly as a radio edit saved mid-broadcast does.
 
@@ -477,7 +477,7 @@ A manually authored Next Start therefore survives a later reclassification to ji
 
 A Track's content type follows the Library path the file sits under, and changes in three ways, all of which requeue an automatically owned trio:
 
-- a missing Track reattaches by fingerprint under a Library path of another content type — the operator moved the file from `/music` to `/jingles`;
+- a missing Track reattaches by fingerprint under a Library path of another content type — the operator moved the file from `/music` to `/jingles`. The trims stand until the fresh result lands, being the same audio either way, but the Next Start is cleared: it is derived only for music, and a jingle carrying one would hand over early on every airing until the pass reached it;
 - the same file appears under a second Library path of another content type, which inserts a new Track that copies the twin's row. The copy is a Track of its own class, so it is queued for its own analysis rather than inheriting the twin's result — including when the twin is manually owned, since that was a decision about the other Track;
 - `update_track_metadata` carries a content type. No UI sends one today — the metadata overlay edits tags only — and a rescan of the file would take the root's type back, so this is a backend affordance rather than an operator feature.
 

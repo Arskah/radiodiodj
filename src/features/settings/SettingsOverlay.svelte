@@ -110,7 +110,30 @@
 
   // Persist the current draft, then adopt the backend's clamped result so the
   // inputs snap to any coerced values.
-  async function saveTuning(): Promise<void> {
+  /**
+   * What a tuning field showed when the operator entered it. A field they
+   * clear never reaches the store — see `numInput` — so the `value` binding
+   * has nothing to re-write on save and the box would sit empty until the
+   * overlay is reopened. This is what goes back into it.
+   */
+  const shownOnFocus = new WeakMap<HTMLInputElement, string>();
+
+  function rememberField(e: FocusEvent): void {
+    const el = e.target;
+    if (el instanceof HTMLInputElement && el.type === "number") {
+      shownOnFocus.set(el, el.value);
+    }
+  }
+
+  async function saveTuning(e?: Event): Promise<void> {
+    const el = e?.target;
+    if (
+      el instanceof HTMLInputElement &&
+      el.type === "number" &&
+      el.value.trim() === ""
+    ) {
+      el.value = shownOnFocus.get(el) ?? el.value;
+    }
     await app.saveTuning($state.snapshot(tuning));
     tuning = $state.snapshot(app.tuning);
   }
@@ -521,7 +544,10 @@
             <LibraryHealth />
           </div>
         {:else if app.settingsTab === "playlist"}
-          <div class="settings-section settings-section--tuning">
+          <div
+            class="settings-section settings-section--tuning"
+            onfocusin={rememberField}
+          >
             <h4>Playlist</h4>
             <p class="settings-section-desc">
               What the auto-playlist queues, how often it tops up, and how long
@@ -1113,7 +1139,10 @@
             </div>
           </div>
 
-          <div class="settings-section settings-section--tuning">
+          <div
+            class="settings-section settings-section--tuning"
+            onfocusin={rememberField}
+          >
             <h4>Advanced Tuning</h4>
             <p class="settings-section-desc">
               Fine-tune library checks, cue analysis, fades, buffering and
