@@ -454,14 +454,24 @@ fn update_track_metadata(
     state: State<'_, AppState>,
     updates: TrackMetadataUpdate,
 ) -> Result<Track, String> {
+    // Read before the write, so the kick below fires on a class that actually
+    // moved rather than on every save that carries the field.
+    let reclassified = match &updates.content_type {
+        Some(next) => state
+            .db
+            .track_content_type(updates.id)
+            .map_err(err)?
+            .is_some_and(|was| was != *next),
+        None => false,
+    };
     let track = state.db.update_track_metadata(&updates).map_err(err)?;
     if track.edited_fields != 0 {
         state.tag_writer.request(track.id);
     }
-    // The update itself requeued the track if a reclassification changed what
-    // automatic analysis would infer; this kicks the pass that drains the
-    // queue. Single-flight, and nothing is queued when nothing changed.
-    if updates.content_type.is_some() {
+    // The update itself requeued the track: a reclassification changes what
+    // automatic analysis would infer. This kicks the pass that drains the
+    // queue.
+    if reclassified {
         Arc::clone(&state.waveform).start(app, Arc::clone(&state.db), Arc::clone(&state.config));
     }
     // Artist and title decide possible duplicates.

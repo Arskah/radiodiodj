@@ -547,8 +547,11 @@ impl Config {
         self.save_locked(&cfg)
     }
 
+    /// The tuning section, normalized on the way out as well as in: a
+    /// hand-edited `config.json` never reaches the code that acts on it with
+    /// values outside their ranges.
     pub fn get_tuning(&self) -> TuningConfig {
-        self.inner.lock().tuning.clone()
+        normalize_tuning(self.inner.lock().tuning.clone())
     }
 
     /// Persist a new tuning section. Values are clamped to sane ranges first, so
@@ -865,6 +868,27 @@ mod tests {
             .unwrap();
         assert_eq!(stored.auto_cue.silence_dbfs, *AUTO_CUE_DB_RANGE.start());
         assert_eq!(stored.auto_cue.segue_dbfs, *AUTO_CUE_DB_RANGE.end());
+    }
+
+    /// `config.json` is a text file an operator may edit by hand, and nothing
+    /// normalizes it on the way in — so the read has to. A segue threshold
+    /// under the silence one would otherwise make every music track a cold
+    /// ending, permanently: the results are stamped `auto`, and a threshold
+    /// change never re-analyses.
+    #[test]
+    fn a_hand_edited_threshold_is_normalized_on_the_way_out() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("config.json"),
+            r#"{"tuning":{"autoCue":{"silenceDbfs":-20.0,"segueDbfs":-70.0}}}"#,
+        )
+        .unwrap();
+
+        let ac = Config::open(dir.path()).unwrap().get_tuning().auto_cue;
+        assert!(
+            ac.segue_dbfs >= ac.silence_dbfs + AUTO_CUE_DB_GAP,
+            "{ac:?} keeps the segue threshold above the silence one"
+        );
     }
 
     /// `config.json` is a text file an operator may edit by hand, and `clamp`

@@ -684,6 +684,10 @@ impl Db {
     /// duration: the positions come from the decode itself, whereas the stored
     /// duration is the tag's and is wrong on VBR MP3. The load-time clamp
     /// remains authoritative either way.
+    ///
+    /// Returns the whole stored set on a commit — the trio the analysis wrote
+    /// plus the fades it never touches — for the copies of the track held
+    /// outside the DB, and `None` when the commit was refused.
     pub fn set_auto_cue(
         &self,
         id: i64,
@@ -691,7 +695,7 @@ impl Db {
         thresholds: Thresholds,
         content_type: &str,
         at_ms: i64,
-    ) -> Result<bool> {
+    ) -> Result<Option<CuePoints>> {
         let music = content_type == "music";
         let conn = self.conn.lock();
         let changed = conn.execute(
@@ -713,7 +717,17 @@ impl Db {
                 content_type
             ],
         )?;
-        Ok(changed > 0)
+        if changed == 0 {
+            return Ok(None);
+        }
+        Ok(conn
+            .query_row(
+                "SELECT cue_in_ms, fade_in_ms, fade_out_ms, cue_out_ms, next_start_ms \
+                 FROM tracks WHERE id = ?",
+                [id],
+                row_to_cue_points,
+            )
+            .optional()?)
     }
 
     /// Every present track still missing a waveform, a fingerprint, a loudness
@@ -902,8 +916,9 @@ impl Db {
                  ORDER BY id LIMIT 1",
             )?;
             let mut insert = tx.prepare(&format!("{UPSERT_TRACK_SQL} RETURNING id"))?;
-            // The twin's analysis carries over only within one content type:
-            // the same file under /music and /jingles is two separate jobs.
+            // The twin's analysis — result, ownership and provenance alike —
+            // carries over only within one content type: the same file under
+            // /music and /jingles is two separate jobs.
             let mut copy_state = tx.prepare(
                 "UPDATE tracks SET title = s.title, artist = s.artist, album = s.album, \
                         genre = s.genre, year = s.year, bpm = s.bpm, \
@@ -914,13 +929,16 @@ impl Db {
                         edited_fields = s.edited_fields, \
                         rg_gain = s.rg_gain, rg_peak = s.rg_peak, \
                         rg_measured_at = s.rg_measured_at, \
-                        auto_cue_state = CASE \
-                          WHEN s.content_type = tracks.content_type \
+                        auto_cue_state = CASE WHEN s.content_type = tracks.content_type \
                           THEN s.auto_cue_state ELSE 'pending' END, \
-                        auto_cue_version = s.auto_cue_version, \
-                        auto_cue_silence_db = s.auto_cue_silence_db, \
-                        auto_cue_segue_db = s.auto_cue_segue_db, \
-                        auto_cue_at = s.auto_cue_at \
+                        auto_cue_version = CASE WHEN s.content_type = tracks.content_type \
+                          THEN s.auto_cue_version ELSE NULL END, \
+                        auto_cue_silence_db = CASE WHEN s.content_type = tracks.content_type \
+                          THEN s.auto_cue_silence_db ELSE NULL END, \
+                        auto_cue_segue_db = CASE WHEN s.content_type = tracks.content_type \
+                          THEN s.auto_cue_segue_db ELSE NULL END, \
+                        auto_cue_at = CASE WHEN s.content_type = tracks.content_type \
+                          THEN s.auto_cue_at ELSE NULL END \
                  FROM (SELECT * FROM tracks WHERE id = ?1) AS s \
                  WHERE tracks.id = ?2",
             )?;
@@ -1157,6 +1175,17 @@ impl Db {
     /// an unchanged one must not be flagged. Returns the updated [`Track`] so
     /// the caller can push it to the renderer as a fast-forward replacement; the
     /// update path never touches `play_count`, `waveform`, or `added_at`.
+    /// A track's content type, which [`Track`] does not carry — the class is a
+    /// property of the Library path the file sits under, not of its tags.
+    pub fn track_content_type(&self, id: i64) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        Ok(conn
+            .query_row("SELECT content_type FROM tracks WHERE id = ?", [id], |r| {
+                r.get(0)
+            })
+            .optional()?)
+    }
+
     pub fn update_track_metadata(&self, updates: &TrackMetadataUpdate) -> Result<Track> {
         use rusqlite::types::Value;
 
@@ -2545,9 +2574,13 @@ mod tests {
     fn an_automatic_result_lands_with_its_provenance() {
         let db = Db::open_in_memory().unwrap();
         let id = music_track(&db, "/a.mp3");
-        assert!(db.set_auto_cue(id, AUTO, THRESHOLDS, "music", 7).unwrap());
+        let stored = db
+            .set_auto_cue(id, AUTO, THRESHOLDS, "music", 7)
+            .unwrap()
+            .expect("committed");
 
         let points = db.get_track(id).unwrap().unwrap().cue_points;
+        assert_eq!(stored, points, "the caller is handed what was stored");
         assert_eq!(points.cue_in_ms, AUTO.cue_in_ms);
         assert_eq!(points.cue_out_ms, AUTO.cue_out_ms);
         assert_eq!(points.next_start_ms, AUTO.next_start_ms);
@@ -2648,7 +2681,10 @@ mod tests {
         };
         db.set_cue_points(id, manual).unwrap();
 
-        assert!(!db.set_auto_cue(id, AUTO, THRESHOLDS, "music", 7).unwrap());
+        assert!(db
+            .set_auto_cue(id, AUTO, THRESHOLDS, "music", 7)
+            .unwrap()
+            .is_none());
         assert_eq!(db.get_track(id).unwrap().unwrap().cue_points, manual);
         assert_eq!(auto_cue_row(&db, id).0, "manual");
     }
@@ -2736,7 +2772,10 @@ mod tests {
         .unwrap();
 
         // The in-flight decode reports what it analysed: the old class.
-        assert!(!db.set_auto_cue(id, AUTO, THRESHOLDS, "music", 7).unwrap());
+        assert!(db
+            .set_auto_cue(id, AUTO, THRESHOLDS, "music", 7)
+            .unwrap()
+            .is_none());
         assert_eq!(auto_cue_row(&db, id).0, "pending");
         assert_eq!(
             db.get_track(id).unwrap().unwrap().cue_points.next_start_ms,
@@ -2745,7 +2784,10 @@ mod tests {
         );
         assert!(db.tracks_needing_analysis().unwrap()[0].needs_auto_cue);
 
-        assert!(db.set_auto_cue(id, AUTO, THRESHOLDS, "jingle", 8).unwrap());
+        assert!(db
+            .set_auto_cue(id, AUTO, THRESHOLDS, "jingle", 8)
+            .unwrap()
+            .is_some());
     }
 
     /// A VBR MP3 whose tag duration undersells the file: automatic analysis
@@ -2927,7 +2969,11 @@ mod tests {
             .into_iter()
             .find(|t| t.id != id)
             .unwrap();
-        assert_eq!(auto_cue_row(&db, copy.id).0, "pending");
+        assert_eq!(
+            auto_cue_row(&db, copy.id),
+            ("pending".into(), None, None, None),
+            "no provenance from an analysis this track never had"
+        );
         assert_eq!(auto_cue_row(&db, id).0, "auto", "the twin is untouched");
     }
 

@@ -304,6 +304,19 @@ export const api = {
   onWaveformReady(callback: (id: number) => void): Promise<UnlistenFn> {
     return listen<number>("waveform-ready", (e) => callback(e.payload));
   },
+  /**
+   * Fires when the background worker has derived a track's cue points. Every
+   * copy of the track the UI holds takes the new markers, since durations are
+   * derived from them.
+   */
+  onCuePointsReady(
+    callback: (id: number, points: CuePoints) => void,
+  ): Promise<UnlistenFn> {
+    return listen<{ id: number; cuePoints: CuePoints }>(
+      "cue-points-ready",
+      (e) => callback(e.payload.id, e.payload.cuePoints),
+    );
+  },
   getWaveformStatus(): Promise<WaveformStatus> {
     return invoke<WaveformStatus>("get_waveform_status");
   },

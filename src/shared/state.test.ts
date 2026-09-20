@@ -52,6 +52,7 @@ const { api } = vi.hoisted(() => {
     onScanProgress: vi.fn(),
     onScanStateChanged: vi.fn(),
     onWaveformReady: vi.fn(),
+    onCuePointsReady: vi.fn(),
     onWaveformProgress: vi.fn(),
     onWaveformStateChanged: vi.fn(),
     getWaveformStatus: vi.fn(),
@@ -2237,6 +2238,41 @@ describe("AppState cue points", () => {
     app.currentTrack = t(1);
     await app.saveCuePoints(1, trimmed);
     expect(app.currentTrack?.cue_points).toBeUndefined();
+  });
+
+  it("an automatic cue result refreshes every copy of the track", async () => {
+    // The backfill derives markers for a track already queued. Nothing asked
+    // the UI for them, so the event is the only thing that keeps the rows from
+    // showing the untrimmed length the deck will not play.
+    app.tracks = [t(1), t(2)];
+    app.playlist = [trackItem(t(1)), trackItem(t(2))];
+    app.cueTrack = t(1);
+
+    const onReady = api.onCuePointsReady.mock.calls[0][0] as (
+      id: number,
+      points: CuePoints,
+    ) => void;
+    onReady(1, trimmed);
+
+    expect(app.tracks.map((x) => x.cue_points)).toEqual([trimmed, undefined]);
+    expect(
+      app.playlist.filter(isTrackItem).map((i) => i.track.cue_points),
+    ).toEqual([trimmed, undefined]);
+    expect(app.cueTrack?.cue_points).toEqual(trimmed);
+  });
+
+  it("an automatic cue result leaves the on-air track and an open editor alone", () => {
+    app.currentTrack = t(1);
+    app.editingCuePoints = t(1);
+
+    const onReady = api.onCuePointsReady.mock.calls[0][0] as (
+      id: number,
+      points: CuePoints,
+    ) => void;
+    onReady(1, trimmed);
+
+    expect(app.currentTrack?.cue_points).toBeUndefined();
+    expect(app.editingCuePoints?.cue_points).toBeUndefined();
   });
 
   // ----- auditioning from the editor -----

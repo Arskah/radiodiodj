@@ -405,6 +405,7 @@ export class AppState {
       if (this.currentTrack?.id === id) this.loadWaveform(id);
       if (this.cueTrack?.id === id) this.loadCueWaveform(id);
     });
+    api.onCuePointsReady((id, points) => this.adoptCuePoints(id, points));
 
     api.onWaveformProgress(({ processed, total }) => {
       if (this.waveformStatus.status === "running") {
@@ -887,20 +888,41 @@ export class AppState {
    */
   async saveCuePoints(id: number, points: CuePoints): Promise<CuePoints> {
     const stored = await api.setCuePoints(id, points);
-    const apply = (t: Track | null): Track | null =>
-      t && t.id === id ? { ...t, cue_points: stored } : t;
-    this.tracks = this.tracks.map((t) => apply(t) as Track);
+    this.adoptCuePoints(id, stored);
+    this.editingCuePoints = this.applyCuePoints(
+      this.editingCuePoints,
+      id,
+      stored,
+    );
+    return stored;
+  }
+
+  private applyCuePoints(
+    track: Track | null,
+    id: number,
+    points: CuePoints,
+  ): Track | null {
+    return track && track.id === id ? { ...track, cue_points: points } : track;
+  }
+
+  /**
+   * Take new markers into every copy of the track the UI holds. Not
+   * `currentTrack`: markers apply from the track's next airing, and rewriting
+   * them here would make the on-air deck's bar disagree with the audio still
+   * coming out of it. Not `editingCuePoints` either unless the operator is the
+   * one who saved — an automatic result must not move an open editor under
+   * them.
+   */
+  private adoptCuePoints(id: number, points: CuePoints): void {
+    this.tracks = this.tracks.map(
+      (t) => this.applyCuePoints(t, id, points) as Track,
+    );
     this.playlist = this.playlist.map((i) =>
       isTrackItem(i) && i.track.id === id
-        ? { ...i, track: { ...i.track, cue_points: stored } }
+        ? { ...i, track: { ...i.track, cue_points: points } }
         : i,
     );
-    // Not `currentTrack`: a saved radio edit applies from the track's next
-    // airing, and rewriting it here would make the on-air deck's bar disagree
-    // with the audio still coming out of it.
-    this.cueTrack = apply(this.cueTrack);
-    this.editingCuePoints = apply(this.editingCuePoints);
-    return stored;
+    this.cueTrack = this.applyCuePoints(this.cueTrack, id, points);
   }
 
   cueTogglePlay(): void {

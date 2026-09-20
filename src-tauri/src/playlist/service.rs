@@ -27,6 +27,7 @@ use crate::broadcast::BroadcastService;
 use crate::library::db::{Db, Track, TrackLoadInfo};
 use crate::library::health::HEALTH_EVENT;
 use crate::library::scanner::now_ms;
+use crate::library::waveform_scan::{CuePointsReady, CUE_POINTS_READY_EVENT};
 use crate::persist::config::Config;
 use crate::persist::session::SessionState;
 
@@ -192,6 +193,20 @@ impl PlaylistService {
             };
             let ids = report.missing.into_iter().map(|t| t.id).collect();
             Inner::apply(&missing, |p, r| p.on_missing_state(ids, r));
+        });
+
+        // A queued item holds a copy of its track, so an automatic cue result
+        // landing mid-queue has to reach it — otherwise the row keeps the full
+        // file length while the deck airs the trimmed one, and the stale copy
+        // is what a session restore brings back.
+        let auto_cue = Arc::clone(&self.inner);
+        app.listen(CUE_POINTS_READY_EVENT, move |event| {
+            let Ok(ready) = serde_json::from_str::<CuePointsReady>(event.payload()) else {
+                return;
+            };
+            Inner::apply(&auto_cue, move |p, _| {
+                p.on_cue_points_saved(ready.id, ready.cue_points)
+            });
         });
 
         let cache_state = Arc::clone(&self.inner);

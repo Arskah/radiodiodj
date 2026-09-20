@@ -457,11 +457,11 @@ For a manually owned Radio edit, a content-type change leaves Cue In, Cue Out an
 
 A manually authored Next Start therefore survives a later reclassification to jingle or commercial.
 
-A Track's content type changes in three ways, and all three requeue an automatically owned trio:
+A Track's content type follows the Library path the file sits under, and changes in three ways, all of which requeue an automatically owned trio:
 
-- the operator edits it in the metadata overlay;
 - a missing Track reattaches by fingerprint under a Library path of another content type — the operator moved the file from `/music` to `/jingles`;
-- the same file appears under a second Library path of another content type, which inserts a new Track that copies the twin's row. The copy is a Track of its own class, so it is queued for its own analysis rather than inheriting the twin's result — including when the twin is manually owned, since that was a decision about the other Track.
+- the same file appears under a second Library path of another content type, which inserts a new Track that copies the twin's row. The copy is a Track of its own class, so it is queued for its own analysis rather than inheriting the twin's result — including when the twin is manually owned, since that was a decision about the other Track;
+- `update_track_metadata` carries a content type. No UI sends one today — the metadata overlay edits tags only — and a rescan of the file would take the root's type back, so this is a backend affordance rather than an operator feature.
 
 ## Source-file changes
 

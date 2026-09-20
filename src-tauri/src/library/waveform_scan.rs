@@ -26,7 +26,7 @@
 //! the next.
 
 use parking_lot::Mutex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::Cursor;
 use std::path::Path;
@@ -38,6 +38,7 @@ use tauri::{AppHandle, Emitter};
 use super::db::{AnalysisJob, Db};
 use super::fingerprint;
 use super::scanner::now_ms;
+use crate::audio::cue_points::CuePoints;
 use crate::audio::{auto_cue, loudness, waveform};
 use crate::persist::config::Config;
 
@@ -45,6 +46,11 @@ type Bytes = Arc<[u8]>;
 
 /// Event emitted after a track's waveform is stored. Payload is the track id.
 const WAVEFORM_READY_EVENT: &str = "waveform-ready";
+/// Event emitted after an automatic cue result is committed, carrying the whole
+/// stored set. Every copy of a track held outside the DB — the playlist's queued
+/// items, the renderer's rows — derives its duration from these markers, and a
+/// backfill changes them under all of them.
+pub const CUE_POINTS_READY_EVENT: &str = "cue-points-ready";
 /// Throttled `{processed, total}` progress updates.
 const WAVEFORM_PROGRESS_EVENT: &str = "waveform-progress";
 /// Running/idle transitions.
@@ -75,6 +81,14 @@ pub enum WaveformStatus {
 struct WaveformProgress {
     processed: usize,
     total: usize,
+}
+
+/// Payload of [`CUE_POINTS_READY_EVENT`].
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CuePointsReady {
+    pub id: i64,
+    pub cue_points: CuePoints,
 }
 
 #[derive(Default)]
@@ -128,8 +142,10 @@ impl WaveformJob {
     /// it is not cancelled and no other kick claimed the free slot first —
     /// that one owns the work from here.
     fn claim_rerun(&self) -> bool {
-        self.kicked.swap(false, Ordering::SeqCst)
-            && !self.cancel.load(Ordering::SeqCst)
+        // Cancel is read first so a kick is not consumed and then thrown away:
+        // it stands, and the next start() serves it.
+        !self.cancel.load(Ordering::SeqCst)
+            && self.kicked.swap(false, Ordering::SeqCst)
             && !self.running.swap(true, Ordering::SeqCst)
     }
 
@@ -309,7 +325,7 @@ fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle, config: &Config) -> Outc
                     }
                 }
                 if job.needs_auto_cue {
-                    store_auto_cue(job, db, config, &analysis.windows, &mut retry);
+                    store_auto_cue(job, db, app, config, &analysis.windows, &mut retry);
                 }
             }
             Err(e) => {
@@ -359,6 +375,7 @@ fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle, config: &Config) -> Outc
 fn store_auto_cue(
     job: &AnalysisJob,
     db: &Db,
+    app: &AppHandle,
     config: &Config,
     windows: &auto_cue::RmsWindows,
     retry: &mut bool,
@@ -369,8 +386,17 @@ fn store_auto_cue(
     let music = job.content_type == "music";
     let cue = auto_cue::detect(windows, music, thresholds);
     match db.set_auto_cue(job.id, cue, thresholds, &job.content_type, now_ms()) {
-        Ok(true) => log::debug!("auto cue: {} {:?}", job.path, cue),
-        Ok(false) => log::debug!("auto cue: {} moved on under us", job.path),
+        Ok(Some(cue_points)) => {
+            log::debug!("auto cue: {} {:?}", job.path, cue);
+            let _ = app.emit(
+                CUE_POINTS_READY_EVENT,
+                CuePointsReady {
+                    id: job.id,
+                    cue_points,
+                },
+            );
+        }
+        Ok(None) => log::debug!("auto cue: {} moved on under us", job.path),
         Err(e) => {
             log::error!("auto cue: store {} failed: {}", job.id, e);
             *retry = true;
@@ -411,6 +437,10 @@ mod tests {
 
         assert!(!job.claim_rerun());
         assert!(!job.running.load(Ordering::SeqCst));
+        assert!(
+            job.kicked.load(Ordering::SeqCst),
+            "the kick stands for the next start"
+        );
     }
 
     /// A fresh kick claimed the slot the instant it was released; it drains.
