@@ -8,6 +8,26 @@ The intended operating assumption is that **almost all library tracks will never
 
 No source audio file is modified.
 
+**Status: landed (2026-09-19, [#372](https://github.com/Arskah/radiodiodj/issues/372)).** The detector is `src-tauri/src/audio/auto_cue.rs`, fed by the RMS windows `audio/waveform.rs` collects during the existing waveform decode and committed by `library/waveform_scan.rs`. Ownership and provenance live on the track row as `auto_cue_state` (`pending` / `auto` / `manual`), `auto_cue_version`, `auto_cue_silence_db`, `auto_cue_segue_db` and `auto_cue_at`. The switch and the thresholds are `tuning.autoCue` in `config.json`, under _Settings → Advanced_.
+
+## The switch
+
+`tuning.autoCue.apply` decides whether a derived trio takes effect. It is on by default.
+
+Switched off, **analysis still runs and still stores its result**. What changes is the answer the library gives: a row whose `auto_cue_state` is `auto` reports no Cue In, Cue Out or Next Start, so the deck airs the whole file and every duration in the app — queue rows, tab totals, the waveform crop, the cue editor — measures the whole file with it. Nothing is cleared, invalidated or re-decoded, so switching back on takes effect immediately.
+
+A track whose state is `pending` is held back with the `auto` ones. A requeue — a rescan of a changed file, a reclassification, a move between roots — keeps the trio it was last given while the state goes back to `pending`, and that trio is still analysis's work. Only an operator save reaches `manual`, so a row that is not `manual` holds nothing of theirs.
+
+Three things are never held back:
+
+- a manually owned trio. The switch is about automatic analysis; a radio edit the operator made is theirs either way;
+- the fades. Nothing infers them, so `fadeIn` and `fadeOut` apply whether the switch is on or off;
+- an item's own Cue point override, which is a per-airing decision the operator made.
+
+Ownership is judged against what the caller was shown, not against the stored row (`Db::set_cue_points`), and a save hands back what the caller will be shown next — the derived trio stays hidden, a manual one comes straight back. Nobody can clear markers they were never given: saving a fade while the switch is off leaves the derived trio intact for when it comes back on. To clear a derived trio deliberately, switch the feature on first. A fade saved while the switch is off is still bounded by the Cue Out it is stored against, hidden or not, so it does not end up past it where the load-time resolve would drop it.
+
+Flipping the switch re-reads every copy of a track the app holds — the library rows, the queue, the library-health report, the cue deck and an open editor — and re-arms the next track — markers are applied at load time, so the deck already holding it has to load it again. The track on air keeps what it started with, exactly as a radio edit saved mid-broadcast does.
+
 ## What is inferred
 
 Automatic analysis writes only these Track-level Radio edit points:
@@ -455,6 +475,12 @@ For a manually owned Radio edit, a content-type change leaves Cue In, Cue Out an
 
 A manually authored Next Start therefore survives a later reclassification to jingle or commercial.
 
+A Track's content type follows the Library path the file sits under, and changes in three ways, all of which requeue an automatically owned trio:
+
+- a missing Track reattaches by fingerprint under a Library path of another content type — the operator moved the file from `/music` to `/jingles`. The trims stand until the fresh result lands, being the same audio either way, but the Next Start is cleared: it is derived only for music, and a jingle carrying one would hand over early on every airing until the pass reached it;
+- the same file appears under a second Library path of another content type, which inserts a new Track that copies the twin's row. The copy is a Track of its own class, so it is queued for its own analysis rather than inheriting the twin's result — including when the twin is manually owned, since that was a decision about the other Track;
+- `update_track_metadata` carries a content type. No UI sends one today — the metadata overlay edits tags only — and a rescan of the file would take the root's type back, so this is a backend affordance rather than an operator feature.
+
 ## Source-file changes
 
 If the scanner detects that the underlying audio file has changed:
@@ -472,14 +498,16 @@ An automatic analysis result is one logical update.
 
 Cue In, Cue Out, Next Start, provenance and analysis version must be committed together rather than as independent writes.
 
-Before committing, the backend must re-check that the Track is still automatically owned.
+Before committing, the backend must re-check that the Track is still automatically owned, **still the content type the analysis ran under, and still the file that was decoded** (its `mtime`) — a reclassification mid-decode would otherwise land a music Next Start on a jingle and mark it analysed, and a file replaced mid-decode would land markers derived from audio that is gone, dropping the rescan's requeue for good.
+
+A result discarded on either ground leaves the Track queued, so the pass takes it again — under its new class, or from the file that is there now.
 
 Example race:
 
 ```text
 background analysis starts
         ↓
-operator saves a Radio edit
+operator saves a Radio edit, or reclassifies the Track
         ↓
 background analysis finishes
 ```

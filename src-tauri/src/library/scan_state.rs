@@ -185,7 +185,7 @@ fn run(
             // Metadata is in — kick the async waveform pass. It runs on its own
             // thread and lands waveforms later, so the scan reports done now and
             // never blocks on the heavy per-track decode.
-            Arc::clone(&waveform).start(app.clone(), Arc::clone(&db));
+            Arc::clone(&waveform).start(app.clone(), Arc::clone(&db), Arc::clone(&config));
         }
         Err(e) => {
             log::error!("scan failed: {}", e);

@@ -5,9 +5,12 @@
 //! track's amplitude curve requires a full audio decode, which is far heavier —
 //! so it runs here, on its own worker thread, after the scan. The same pass
 //! backfills [fingerprints](super::fingerprint): from the bytes already read
-//! when a waveform is due, from the head of the file otherwise. Waveforms land in
-//! the DB one at a time and a `waveform-ready` event is emitted per track so the
-//! renderer can refresh a curve for the deck that is currently showing it.
+//! when a waveform is due, from the head of the file otherwise. The same decode
+//! also yields the [automatic cue points](crate::audio::auto_cue), so an
+//! unprepped track airs trimmed without a second pass over the file. Waveforms
+//! land in the DB one at a time and a `waveform-ready` event is emitted per
+//! track so the renderer can refresh a curve for the deck that is currently
+//! showing it.
 //!
 //! Progress is surfaced separately from the metadata scan via
 //! `waveform-progress` / `waveform-state-changed` so the UI can show a second
@@ -23,7 +26,7 @@
 //! the next.
 
 use parking_lot::Mutex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::Cursor;
 use std::path::Path;
@@ -35,12 +38,19 @@ use tauri::{AppHandle, Emitter};
 use super::db::{AnalysisJob, Db};
 use super::fingerprint;
 use super::scanner::now_ms;
-use crate::audio::{loudness, waveform};
+use crate::audio::cue_points::CuePoints;
+use crate::audio::{auto_cue, loudness, waveform};
+use crate::persist::config::Config;
 
 type Bytes = Arc<[u8]>;
 
 /// Event emitted after a track's waveform is stored. Payload is the track id.
 const WAVEFORM_READY_EVENT: &str = "waveform-ready";
+/// Event emitted after an automatic cue result is committed, carrying the whole
+/// stored set. Every copy of a track held outside the DB — the playlist's queued
+/// items, the renderer's rows — derives its duration from these markers, and a
+/// backfill changes them under all of them.
+pub const CUE_POINTS_READY_EVENT: &str = "cue-points-ready";
 /// Throttled `{processed, total}` progress updates.
 const WAVEFORM_PROGRESS_EVENT: &str = "waveform-progress";
 /// Running/idle transitions.
@@ -73,9 +83,19 @@ struct WaveformProgress {
     total: usize,
 }
 
+/// Payload of [`CUE_POINTS_READY_EVENT`].
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CuePointsReady {
+    pub id: i64,
+    pub cue_points: CuePoints,
+}
+
 #[derive(Default)]
 pub struct WaveformJob {
     running: AtomicBool,
+    /// Work arrived while a worker was running. See [`WaveformJob::start`].
+    kicked: AtomicBool,
     cancel: AtomicBool,
     status: Mutex<WaveformStatus>,
 }
@@ -94,16 +114,51 @@ impl WaveformJob {
     /// Kick the worker. No-op if one is already running (single-flight): the
     /// running worker re-drains the work list on each pass, so it will observe
     /// any tracks a concurrent scan just added.
-    pub fn start(self: Arc<Self>, app: AppHandle, db: Arc<Db>) {
-        // Claim the single-flight slot; bail if a worker already holds it.
+    ///
+    /// A kick that arrives after the running worker's last drain found nothing
+    /// is recorded rather than dropped — otherwise work queued in that window
+    /// (a reclassification, say) would wait for the next scan or restart.
+    pub fn start(self: Arc<Self>, app: AppHandle, db: Arc<Db>, config: Arc<Config>) {
+        // Claim the single-flight slot, or leave a note for the worker holding
+        // it, which may be past the point of noticing on its own.
         if self.running.swap(true, Ordering::SeqCst) {
+            self.kicked.store(true, Ordering::SeqCst);
             return;
         }
         self.cancel.store(false, Ordering::SeqCst);
-        std::thread::spawn(move || {
-            run(&self, &app, &db);
+        std::thread::spawn(move || loop {
+            // Cleared before the drain, so a kick during it is never lost.
+            self.kicked.store(false, Ordering::SeqCst);
+            run(&self, &app, &db, &config);
             self.running.store(false, Ordering::SeqCst);
+            if !self.claim_rerun() {
+                break;
+            }
         });
+    }
+
+    /// Kick the worker for work that turned up on its own, rather than for an
+    /// operator asking for a pass. A cancelled pass stays cancelled: the
+    /// operator stopped the decoder, and one track changing class is not a
+    /// reason to put the whole library back through it. The track keeps its
+    /// `pending` state and the next scan takes it.
+    pub fn nudge(self: Arc<Self>, app: AppHandle, db: Arc<Db>, config: Arc<Config>) {
+        if self.cancel.load(Ordering::SeqCst) {
+            return;
+        }
+        self.start(app, db, config);
+    }
+
+    /// Whether the worker that has just released the slot should take it back
+    /// and drain again: only for a kick it has not already served, and only if
+    /// it is not cancelled and no other kick claimed the free slot first —
+    /// that one owns the work from here.
+    fn claim_rerun(&self) -> bool {
+        // Cancel is read first so a kick is not consumed and then thrown away:
+        // it stands, and the next start() serves it.
+        !self.cancel.load(Ordering::SeqCst)
+            && self.kicked.swap(false, Ordering::SeqCst)
+            && !self.running.swap(true, Ordering::SeqCst)
     }
 
     fn set_status(&self, app: &AppHandle, next: WaveformStatus) {
@@ -112,7 +167,7 @@ impl WaveformJob {
     }
 }
 
-fn run(job: &WaveformJob, app: &AppHandle, db: &Db) {
+fn run(job: &WaveformJob, app: &AppHandle, db: &Db, config: &Config) {
     // Ids that could not be read or stored this run — skipped on subsequent
     // passes so the drain loop cannot spin on them. Shared across the decode
     // threads.
@@ -184,7 +239,7 @@ fn run(job: &WaveformJob, app: &AppHandle, db: &Db) {
                     let Some(track) = pending.get(i) else {
                         break;
                     };
-                    match analyse(track, db, app) {
+                    match analyse(track, db, app, config) {
                         Outcome::Done => {}
                         Outcome::Retry => {
                             failed.lock().insert(track.id);
@@ -234,11 +289,11 @@ enum Outcome {
 }
 
 /// Fill whatever `job` is missing and store it.
-fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle) -> Outcome {
+fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle, config: &Config) -> Outcome {
     let path = Path::new(&job.path);
     let mut retry = false;
     let mut errors: Vec<String> = Vec::new();
-    let fingerprint = if job.needs_waveform || job.needs_loudness {
+    let fingerprint = if job.needs_waveform || job.needs_loudness || job.needs_auto_cue {
         let start = Instant::now();
         let bytes: Bytes = match std::fs::read(path) {
             Ok(v) => Arc::from(v.into_boxed_slice()),
@@ -281,6 +336,9 @@ fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle) -> Outcome {
                         );
                     }
                 }
+                if job.needs_auto_cue {
+                    store_auto_cue(job, db, app, config, &analysis.windows, &mut retry);
+                }
             }
             Err(e) => {
                 log::warn!("waveform: decode {} failed: {:#}", job.path, e);
@@ -317,5 +375,100 @@ fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle) -> Outcome {
         Outcome::Done
     } else {
         Outcome::Unreadable(errors.join("; "))
+    }
+}
+
+/// Derive and commit this track's automatic cue points. The commit is refused
+/// outright if the row moved on while the decode ran — the operator took
+/// ownership, or a reclassification changed what should have been derived —
+/// which is the whole race the ownership state exists for. A discarded result
+/// is not a failure and leaves nothing to retry: a reclassified track is still
+/// `pending`, so the drain loop takes it again under its new class.
+fn store_auto_cue(
+    job: &AnalysisJob,
+    db: &Db,
+    app: &AppHandle,
+    config: &Config,
+    windows: &auto_cue::RmsWindows,
+    retry: &mut bool,
+) {
+    // Read per track rather than once per run: a threshold changed mid-backfill
+    // then applies from the next file, matching "future analyses only".
+    let thresholds = config.get_tuning().auto_cue.thresholds();
+    let music = job.content_type == "music";
+    let cue = auto_cue::detect(windows, music, thresholds);
+    match db.set_auto_cue(
+        job.id,
+        cue,
+        thresholds,
+        &job.content_type,
+        job.mtime,
+        now_ms(),
+    ) {
+        Ok(Some(cue_points)) => {
+            log::debug!("auto cue: {} {:?}", job.path, cue);
+            let _ = app.emit(
+                CUE_POINTS_READY_EVENT,
+                CuePointsReady {
+                    id: job.id,
+                    cue_points,
+                },
+            );
+        }
+        Ok(None) => log::debug!("auto cue: {} moved on under us", job.path),
+        Err(e) => {
+            log::error!("auto cue: store {} failed: {}", job.id, e);
+            *retry = true;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The lost wakeup: a track queued after the worker's last drain found
+    /// nothing, while it is still tidying up, must not wait for the next scan.
+    #[test]
+    fn a_kick_during_the_last_drain_runs_the_worker_again() {
+        let job = WaveformJob::default();
+        job.running.store(true, Ordering::SeqCst);
+        job.kicked.store(true, Ordering::SeqCst);
+        job.running.store(false, Ordering::SeqCst);
+
+        assert!(job.claim_rerun());
+        assert!(job.running.load(Ordering::SeqCst), "the slot is held again");
+        assert!(!job.kicked.load(Ordering::SeqCst), "the kick is served");
+    }
+
+    #[test]
+    fn a_worker_nobody_kicked_stops() {
+        let job = WaveformJob::default();
+        assert!(!job.claim_rerun());
+        assert!(!job.running.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_cancelled_worker_stops_despite_a_kick() {
+        let job = WaveformJob::default();
+        job.kicked.store(true, Ordering::SeqCst);
+        job.cancel();
+
+        assert!(!job.claim_rerun());
+        assert!(!job.running.load(Ordering::SeqCst));
+        assert!(
+            job.kicked.load(Ordering::SeqCst),
+            "the kick stands for the next start"
+        );
+    }
+
+    /// A fresh kick claimed the slot the instant it was released; it drains.
+    #[test]
+    fn a_worker_that_lost_the_slot_stops() {
+        let job = WaveformJob::default();
+        job.kicked.store(true, Ordering::SeqCst);
+        job.running.store(true, Ordering::SeqCst);
+
+        assert!(!job.claim_rerun());
     }
 }

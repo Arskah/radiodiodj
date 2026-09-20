@@ -284,6 +284,22 @@ export interface LibraryConfig {
   tagWriteTimeoutSec: number;
 }
 
+/// Whether derived cue points are applied, and the levels the analyser works
+/// to, in dBFS. Changing a level affects later analyses only. See
+/// `docs/cue-auto-analysis.md`.
+export interface AutoCueConfig {
+  /**
+   * Whether a derived set takes effect. Off, the analysis still runs and still
+   * stores its result — every track simply airs whole — so switching back on
+   * costs no second pass over the library.
+   */
+  apply: boolean;
+  /** Below this there is no programme audio, so Cue In and Cue Out trim it. */
+  silenceDbfs: number;
+  /** Below this a music track is quiet enough for the next item to begin. */
+  segueDbfs: number;
+}
+
 /// User-tunable playback behaviour, persisted in `config.json`.
 export interface TuningConfig {
   interleave: InterleaveConfig;
@@ -292,6 +308,7 @@ export interface TuningConfig {
   cache: CacheConfig;
   player: PlayerConfig;
   library: LibraryConfig;
+  autoCue: AutoCueConfig;
 }
 
 export interface DeviceInfo {

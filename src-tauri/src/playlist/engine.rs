@@ -6,7 +6,7 @@
 //! — ordering, outage skip-to-cached, refill sizing, stop markers — is therefore
 //! testable here, which is where it moved to from the renderer.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::model::{PlaylistItem, Snapshot};
 use crate::audio::cue_points::CuePoints;
@@ -550,6 +550,55 @@ impl Playlist {
         self.advance(true, r)
     }
 
+    /// Whether any copy of this track is held here. The analysis pass reports
+    /// every automatic result, one per track in the library on a backfill, and
+    /// applying one costs a full snapshot to the renderer and an arm reconcile
+    /// — so a track nobody queued is dropped before that.
+    pub fn holds(&self, id: i64) -> bool {
+        self.items
+            .iter()
+            .any(|i| matches!(i, PlaylistItem::Track { track, .. } if track.id == id))
+            || self.history.iter().any(|t| t.id == id)
+    }
+
+    /// Every track held here, queued or aired. Read when the automatic-cue
+    /// policy changes and every copy held here has gone stale at once.
+    pub fn held_ids(&self) -> Vec<i64> {
+        self.items
+            .iter()
+            .filter_map(|i| match i {
+                PlaylistItem::Track { track, .. } => Some(track.id),
+                _ => None,
+            })
+            .chain(self.history.iter().map(|t| t.id))
+            .collect()
+    }
+
+    /// Replace the markers on the copies held here with what the library now
+    /// reports. The track on air is left alone for the same reason a radio edit
+    /// leaves it alone: its numbers must not move while it is playing.
+    pub fn refresh_cue_points(&mut self, fresh: &HashMap<i64, CuePoints>) -> Transition {
+        for item in &mut self.items {
+            if let PlaylistItem::Track { track, .. } = item {
+                if let Some(points) = fresh.get(&track.id) {
+                    track.cue_points = *points;
+                }
+            }
+        }
+        for track in &mut self.history {
+            if let Some(points) = fresh.get(&track.id) {
+                track.cue_points = *points;
+            }
+        }
+        // Markers are applied at load time, so the track already armed on the
+        // handover deck still carries the ones it was armed with. Forgetting
+        // what is armed makes the reconcile that follows every transition load
+        // it again — the policy is meant to take effect at once, and the next
+        // track is the first place it would otherwise be visibly late.
+        self.armed = None;
+        Transition::default()
+    }
+
     /// A radio edit was saved for `id`. Queued items carry a copy of the track
     /// for display, so the copies are refreshed here — otherwise the next
     /// snapshot would hand the renderer the duration the track had before the
@@ -570,6 +619,13 @@ impl Playlist {
         // History rows show air time, so they carry the markers too.
         for track in self.history.iter_mut().filter(|t| t.id == id) {
             track.cue_points = points;
+        }
+        // Markers are applied at load time, so the deck holding this track as
+        // next-up still has the ones it was armed with. Forgetting the arm has
+        // the reconcile that follows every transition load it again, or the
+        // very next airing would be the one that ignored the edit.
+        if self.armed.as_ref().is_some_and(|a| a.id == id) {
+            self.armed = None;
         }
         Transition::default()
     }
@@ -1989,6 +2045,73 @@ mod tests {
             |p: &Playlist, i: usize| p.snapshot().playlist[i].as_track().map(|t| t.cue_points);
         assert_eq!(queued_points(&p, 0), Some(points(4_000)));
         assert_eq!(queued_points(&p, 1), Some(CuePoints::default()));
+    }
+
+    /// The same for one track: a result landing on the already-armed track is
+    /// routine during a backfill, and the first airing after it would otherwise
+    /// be the one that played untrimmed.
+    #[test]
+    fn new_markers_re_arm_the_track_they_are_for() {
+        let mut p = with(&[Some(1), Some(2)]);
+        p.play_index(0, &NoRefill);
+        p.reconcile_arm();
+        assert_eq!(p.reconcile_arm(), None, "2 is already armed");
+
+        p.on_cue_points_saved(2, points(4_000));
+
+        assert!(matches!(p.reconcile_arm(), Some(Effect::Arm { id: 2, .. })));
+    }
+
+    /// An edit for some other track leaves the armed deck alone: reloading it
+    /// would be work for nothing.
+    #[test]
+    fn markers_for_another_track_leave_the_arm_alone() {
+        let mut p = with(&[Some(1), Some(2)]);
+        p.play_index(0, &NoRefill);
+        p.reconcile_arm();
+
+        p.on_cue_points_saved(7, points(4_000));
+
+        assert_eq!(p.reconcile_arm(), None);
+    }
+
+    /// Markers are applied at load time, so the deck holding the next track
+    /// has to load it again or the switch would visibly miss the very next
+    /// airing.
+    #[test]
+    fn a_policy_change_re_arms_the_next_track() {
+        let mut p = with(&[Some(1), Some(2)]);
+        p.play_index(0, &NoRefill);
+        p.reconcile_arm();
+        assert_eq!(p.reconcile_arm(), None, "2 is already armed");
+
+        p.refresh_cue_points(&HashMap::from([(2, points(4_000))]));
+
+        assert!(matches!(p.reconcile_arm(), Some(Effect::Arm { id: 2, .. })));
+        let queued_points =
+            |p: &Playlist, i: usize| p.snapshot().playlist[i].as_track().map(|t| t.cue_points);
+        assert_eq!(queued_points(&p, 0), Some(points(4_000)));
+    }
+
+    /// A backfill reports one result per track in the library. Applying one
+    /// costs a full snapshot, so the playlist answers for what it holds and
+    /// the service drops the rest before paying for them.
+    #[test]
+    fn the_playlist_knows_which_tracks_it_holds() {
+        let mut p = with(&[Some(2), None]);
+        p.hydrate(
+            p.snapshot().playlist,
+            Some(track(9)),
+            None,
+            0.0,
+            false,
+            true,
+            vec![track(1)],
+        );
+        assert!(p.holds(2), "queued");
+        assert!(p.holds(1), "in history");
+        assert!(!p.holds(9), "on air, not held here");
+        assert!(!p.holds(7), "nowhere");
     }
 
     /// The item still airs under its override; only the track copy it displays

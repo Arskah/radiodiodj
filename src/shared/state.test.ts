@@ -52,6 +52,7 @@ const { api } = vi.hoisted(() => {
     onScanProgress: vi.fn(),
     onScanStateChanged: vi.fn(),
     onWaveformReady: vi.fn(),
+    onCuePointsReady: vi.fn(),
     onWaveformProgress: vi.fn(),
     onWaveformStateChanged: vi.fn(),
     getWaveformStatus: vi.fn(),
@@ -116,6 +117,7 @@ function defaultTuning() {
       replayGain: "track" as const,
     },
     library: { checkIntervalMin: 15, writeTags: false, tagWriteTimeoutSec: 30 },
+    autoCue: { apply: true, silenceDbfs: -70, segueDbfs: -20 },
   };
 }
 
@@ -158,6 +160,7 @@ import {
   type Track,
 } from "./state.svelte";
 import type { ScanStatus } from "./api";
+import { NO_CUE_POINTS } from "./cuePoints";
 import {
   isTrackItem,
   stopMarker,
@@ -1255,6 +1258,48 @@ describe("AppState tuning", () => {
     expect(api.setTuningConfig).toHaveBeenCalledWith(requested);
     expect(app.tuning.autoPlaylist.autoPlaylistThreshold).toBe(4);
   });
+
+  it("re-reads the library when automatic cue points are switched off", async () => {
+    // Every derived duration the rows show has just changed meaning.
+    const next = defaultTuning();
+    next.autoCue.apply = false;
+    api.setTuningConfig.mockResolvedValueOnce(next);
+    api.search.mockClear();
+
+    await app.saveTuning(next);
+
+    expect(api.search).toHaveBeenCalled();
+  });
+
+  it("re-reads the cued track and the open editor when the switch moves", async () => {
+    // The editor saves what it was given, and the backend judges ownership
+    // against what it last showed: a stale copy turns a fade-only save into an
+    // edit to the trio.
+    const stale = { cue_in_ms: 10_000, cue_out_ms: 30_000 };
+    app.cueTrack = t(1, { cue_points: stale as never });
+    app.editingCuePoints = t(1, { cue_points: stale as never });
+    const next = defaultTuning();
+    next.autoCue.apply = false;
+    api.setTuningConfig.mockResolvedValueOnce(next);
+    api.getTracksByIds.mockResolvedValueOnce([t(1)]);
+
+    await app.saveTuning(next);
+
+    expect(api.getTracksByIds).toHaveBeenCalledWith([1]);
+    expect(app.cueTrack?.cue_points).toEqual(NO_CUE_POINTS);
+    expect(app.editingCuePoints?.cue_points).toEqual(NO_CUE_POINTS);
+  });
+
+  it("leaves the library alone when the switch did not move", async () => {
+    const next = defaultTuning();
+    next.autoCue.silenceDbfs = -65;
+    api.setTuningConfig.mockResolvedValueOnce(next);
+    api.search.mockClear();
+
+    await app.saveTuning(next);
+
+    expect(api.search).not.toHaveBeenCalled();
+  });
 });
 
 describe("AppState appearance", () => {
@@ -2168,6 +2213,35 @@ describe("AppState cue points", () => {
     expect(app.cueDuration).toBe(20);
   });
 
+  it("crops the main waveform to what the deck is airing", () => {
+    // The deck reports air time, so the bar measures the trimmed track. The
+    // curve under it has to measure the same region or the fill starts where
+    // no audio does.
+    app.currentTrack = t(1, { cue_points: trimmed });
+    expect(app.airCrop).toEqual({ from: 0.1, to: 0.3 });
+  });
+
+  it("an untrimmed track fills the whole main waveform", () => {
+    app.currentTrack = t(2);
+    expect(app.airCrop).toEqual({ from: 0, to: 1 });
+  });
+
+  it("the main waveform follows the item's override, not the track's edit", () => {
+    app.currentTrack = t(1, { cue_points: trimmed });
+    app.currentCueOverride = {
+      cue_in_ms: 50_000,
+      fade_in_ms: null,
+      fade_out_ms: null,
+      cue_out_ms: 60_000,
+      next_start_ms: null,
+    };
+    expect(app.airCrop).toEqual({ from: 0.5, to: 0.6 });
+  });
+
+  it("nothing on air crops nothing", () => {
+    expect(app.airCrop).toBeNull();
+  });
+
   it("Preview crops the waveform to the aired region", async () => {
     app.cueLoad(t(1, { cue_points: trimmed }), trimmed);
     await flushAsync();
@@ -2236,6 +2310,67 @@ describe("AppState cue points", () => {
     app.currentTrack = t(1);
     await app.saveCuePoints(1, trimmed);
     expect(app.currentTrack?.cue_points).toBeUndefined();
+  });
+
+  it("an automatic cue result refreshes every copy of the track", async () => {
+    // The backfill derives markers for a track already queued. Nothing asked
+    // the UI for them, so the event is the only thing that keeps the rows from
+    // showing the untrimmed length the deck will not play.
+    app.tracks = [t(1), t(2)];
+    app.playlist = [trackItem(t(1)), trackItem(t(2))];
+    app.cueTrack = t(1);
+
+    const onReady = api.onCuePointsReady.mock.calls[0][0] as (
+      id: number,
+      points: CuePoints,
+    ) => void;
+    onReady(1, trimmed);
+
+    expect(app.tracks.map((x) => x.cue_points)).toEqual([trimmed, undefined]);
+    expect(
+      app.playlist.filter(isTrackItem).map((i) => i.track.cue_points),
+    ).toEqual([trimmed, undefined]);
+    expect(app.cueTrack?.cue_points).toEqual(trimmed);
+  });
+
+  it("an automatic cue result leaves the on-air track alone", () => {
+    app.currentTrack = t(1);
+
+    const onReady = api.onCuePointsReady.mock.calls[0][0] as (
+      id: number,
+      points: CuePoints,
+    ) => void;
+    onReady(1, trimmed);
+
+    expect(app.currentTrack?.cue_points).toBeUndefined();
+  });
+
+  /// The editor's draft was built before the analysis existed. Saving it would
+  /// write those nulls back over the result and take the trio off automatic.
+  it("an automatic cue result refreshes an untouched editor", () => {
+    app.editingCuePoints = t(1);
+    app.cueEditorDirty = false;
+
+    const onReady = api.onCuePointsReady.mock.calls[0][0] as (
+      id: number,
+      points: CuePoints,
+    ) => void;
+    onReady(1, trimmed);
+
+    expect(app.editingCuePoints?.cue_points).toEqual(trimmed);
+  });
+
+  it("an automatic cue result leaves an edited draft alone", () => {
+    app.editingCuePoints = t(1);
+    app.cueEditorDirty = true;
+
+    const onReady = api.onCuePointsReady.mock.calls[0][0] as (
+      id: number,
+      points: CuePoints,
+    ) => void;
+    onReady(1, trimmed);
+
+    expect(app.editingCuePoints?.cue_points).toBeUndefined();
   });
 
   // ----- auditioning from the editor -----

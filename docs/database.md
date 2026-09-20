@@ -46,8 +46,18 @@ The library lives in SQLite (`radiodiodj.db`, WAL mode) and is opened by
   count, waveform, fingerprint and the loudness measurement must survive a
   rescan. `UPSERT_TRACK_SQL`
   touches only tag-derived columns, and it only overwrites the fingerprint with
-  a non-null value. It also clears the recorded analysis failure, since it runs
-  only for a file that changed.
+  a non-null value. It also clears the recorded analysis failure and puts an
+  _automatic_ cue point set back in the queue (`auto_cue_state`, never the
+  markers themselves), since it runs only for a file that changed — a manual
+  set is left alone, and the old automatic values stand until fresh ones land.
+  The automatic trio is also applied on the way _out_: with
+  `tuning.autoCue.apply` off, a row whose `auto_cue_state` is `auto` reports no
+  Cue In, Cue Out or Next Start, while the columns keep their values. Every
+  read goes through `effective_cue_points`, so the whole app agrees; the
+  ownership check in `set_cue_points` compares against that same masked view.
+  `reconcile` applies the same rule wherever a Track's content type moves —
+  a reattach under a Library path of another type, or a duplicate inserted
+  under one — so an automatic trio is never inherited across classes.
 - **No foreign keys.** `PRAGMA foreign_keys` is off (SQLite's default, never
   set here), so an `ON DELETE` clause would be decoration that silently never
   fires. A table referencing `tracks(id)` declares the column plain and the

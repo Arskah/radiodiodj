@@ -79,6 +79,7 @@ const DEFAULT_TUNING: TuningConfig = {
     replayGain: "track",
   },
   library: { checkIntervalMin: 15, writeTags: false, tagWriteTimeoutSec: 30 },
+  autoCue: { apply: true, silenceDbfs: -70, segueDbfs: -20 },
 };
 
 export const EMPTY_HEALTH: HealthReport = {
@@ -248,6 +249,12 @@ export class AppState {
   editingMetadata = $state<Track | null>(null);
   // Track whose cue points are open in the cue-point editor.
   editingCuePoints = $state<Track | null>(null);
+  /**
+   * Set by the cue editor: its draft differs from the stored markers. Read when
+   * an automatic result lands for the track being edited — see
+   * {@link AppState.adoptCuePoints}.
+   */
+  cueEditorDirty = $state(false);
 
   // Admin mode, mirrored from the backend. With no password set the app is
   // always admin. See docs/admin-mode.md.
@@ -404,6 +411,7 @@ export class AppState {
       if (this.currentTrack?.id === id) this.loadWaveform(id);
       if (this.cueTrack?.id === id) this.loadCueWaveform(id);
     });
+    api.onCuePointsReady((id, points) => this.adoptCuePoints(id, points));
 
     api.onWaveformProgress(({ processed, total }) => {
       if (this.waveformStatus.status === "running") {
@@ -879,6 +887,26 @@ export class AppState {
   }
 
   /**
+   * The sub-range of the file the main deck is airing, as fractions — `null`
+   * with nothing on air or no duration to divide by.
+   *
+   * The deck reports air time, so the bar already measures what plays; without
+   * this the curve under it still spanned the whole file, putting the trimmed
+   * head and tail on screen and starting the fill somewhere the audio never
+   * does.
+   */
+  get airCrop(): { from: number; to: number } | null {
+    const track = this.currentTrack;
+    if (!track?.duration) return null;
+    const aired = airedTrack(track, this.currentCueOverride);
+    const cue = resolveCuePoints(aired.cue_points, track.duration);
+    return {
+      from: cue.cueIn / track.duration,
+      to: cue.cueOut / track.duration,
+    };
+  }
+
+  /**
    * Persist a track's cue points and adopt the clamped value the backend
    * returns — the one rule lives there, so whatever comes back is the truth.
    * Every copy of the track the UI holds is refreshed, since durations
@@ -886,20 +914,59 @@ export class AppState {
    */
   async saveCuePoints(id: number, points: CuePoints): Promise<CuePoints> {
     const stored = await api.setCuePoints(id, points);
-    const apply = (t: Track | null): Track | null =>
-      t && t.id === id ? { ...t, cue_points: stored } : t;
-    this.tracks = this.tracks.map((t) => apply(t) as Track);
-    this.playlist = this.playlist.map((i) =>
-      isTrackItem(i) && i.track.id === id
-        ? { ...i, track: { ...i.track, cue_points: stored } }
-        : i,
+    this.adoptCuePoints(id, stored);
+    this.editingCuePoints = this.applyCuePoints(
+      this.editingCuePoints,
+      id,
+      stored,
     );
-    // Not `currentTrack`: a saved radio edit applies from the track's next
-    // airing, and rewriting it here would make the on-air deck's bar disagree
-    // with the audio still coming out of it.
-    this.cueTrack = apply(this.cueTrack);
-    this.editingCuePoints = apply(this.editingCuePoints);
     return stored;
+  }
+
+  private applyCuePoints(
+    track: Track | null,
+    id: number,
+    points: CuePoints,
+  ): Track | null {
+    return track && track.id === id ? { ...track, cue_points: points } : track;
+  }
+
+  /**
+   * Take new markers into every copy of the track the UI holds. Not
+   * `currentTrack`: markers apply from the track's next airing, and rewriting
+   * them here would make the on-air deck's bar disagree with the audio still
+   * coming out of it. An open editor is refreshed only while its draft is
+   * untouched.
+   */
+  private adoptCuePoints(id: number, points: CuePoints): void {
+    // The analysis pass reports every result it commits — one per track in the
+    // library on a backfill — and rebuilding the rows re-renders the list. A
+    // track that is nowhere on screen is dropped before that.
+    if (this.tracks.some((t) => t.id === id)) {
+      this.tracks = this.tracks.map(
+        (t) => this.applyCuePoints(t, id, points) as Track,
+      );
+    }
+    if (this.playlist.some((i) => isTrackItem(i) && i.track.id === id)) {
+      this.playlist = this.playlist.map((i) =>
+        isTrackItem(i) && i.track.id === id
+          ? { ...i, track: { ...i.track, cue_points: points } }
+          : i,
+      );
+    }
+    this.cueTrack = this.applyCuePoints(this.cueTrack, id, points);
+    // A result landing for the track being edited refreshes a pristine editor.
+    // Its draft was built before the analysis existed, so saving it would write
+    // those `null`s back over the result and take the trio off automatic for
+    // good — from an edit that may only have touched a fade. A draft the
+    // operator has already changed stands: what they see is what they save.
+    if (!this.cueEditorDirty) {
+      this.editingCuePoints = this.applyCuePoints(
+        this.editingCuePoints,
+        id,
+        points,
+      );
+    }
   }
 
   cueTogglePlay(): void {
@@ -1015,7 +1082,42 @@ export class AppState {
   /// fields only take effect on restart (their worker threads capture them at
   /// startup); the renderer-side fields applied here take effect immediately.
   async saveTuning(next: TuningConfig): Promise<void> {
+    const wasApplying = this.tuning?.autoCue?.apply;
     this.applyTuning(await api.setTuningConfig(next));
+    if (this.tuning.autoCue.apply !== wasApplying) await this.rereadCuePoints();
+  }
+
+  /**
+   * Switching automatic cue points on or off changes every derived set the
+   * library reports, so every copy the UI holds is stale at once. The queue
+   * arrives on its own — the backend re-reads what it holds and pushes a
+   * snapshot — but the rest is ours.
+   *
+   * A stale copy is not merely cosmetic here. The editor saves what it was
+   * given, and the backend judges ownership against what it last showed, so
+   * handing the editor a pre-flip copy would let a fade-only save read as an
+   * edit to the trio: on, it would clear the derived markers for good; off, it
+   * would freeze them as the operator's.
+   */
+  private async rereadCuePoints(): Promise<void> {
+    await Promise.all([this.search(), this.loadHealth()]);
+    const ids = [this.cueTrack?.id, this.editingCuePoints?.id].filter(
+      (id): id is number => id != null,
+    );
+    if (ids.length === 0) return;
+    try {
+      for (const fresh of await api.getTracksByIds([...new Set(ids)])) {
+        const points = fresh.cue_points ?? NO_CUE_POINTS;
+        this.cueTrack = this.applyCuePoints(this.cueTrack, fresh.id, points);
+        this.editingCuePoints = this.applyCuePoints(
+          this.editingCuePoints,
+          fresh.id,
+          points,
+        );
+      }
+    } catch (err) {
+      logger.error("Re-reading cue points failed:", err);
+    }
   }
 
   /// Adopt a tuning config: store it and rebuild the session-save throttle,

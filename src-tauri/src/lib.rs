@@ -450,12 +450,29 @@ fn audio_list_devices() -> Vec<DeviceInfo> {
 
 #[tauri::command(rename_all = "camelCase")]
 fn update_track_metadata(
+    app: AppHandle,
     state: State<'_, AppState>,
     updates: TrackMetadataUpdate,
 ) -> Result<Track, String> {
+    // Read before the write, so the kick below fires on a class that actually
+    // moved rather than on every save that carries the field.
+    let reclassified = match &updates.content_type {
+        Some(next) => state
+            .db
+            .track_content_type(updates.id)
+            .map_err(err)?
+            .is_some_and(|was| was != *next),
+        None => false,
+    };
     let track = state.db.update_track_metadata(&updates).map_err(err)?;
     if track.edited_fields != 0 {
         state.tag_writer.request(track.id);
+    }
+    // The update itself requeued the track: a reclassification changes what
+    // automatic analysis would infer. This kicks the pass that drains the
+    // queue.
+    if reclassified {
+        Arc::clone(&state.waveform).nudge(app, Arc::clone(&state.db), Arc::clone(&state.config));
     }
     // Artist and title decide possible duplicates.
     state.health.refresh();
@@ -668,7 +685,17 @@ fn set_tuning_config(
     state: State<'_, AppState>,
     config: TuningConfig,
 ) -> Result<TuningConfig, String> {
-    state.config.set_tuning(config).map_err(err)
+    let was = state.config.get_tuning().auto_cue.apply;
+    let stored = state.config.set_tuning(config).map_err(err)?;
+    // Switching the automatic cue points on or off changes what every derived
+    // set means, so the library's answer changes and the copies the playlist
+    // holds have to be re-read. Analysis is untouched: it runs and stores its
+    // results either way, which is what makes the switch instant both ways.
+    if stored.auto_cue.apply != was {
+        state.db.set_apply_auto_cue(stored.auto_cue.apply);
+        state.playlist.reload_cue_points();
+    }
+    Ok(stored)
 }
 
 /// The resolved appearance the renderer paints. Ungated by necessity: the
@@ -963,6 +990,9 @@ pub fn run() {
             let library_reset = opened.reset_backup.is_some();
             let db = Arc::new(opened.db);
             let config = Arc::new(Config::open(&data_dir)?);
+            // The library applies the automatic-cue policy on the way out, so
+            // it has to know it before anything reads a track.
+            db.set_apply_auto_cue(config.get_tuning().auto_cue.apply);
 
             // Give a first-run operator something to copy. Only when themes/ is
             // absent, so deleting the example does not bring it back.
@@ -1012,9 +1042,10 @@ pub fn run() {
             playlist.attach_to_app(app.handle());
             playlist.hydrate(&session.load());
             let waveform = Arc::new(WaveformJob::default());
-            // Backfill waveforms for any already-indexed tracks that lack one,
-            // without waiting for the next scan. No-op on an empty library.
-            Arc::clone(&waveform).start(app.handle().clone(), Arc::clone(&db));
+            // Backfill waveforms, loudness and automatic cue points for any
+            // already-indexed track that lacks one, without waiting for the
+            // next scan. No-op on an empty library.
+            Arc::clone(&waveform).start(app.handle().clone(), Arc::clone(&db), Arc::clone(&config));
             let tag_writer = TagWriter::new(Arc::clone(&db), Arc::clone(&config));
             let health = Health::new(
                 app.handle().clone(),

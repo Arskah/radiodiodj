@@ -110,7 +110,30 @@
 
   // Persist the current draft, then adopt the backend's clamped result so the
   // inputs snap to any coerced values.
-  async function saveTuning(): Promise<void> {
+  /**
+   * What a tuning field showed when the operator entered it. A field they
+   * clear never reaches the store — see `numInput` — so the `value` binding
+   * has nothing to re-write on save and the box would sit empty until the
+   * overlay is reopened. This is what goes back into it.
+   */
+  const shownOnFocus = new WeakMap<HTMLInputElement, string>();
+
+  function rememberField(e: FocusEvent): void {
+    const el = e.target;
+    if (el instanceof HTMLInputElement && el.type === "number") {
+      shownOnFocus.set(el, el.value);
+    }
+  }
+
+  async function saveTuning(e?: Event): Promise<void> {
+    const el = e?.target;
+    if (
+      el instanceof HTMLInputElement &&
+      el.type === "number" &&
+      el.value.trim() === ""
+    ) {
+      el.value = shownOnFocus.get(el) ?? el.value;
+    }
     await app.saveTuning($state.snapshot(tuning));
     tuning = $state.snapshot(app.tuning);
   }
@@ -118,7 +141,13 @@
   // Parse a number input, ignoring empty/NaN so a mid-edit blank doesn't wipe
   // the field; the min-clamp is enforced by the backend on save.
   function numInput(e: Event, apply: (v: number) => void): void {
-    const v = Number((e.currentTarget as HTMLInputElement).value);
+    // `Number("")` is 0, which is finite: without the blank check a cleared
+    // field reads as a deliberate zero on blur. Harmless where 0 clamps toward
+    // a floor, not on a range that excludes it — the dBFS levels would clamp
+    // to their *ceiling* and trim every later analysis to nothing.
+    const raw = (e.currentTarget as HTMLInputElement).value.trim();
+    if (raw === "") return;
+    const v = Number(raw);
     if (Number.isFinite(v)) apply(v);
   }
 
@@ -515,7 +544,10 @@
             <LibraryHealth />
           </div>
         {:else if app.settingsTab === "playlist"}
-          <div class="settings-section settings-section--tuning">
+          <div
+            class="settings-section settings-section--tuning"
+            onfocusin={rememberField}
+          >
             <h4>Playlist</h4>
             <p class="settings-section-desc">
               What the auto-playlist queues, how often it tops up, and how long
@@ -1107,11 +1139,14 @@
             </div>
           </div>
 
-          <div class="settings-section settings-section--tuning">
+          <div
+            class="settings-section settings-section--tuning"
+            onfocusin={rememberField}
+          >
             <h4>Advanced Tuning</h4>
             <p class="settings-section-desc">
-              Fine-tune library checks, fades, buffering and network resilience.
-              Out-of-range values are clamped on save.
+              Fine-tune library checks, cue analysis, fades, buffering and
+              network resilience. Out-of-range values are clamped on save.
             </p>
 
             <h5 class="tuning-group-title">Library</h5>
@@ -1151,6 +1186,70 @@
               <div class="hint">
                 How long writing an edit into a file may take before it is
                 reported as failed.
+              </div>
+            </div>
+
+            <h5 class="tuning-group-title">Automatic cue analysis</h5>
+            <div class="np-group" class:disabled={!tuning.autoCue.apply}>
+              <div class="np-group-header">
+                <span class="material-symbols-outlined" aria-hidden="true"
+                  >content_cut</span
+                >
+                <span class="np-group-title">Apply automatic cue points</span>
+                <label class="np-toggle" title="Apply automatic cue points">
+                  <input
+                    id="setting-apply-auto-cue"
+                    type="checkbox"
+                    bind:checked={tuning.autoCue.apply}
+                    onchange={saveTuning}
+                  />
+                  <span class="np-toggle-track"></span>
+                </label>
+              </div>
+              <p class="settings-section-desc">
+                Trims and segues derived from the audio are used on air and in
+                every duration the app shows. Switched off, every track plays
+                whole — but the analysis still runs and keeps its results, so
+                switching back on takes effect immediately with no second pass
+                over the library. Radio edits you made by hand always apply.
+              </p>
+            </div>
+            <div class="device-row">
+              <label for="tune-silence-db">Silence threshold (dBFS)</label>
+              <input
+                id="tune-silence-db"
+                type="number"
+                min="-100"
+                max="-4"
+                step="1"
+                value={tuning.autoCue.silenceDbfs}
+                oninput={(e) =>
+                  numInput(e, (v) => (tuning.autoCue.silenceDbfs = v))}
+                onchange={saveTuning}
+              />
+              <div class="hint">
+                Below this there is no programme audio, so Cue in and Cue out
+                trim it off each end of a track. Changing it affects later
+                analyses only — nothing already analysed is recalculated.
+              </div>
+            </div>
+            <div class="device-row">
+              <label for="tune-segue-db">Segue threshold (dBFS)</label>
+              <input
+                id="tune-segue-db"
+                type="number"
+                min="-99"
+                max="-3"
+                step="1"
+                value={tuning.autoCue.segueDbfs}
+                oninput={(e) =>
+                  numInput(e, (v) => (tuning.autoCue.segueDbfs = v))}
+                onchange={saveTuning}
+              />
+              <div class="hint">
+                How quiet a music track has to get before the next item may
+                start. Always kept above the silence threshold. Music only —
+                commercials and jingles get no automatic Next start.
               </div>
             </div>
 

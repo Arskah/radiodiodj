@@ -154,7 +154,19 @@
       : null,
   );
 
+  // The editor owns the draft; the store owns what lands from the analysis
+  // pass, and needs to know whether refreshing the markers would take work
+  // away from the operator.
+  $effect(() => {
+    app.cueEditorDirty = dirty;
+  });
+
   // ----- Opening and closing -----
+
+  /// The track this dialog opened on. The store hands the editor a fresh copy
+  /// whenever the markers change underneath it — a save, or an automatic result
+  /// landing on a pristine draft — and that is a refresh, not an opening.
+  let openedId: number | null = null;
 
   $effect(() => {
     const t = app.editingCuePoints;
@@ -167,14 +179,20 @@
       deckBefore = null;
       selected = null;
       dragging = false;
+      openedId = null;
       return;
     }
     draft = { ...NO_CUE_POINTS, ...(t.cue_points ?? {}) };
     error = null;
     confirmingDiscard = false;
     selected = null;
+    if (openedId === t.id) return;
+    openedId = t.id;
     // Untracked: reading the deck reactively would re-run this effect the
-    // moment playback changes it, wiping the draft mid-edit.
+    // moment playback changes it, wiping the draft mid-edit. Opening only:
+    // re-taking the snapshot on a refresh would capture the editor's own
+    // audition as the deck to restore, leaving a draft armed behind the
+    // closed dialog — and would throw away the operator's zoom with it.
     untrack(() => {
       deckBefore = app.cueSnapshot();
       manualFrame = false;

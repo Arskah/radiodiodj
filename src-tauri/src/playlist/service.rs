@@ -5,7 +5,7 @@
 //! transition ends with a [`Snapshot`] on `program:playlist-state`, which is the
 //! renderer's only source of playlist truth.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -27,6 +27,7 @@ use crate::broadcast::BroadcastService;
 use crate::library::db::{Db, Track, TrackLoadInfo};
 use crate::library::health::HEALTH_EVENT;
 use crate::library::scanner::now_ms;
+use crate::library::waveform_scan::{CuePointsReady, CUE_POINTS_READY_EVENT};
 use crate::persist::config::Config;
 use crate::persist::session::SessionState;
 
@@ -194,6 +195,18 @@ impl PlaylistService {
             Inner::apply(&missing, |p, r| p.on_missing_state(ids, r));
         });
 
+        // A queued item holds a copy of its track, so an automatic cue result
+        // landing mid-queue has to reach it — otherwise the row keeps the full
+        // file length while the deck airs the trimmed one, and the stale copy
+        // is what a session restore brings back.
+        let auto_cue = Arc::clone(&self.inner);
+        app.listen(CUE_POINTS_READY_EVENT, move |event| {
+            let Ok(ready) = serde_json::from_str::<CuePointsReady>(event.payload()) else {
+                return;
+            };
+            Inner::adopt_cue_points(&auto_cue, ready.id, ready.cue_points);
+        });
+
         let cache_state = Arc::clone(&self.inner);
         app.listen("main-deck:cache-state", move |event| {
             let ids: Vec<i64> = serde_json::from_str(event.payload()).unwrap_or_default();
@@ -251,10 +264,28 @@ impl PlaylistService {
         self.with_track(id, move |p, _, track| p.add_front(track, cue_override))
     }
 
+    /// The automatic-cue policy changed, so every copy held here is stale at
+    /// once. Re-reads them from the library, which applies the policy, in one
+    /// transition rather than one per track.
+    pub fn reload_cue_points(&self) {
+        let ids = self.inner.playlist.lock().held_ids();
+        if ids.is_empty() {
+            return;
+        }
+        let fresh: HashMap<i64, CuePoints> = match self.inner.db.get_tracks_by_ids(&ids) {
+            Ok(tracks) => tracks.into_iter().map(|t| (t.id, t.cue_points)).collect(),
+            Err(e) => {
+                log::error!("playlist: re-reading cue points failed: {}", e);
+                return;
+            }
+        };
+        Inner::apply(&self.inner, move |p, _| p.refresh_cue_points(&fresh));
+    }
+
     /// A radio edit was stored for `id`; refresh the queued copies of it so the
     /// operator's next snapshot shows what was just saved.
     pub fn on_cue_points_saved(&self, id: i64, points: CuePoints) {
-        Inner::apply(&self.inner, move |p, _| p.on_cue_points_saved(id, points));
+        Inner::adopt_cue_points(&self.inner, id, points);
     }
 
     pub fn set_item_cue_points(&self, index: usize, cue_override: Option<CuePoints>) {
@@ -373,6 +404,19 @@ impl Inner {
             threshold: tuning.auto_playlist.auto_playlist_threshold as i64,
             history_cap: tuning.auto_playlist.history_cap,
         }
+    }
+
+    /// Take new markers into the copies of a track held here, if any are. The
+    /// analysis pass reports every result it commits — one per track in the
+    /// library on a backfill — and [`Inner::apply`] is not cheap: it takes the
+    /// playlist lock, reconciles the arm deck, serializes a whole snapshot to
+    /// the renderer and re-pushes the prefetch window. A track nobody queued
+    /// is dropped before any of that.
+    fn adopt_cue_points(inner: &Arc<Inner>, id: i64, points: CuePoints) {
+        if !inner.playlist.lock().holds(id) {
+            return;
+        }
+        Inner::apply(inner, move |p, _| p.on_cue_points_saved(id, points));
     }
 
     /// Run one transition and settle its consequences.
