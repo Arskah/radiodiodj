@@ -215,7 +215,7 @@ the next airing.
 Both the queued overrides and the one the track on air is playing under live in
 `session.json`, so a custom airing survives a restart. The items themselves live
 on the backend playlist — see
-[backend-owned-playlist.md](./backend-owned-playlist.md).
+[playlist.md](./playlist.md).
 
 ## What airs
 

@@ -171,7 +171,7 @@ two-group ranking. This is the increment that changes what the operator sees.
 to want after increment 3 is in use.
 
 Increment 2 before 3 is the same reasoning as
-[backend-owned-playlist.md](./backend-owned-playlist.md#why-this-lands-first):
+[playlist.md](./playlist.md#why-the-refactor-landed-first):
 the risky change should land against infrastructure the suite already validates.
 
 **Acceptance criterion for increment 3:** every query in the table under

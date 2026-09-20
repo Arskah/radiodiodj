@@ -9,7 +9,7 @@
 //!   prefetch cache and the renderer.
 //!
 //! The backend owns the playlist; the renderer mirrors the snapshots this
-//! module emits. See `docs/backend-owned-playlist.md`.
+//! module emits. See `docs/playlist.md`.
 
 pub mod engine;
 pub mod generate;

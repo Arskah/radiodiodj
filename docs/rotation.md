@@ -6,18 +6,20 @@ own — it is what the History tab should have been built on — and the rules a
 impossible without it.
 
 Designed 2026-09-18 against
-[#282](https://github.com/Arskah/radiodiodj/issues/282).
+[#282](https://github.com/Arskah/radiodiodj/issues/282); both halves are live —
+the log in [#401](https://github.com/Arskah/radiodiodj/issues/401), the rules in
+[#430](https://github.com/Arskah/radiodiodj/issues/430).
 
 ## The problem
 
-`generate()` in `playlist/generate.rs` picks a block of music with one
-constraint: `exclude_ids`, the tracks already queued. It has no memory of what
-aired. The same artist can return three songs later, and the same track can
-return as soon as it leaves the queue. That is the most audible weakness of an
-automated station, and the one thing every real rotation system solves first.
+`generate()` in `playlist/generate.rs` used to pick a block of music with one
+constraint: `exclude_ids`, the tracks already queued. It had no memory of what
+aired, so the same artist could return three songs later and the same track as
+soon as it left the queue. That is the most audible weakness of an automated
+station, and the one thing every real rotation system solves first.
 
-The material to fix it does not exist yet. `tracks.play_count` counts airings
-but not _when_, and the only ordered record of recent play is
+The material to fix it did not exist either. `tracks.play_count` counts airings
+but not _when_, and the only ordered record of recent play was
 `AppState.history` in the renderer — a display array, capped at 100, wiped by a
 Clear button, persisted as bare ids in `session.json`.
 
@@ -79,16 +81,15 @@ Consequences accepted deliberately:
 - **A track purged between arming and airing logs nothing.** The write is
   `INSERT ... SELECT ... FROM tracks WHERE id = ?`; no row, no insert, no error.
 
-### History moves to the backend
+### History lives on the backend
 
-With the log in place, renderer-owned history is a duplicate of it, and
-[backend-owned-playlist.md](./backend-owned-playlist.md) can drop its one
-remaining exception.
+With the log in place, renderer-owned history was a duplicate of it, so it went
+the same way as the rest of the playlist — see [playlist.md](./playlist.md).
 
-`Snapshot` gains `history` and the renderer renders it.
-`Transition::displaced` — which exists solely to feed renderer history — is
-deleted along with `AppState.appendHistory`, `removeFromHistory`,
-`clearHistory`, and `session.history_ids`.
+`Snapshot` carries `history` and the renderer renders it.
+`Transition::displaced`, which existed solely to feed renderer history, is gone
+along with `AppState.appendHistory`, `removeFromHistory`, `clearHistory` and
+`session.history_ids`.
 
 The window itself lives in `Playlist`, appended where a track actually leaves
 the deck, and hydrated from `recent_airings` at launch. The engine stays a pure
@@ -238,19 +239,20 @@ a small library out of the box, and on a library large enough for them to feel
 decorative — 180 minutes is about 45 tracks, one percent of the live library —
 the operator is already in Settings tuning everything else.
 
-## Increments
+## How it landed
 
-1. **Airing log.** The migration, the write inside the `TrackPlayed` handler,
-   the purge cleanup, History fed from the snapshot, the delete buttons and
-   `history_ids` removed. Selection is untouched, so the existing playlist and
-   engine suites validate that nothing moved.
-2. **Rotation rules.** Rotation parameters through `Refiller` and `generate()`,
-   the SQL predicates, the relaxation ladder, config plus settings UI, and tests
-   for both rules and the small-pool fallback.
+1. **Airing log** (#401). The migration, the write inside the `TrackPlayed`
+   handler, the purge cleanup, History fed from the snapshot, and the delete
+   buttons and `history_ids` removed. Selection was untouched, so the existing
+   playlist and engine suites validated that nothing moved.
+2. **Rotation rules** (#430). Rotation parameters through `Refiller` and
+   `generate()`, the SQL predicates, the relaxation ladder, config plus settings
+   UI, and tests for both rules and the small-pool fallback.
 
-The refactor lands first so the mature suite is what validates it — the same
-reasoning that ordered the backend-owned playlist work. Increment 1 is worth
-shipping alone: history that survives a restart is an improvement with or
+The refactor went first so the mature suite was what validated it — the same
+reasoning that ordered the backend-owned playlist work, see
+[playlist.md](./playlist.md#why-the-refactor-landed-first). Increment 1 was
+worth shipping alone: history that survives a restart is an improvement with or
 without rotation.
 
 ## Not in scope

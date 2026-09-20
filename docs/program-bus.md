@@ -6,9 +6,10 @@ the fixed one-deck-per-output model that shipped with the cue deck.
 
 Adopted from
 [sakuvirtanen's proposal on #278](https://github.com/Arskah/radiodiodj/issues/278#issuecomment-5682029460).
-Supersedes the deck model in
-[audio-backend-and-cue-deck.md](./audio-backend-and-cue-deck.md). Consumes the
-`next_start_ms` cue point defined in [cue-points.md](./cue-points.md).
+Supersedes the fixed main-deck/cue-deck pair the original audio backend
+shipped with. Consumes the `next_start_ms` cue point defined in
+[cue-points.md](./cue-points.md); the decode path and output devices underneath
+it are [audio.md](./audio.md).
 
 ## Why
 
@@ -341,13 +342,13 @@ so a change in Settings applies to the next press.
 Handover is timed by the backend, which means the backend must be able to load
 the next item onto the arm deck at the right moment. That is what forces playlist
 ownership into Rust — see
-[backend-owned-playlist.md](./backend-owned-playlist.md).
+[playlist.md](./playlist.md).
 
 ## Scope notes
 
 - The mixer summing N decks is the structural change; soundboard and sweeper
   decks are follow-on work that needs no further restructuring.
 - Exclusive output mode remains deferred for the reasons recorded in
-  [audio-backend-and-cue-deck.md](./audio-backend-and-cue-deck.md); the bus does
-  not change that analysis, though it does mean an exclusive program output
-  would be negotiated once for the bus rather than per deck.
+  [audio.md](./audio.md#exclusive-output); the bus does not change that
+  analysis, though it does mean an exclusive program output would be negotiated
+  once for the bus rather than per deck.

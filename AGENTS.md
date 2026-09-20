@@ -17,107 +17,200 @@ pnpm format:check                                 # prettier --check .
 
 ## Architecture
 
-Tauri 2 app. Two process boundaries: a Rust backend and a Svelte 5 / Vite renderer talking over Tauri `invoke` + `emit`/`listen`.
+Tauri 2 app. Two process boundaries: a Rust backend (`src-tauri/src/`, grouped
+by domain — `audio/`, `library/`, `playlist/`, `broadcast/`, `appearance/`,
+`persist/`, `admin.rs`) and a Svelte 5 / Vite renderer (`src/`, one folder per
+UI feature under `features/` plus `shared/`), talking over Tauri `invoke` +
+`emit`/`listen`.
 
-**Rust backend** (`src-tauri/src/`) — grouped by domain:
+The module map, the event table and the boundary conventions are
+[docs/architecture.md](docs/architecture.md). Domain vocabulary is
+[CONTEXT.md](CONTEXT.md). All design docs:
+[docs/README.md](docs/README.md).
 
-- `lib.rs` — `tauri::Builder` setup (`tauri-plugin-log` first, then `tauri-plugin-dialog`), `AppState`, all `#[tauri::command]` handlers, panic hook (force-capture backtrace → `log::error!`)
-- `admin.rs` — admin mode: `AdminLock` (unlocked flag, Argon2 password check), `ADMIN_COMMANDS`, and the gate the invoke handler applies
-- `main.rs` — thin `pub fn main() { radiodiodj_lib::run() }` binary entry
-- `audio/` — `formats.rs` (supported extension table), `player.rs` (shared deck primitives: the `Cmd` vocabulary, the `Topics` table, whole-file read/retry and symphonia decode for mp3/flac/vorbis/wav/aac/m4a), `output.rs` (one `OutputStream` per device, opened lazily with self-healing retry), `deck.rs` (one rodio `Sink` per deck plus the worker loop that ticks a whole set of them against one output; emits `{role}:time` (10 Hz) / `:duration` / `:pause-state` / `:ended` / `:error` / `:buffering` / `:loaded` / `:load-failed` / `:output-unavailable`), `bus.rs` (the program bus — deck A + deck B on one mixer, one worker, `program:roles`), `cue.rs` (the cue deck: one deck on its own output, `cue:*`), `cue_points.rs` (the five per-track markers and their resolution to file positions — pure, no device), `auto_cue.rs` (deriving Cue in / Cue out / Next start from 50 ms RMS windows — pure, no decoder), `envelope.rs` (the `Enveloped<I>` source applying a track's stored fades), `loudness.rs` (ReplayGain: the reference level, and the factor a stored measurement earns under the setting), `waveform.rs` (`analyze`: one decode yielding the stored RMS curve, the loudness measurement and the automatic-cue RMS windows)
-- `library/` (overview: `docs/library.md`) — `db.rs` (rusqlite + FTS5, WAL, `parking_lot::Mutex<Connection>`, append-only `rusqlite_migration` steps with a `schema.sql` snapshot, pre-migration backup, newer-DB refusal), `scanner.rs` + `scan_state.rs` (recursive walkdir scan, `lofty` tag extraction, mtime+content_type delta cache, one reconcile transaction per scan, background worker thread emitting `scan-progress` / `scan-state-changed` events with cancel token), `listing.rs` (root listing plus the changed and gone rules, shared by scan and check), `fingerprint.rs` (tag-independent content hash of the first MiB of demuxed packets), `waveform_scan.rs` (background pass filling waveforms, fingerprints, loudness measurements and automatic cue points), `health.rs` (the `library-health` report: missing tracks, exact and possible duplicates, unreadable tracks, dismissals, failed tag writes), `check.rs` (the timed library check — listing and stat only, never writes), `tag_write.rs` (opt-in write-back of metadata edits into the files' tags)
-- `appearance/` (overview: `docs/theming.md`) — `theme.rs` (the `Theme` model, `THEMEABLE_TOKENS`, the colour-value grammar and `validate`), `store.rs` (enumeration of `{app_data_dir}/themes`, first-run seeding of the copy-me `example/`, built-ins via `include_str!`, base merge and active-theme resolution, station-identity images under `{app_data_dir}/branding/`)
-- `persist/` — `config.rs` (`AppConfig` → `{app_data_dir}/config.json`), `session.rs` (`SessionState` per-field defaults → `{app_data_dir}/session.json`)
-- `playlist/` — owner of the playlist and of everything that advances it: `generate.rs` (random selection with jingle/commercial interleaving, every-4 / every-8), `engine.rs` (the pure state machine — queueing, advancement, outage skip-to-cached, retry of a track whose own read failed, refill, stop markers — returning effects), `model.rs` (wire types incl. the `program:playlist-state` snapshot), `service.rs` (effects → deck commands, play counts recorded when a load lands, prefetch window, retry timers)
+## Key patterns
 
-**Frontend** (`src/`) — Vite root + Tauri Svelte template convention:
+Each entry is the invariant to preserve; the linked doc carries the reasoning.
 
-- `main.ts` — app entry; mounts Svelte, hooks Tauri `onCloseRequested` to await `flushSave()` before `win.destroy()`
-- `App.svelte` — top-level UI tree
-- `shared/` — `types.ts`, `api.ts` (typed `invoke()` wrapper, folder picker via `@tauri-apps/plugin-dialog`), `state.svelte.ts` (Svelte 5 `$state` store; deck transport via `DeckTransport`, playlist state mirrored from backend snapshots), colocated `state.test.ts` + `mockBackend.ts` + `mockPlaylist.ts`
-- `features/<feature>/` — one folder per UI feature: `library/`, `playlist/`, `deck/` (NowPlaying.svelte + CueDeck.svelte + Waveform.svelte + backend.ts + nativeBackend.ts), `scan/`, `settings/` (SettingsOverlay.svelte — Audio, Library (paths, scan and library health), Playlist (interleave, rotation, auto-playlist), Now Playing, Appearance, Advanced tabs), `health/` (LibraryHealth.svelte), `admin/` (UnlockDialog.svelte + idleLock.ts), `toolbar/`, `track/` (TrackTooltip.svelte + MetadataOverlay.svelte + CuePointOverlay.svelte)
+**Audio playback** — in-process Rust decks, no browser `<audio>`, no `media://`,
+no transcoder. A deck reads the **whole file into RAM** (retry + 10 s watchdog)
+and never streams from the filesystem, which is what survives a wedged network
+share. See [docs/audio.md](docs/audio.md).
 
-## Key Patterns
+**Program bus** — every on-air deck is a `Sink` on one shared `OutputStream`,
+driven by one worker. Deck events are **role-mapped**: `main-deck:*`,
+`arm-deck:*`, `tail-deck:*`. Nothing outside the bus learns which physical deck
+is on air. Handover moves the `main` role at the outgoing track's `next_start`;
+the engine authorises it by arm-loading and reconciles against
+`program:handover`. At most two tracks are ever audible. The cue deck is
+deliberately off the bus, on its own stream, thread and `cue:*` topics. See
+[docs/program-bus.md](docs/program-bus.md).
 
-**Audio playback:** in-process Rust decks. The playlist loads tracks onto the main deck; the worker thread decodes via symphonia and emits time/duration/pause-state/ended/error events. No browser `<audio>` element, no `media://` protocol, no transcoder.
+**Live fades** — one primitive, `Cmd::Fade { to, ms, on_complete }`, stepped
+from the bus worker's 50 ms tick. It **multiplies** the operator's deck volume
+rather than replacing it, and every command that changes what a deck is doing
+cancels it and restores full gain. `Cmd::HandOverNow` is the one command acting
+on two decks, so the worker intercepts it before dispatch. A completed fade to
+silence on `main` emits `program:faded-out`, which the service maps to the same
+`stop()` the Stop button runs. Durations are read per press from
+`tuning.player`. See [docs/program-bus.md](docs/program-bus.md#live-fades).
 
-**Program bus:** every on-air deck is a `Sink` on one shared `OutputStream` mixer, driven by a single worker thread, so two decks can be audible at once (the precondition for handover). Deck events are **role-mapped**: whichever deck holds `main` emits `main-deck:*`, the armed one emits `arm-deck:*`, and one playing an outgoing track out emits `tail-deck:*` — the renderer, broadcast service and now-playing webhook never learn which physical deck is on air. **Handover** moves the `main` role at the outgoing track's `next_start`: the playlist engine authorises it by arm-loading the next item, the bus worker times it on its own tick, and `program:handover` is what the engine reconciles against. A tail is vacated at its `cueOut` or when the deck that took over from it ends, whichever comes first, so at most two tracks are ever audible; any explicit operator action that changes or stops what is on air cuts the tail too. With two decks nothing is armed during an overlap, so consecutive short items segue at most every other item and otherwise hard-cut. The cue deck is deliberately off the bus with its own stream, thread and `cue:*` topics. See `docs/program-bus.md`.
+**ReplayGain** — measured by the analysis pass, never read from tags.
+`Cmd::Load` carries an already-resolved linear factor, so the worker never
+consults the library, and it is applied at the source in `append_span` (not
+`sink.set_volume()`) and therefore before the bus mixer. `rg_measured_at` is
+what "measured" means. No album mode. See
+[docs/audio.md](docs/audio.md#replaygain).
 
-**Live fades:** two operator transport actions on the on-air deck — _Fade out_ (ramp to silence, then stop) and _Fade to next_ (start the next item now, fade the outgoing track out underneath it). The only new primitive is a deck gain ramp, `Cmd::Fade { to, ms, on_complete }`, stepped from the bus worker's 50 ms tick; it **multiplies** the operator's deck volume rather than replacing it, and every command that changes what a deck is doing cancels it and restores full gain. Linear, matching `envelope::gain_at`. _Fade to next_ is `Cmd::HandOverNow` — the one command that acts on two decks, so the worker intercepts it before dispatch, calls the same `hand_over` the tick does at `next_start`, and ramps the new tail down; the playlist engine needs no special case because it reconciles against `program:handover` either way. With nothing armed (or a tail already playing) the ramp ends with `RampDone::EndTrack` instead, emitting `{role}:ended` so the playlist advances under its existing end-of-track rules. A completed fade to silence on `main` emits `program:faded-out`, which the playlist service maps to the same `stop()` the Stop button runs — so the track goes to history, `current` clears, and Play afterwards starts the next queued item rather than resuming a silent deck. Durations are `tuning.player.fadeOutMs` / `fadeToNextMs`, read per press so a Settings change applies immediately. See `docs/program-bus.md#live-fades`.
+**Cue points** — five nullable columns on `tracks`, deliberately absent from
+`UPSERT_TRACK_SQL` so a rescan cannot destroy them. `Cmd::Load` carries concrete
+`CuePoints`, resolved against the **decoded** duration. Stored fades are a
+source-level envelope (`audio/envelope.rs`), never a sink ramp — a live fade and
+a stored fade would otherwise fight over one value. Clamping is backend-owned:
+`set_cue_points` returns what it stored, and `shared/cuePoints.ts` only applies
+`null` fallbacks. See [docs/cue-points.md](docs/cue-points.md).
 
-**ReplayGain:** `rg_gain` / `rg_peak` / `rg_measured_at` on `tracks`, measured by the analysis pass rather than read from tags — most libraries are largely untagged, and levelling only the tagged half would split the library in two; tags from different scanners are not comparable anyway (RG 1.0's 89 dB reference vs 2.0's -18 LUFS). `rg_measured_at` is what "measured" means, since a silent or very short file legitimately has no gain. `Cmd::Load` carries an already-resolved linear factor (`audio/loudness.rs::factor`), like `CuePoints`: the worker never consults the library. It is applied at the source in `append_span`, not through `sink.set_volume()` — same reason as the fade envelope — and before the bus mixer sums the decks, so a handover between tracks mastered at different levels crossfades right. The same function serves the cue deck, whose headphone output never passes the station's processing chain. Setting is `player.replayGain` (`off` / `track`); there is deliberately no album mode. See #80.
+**Durations mean air time** — everything crossing the boundary reports
+`cueOut − cueIn` via `airDuration()`; position `0` is the first audible sample.
+The toolbar's library _Playtime_ is the one exception. Never optimistically show
+file time. See [docs/audio.md](docs/audio.md#durations-mean-air-time).
 
-**Cue points:** five nullable per-track markers (`cue_in_ms`, `fade_in_ms`, `fade_out_ms`, `cue_out_ms`, `next_start_ms`) stored as columns on `tracks`, deliberately absent from `UPSERT_TRACK_SQL` so a rescan cannot destroy them. `Cmd::Load` carries concrete `CuePoints`; the worker resolves them against the _decoded_ duration (the tag one is wrong on VBR MP3) and plays `take_duration(cueOut − pos)`, so the existing `sink.empty()` → `:ended` path ends a trimmed track with no new termination rule. Everything crossing the Tauri boundary is **air time**, measured from `cue_in` — a trimmed track is simply a shorter track to the renderer. Stored fades are a **source-level** envelope (`audio/envelope.rs`), not a `sink.set_volume()` ramp: a live fade and a stored fade would otherwise fight over one value, whereas a source envelope times a sink gain composes by multiplication. A track with no ramps is handed to the sink unwrapped. Clamping is backend-owned: `set_cue_points` returns what it stored, and `shared/cuePoints.ts` only ever applies the `null` fallbacks — there is no TypeScript clamp (the editor's input-only neighbour stops aside). See `docs/cue-points.md`.
+**Automatic cue points** — cue in, cue out and (for music) next start derived
+from the waveform pass's RMS windows, no second decode. Ownership is a per-track
+state (`pending` / `auto` / `manual`); an operator write that moves the trio
+makes it `manual` for good, and `set_auto_cue` only commits while the track is
+still automatic. Re-analysis is scheduled for `auto` tracks only; changing a
+threshold never re-analyses anything. See
+[docs/cue-auto-analysis.md](docs/cue-auto-analysis.md).
 
-**Durations mean air time.** Library rows, playlist rows, the history list, both decks and the now-playing webhook all report `cueOut − cueIn`, via `airDuration()`. So do the Upcoming tab total and the main deck's remaining-on-air countdown, both of which stop at the first stop marker. The toolbar's library _Playtime_ alone stays file time. `TrackTooltip` carries the file length too when the two differ. The renderer never optimistically shows file time, because the deck reports air time and the two would disagree mid-load.
+**Authoring cue points** — `CuePointOverlay.svelte` is the only surface that
+moves a marker, with the rules in `shared/cueEditor.ts`. The editor's
+input-only neighbour stop is the one exception to backend-owned clamping. The
+dialog borrows the cue deck and restores it on every exit, so no draft is left
+armed behind a closed one. Saving a radio edit deliberately does **not** touch
+`currentTrack`. See [docs/cue-points.md](docs/cue-points.md#authoring).
 
-**Automatic cue points.** Cue in, Cue out and — for music — Next start are derived from the decode the waveform pass already runs (`audio/auto_cue.rs`, fed by `waveform::analyze`), so the untouched majority of a library airs trimmed and segued with no second pass over the file. 50 ms RMS windows, two thresholds (`tuning.autoCue`: silence −70 dBFS, segue −20 dBFS, the segue one always held above the silence one), and nothing else — no beats, phrases or hidden-track handling. Fades are never inferred. A marker at the file's own edge is stored `NULL`, because that is already what `NULL` means. Ownership is a per-track state: `pending` / `auto` / `manual`. An operator write that moves any of the trio (clearing one to `NULL` included) makes it `manual` for good; a fade edit or an item override does not. `set_auto_cue` commits the trio, the state and the provenance (algorithm version and the thresholds used) in one statement and only while the track is still automatic, so an operator save that landed mid-decode wins and the finished analysis is discarded. Re-analysis is scheduled for `auto` tracks only, by a content-type change or by the scanner seeing the file change; the old values stand until fresh ones land. Changing a threshold never re-analyses anything. See `docs/cue-auto-analysis.md`.
+**Item overrides** — `cue_override: Option<CuePoints>` on a playlist item.
+`None` means the item _references_ the track; an all-`NULL` override is distinct
+and means "play the whole file this once". Effects carry the override because
+the item is consumed before the service runs them, and `prev` returns the
+outgoing track to the queue as an item. See
+[docs/playlist.md](docs/playlist.md#item-overrides).
 
-**Authoring cue points.** `CuePointOverlay.svelte` (library row → _Cue points…_, or the cue deck's marker button) is the editor, built from `CueOverview.svelte` (whole file; click seeks, Cue In/Out drag by edge tabs), `CueDetail.svelte` (zoomed onto the region ± `max(5 s, 15 %)`, or following the playhead; markers drag only by flags in a lane above it, so a curve click is always a seek; the overview's zoom box resizes by its grips and pans by its middle, which holds framing until _Fit_) and `CueMarkerRow.svelte` (time field, nudge, mark at playhead, clear), with the rules in `shared/cueEditor.ts`. The zoomed curve comes from `get_waveform_detail` (10 ms RMS, decoded on open, never stored). _Play_ plays the raw file and ignores edits; _Audition_ plays the draft and reloads at the same position (`cue_load`'s `startAt`) after an edit. Keys: Space, A, I/O/F/G/N mark, ←/→ nudge, P pre-roll. Editor input stops at the nearest set neighbour — the one, input-only exception to backend-owned clamping. The cue deck auditions in two modes that never mix — _Absolute_ plays the whole file so an in-point can be scrubbed for, _Preview_ reloads with markers applied and crops the waveform to the aired region. Switching reloads the deck because markers are applied at load time. `cue_load` takes an optional `cuePoints`, so the editor can audition an unsaved draft, plus an `autoplay` flag — the deck parks its sink when the background read lands, so a `Play` sent alongside a `Load` is undone by it. Cueing and mode switching stay **parked**; the editor's _Play_, _Audition_ and pre-roll are the only explicit asks. Auditioning happens inside the dialog, and the dialog borrows the cue deck and restores it on every exit, so no draft is left armed behind a closed one. Three labelled exits: _Save to track_ (radio edit, every airing), _Use once_ (queues that one airing), and _Cancel_, which asks before discarding. Saving a radio edit deliberately does **not** touch `currentTrack`: it applies from the next airing, so on-air audio never re-decodes under the operator.
+**Playlist ownership** — the backend owns the playlist, what is on air,
+advancement, refill, the prefetch window and history. The renderer sends
+`playlist_*` commands and mirrors the whole `program:playlist-state` snapshot;
+it computes nothing. Snapshots are whole, never deltas. See
+[docs/playlist.md](docs/playlist.md).
 
-**Item overrides.** A backend playlist item carries `cue_override: Option<CuePoints>` — cue points for that one airing. `None` means the item _references_ the track, so a corrected radio edit reaches every queued airing of it; an all-`NULL` override is distinct and means "play the whole file this once". `Effect::Play`/`Resume` carry the override because the item is consumed before the service runs the effect, and `prev` returns the outgoing track to the queue as an item, which is how the renderer-owned playlist's override-stripping defect stays fixed. The editor's _Use once_ is where one is authored — it queues the track next-up carrying the draft and never writes to the track; promotion from the cue deck attaches one too, but only when what is applied there differs from the radio edit. The playlist row's marker badge clears it. Both the queued overrides and the one on air are in `session.json`.
+**Auto-playlist** — a lookahead buffer refilled inside `playlist::engine`, so a
+refill and the track change that triggered it are one transition. Interleave
+counters advance on music only. See [docs/playlist.md](docs/playlist.md#modes).
 
-**Theming.** A theme is a directory under `{app_data_dir}/themes/` holding a `theme.json`; built-in Midnight and Daylight are the same file format, compiled in with `include_str!` and run through the same parser, validator and merge, so a shipped palette and an operator's cannot diverge in shape. A theme sets **colours only** — the token contract is the `:root` block of `src/styles.css` — and validation is a token-name allowlist plus one closed value grammar (hex / `rgb()` / `hsl()` / `transparent`), run in Rust at load so the renderer never sees an unvalidated token. An invalid theme is listed, greyed and refused whole; an _incomplete_ one is filled from the built-in named by its `base`. The backend resolves a complete token map and the renderer only paints it, via `setProperty` on `document.documentElement` plus `colorScheme` for native chrome. Station identity — name, toolbar logo, record label — is configured separately from the theme and overrides any images a theme ships; images cross the boundary as base64 data URLs, exactly as `get_cover_art` does, because `asset://` is not enabled. Nothing repaints unasked: no watcher, and no following the OS appearance. See `docs/theming.md`.
+**Rotation rules** — both predicates run in SQL (`SelectionFilter` in
+`library/db.rs`), so a query returns exactly the count asked for; the queue
+counts as already aired. One track per artist per generated block via
+`ROW_NUMBER() OVER (PARTITION BY artist ...)`. A short block refetches the
+deficit down a three-rung ladder, warning per relaxation; the id exclusion is
+never relaxed. Jingles and commercials are untouched by both rules. See
+[docs/rotation.md](docs/rotation.md).
 
-**Naming:** "edit" means metadata and nothing else (`MetadataOverlay.svelte`, `app.editingMetadata`); playback markers are always "cue points" (`CuePointOverlay.svelte`, `app.editingCuePoints`).
+**Seek** — the source is reloaded, then `append_span` seeks in two stages:
+`try_seek` to ~200 ms short, then `skip_duration` for the remainder, so a marker
+lands sample-exactly. See [docs/audio.md](docs/audio.md#seek).
 
-**Metadata edits.** `tracks.edited_fields` flags each tag column the operator changed (title 1, artist 2, album 4, genre 8, year 16). `UPSERT_TRACK_SQL` keeps a flagged column, so a rescan of a changed file cannot clobber the edit. The duplicate path copies the flags, and `revert_track_tags` re-reads the file and clears them. With `tuning.library.writeTags` on, `TagWriter` writes the edit into the file: tag in memory, check the fingerprint, write a temp file, rename it over the original. Never in place, since lofty truncates and rewrites in place. Success stores the new mtime and clears the flags. Failure keeps both and lists the write in the health report. See `docs/library.md#editing-a-track`.
+**Search** — FTS5 virtual table on title/artist/album/genre, kept in sync by
+triggers. A query is tokenized as prefix match: `foo bar` → `"foo"* "bar"*`. See
+[docs/library-search.md](docs/library-search.md) for the planned fuzzy pass.
 
-**Search:** FTS5 virtual table on title/artist/album/genre. Triggers keep FTS in sync with tracks table. Query tokenized as prefix match: `foo bar` → `"foo"* "bar"*`.
+**Scan + prune** — a scan never deletes a track. One `Db::reconcile` transaction
+per scan. Rows whose file is gone get `missing_since`, but only under a fully
+listed root or outside every root. New paths **reattach** by fingerprint,
+**duplicate** a present row (copying its operator state), or are inserted. Root
+membership is `Path::starts_with`, never `LIKE`. Only _Settings → Purge_
+deletes. See [docs/track-identity.md](docs/track-identity.md).
 
-**Scan + prune:** A scan never deletes a track. It lists every configured path, then applies one `Db::reconcile` transaction. Changed files are re-tagged. Rows whose file is gone get `missing_since`, but only under a fully listed root or outside every root — an unreachable or partly unreadable root marks nothing. New paths **reattach** to a missing row with the same fingerprint, or **duplicate** a present one (copying its operator state), or are inserted. Missing rows are hidden everywhere but stay readable by id; only _Settings → Purge_ deletes them. Root membership is `Path::starts_with`, never `LIKE`. A first scan into an empty library skips fingerprinting and leaves it to the background pass. See `docs/track-identity.md`.
+**Library health** — one report (missing, exact and possible duplicates,
+unreadable tracks, the latest library check), re-emitted as `library-health`
+after scans, the analysis pass, metadata edits, path changes and purges. The app
+never deletes audio files. Dismissals silence the badge only while the finding
+is unchanged. The playlist engine takes missing ids from the same event. The
+check reports only and never runs alongside a scan. See
+[docs/library-health.md](docs/library-health.md).
 
-**Library health:** `library::health::Health` keeps one report — missing tracks, exact duplicates (shared fingerprint), possible duplicates (music with the same normalised artist, album and title), unreadable tracks (`analysis_error`, set by the analysis pass when a file cannot be decoded and cleared by the upsert when the file changes; a read failure is not recorded) and the latest library check — and re-emits it as `library-health` after scans, the analysis pass, metadata edits, path changes and purges. The app never deletes audio files: an unwanted copy is deleted by the operator, then marked missing by a scan and purged with `purge_tracks(ids)`. Dismissals (`health_dismissals` table; the check's in memory) silence the badge only while the finding is unchanged. The playlist engine takes missing ids from the same event: advancement drops them up to the next stop marker, even on a cold cache. The library check runs at launch and every `tuning.library.checkIntervalMin` minutes, never alongside a scan, and reports only. See `docs/library-health.md`.
+**Metadata edits** — `tracks.edited_fields` flags each operator-changed tag
+column and `UPSERT_TRACK_SQL` keeps a flagged column, so a rescan cannot clobber
+an edit. `TagWriter` never writes in place (lofty truncates and rewrites): tag in
+memory, check the fingerprint, write a temp file, rename it over the original.
+See [docs/library.md](docs/library.md#editing-a-track).
 
-**Admin mode:** with a password set (`admin.passwordHash` in `config.json`), each launch starts locked. While locked, Settings, metadata edits, _Save to track_ and scan cancel are unavailable; playback, playlist, library browsing, the cue deck and _Use once_ stay open, and the health badge still shows. `lib.rs` wraps the command handler in `admin_gated`, which rejects every command in `admin::ADMIN_COMMANDS` while locked. The unlocked flag lives only in `AppState`; the renderer mirrors it (`app.admin`, `app.isAdmin`) and runs the idle timer, which can lock but never unlock. No password means always unlocked. Not a security boundary. See `docs/admin-mode.md`.
+**Theming** — a theme sets **colours only**; the token contract is the `:root`
+block of `src/styles.css`. Validation is a token-name allowlist plus one closed
+value grammar, run in Rust at load, so the renderer never sees an unvalidated
+token. An invalid theme is refused whole; an incomplete one is filled from its
+`base`. Station identity is configured separately and wins over theme images.
+Nothing repaints unasked — no watcher, no following the OS. See
+[docs/theming.md](docs/theming.md).
 
-**Playlist ownership:** the backend owns the playlist, what is on air, and advancement. The renderer sends `playlist_*` commands and mirrors the `program:playlist-state` snapshot that comes back — it keeps no playlist of its own. History is the one exception: a renderer-side display log fed by each snapshot's `displaced` track. See `docs/backend-owned-playlist.md`.
+**Admin mode** — `lib.rs` wraps the command handler in `admin_gated`, which
+rejects every command in `admin::ADMIN_COMMANDS` while locked. The unlocked flag
+lives only in `AppState`; the renderer mirrors it and runs the idle timer, which
+can lock but never unlock. Not a security boundary. See
+[docs/admin-mode.md](docs/admin-mode.md).
 
-**Auto-playlist:** Toggle mode that keeps a lookahead buffer queued, refilling from random DB selection when it drops below the threshold. Runs in `playlist::engine` alongside advancement, so a refill and the track change that triggered it are one transition.
-
-**Rotation rules:** music selection will not reselect a track that aired inside `tuning.rotation.titleWindowMin`, nor one whose artist aired inside `artistWindowMin` — minutes of wall clock against `play_log.aired_at`, `0` disabling either rule. Both predicates run in SQL (`SelectionFilter` in `library/db.rs`), so a query still returns exactly the count asked for. The queue counts as already aired, because a queued track has no log row yet. The block being generated constrains itself inside the same query: a `ROW_NUMBER() OVER (PARTITION BY artist ORDER BY RANDOM())` pass over ids returns at most one track per artist (each untagged track its own group), so a block cannot stack up on one act without a query per slot. A block short of material refetches only the deficit down a three-rung ladder — both rules, then title only, then neither — warning per relaxation; the id exclusion is never relaxed. Jingles and commercials are untouched: they share one artist string apiece, so an artist rule would block the pool after one airing. See `docs/rotation.md`.
-
-**Seek:** `audio/player.rs` reloads the source on seek. `append_span` seeks in two stages — `try_seek` (container-level binary search) to ~200 ms short of the target, then `skip_duration` (sample iteration) for the remainder — so a stored marker lands sample-exactly even where symphonia estimates the seek by bitrate. A failing `try_seek` falls back to `skip_duration` from zero. `seek_offset + sink.get_pos()`, less `cue_in`, keeps `{role}:time` accurate.
+**Naming** — "edit" means metadata and nothing else (`MetadataOverlay.svelte`,
+`app.editingMetadata`); playback markers are always "cue points"
+(`CuePointOverlay.svelte`, `app.editingCuePoints`). The rest of the vocabulary
+is [CONTEXT.md](CONTEXT.md).
 
 ## Gotchas
 
-- A new colour token must land in three places — the `:root` block in `src/styles.css`, `THEMEABLE_TOKENS` in `appearance/theme.rs`, and every built-in theme JSON — or the contract guard fails. Colour literals outside `:root` fail it too: a themeable UI has no hardcoded colours.
-- `tauri::generate_context!()` runs at compile time and validates `frontendDist=../dist`. `cargo clippy` / `cargo test` panic with "frontendDist path doesn't exist" unless `pnpm vite build` has run; CI does this in `rust.yml` before cargo steps.
-- `serde(default)` per-field on `SessionState` / `AppConfig` lets new fields land without a schema version bump. Match this pattern when adding fields.
-- DB schema changes: append a step to `MIGRATION_STEPS` (never edit a shipped one), add a `SEEDS` entry, and regenerate `src-tauri/src/library/schema.sql` with `UPDATE_SCHEMA=1 cargo test schema_matches_snapshot`. Operator-work columns stay out of `UPSERT_TRACK_SQL`'s `SET` list. See `docs/database.md`.
-- pnpm `minimumReleaseAge` constraint blocks plugin versions younger than ~3 days; pin to a slightly older stable version when adding `tauri-plugin-*` deps.
-- A new admin-only command must be added to `admin::ADMIN_COMMANDS`, or it runs while admin mode is locked.
-- Tauri command argument name `state` collides with the `State<AppState>` injection; the managed state arg is named `app` in command handlers.
-- `release-please-config.json` bumps `package.json`, `src-tauri/tauri.conf.json` (jsonpath `$.version`), and `src-tauri/Cargo.toml` (`# x-release-please-version` annotation) on each release. Keep all three in sync.
-- `tauri-plugin-log` is initialized first in the builder chain so panics before later plugin setup still reach the file sink. Renderer `console.*` is intercepted by `attachConsole()` in `main.ts`; vitest must not import `main.ts` (it doesn't — tests use `mockBackend`). Log level honors `RUST_LOG` (whole-app level only — no module syntax) and falls back to `Debug` in `cfg!(debug_assertions)` / `Info` in release. `symphonia*` modules are forced to `Warn` (`symphonia_bundle_mp3` to `Error`, whose false-sync warnings on a non-MP3 file otherwise fill the 1 MB log) to keep the webview console readable.
+- A new colour token must land in three places — the `:root` block in
+  `src/styles.css`, `THEMEABLE_TOKENS` in `appearance/theme.rs`, and every
+  built-in theme JSON — or the contract guard fails. Colour literals outside
+  `:root` fail it too. See [docs/theming.md](docs/theming.md#the-token-contract).
+- `tauri::generate_context!()` runs at compile time and validates
+  `frontendDist=../dist`. `cargo clippy` / `cargo test` panic with "frontendDist
+  path doesn't exist" unless `pnpm vite build` has run; CI does this in
+  `rust.yml` before cargo steps.
+- `serde(default)` per-field on `SessionState` / `AppConfig` lets new fields land
+  without a schema version bump. Match this pattern when adding fields.
+- DB schema changes: append a step to `MIGRATION_STEPS` (never edit a shipped
+  one), add a `SEEDS` entry, and regenerate
+  `src-tauri/src/library/schema.sql` with
+  `UPDATE_SCHEMA=1 cargo test schema_matches_snapshot`. Operator-work columns
+  stay out of `UPSERT_TRACK_SQL`'s `SET` list. See
+  [docs/database.md](docs/database.md).
+- pnpm `minimumReleaseAge` constraint blocks plugin versions younger than
+  ~3 days; pin to a slightly older stable version when adding `tauri-plugin-*`
+  deps.
+- A new admin-only command must be added to `admin::ADMIN_COMMANDS`, or it runs
+  while admin mode is locked. See [docs/admin-mode.md](docs/admin-mode.md).
+- Tauri command argument name `state` collides with the `State<AppState>`
+  injection; the managed state arg is named `app` in command handlers.
+- `release-please-config.json` bumps `package.json`,
+  `src-tauri/tauri.conf.json` (jsonpath `$.version`), and `src-tauri/Cargo.toml`
+  (`# x-release-please-version` annotation) on each release. Keep all three in
+  sync.
+- `tauri-plugin-log` is initialized first in the builder chain so panics before
+  later plugin setup still reach the file sink. Renderer `console.*` is
+  intercepted by `attachConsole()` in `main.ts`; vitest must not import
+  `main.ts` (it doesn't — tests use `mockBackend`). Log level honors `RUST_LOG`
+  (whole-app level only — no module syntax) and falls back to `Debug` in
+  `cfg!(debug_assertions)` / `Info` in release. `symphonia*` modules are forced
+  to `Warn` (`symphonia_bundle_mp3` to `Error`, whose false-sync warnings on a
+  non-MP3 file otherwise fill the 1 MB log) to keep the webview console
+  readable.
 
-## Data files
+## Data files and logs
 
-RadiodioDJ stores its database (`radiodiodj.db`), config (`config.json`), session
-state (`session.json`), themes (`themes/`), station-identity images
-(`branding/`), and default now-playing output in a per-user data directory. Database backups sit beside it: `radiodiodj.v{N}.bak.db` (before a
-migration, newest two kept) and `radiodiodj.legacy-v{N}.bak.db` (a pre-baseline
-library that was reset).
-
-- macOS: `~/Library/Application Support/com.radiodiodj/`
-- Linux: `~/.local/share/com.radiodiodj/` (or `$XDG_DATA_HOME/com.radiodiodj/`)
-- Windows: `%APPDATA%\com.radiodiodj\` (typically `C:\Users\<you>\AppData\Roaming\com.radiodiodj\`)
-
-Forgot the admin password: quit the app, delete `passwordHash` from the `admin`
-section of `config.json`, and relaunch. See `docs/admin-mode.md`.
-
-## Logs
-
-RadiodioDJ writes a rotating log file (`RadiodioDJ.log`, 1 MB max, one prior file kept).
-
-- macOS: `~/Library/Logs/com.radiodiodj/RadiodioDJ.log`
-- Linux: `~/.local/share/com.radiodiodj/logs/RadiodioDJ.log` (or `$XDG_DATA_HOME/com.radiodiodj/logs/`)
-- Windows: `%LOCALAPPDATA%\com.radiodiodj\logs\RadiodioDJ.log`
-
-Set `RUST_LOG=debug` (or `trace`) before launching to raise verbosity. Default is `info` (release) or `debug` (dev).
+Per-user data directory paths, database backup naming, log file locations and
+the admin-password reset are in the README:
+[Data files](README.md#data-files), [Logs](README.md#logs).
 
 ## Testing
 
 Pre-commit hook runs lint-staged (prettier + eslint fix) then vitest.
 
-CI gates Rust with `cargo fmt --check` + `cargo clippy --all-targets -- -D warnings` (`.github/workflows/rust.yml`); run both locally before pushing.
+CI gates Rust with `cargo fmt --check` + `cargo clippy --all-targets -- -D warnings`
+(`.github/workflows/rust.yml`); run both locally before pushing.

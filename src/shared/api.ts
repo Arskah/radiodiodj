@@ -51,7 +51,7 @@ export interface SessionLoadResult {
 /**
  * Whole-playlist snapshot from the backend, which owns the playlist. Arrives on
  * every mutation and every advance; the renderer mirrors it rather than keeping
- * a playlist of its own. See `docs/backend-owned-playlist.md`.
+ * a playlist of its own. See `docs/playlist.md`.
  */
 export interface PlaylistSnapshot {
   playlist: PlaylistItem[];

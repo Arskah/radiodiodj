@@ -10,7 +10,7 @@ count. This page covers the whole feature and links to the detailed designs.
 | missing tracks, duplicates, the library check | [library-health.md](./library-health.md)       |
 | schema and migrations                         | [database.md](./database.md)                   |
 | cue points stored on a track                  | [cue-points.md](./cue-points.md)               |
-| automatic cue points (planned)                | [cue-auto-analysis.md](./cue-auto-analysis.md) |
+| automatic cue points                          | [cue-auto-analysis.md](./cue-auto-analysis.md) |
 
 The app **reads** audio files and never writes, moves or deletes them. Everything
 the operator adds to a track (edited tags, cue points, play count) lives in the
@@ -48,7 +48,7 @@ A scan:
    skipped, and symbolic links are not followed. Only files with an audio
    extension are kept: `mp3`, `flac`, `wav`, `ogg`, `oga`, `aac`, `m4a`,
    `opus`, `webm`, `aiff`, `aif`, `mka`, `mp2`. WMA is not supported; convert
-   such files first (see the README).
+   such files first (see [Unsupported formats](#unsupported-formats)).
 2. **Inspects** each file on up to four threads at once, which hides the latency
    of a network share without flooding it.
    - A known file whose modification time and content type are unchanged is
@@ -231,6 +231,23 @@ _Settings → Library_ also reports what needs attention: missing tracks, exact 
 possible duplicates, and disk changes the library has not picked up. A count on
 the Settings button says when there is something to look at. See
 [library-health.md](./library-health.md).
+
+## Unsupported formats
+
+WMA (Windows Media Audio) files are not supported, and a scan skips them.
+Convert them with [ffmpeg](https://ffmpeg.org/) first, e.g. to MP3:
+
+```bash
+ffmpeg -i track.wma -c:a libmp3lame -q:a 2 track.mp3
+```
+
+or a whole folder at once:
+
+```bash
+for f in *.wma; do ffmpeg -i "$f" -c:a libmp3lame -q:a 2 "${f%.wma}.mp3"; done
+```
+
+Tags are carried over. Delete or move the `.wma` originals afterwards.
 
 ## Where it is stored
 
