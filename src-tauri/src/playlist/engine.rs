@@ -620,6 +620,13 @@ impl Playlist {
         for track in self.history.iter_mut().filter(|t| t.id == id) {
             track.cue_points = points;
         }
+        // Markers are applied at load time, so the deck holding this track as
+        // next-up still has the ones it was armed with. Forgetting the arm has
+        // the reconcile that follows every transition load it again, or the
+        // very next airing would be the one that ignored the edit.
+        if self.armed.as_ref().is_some_and(|a| a.id == id) {
+            self.armed = None;
+        }
         Transition::default()
     }
 
@@ -2038,6 +2045,34 @@ mod tests {
             |p: &Playlist, i: usize| p.snapshot().playlist[i].as_track().map(|t| t.cue_points);
         assert_eq!(queued_points(&p, 0), Some(points(4_000)));
         assert_eq!(queued_points(&p, 1), Some(CuePoints::default()));
+    }
+
+    /// The same for one track: a result landing on the already-armed track is
+    /// routine during a backfill, and the first airing after it would otherwise
+    /// be the one that played untrimmed.
+    #[test]
+    fn new_markers_re_arm_the_track_they_are_for() {
+        let mut p = with(&[Some(1), Some(2)]);
+        p.play_index(0, &NoRefill);
+        p.reconcile_arm();
+        assert_eq!(p.reconcile_arm(), None, "2 is already armed");
+
+        p.on_cue_points_saved(2, points(4_000));
+
+        assert!(matches!(p.reconcile_arm(), Some(Effect::Arm { id: 2, .. })));
+    }
+
+    /// An edit for some other track leaves the armed deck alone: reloading it
+    /// would be work for nothing.
+    #[test]
+    fn markers_for_another_track_leave_the_arm_alone() {
+        let mut p = with(&[Some(1), Some(2)]);
+        p.play_index(0, &NoRefill);
+        p.reconcile_arm();
+
+        p.on_cue_points_saved(7, points(4_000));
+
+        assert_eq!(p.reconcile_arm(), None);
     }
 
     /// Markers are applied at load time, so the deck holding the next track

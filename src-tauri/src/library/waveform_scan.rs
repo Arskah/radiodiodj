@@ -397,7 +397,14 @@ fn store_auto_cue(
     let thresholds = config.get_tuning().auto_cue.thresholds();
     let music = job.content_type == "music";
     let cue = auto_cue::detect(windows, music, thresholds);
-    match db.set_auto_cue(job.id, cue, thresholds, &job.content_type, now_ms()) {
+    match db.set_auto_cue(
+        job.id,
+        cue,
+        thresholds,
+        &job.content_type,
+        job.mtime,
+        now_ms(),
+    ) {
         Ok(Some(cue_points)) => {
             log::debug!("auto cue: {} {:?}", job.path, cue);
             let _ = app.emit(

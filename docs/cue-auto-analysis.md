@@ -498,9 +498,9 @@ An automatic analysis result is one logical update.
 
 Cue In, Cue Out, Next Start, provenance and analysis version must be committed together rather than as independent writes.
 
-Before committing, the backend must re-check that the Track is still automatically owned **and still the content type the analysis ran under** — a reclassification mid-decode would otherwise land a music Next Start on a jingle and mark it analysed.
+Before committing, the backend must re-check that the Track is still automatically owned, **still the content type the analysis ran under, and still the file that was decoded** (its `mtime`) — a reclassification mid-decode would otherwise land a music Next Start on a jingle and mark it analysed, and a file replaced mid-decode would land markers derived from audio that is gone, dropping the rescan's requeue for good.
 
-A result discarded because the content type moved leaves the Track queued, so the pass takes it again under its new class.
+A result discarded on either ground leaves the Track queued, so the pass takes it again — under its new class, or from the file that is there now.
 
 Example race:
 
