@@ -137,6 +137,18 @@ impl WaveformJob {
         });
     }
 
+    /// Kick the worker for work that turned up on its own, rather than for an
+    /// operator asking for a pass. A cancelled pass stays cancelled: the
+    /// operator stopped the decoder, and one track changing class is not a
+    /// reason to put the whole library back through it. The track keeps its
+    /// `pending` state and the next scan takes it.
+    pub fn nudge(self: Arc<Self>, app: AppHandle, db: Arc<Db>, config: Arc<Config>) {
+        if self.cancel.load(Ordering::SeqCst) {
+            return;
+        }
+        self.start(app, db, config);
+    }
+
     /// Whether the worker that has just released the slot should take it back
     /// and drain again: only for a kick it has not already served, and only if
     /// it is not cancelled and no other kick claimed the free slot first —

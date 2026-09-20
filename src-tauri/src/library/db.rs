@@ -626,23 +626,22 @@ impl Db {
         let Some((duration, stored)) = current else {
             anyhow::bail!("track {} is no longer in the library", id);
         };
-        let clamped = points.clamp(duration);
-        // Compared before the clamp, and written back unclamped when unchanged:
-        // an automatic Cue Out legitimately sits past the tag duration on a VBR
-        // MP3, and clamping it here would read as an operator edit.
+        // The stored duration is the tag's, and the tag is wrong on VBR MP3:
+        // automatic analysis reads the length off the decode and may put a
+        // marker past it. Both are lower bounds on the real file, so the clamp
+        // runs against the further of the two — otherwise saving one marker
+        // would drag every other one inside a length the file does not have.
+        let end_of_file = [duration.map(|d| (d * 1000.0) as i64), furthest(&stored)]
+            .into_iter()
+            .flatten()
+            .max()
+            .map(|ms| ms as f64 / 1000.0);
+        let clamped = points.clamp(end_of_file);
+        // Ownership is decided on what came in, not on what the clamp made of
+        // it: only a marker the operator moved takes the trio off automatic.
         let owns = points.cue_in_ms != stored.cue_in_ms
             || points.cue_out_ms != stored.cue_out_ms
             || points.next_start_ms != stored.next_start_ms;
-        let written = if owns {
-            clamped
-        } else {
-            CuePoints {
-                cue_in_ms: stored.cue_in_ms,
-                cue_out_ms: stored.cue_out_ms,
-                next_start_ms: stored.next_start_ms,
-                ..clamped
-            }
-        };
         let state = if owns {
             ", auto_cue_state = 'manual'"
         } else {
@@ -655,18 +654,18 @@ impl Db {
                  WHERE id = ?"
             ),
             params![
-                written.cue_in_ms,
-                written.fade_in_ms,
-                written.fade_out_ms,
-                written.cue_out_ms,
-                written.next_start_ms,
+                clamped.cue_in_ms,
+                clamped.fade_in_ms,
+                clamped.fade_out_ms,
+                clamped.cue_out_ms,
+                clamped.next_start_ms,
                 id
             ],
         )?;
         if changed == 0 {
             anyhow::bail!("track {} is no longer in the library", id);
         }
-        Ok(written)
+        Ok(clamped)
     }
 
     /// Commit one automatic analysis: the trio, the ownership state and the
@@ -916,16 +915,25 @@ impl Db {
                  ORDER BY id LIMIT 1",
             )?;
             let mut insert = tx.prepare(&format!("{UPSERT_TRACK_SQL} RETURNING id"))?;
-            // The twin's analysis — result, ownership and provenance alike —
+            // The twin's analysis — trio, ownership and provenance alike —
             // carries over only within one content type: the same file under
-            // /music and /jingles is two separate jobs.
+            // /music and /jingles is two separate jobs. Across classes the
+            // trio is left NULL rather than inherited: file start, file end
+            // and "wait until Cue Out" is the conservative reading, and a
+            // music Next Start on a jingle would segue early on every airing
+            // until the pass reaches it — for good, if its decode fails.
+            // The fades are not inferred by anything, so they travel.
             let mut copy_state = tx.prepare(
                 "UPDATE tracks SET title = s.title, artist = s.artist, album = s.album, \
                         genre = s.genre, year = s.year, bpm = s.bpm, \
                         play_count = s.play_count, waveform = s.waveform, \
-                        cue_in_ms = s.cue_in_ms, fade_in_ms = s.fade_in_ms, \
-                        fade_out_ms = s.fade_out_ms, cue_out_ms = s.cue_out_ms, \
-                        next_start_ms = s.next_start_ms, \
+                        cue_in_ms = CASE WHEN s.content_type = tracks.content_type \
+                          THEN s.cue_in_ms ELSE NULL END, \
+                        fade_in_ms = s.fade_in_ms, fade_out_ms = s.fade_out_ms, \
+                        cue_out_ms = CASE WHEN s.content_type = tracks.content_type \
+                          THEN s.cue_out_ms ELSE NULL END, \
+                        next_start_ms = CASE WHEN s.content_type = tracks.content_type \
+                          THEN s.next_start_ms ELSE NULL END, \
                         edited_fields = s.edited_fields, \
                         rg_gain = s.rg_gain, rg_peak = s.rg_peak, \
                         rg_measured_at = s.rg_measured_at, \
@@ -1572,6 +1580,20 @@ fn row_to_track(row: &Row) -> rusqlite::Result<Track> {
 }
 
 /// Read the five marker columns off a row that selected them by name.
+/// The furthest marker a set holds, as a lower bound on the file's length.
+fn furthest(points: &CuePoints) -> Option<i64> {
+    [
+        points.cue_in_ms,
+        points.fade_in_ms,
+        points.fade_out_ms,
+        points.cue_out_ms,
+        points.next_start_ms,
+    ]
+    .into_iter()
+    .flatten()
+    .max()
+}
+
 fn row_to_cue_points(row: &Row) -> rusqlite::Result<CuePoints> {
     Ok(CuePoints {
         cue_in_ms: row.get("cue_in_ms")?,
@@ -2825,6 +2847,39 @@ mod tests {
         assert_eq!(points.next_start_ms, decoded.next_start_ms);
     }
 
+    /// Moving one marker must not drag the others: the edit takes ownership,
+    /// and an automatic Cue Out past the tag duration stays where the decode
+    /// put it.
+    #[test]
+    fn an_edit_leaves_the_markers_it_did_not_touch_where_they_are() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/vbr.mp3"); // tag duration 200 s
+        let decoded = AutoCue {
+            cue_in_ms: Some(100),
+            cue_out_ms: Some(203_500),
+            next_start_ms: Some(203_000),
+        };
+        db.set_auto_cue(id, decoded, THRESHOLDS, "music", 7)
+            .unwrap();
+
+        let saved = db
+            .set_cue_points(
+                id,
+                CuePoints {
+                    cue_in_ms: Some(300),
+                    cue_out_ms: decoded.cue_out_ms,
+                    next_start_ms: decoded.next_start_ms,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(saved.cue_in_ms, Some(300));
+        assert_eq!(saved.cue_out_ms, decoded.cue_out_ms);
+        assert_eq!(saved.next_start_ms, decoded.next_start_ms);
+        assert_eq!(auto_cue_row(&db, id).0, "manual");
+    }
+
     /// Moving a marker still takes ownership, and is still bounded by the
     /// duration the library holds.
     #[test]
@@ -2973,6 +3028,11 @@ mod tests {
             auto_cue_row(&db, copy.id),
             ("pending".into(), None, None, None),
             "no provenance from an analysis this track never had"
+        );
+        assert_eq!(
+            copy.cue_points,
+            CuePoints::default(),
+            "nor a music trio on a jingle"
         );
         assert_eq!(auto_cue_row(&db, id).0, "auto", "the twin is untouched");
     }

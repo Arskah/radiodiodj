@@ -269,6 +269,9 @@ impl PlaylistService {
     /// A radio edit was stored for `id`; refresh the queued copies of it so the
     /// operator's next snapshot shows what was just saved.
     pub fn on_cue_points_saved(&self, id: i64, points: CuePoints) {
+        if !self.inner.playlist.lock().holds(id) {
+            return;
+        }
         Inner::apply(&self.inner, move |p, _| p.on_cue_points_saved(id, points));
     }
 

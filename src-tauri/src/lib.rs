@@ -472,7 +472,7 @@ fn update_track_metadata(
     // automatic analysis would infer. This kicks the pass that drains the
     // queue.
     if reclassified {
-        Arc::clone(&state.waveform).start(app, Arc::clone(&state.db), Arc::clone(&state.config));
+        Arc::clone(&state.waveform).nudge(app, Arc::clone(&state.db), Arc::clone(&state.config));
     }
     // Artist and title decide possible duplicates.
     state.health.refresh();

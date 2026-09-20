@@ -559,6 +559,17 @@ impl Playlist {
     /// The track on air is deliberately left alone. A radio edit saved
     /// mid-broadcast applies from the next airing, so its numbers must not move
     /// under the operator while it is playing.
+    /// Whether any copy of this track is held here. The analysis pass reports
+    /// every automatic result, one per track in the library on a backfill, and
+    /// applying one costs a full snapshot to the renderer and an arm reconcile
+    /// — so a track nobody queued is dropped before that.
+    pub fn holds(&self, id: i64) -> bool {
+        self.items
+            .iter()
+            .any(|i| matches!(i, PlaylistItem::Track { track, .. } if track.id == id))
+            || self.history.iter().any(|t| t.id == id)
+    }
+
     pub fn on_cue_points_saved(&mut self, id: i64, points: CuePoints) -> Transition {
         for item in &mut self.items {
             if let PlaylistItem::Track { track, .. } = item {
@@ -1989,6 +2000,27 @@ mod tests {
             |p: &Playlist, i: usize| p.snapshot().playlist[i].as_track().map(|t| t.cue_points);
         assert_eq!(queued_points(&p, 0), Some(points(4_000)));
         assert_eq!(queued_points(&p, 1), Some(CuePoints::default()));
+    }
+
+    /// A backfill reports one result per track in the library. Applying one
+    /// costs a full snapshot, so the playlist answers for what it holds and
+    /// the service drops the rest before paying for them.
+    #[test]
+    fn the_playlist_knows_which_tracks_it_holds() {
+        let mut p = with(&[Some(2), None]);
+        p.hydrate(
+            p.snapshot().playlist,
+            Some(track(9)),
+            None,
+            0.0,
+            false,
+            true,
+            vec![track(1)],
+        );
+        assert!(p.holds(2), "queued");
+        assert!(p.holds(1), "in history");
+        assert!(!p.holds(9), "on air, not held here");
+        assert!(!p.holds(7), "nowhere");
     }
 
     /// The item still airs under its override; only the track copy it displays
