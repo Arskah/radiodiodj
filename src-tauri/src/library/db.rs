@@ -660,26 +660,28 @@ impl Db {
             .flatten()
             .max()
             .map(|ms| ms as f64 / 1000.0);
-        let clamped = points.clamp(end_of_file);
         // Ownership is decided on what came in against what went out, not on
-        // what the clamp made of it: only a marker the operator moved takes the
-        // trio off automatic.
+        // what the clamp makes of it: only a marker the operator moved takes
+        // the trio off automatic.
         let owns = points.cue_in_ms != shown.cue_in_ms
             || points.cue_out_ms != shown.cue_out_ms
             || points.next_start_ms != shown.next_start_ms;
-        // An untouched trio is written back as stored — which is not what came
-        // in when the feature is off, and not the clamped value when the tag
-        // duration undersells the file.
+        // An untouched trio goes back as stored — which is not what came in
+        // when the feature is off. The stored trio is restored *before* the
+        // clamp so the fades are bounded by the Cue Out they will be stored
+        // against: bounding them by the file end instead would let a fade sit
+        // past Cue Out, where the load-time resolve drops it silently.
         let written = if owns {
-            clamped
+            points
         } else {
             CuePoints {
                 cue_in_ms: stored.cue_in_ms,
                 cue_out_ms: stored.cue_out_ms,
                 next_start_ms: stored.next_start_ms,
-                ..clamped
+                ..points
             }
-        };
+        }
+        .clamp(end_of_file);
         let state = if owns {
             ", auto_cue_state = 'manual'"
         } else {
@@ -1634,7 +1636,11 @@ const TRACK_COLUMNS: &str = "id, title, artist, album, duration, play_count, gen
 /// nothing infers those, so they are the operator's either way.
 fn effective_cue_points(row: &Row, apply: bool) -> rusqlite::Result<CuePoints> {
     let points = row_to_cue_points(row)?;
-    if apply || row.get::<_, String>("auto_cue_state")? != "auto" {
+    // `manual`, not `auto`, is the test: a requeued track keeps the trio it was
+    // last given while its state goes back to `pending`, and that trio is still
+    // analysis's. Only an operator save reaches `manual`, so a row that is not
+    // `manual` holds nothing of theirs.
+    if apply || row.get::<_, String>("auto_cue_state")? == "manual" {
         return Ok(points);
     }
     Ok(CuePoints {
@@ -2918,6 +2924,64 @@ mod tests {
         assert_eq!(
             db.get_track_load_info(id).unwrap().unwrap().cue_points,
             manual
+        );
+    }
+
+    /// A requeue keeps the old trio and sets the state back to `pending`, so
+    /// `pending` has to be held back too — or a rescan, a reclassification or a
+    /// move between roots would put the derived markers back on air behind the
+    /// operator's back.
+    #[test]
+    fn a_requeued_track_is_held_back_as_well() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/a.mp3");
+        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", 7).unwrap();
+        db.set_apply_auto_cue(false);
+
+        db.update_track_metadata(&TrackMetadataUpdate {
+            id,
+            content_type: Some("jingle".into()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(auto_cue_row(&db, id).0, "pending", "requeued, trio intact");
+        assert_eq!(
+            db.get_track(id).unwrap().unwrap().cue_points,
+            CuePoints::default()
+        );
+        assert_eq!(
+            db.get_track_load_info(id).unwrap().unwrap().cue_points,
+            CuePoints::default(),
+            "and the deck still airs the whole file"
+        );
+    }
+
+    /// A fade saved while the feature is off must still be bounded by the Cue
+    /// Out it is stored against. Bounded by the file end instead it would sit
+    /// past Cue Out, and the load-time resolve would drop it without a word.
+    #[test]
+    fn a_fade_saved_with_the_feature_off_stays_inside_the_hidden_cue_out() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/a.mp3");
+        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", 7).unwrap(); // cue out 190 s
+        db.set_apply_auto_cue(false);
+
+        db.set_cue_points(
+            id,
+            CuePoints {
+                fade_out_ms: Some(196_000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        db.set_apply_auto_cue(true);
+        let points = db.get_track(id).unwrap().unwrap().cue_points;
+        assert_eq!(points.cue_out_ms, AUTO.cue_out_ms);
+        assert_eq!(
+            points.fade_out_ms, AUTO.cue_out_ms,
+            "bounded by Cue Out, so the fade still plays"
         );
     }
 

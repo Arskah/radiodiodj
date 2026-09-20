@@ -16,13 +16,17 @@ No source audio file is modified.
 
 Switched off, **analysis still runs and still stores its result**. What changes is the answer the library gives: a row whose `auto_cue_state` is `auto` reports no Cue In, Cue Out or Next Start, so the deck airs the whole file and every duration in the app — queue rows, tab totals, the waveform crop, the cue editor — measures the whole file with it. Nothing is cleared, invalidated or re-decoded, so switching back on takes effect immediately.
 
+A track whose state is `pending` is held back with the `auto` ones. A requeue — a rescan of a changed file, a reclassification, a move between roots — keeps the trio it was last given while the state goes back to `pending`, and that trio is still analysis's work. Only an operator save reaches `manual`, so a row that is not `manual` holds nothing of theirs.
+
 Three things are never held back:
 
 - a manually owned trio. The switch is about automatic analysis; a radio edit the operator made is theirs either way;
 - the fades. Nothing infers them, so `fadeIn` and `fadeOut` apply whether the switch is on or off;
 - an item's own Cue point override, which is a per-airing decision the operator made.
 
-Ownership is judged against what the caller was shown, not against the stored row (`Db::set_cue_points`). Nobody can clear markers they were never given: saving a fade while the switch is off leaves the derived trio intact for when it comes back on. To clear a derived trio deliberately, switch the feature on first.
+Ownership is judged against what the caller was shown, not against the stored row (`Db::set_cue_points`). Nobody can clear markers they were never given: saving a fade while the switch is off leaves the derived trio intact for when it comes back on. To clear a derived trio deliberately, switch the feature on first. A fade saved while the switch is off is still bounded by the Cue Out it is stored against, hidden or not, so it does not end up past it where the load-time resolve would drop it.
+
+Flipping the switch re-reads the copies the playlist holds and re-arms the next track — markers are applied at load time, so the deck already holding it has to load it again. The track on air keeps what it started with, exactly as a radio edit saved mid-broadcast does.
 
 ## What is inferred
 

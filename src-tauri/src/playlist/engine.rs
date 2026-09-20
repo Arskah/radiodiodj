@@ -590,6 +590,12 @@ impl Playlist {
                 track.cue_points = *points;
             }
         }
+        // Markers are applied at load time, so the track already armed on the
+        // handover deck still carries the ones it was armed with. Forgetting
+        // what is armed makes the reconcile that follows every transition load
+        // it again — the policy is meant to take effect at once, and the next
+        // track is the first place it would otherwise be visibly late.
+        self.armed = None;
         Transition::default()
     }
 
@@ -2032,6 +2038,24 @@ mod tests {
             |p: &Playlist, i: usize| p.snapshot().playlist[i].as_track().map(|t| t.cue_points);
         assert_eq!(queued_points(&p, 0), Some(points(4_000)));
         assert_eq!(queued_points(&p, 1), Some(CuePoints::default()));
+    }
+
+    /// Markers are applied at load time, so the deck holding the next track
+    /// has to load it again or the switch would visibly miss the very next
+    /// airing.
+    #[test]
+    fn a_policy_change_re_arms_the_next_track() {
+        let mut p = with(&[Some(1), Some(2)]);
+        p.play_index(0, &NoRefill);
+        p.reconcile_arm();
+        assert_eq!(p.reconcile_arm(), None, "2 is already armed");
+
+        p.refresh_cue_points(&HashMap::from([(2, points(4_000))]));
+
+        assert!(matches!(p.reconcile_arm(), Some(Effect::Arm { id: 2, .. })));
+        let queued_points =
+            |p: &Playlist, i: usize| p.snapshot().playlist[i].as_track().map(|t| t.cue_points);
+        assert_eq!(queued_points(&p, 0), Some(points(4_000)));
     }
 
     /// A backfill reports one result per track in the library. Applying one
