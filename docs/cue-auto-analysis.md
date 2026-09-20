@@ -26,7 +26,7 @@ Three things are never held back:
 
 Ownership is judged against what the caller was shown, not against the stored row (`Db::set_cue_points`). Nobody can clear markers they were never given: saving a fade while the switch is off leaves the derived trio intact for when it comes back on. To clear a derived trio deliberately, switch the feature on first. A fade saved while the switch is off is still bounded by the Cue Out it is stored against, hidden or not, so it does not end up past it where the load-time resolve would drop it.
 
-Flipping the switch re-reads the copies the playlist holds and re-arms the next track — markers are applied at load time, so the deck already holding it has to load it again. The track on air keeps what it started with, exactly as a radio edit saved mid-broadcast does.
+Flipping the switch re-reads every copy of a track the app holds — the library rows, the queue, the library-health report, the cue deck and an open editor — and re-arms the next track — markers are applied at load time, so the deck already holding it has to load it again. The track on air keeps what it started with, exactly as a radio edit saved mid-broadcast does.
 
 ## What is inferred
 

@@ -655,11 +655,15 @@ impl Db {
         // marker past it. Both are lower bounds on the real file, so the clamp
         // runs against the further of the two — otherwise saving one marker
         // would drag every other one inside a length the file does not have.
-        let end_of_file = [duration.map(|d| (d * 1000.0) as i64), furthest(&stored)]
-            .into_iter()
-            .flatten()
-            .max()
-            .map(|ms| ms as f64 / 1000.0);
+        // With no duration at all there is still no ceiling: a stored marker
+        // is a lower bound on the file, never a limit on where the next one
+        // may go.
+        let end_of_file = duration
+            .filter(|d| *d > 0.0)
+            .map(|d| match furthest(&stored) {
+                Some(ms) => d.max(ms as f64 / 1000.0),
+                None => d,
+            });
         // Ownership is decided on what came in against what went out, not on
         // what the clamp makes of it: only a marker the operator moved takes
         // the trio off automatic.
@@ -735,6 +739,11 @@ impl Db {
     /// duration is the tag's and is wrong on VBR MP3. The load-time clamp
     /// remains authoritative either way.
     ///
+    /// The fades are not derived, but they are sorted against the new trio: an
+    /// operator fade saved before the analysis landed could otherwise end up
+    /// past the fresh Cue Out, where the load-time clamp folds it onto Cue Out
+    /// and the ramp silently collapses to nothing.
+    ///
     /// Returns the whole stored set on a commit — the trio the analysis wrote
     /// plus the fades it never touches — for the copies of the track held
     /// outside the DB, and `None` when the commit was refused.
@@ -748,8 +757,26 @@ impl Db {
     ) -> Result<Option<CuePoints>> {
         let music = content_type == "music";
         let conn = self.conn.lock();
+        // `clamp` with no duration applies the ordering rules alone, which is
+        // exactly the sorting the fades need against the incoming trio.
+        let fades: Option<CuePoints> = conn
+            .query_row(
+                "SELECT cue_in_ms, fade_in_ms, fade_out_ms, cue_out_ms, next_start_ms \
+                 FROM tracks WHERE id = ?",
+                [id],
+                row_to_cue_points,
+            )
+            .optional()?;
+        let sorted = CuePoints {
+            cue_in_ms: cue.cue_in_ms,
+            cue_out_ms: cue.cue_out_ms,
+            next_start_ms: cue.next_start_ms,
+            ..fades.unwrap_or_default()
+        }
+        .clamp(None);
         let changed = conn.execute(
             "UPDATE tracks SET cue_in_ms = ?1, cue_out_ms = ?2, next_start_ms = ?3, \
+                    fade_in_ms = ?10, fade_out_ms = ?11, \
                     auto_cue_state = 'auto', auto_cue_version = ?4, \
                     auto_cue_silence_db = ?5, auto_cue_segue_db = ?6, auto_cue_at = ?7 \
              WHERE id = ?8 AND auto_cue_state <> 'manual' AND content_type = ?9",
@@ -764,7 +791,9 @@ impl Db {
                 music.then_some(thresholds.segue_dbfs),
                 at_ms,
                 id,
-                content_type
+                content_type,
+                sorted.fade_in_ms,
+                sorted.fade_out_ms
             ],
         )?;
         if changed == 0 {
@@ -1030,13 +1059,16 @@ impl Db {
         Ok(done)
     }
 
-    /// Every missing row, newest first, with what a purge would destroy.
+    /// Every missing row, newest first, with what a purge would destroy. Only a
+    /// manually owned set counts as cue points here: the purge warning is about
+    /// work the operator would have to do again, and a derived trio comes back
+    /// on its own from the next analysis.
     pub fn missing_tracks(&self) -> Result<Vec<MissingRow>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id, title, artist, path, missing_since, play_count, \
-                    COALESCE(cue_in_ms, fade_in_ms, fade_out_ms, cue_out_ms, \
-                             next_start_ms) IS NOT NULL \
+                    (auto_cue_state = 'manual' AND COALESCE(cue_in_ms, fade_in_ms, \
+                        fade_out_ms, cue_out_ms, next_start_ms) IS NOT NULL) \
              FROM tracks WHERE missing_since IS NOT NULL \
              ORDER BY missing_since DESC, id DESC",
         )?;
@@ -2925,6 +2957,58 @@ mod tests {
             db.get_track_load_info(id).unwrap().unwrap().cue_points,
             manual
         );
+    }
+
+    /// A fade the operator saved before the analysis landed must not end up
+    /// past the Cue Out it arrives with: the load-time clamp would fold it onto
+    /// Cue Out and the ramp would collapse to nothing, unasked.
+    #[test]
+    fn an_analysis_sorts_the_fades_it_finds_against_its_own_trio() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/a.mp3");
+        db.set_cue_points(
+            id,
+            CuePoints {
+                fade_out_ms: Some(196_000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // A fade owns nothing, so the track is still up for analysis.
+        assert_eq!(auto_cue_row(&db, id).0, "pending");
+
+        let stored = db
+            .set_auto_cue(id, AUTO, THRESHOLDS, "music", 7)
+            .unwrap()
+            .expect("committed");
+
+        assert_eq!(stored.cue_out_ms, AUTO.cue_out_ms);
+        assert_eq!(
+            stored.fade_out_ms, AUTO.cue_out_ms,
+            "pulled back onto Cue Out, where it still plays"
+        );
+    }
+
+    /// Ordinary fades are left exactly where the operator put them.
+    #[test]
+    fn an_analysis_leaves_a_fade_inside_its_trio_alone() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/a.mp3");
+        db.set_cue_points(
+            id,
+            CuePoints {
+                fade_out_ms: Some(180_000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let stored = db
+            .set_auto_cue(id, AUTO, THRESHOLDS, "music", 7)
+            .unwrap()
+            .expect("committed");
+
+        assert_eq!(stored.fade_out_ms, Some(180_000));
     }
 
     /// A requeue keeps the old trio and sets the state back to `pending`, so

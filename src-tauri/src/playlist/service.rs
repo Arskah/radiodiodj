@@ -264,8 +264,6 @@ impl PlaylistService {
         self.with_track(id, move |p, _, track| p.add_front(track, cue_override))
     }
 
-    /// A radio edit was stored for `id`; refresh the queued copies of it so the
-    /// operator's next snapshot shows what was just saved.
     /// The automatic-cue policy changed, so every copy held here is stale at
     /// once. Re-reads them from the library, which applies the policy, in one
     /// transition rather than one per track.
@@ -284,6 +282,8 @@ impl PlaylistService {
         Inner::apply(&self.inner, move |p, _| p.refresh_cue_points(&fresh));
     }
 
+    /// A radio edit was stored for `id`; refresh the queued copies of it so the
+    /// operator's next snapshot shows what was just saved.
     pub fn on_cue_points_saved(&self, id: i64, points: CuePoints) {
         Inner::adopt_cue_points(&self.inner, id, points);
     }
@@ -406,18 +406,6 @@ impl Inner {
         }
     }
 
-    /// Run one transition and settle its consequences.
-    ///
-    /// Two ordering rules, both about re-entrancy. Tauri dispatches to backend
-    /// listeners inline, and `set_window` emits `main-deck:cache-state`, which
-    /// this service listens to — so a transition can re-enter `apply` before it
-    /// returns.
-    ///
-    /// The playlist lock is therefore released before any effect runs, or the
-    /// nested call would deadlock on it. And the snapshot is emitted before the
-    /// effects, so the nested transition's snapshot lands *after* this one:
-    /// emitting last would have the outer call overwrite the renderer with the
-    /// state as it was before the nested advance.
     /// Take new markers into the copies of a track held here, if any are. The
     /// analysis pass reports every result it commits — one per track in the
     /// library on a backfill — and [`Inner::apply`] is not cheap: it takes the
@@ -431,6 +419,18 @@ impl Inner {
         Inner::apply(inner, move |p, _| p.on_cue_points_saved(id, points));
     }
 
+    /// Run one transition and settle its consequences.
+    ///
+    /// Two ordering rules, both about re-entrancy. Tauri dispatches to backend
+    /// listeners inline, and `set_window` emits `main-deck:cache-state`, which
+    /// this service listens to — so a transition can re-enter `apply` before it
+    /// returns.
+    ///
+    /// The playlist lock is therefore released before any effect runs, or the
+    /// nested call would deadlock on it. And the snapshot is emitted before the
+    /// effects, so the nested transition's snapshot lands *after* this one:
+    /// emitting last would have the outer call overwrite the renderer with the
+    /// state as it was before the nested advance.
     fn apply<F>(inner: &Arc<Inner>, f: F)
     where
         F: FnOnce(&mut Playlist, &dyn Refiller) -> Transition,

@@ -1084,10 +1084,40 @@ export class AppState {
   async saveTuning(next: TuningConfig): Promise<void> {
     const wasApplying = this.tuning?.autoCue?.apply;
     this.applyTuning(await api.setTuningConfig(next));
-    // Switching automatic cue points on or off changes every derived duration
-    // the library reports, so the rows on screen are stale. The queue arrives
-    // on its own: the backend re-reads what it holds and pushes a snapshot.
-    if (this.tuning.autoCue.apply !== wasApplying) await this.search();
+    if (this.tuning.autoCue.apply !== wasApplying) await this.rereadCuePoints();
+  }
+
+  /**
+   * Switching automatic cue points on or off changes every derived set the
+   * library reports, so every copy the UI holds is stale at once. The queue
+   * arrives on its own — the backend re-reads what it holds and pushes a
+   * snapshot — but the rest is ours.
+   *
+   * A stale copy is not merely cosmetic here. The editor saves what it was
+   * given, and the backend judges ownership against what it last showed, so
+   * handing the editor a pre-flip copy would let a fade-only save read as an
+   * edit to the trio: on, it would clear the derived markers for good; off, it
+   * would freeze them as the operator's.
+   */
+  private async rereadCuePoints(): Promise<void> {
+    await Promise.all([this.search(), this.loadHealth()]);
+    const ids = [this.cueTrack?.id, this.editingCuePoints?.id].filter(
+      (id): id is number => id != null,
+    );
+    if (ids.length === 0) return;
+    try {
+      for (const fresh of await api.getTracksByIds([...new Set(ids)])) {
+        const points = fresh.cue_points ?? NO_CUE_POINTS;
+        this.cueTrack = this.applyCuePoints(this.cueTrack, fresh.id, points);
+        this.editingCuePoints = this.applyCuePoints(
+          this.editingCuePoints,
+          fresh.id,
+          points,
+        );
+      }
+    } catch (err) {
+      logger.error("Re-reading cue points failed:", err);
+    }
   }
 
   /// Adopt a tuning config: store it and rebuild the session-save throttle,

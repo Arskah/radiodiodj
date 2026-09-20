@@ -160,6 +160,7 @@ import {
   type Track,
 } from "./state.svelte";
 import type { ScanStatus } from "./api";
+import { NO_CUE_POINTS } from "./cuePoints";
 import {
   isTrackItem,
   stopMarker,
@@ -1268,6 +1269,25 @@ describe("AppState tuning", () => {
     await app.saveTuning(next);
 
     expect(api.search).toHaveBeenCalled();
+  });
+
+  it("re-reads the cued track and the open editor when the switch moves", async () => {
+    // The editor saves what it was given, and the backend judges ownership
+    // against what it last showed: a stale copy turns a fade-only save into an
+    // edit to the trio.
+    const stale = { cue_in_ms: 10_000, cue_out_ms: 30_000 };
+    app.cueTrack = t(1, { cue_points: stale as never });
+    app.editingCuePoints = t(1, { cue_points: stale as never });
+    const next = defaultTuning();
+    next.autoCue.apply = false;
+    api.setTuningConfig.mockResolvedValueOnce(next);
+    api.getTracksByIds.mockResolvedValueOnce([t(1)]);
+
+    await app.saveTuning(next);
+
+    expect(api.getTracksByIds).toHaveBeenCalledWith([1]);
+    expect(app.cueTrack?.cue_points).toEqual(NO_CUE_POINTS);
+    expect(app.editingCuePoints?.cue_points).toEqual(NO_CUE_POINTS);
   });
 
   it("leaves the library alone when the switch did not move", async () => {
