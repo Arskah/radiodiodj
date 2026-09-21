@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::audio::auto_cue::{AutoCue, Thresholds};
 use crate::audio::cue_points::CuePoints;
+use crate::library::fingerprint;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Track {
@@ -820,21 +821,26 @@ impl Db {
             .optional()?)
     }
 
-    /// Every present track still missing a waveform, a fingerprint, a loudness
-    /// measurement or an automatic cue, ordered by id. Drives the background
+    /// Every present track still missing a waveform, a loudness measurement or
+    /// an automatic cue, or whose fingerprint is missing or was computed by an
+    /// older [`fingerprint::VERSION`], ordered by id. Drives the background
     /// analysis worker (backfill included). A track whose analysis failed is
     /// left out until its file changes.
     pub fn tracks_needing_analysis(&self) -> Result<Vec<AnalysisJob>> {
+        let stale_fingerprint = format!(
+            "(fingerprint IS NULL OR fingerprint NOT LIKE '{}:%')",
+            fingerprint::VERSION
+        );
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id, path, mtime, content_type, waveform IS NULL, fingerprint IS NULL, \
+        let mut stmt = conn.prepare(&format!(
+            "SELECT id, path, mtime, content_type, waveform IS NULL, {stale_fingerprint}, \
                     rg_measured_at IS NULL, auto_cue_state = 'pending' \
              FROM tracks \
              WHERE missing_since IS NULL AND analysis_failed_at IS NULL \
-               AND (waveform IS NULL OR fingerprint IS NULL \
+               AND (waveform IS NULL OR {stale_fingerprint} \
                     OR rg_measured_at IS NULL OR auto_cue_state = 'pending') \
-             ORDER BY id",
-        )?;
+             ORDER BY id"
+        ))?;
         let rows = stmt.query_map([], |r| {
             Ok(AnalysisJob {
                 id: r.get(0)?,
@@ -3853,7 +3859,8 @@ mod tests {
         let (a, b) = (jobs[0].id, jobs[1].id);
         db.set_waveform(a, &[9]).unwrap();
         db.set_waveform(b, &[9]).unwrap();
-        db.set_fingerprint(b, "v1:b").unwrap();
+        db.set_fingerprint(b, &format!("{}:b", fingerprint::VERSION))
+            .unwrap();
         db.set_loudness(b, Some(-6.0), Some(0.9), 1).unwrap();
         db.set_auto_cue(b, AutoCue::default(), THRESHOLDS, "music", None, 1)
             .unwrap();
@@ -3865,6 +3872,33 @@ mod tests {
         assert!(jobs[0].needs_fingerprint);
         assert!(jobs[0].needs_loudness);
         assert!(jobs[0].needs_auto_cue);
+    }
+
+    /// A fingerprint from an older algorithm is worthless for matching a moved
+    /// file against the library, so the analysis pass recomputes it.
+    #[test]
+    fn a_fingerprint_from_an_older_version_is_analysed_again() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&TrackInsert {
+            path: "/a.mp3".into(),
+            content_type: "music".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let id = only_id(&db);
+        db.set_waveform(id, &[9]).unwrap();
+        db.set_loudness(id, Some(-6.0), Some(0.9), 1).unwrap();
+        db.set_auto_cue(id, AutoCue::default(), THRESHOLDS, "music", None, 1)
+            .unwrap();
+
+        db.set_fingerprint(id, "v1:stale").unwrap();
+        let jobs = db.tracks_needing_analysis().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert!(jobs[0].needs_fingerprint);
+
+        db.set_fingerprint(id, &format!("{}:fresh", fingerprint::VERSION))
+            .unwrap();
+        assert!(db.tracks_needing_analysis().unwrap().is_empty());
     }
 
     /// A silent or very short file measures successfully with no gain to
@@ -3881,7 +3915,8 @@ mod tests {
         .unwrap();
         let id = only_id(&db);
         db.set_waveform(id, &[0]).unwrap();
-        db.set_fingerprint(id, "v1:s").unwrap();
+        db.set_fingerprint(id, &format!("{}:s", fingerprint::VERSION))
+            .unwrap();
         db.set_loudness(id, None, None, 42).unwrap();
         db.set_auto_cue(id, AutoCue::default(), THRESHOLDS, "music", None, 42)
             .unwrap();

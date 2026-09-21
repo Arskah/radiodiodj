@@ -5,9 +5,14 @@
 //! [`HEAD_BYTES`] of demuxed packet payload. Demuxers already step over the
 //! tag blocks (ID3v2/APE, FLAC metadata, RIFF `LIST`, MP4 `udta`) and
 //! reassemble Ogg packets, so a tag edit — even one that re-pages an Ogg
-//! stream — leaves it unchanged. Nothing is decoded, so a symphonia upgrade
-//! cannot shift it either, and only the head of the file is read, which keeps
-//! the cost on a network share to about a megabyte.
+//! stream — leaves it unchanged. Nothing is decoded, so no decoder change can
+//! shift it either. Only the head of the file is read, which keeps the cost on
+//! a network share to about a megabyte.
+//!
+//! The codec goes in as the id symphonia gives it, which a symphonia upgrade
+//! may renumber — 0.6 renumbered MP3, AAC and thirteen others. That is what
+//! [`VERSION`] is for: bump it, and the background analysis pass re-reads the
+//! head of every present track and stores the new value.
 //!
 //! Not hashed: the frame count and the tail. On an MP3 without a Xing header
 //! both are estimated from the file length, which includes the tags. The
@@ -17,18 +22,21 @@
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 use std::path::Path;
+use symphonia::core::audio::Channels;
+use symphonia::core::codecs::CodecParameters;
 use symphonia::core::errors::Error as SymphoniaError;
-use symphonia::core::formats::FormatOptions;
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, TrackType};
 use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
 
 /// Packet payload hashed per track.
 const HEAD_BYTES: usize = 1 << 20;
 
 /// Bumped whenever the hashed input changes, so values from two algorithms
-/// never compare equal.
-const VERSION: &str = "v1";
+/// never compare equal. A track whose stored fingerprint carries an older
+/// version is re-fingerprinted by the background analysis pass.
+pub const VERSION: &str = "v2";
 
 /// Fingerprint the file at `path`, reading only its head.
 pub fn of_file(path: &Path) -> Result<String> {
@@ -55,34 +63,40 @@ pub fn of_source(source: Box<dyn MediaSource>, extension: Option<&str>) -> Resul
         hint.with_extension(ext);
     }
     let stream = MediaSourceStream::new(source, Default::default());
-    let probed = symphonia::default::get_probe()
-        .format(
+    let mut format = symphonia::default::get_probe()
+        .probe(
             &hint,
             stream,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
+            FormatOptions::default(),
+            MetadataOptions::default(),
         )
         .context("probe")?;
-    let mut format = probed.format;
-    let track = format.default_track().context("no audio track")?;
+    let track = format
+        .default_track(TrackType::Audio)
+        .context("no audio track")?;
     let track_id = track.id;
-    let params = &track.codec_params;
+    let params = track
+        .codec_params
+        .as_ref()
+        .and_then(CodecParameters::audio)
+        .context("no audio codec parameters")?;
 
     let mut hasher = Sha256::new();
     hasher.update(params.codec.to_string().as_bytes());
     hasher.update(params.sample_rate.unwrap_or(0).to_le_bytes());
-    hasher.update((params.channels.map_or(0, |c| c.count()) as u32).to_le_bytes());
+    hasher.update((params.channels.as_ref().map_or(0, Channels::count) as u32).to_le_bytes());
 
     let mut hashed = 0usize;
     while hashed < HEAD_BYTES {
         let packet = match format.next_packet() {
-            Ok(packet) => packet,
+            Ok(Some(packet)) => packet,
+            Ok(None) => break,
             Err(SymphoniaError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                 break
             }
             Err(e) => return Err(e).context("read packet"),
         };
-        if packet.track_id() != track_id {
+        if packet.track_id != track_id {
             continue;
         }
         let take = packet.data.len().min(HEAD_BYTES - hashed);
@@ -112,6 +126,17 @@ mod tests {
     use lofty::tag::{ItemKey, Tag, TagType};
 
     #[test]
+    fn the_fingerprint_of_a_known_recording_is_pinned() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.wav");
+        write_wav(&path, 1, 2);
+        assert_eq!(
+            of_file(&path).unwrap(),
+            "v2:2b8824ce42c1a4e43a8cde23d6c31d31f8d0f2163fe7d786cded49a0d6030e7d"
+        );
+    }
+
+    #[test]
     fn different_audio_gives_different_fingerprints() {
         let dir = tempfile::tempdir().unwrap();
         let (a, b) = (dir.path().join("a.wav"), dir.path().join("b.wav"));
@@ -127,7 +152,7 @@ mod tests {
         write_wav(&a, 1, 2);
         write_wav(&b, 1, 2);
         let fp = of_file(&a).unwrap();
-        assert!(fp.starts_with("v1:"), "{fp}");
+        assert!(fp.starts_with("v2:"), "{fp}");
         assert_eq!(fp, of_file(&b).unwrap());
         let bytes = std::fs::read(&a).unwrap();
         let in_memory = of_source(Box::new(std::io::Cursor::new(bytes)), Some("wav")).unwrap();
