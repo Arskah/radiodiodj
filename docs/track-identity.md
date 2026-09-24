@@ -98,7 +98,7 @@ that path as a new track.
 
 ## Fingerprint
 
-`library/fingerprint.rs` computes `v1:` + SHA-256 over:
+`library/fingerprint.rs` computes `v2:` + SHA-256 over:
 
 - the codec, sample rate and channel count
 - the first **1 MiB** of demuxed packet payload for the default track
@@ -113,6 +113,25 @@ metadata write-back planned in
 **Why no decode.** A decoded-PCM hash is tag-proof too, but lossy decoders
 produce floats that a symphonia upgrade may shift, and that would orphan the
 whole library at once. Packet bytes are file bytes.
+
+**Why the version prefix.** The codec goes into the hash as the id symphonia
+gives it, and a symphonia upgrade may renumber those: 0.6 renumbered fifteen of
+them, MP3 and AAC among them. Any such change makes the whole algorithm a new
+one, which is what `VERSION` names. Bumping it is the supported move —
+`the_fingerprint_of_a_known_recording_is_pinned` pins the hash against a golden
+value, so a silent shift fails the suite rather than the library.
+
+**What a bump costs.** A fingerprint is only worth matching against another of
+the same version, so `tracks_needing_analysis` treats a fingerprint that is not
+of the current `VERSION` exactly like a missing one: the background analysis
+pass re-reads the head of every present track and stores the new value. That is
+a megabyte per track, once, on the first run of the new build.
+
+Tracks that are **missing** at that moment keep their old value — their file is
+gone, so there is nothing to re-read. If such a file comes back at a new path
+it is fingerprinted with the current version, does not match the stored one,
+and comes back as a new track. Pre-1.0 this is accepted rather than migrated;
+the operator's route back is _Settings → Purge_ and a rescan.
 
 **Why the head only.** A scan on an SMB or NFS share pays about a megabyte per
 new file, not the whole file. The frame count and the tail are deliberately left

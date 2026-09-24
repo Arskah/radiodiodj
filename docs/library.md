@@ -90,7 +90,10 @@ the scan bar shows its progress.
   scan.
 - The **fingerprint** identifies the audio independently of path and tags. It is
   computed from the bytes already read for the waveform, or from the first
-  megabyte of the file otherwise.
+  megabyte of the file otherwise. A track whose stored fingerprint predates the
+  current algorithm is picked up by this pass too, so a version bump costs one
+  extra read per track and nothing else. See
+  [track-identity.md](./track-identity.md#fingerprint).
 
 A file that fails to decode is recorded on its track and skipped until a scan
 sees the file change; it is listed under [Unreadable
