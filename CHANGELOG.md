@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.22.0](https://github.com/Arskah/radiodiodj/compare/v0.21.2...v0.22.0) (2026-09-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **deps:** every stored track fingerprint is invalidated. On the first run of this build the background analysis pass re-fingerprints every present track, one extra megabyte read per track. Tracks that are missing at that moment keep their old fingerprint and come back as new tracks if their file reappears at another path, losing the cue points, play count and edits attached to the old row. Present tracks keep everything; the database is not reset.
+
+### Features
+
+* **audio:** level every track to the ReplayGain reference ([#429](https://github.com/Arskah/radiodiodj/issues/429)) ([990f7bc](https://github.com/Arskah/radiodiodj/commit/990f7bcced7dc50d365e52719b8c1b88f4838aad)), closes [#80](https://github.com/Arskah/radiodiodj/issues/80)
+* **library:** derive cue points from the analysis decode ([#431](https://github.com/Arskah/radiodiodj/issues/431)) ([c2ae235](https://github.com/Arskah/radiodiodj/commit/c2ae2355b33173c4cc311e0da0f2823cc4e8ce70)), closes [#372](https://github.com/Arskah/radiodiodj/issues/372)
+* **library:** switch automatic Next starts off on their own ([#450](https://github.com/Arskah/radiodiodj/issues/450)) ([3ce2768](https://github.com/Arskah/radiodiodj/commit/3ce2768a45eacb96595a45174c7fb4bed7dda523))
+* **playlist:** keep the auto-playlist off recent titles and artists ([#430](https://github.com/Arskah/radiodiodj/issues/430)) ([bbb083d](https://github.com/Arskah/radiodiodj/commit/bbb083ddf5edc345c56d2659491166f8ebfc78c9)), closes [#282](https://github.com/Arskah/radiodiodj/issues/282)
+
+
+### Bug Fixes
+
+* **deps:** update dependency @tauri-apps/plugin-log to v2.9.2 ([#447](https://github.com/Arskah/radiodiodj/issues/447)) ([23cbedc](https://github.com/Arskah/radiodiodj/commit/23cbedcb9ee9eb952295f89ee38bc3f0d9561b89))
+* **deps:** update dependency material-symbols to v0.47.4 ([#437](https://github.com/Arskah/radiodiodj/issues/437)) ([e5d3ffe](https://github.com/Arskah/radiodiodj/commit/e5d3ffe8be6fe359a385e43f85e9c3e4202315a1))
+* **deps:** update rust crate lofty to v0.25.4 ([#442](https://github.com/Arskah/radiodiodj/issues/442)) ([bac2e4e](https://github.com/Arskah/radiodiodj/commit/bac2e4e8b2d8a1106ad1e7e948a11b866a529a6d))
+* **deps:** update rust crate symphonia to v0.6.1 ([#377](https://github.com/Arskah/radiodiodj/issues/377)) ([6c4a3e2](https://github.com/Arskah/radiodiodj/commit/6c4a3e2fd9713393476d9d58aba2d8dece3a2a60))
+* **deps:** update rust crate tauri-plugin-log to v2.9.2 ([#448](https://github.com/Arskah/radiodiodj/issues/448)) ([6d19cc3](https://github.com/Arskah/radiodiodj/commit/6d19cc30a98d3e45c4d05c538481a3d2dd71fc99))
+* **deps:** update tauri monorepo ([#445](https://github.com/Arskah/radiodiodj/issues/445)) ([2125ecd](https://github.com/Arskah/radiodiodj/commit/2125ecdf38dd10cd905b2fdd7bb90693ee40bb35))
+* **library:** escape quotes in search queries ([#424](https://github.com/Arskah/radiodiodj/issues/424)) ([c5b9e53](https://github.com/Arskah/radiodiodj/commit/c5b9e538d1c4f3534a857031ad4443f2ebe25c2a))
+* **playlist:** put the interrupted track back on when the share returns ([#432](https://github.com/Arskah/radiodiodj/issues/432)) ([874370f](https://github.com/Arskah/radiodiodj/commit/874370fe3033799ed81789d61f66c56b516fc49a))
+
+
+### Miscellaneous Chores
+
+* **deps:** lock file maintenance ([#435](https://github.com/Arskah/radiodiodj/issues/435)) ([d44da45](https://github.com/Arskah/radiodiodj/commit/d44da455a8df2e1f294eb78d548fe3b8c48aa2c8))
+* **deps:** update commitlint monorepo to v21.2.3 ([#444](https://github.com/Arskah/radiodiodj/issues/444)) ([f8e8d0f](https://github.com/Arskah/radiodiodj/commit/f8e8d0fe5ab2ab7776f4133a79e463088782d941))
+* **deps:** update dependency @types/node to v25.9.8 ([#439](https://github.com/Arskah/radiodiodj/issues/439)) ([0ab2e9e](https://github.com/Arskah/radiodiodj/commit/0ab2e9ec214d7f65cbc0a3d67a22deaee4faf3c3))
+* **deps:** update dependency eslint to v10.11.0 ([#441](https://github.com/Arskah/radiodiodj/issues/441)) ([aa7063f](https://github.com/Arskah/radiodiodj/commit/aa7063fd19edf0ffc481568cc0d60558c6f84c8e))
+* **deps:** update dependency jsdom to v30.1.0 ([#433](https://github.com/Arskah/radiodiodj/issues/433)) ([471b44b](https://github.com/Arskah/radiodiodj/commit/471b44be3451ffd06b64fc9ce685fa13cff11a4f))
+* **deps:** update dependency prettier to v3.9.8 ([#436](https://github.com/Arskah/radiodiodj/issues/436)) ([e955fad](https://github.com/Arskah/radiodiodj/commit/e955fad81d7c55e1f1945375e08d76125390e4d7))
+* **deps:** update dependency svelte to v5.57.1 ([#440](https://github.com/Arskah/radiodiodj/issues/440)) ([466a5c2](https://github.com/Arskah/radiodiodj/commit/466a5c29f4e65e83125e34c5d819fc205331e95e))
+* **deps:** update dependency tsx to v4.23.15 ([#446](https://github.com/Arskah/radiodiodj/issues/446)) ([e47bde3](https://github.com/Arskah/radiodiodj/commit/e47bde37c9bf557482f0598a0f7af8b858ca43ef))
+* **deps:** update dependency typescript-eslint to v8.70.1 ([#451](https://github.com/Arskah/radiodiodj/issues/451)) ([9060555](https://github.com/Arskah/radiodiodj/commit/9060555aa219f1f15ca5b9859bdd837332f3f471))
+* **deps:** update pnpm to v12.5.1 ([#438](https://github.com/Arskah/radiodiodj/issues/438)) ([d06071b](https://github.com/Arskah/radiodiodj/commit/d06071bce8f9286ba7d49b6b60a8cff3e8141815))
+* **deps:** update webdriverio monorepo to v9.32.0 ([#449](https://github.com/Arskah/radiodiodj/issues/449)) ([31d858c](https://github.com/Arskah/radiodiodj/commit/31d858c129e3cae9b6224d8928be0417231ae206))
+* **ui:** remove the decorative Live On Air badge ([#428](https://github.com/Arskah/radiodiodj/issues/428)) ([23994ef](https://github.com/Arskah/radiodiodj/commit/23994ef78bbd27e58e6c97d4af678b8965a47fff)), closes [#287](https://github.com/Arskah/radiodiodj/issues/287)
+
+
+### Documentation
+
+* design for fuzzy library search ([#425](https://github.com/Arskah/radiodiodj/issues/425)) ([cf6fa6f](https://github.com/Arskah/radiodiodj/commit/cf6fa6f3bda931e4d73362807091e44ebc5a9576))
+* split README, AGENTS.md and docs/ by audience ([#434](https://github.com/Arskah/radiodiodj/issues/434)) ([cab8997](https://github.com/Arskah/radiodiodj/commit/cab89974db549f9b28307458f508ed55ce74cd4e))
+
+
+### Continuous Integration
+
+* run CI on pull requests only ([#457](https://github.com/Arskah/radiodiodj/issues/457)) ([17a6542](https://github.com/Arskah/radiodiodj/commit/17a65423675313c75d53d2027be18502e8c7f2d7))
+
 ## [0.21.2](https://github.com/Arskah/radiodiodj/compare/v0.21.1...v0.21.2) (2026-09-19)
 
 
