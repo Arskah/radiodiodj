@@ -8,25 +8,31 @@ The intended operating assumption is that **almost all library tracks will never
 
 No source audio file is modified.
 
-The detector (landed 2026-09-19, [#372](https://github.com/Arskah/radiodiodj/issues/372)) is `src-tauri/src/audio/auto_cue.rs`, fed by the RMS windows `audio/waveform.rs` collects during the existing waveform decode and committed by `library/waveform_scan.rs`. Ownership and provenance live on the track row as `auto_cue_state` (`pending` / `auto` / `manual`), `auto_cue_version`, `auto_cue_silence_db`, `auto_cue_segue_db` and `auto_cue_at`. The switch and the thresholds are `tuning.autoCue` in `config.json`, under _Settings → Advanced_.
+The detector (landed 2026-09-19, [#372](https://github.com/Arskah/radiodiodj/issues/372)) is `src-tauri/src/audio/auto_cue.rs`, fed by the RMS windows `audio/waveform.rs` collects during the existing waveform decode and committed by `library/waveform_scan.rs`. Ownership and provenance live on the track row as `auto_cue_state` (`pending` / `auto` / `manual`), `auto_cue_version`, `auto_cue_silence_db`, `auto_cue_segue_db` and `auto_cue_at`. The switches and the thresholds are `tuning.autoCue` in `config.json`, under _Settings → Advanced_.
 
-## The switch
+## The switches
 
-`tuning.autoCue.apply` decides whether a derived trio takes effect. It is on by default.
+`tuning.autoCue.apply` decides whether a derived trio takes effect. `tuning.autoCue.applyNextStart` sits under it and decides whether the derived Next Start alone takes effect. Both are on by default.
 
 Switched off, **analysis still runs and still stores its result**. What changes is the answer the library gives: a row whose `auto_cue_state` is `auto` reports no Cue In, Cue Out or Next Start, so the deck airs the whole file and every duration in the app — queue rows, tab totals, the waveform crop, the cue editor — measures the whole file with it. Nothing is cleared, invalidated or re-decoded, so switching back on takes effect immediately.
+
+The nested switch holds back the Next Start and nothing else: the trims still apply, so durations do not move, and the deck hands over at Cue Out instead of overlapping the incoming item. It is the answer to "trim my library, but do not segue my music" — trimming a leading silence is a safe mechanical edit, while an automatic Next Start is a taste call that overlaps the last 500 ms of every cold-ending song. There is no switch the other way round: the Next Start is derived from the effective Cue Out, so it has no meaning without the trims, and `apply` off hides all three regardless.
+
+Both switches gate at one place, `effective_cue_points` in `library/db.rs`, so Handover, the air timeline, the cue deck, the cue editor and the library-health report all follow from the library's answer. Nothing in the program bus knows either switch exists — a `NULL` Next Start already resolves to Cue Out, which is a hard cut.
 
 A track whose state is `pending` is held back with the `auto` ones. A requeue — a rescan of a changed file, a reclassification, a move between roots — keeps the trio it was last given while the state goes back to `pending`, and that trio is still analysis's work. Only an operator save reaches `manual`, so a row that is not `manual` holds nothing of theirs.
 
 Three things are never held back:
 
-- a manually owned trio. The switch is about automatic analysis; a radio edit the operator made is theirs either way;
-- the fades. Nothing infers them, so `fadeIn` and `fadeOut` apply whether the switch is on or off;
+- a manually owned trio. The switches are about automatic analysis; a radio edit the operator made is theirs either way, including a Next Start they authored by hand;
+- the fades. Nothing infers them, so `fadeIn` and `fadeOut` apply whether the switches are on or off;
 - an item's own Cue point override, which is a per-airing decision the operator made.
 
-Ownership is judged against what the caller was shown, not against the stored row (`Db::set_cue_points`), and a save hands back what the caller will be shown next — the derived trio stays hidden, a manual one comes straight back. Nobody can clear markers they were never given: saving a fade while the switch is off leaves the derived trio intact for when it comes back on. To clear a derived trio deliberately, switch the feature on first. A fade saved while the switch is off is still bounded by the Cue Out it is stored against, hidden or not, so it does not end up past it where the load-time resolve would drop it.
+Ownership is judged against what the caller was shown, not against the stored row (`Db::set_cue_points`), and a save hands back what the caller will be shown next — a hidden marker stays hidden, a manual one comes straight back. Nobody can clear markers they were never given: saving a fade while either switch is off leaves the derived trio intact for when it comes back on. To clear a derived trio deliberately, switch the feature on first. A fade saved while a switch is off is still bounded by the Cue Out it is stored against, hidden or not, so it does not end up past it where the load-time resolve would drop it.
 
-Flipping the switch re-reads every copy of a track the app holds — the library rows, the queue, the library-health report, the cue deck and an open editor — and re-arms the next track — markers are applied at load time, so the deck already holding it has to load it again. The track on air keeps what it started with, exactly as a radio edit saved mid-broadcast does.
+Moving the trio is different. It is the operator taking it over, and it is judged whole: a save that moves Cue In or Cue Out while the derived Next Start is hidden takes the row to `manual` and stores the `NULL` the operator was shown over it. The derived position is gone, and turning the nested switch back on does not bring it back — the row is theirs now and analysis no longer touches it. That is the intended reading: `NULL` means the handover waits for Cue Out, which is exactly what the switch asked for.
+
+Flipping either switch re-reads every copy of a track the app holds — the library rows, the queue, the library-health report, the cue deck and an open editor — and re-arms the next track — markers are applied at load time, so the deck already holding it has to load it again. The track on air keeps what it started with, exactly as a radio edit saved mid-broadcast does.
 
 ## What is inferred
 
@@ -529,11 +535,13 @@ The row survives moves, renames and removing then re-adding a Library path, and 
 The automatic-analysis settings belong with the application's other playback/library tuning:
 
 ```text
+apply:              on
+apply Next starts:  on
 silence threshold: -70 dBFS
 segue threshold:   -20 dBFS
 ```
 
-Both are persisted settings.
+All four are persisted settings. The segue threshold stays editable while automatic Next Starts are switched off — analysis derives and stores the position either way, so the level it works to is still live.
 
 Validation must at least guarantee:
 

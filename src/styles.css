@@ -2447,6 +2447,25 @@ body {
   opacity: 0.5;
 }
 
+/* One switch nested under another, inside the same group card. */
+.np-subsetting {
+  margin-top: var(--sp-md);
+  padding-left: var(--sp-md);
+  border-left: 2px solid var(--outline-variant);
+}
+
+.np-subsetting .np-group-header {
+  margin-bottom: var(--sp-sm);
+}
+
+.np-subsetting .settings-section-desc:last-child {
+  margin-bottom: 0;
+}
+
+.np-toggle input:disabled + .np-toggle-track {
+  cursor: not-allowed;
+}
+
 .np-group-header {
   display: flex;
   align-items: center;

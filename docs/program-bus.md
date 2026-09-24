@@ -200,7 +200,10 @@ the tail.** Only reaching its own `cueOut` lets a tail finish.
 - **Seek** acts on the incoming track, which is what `main` means.
 
 **Fallbacks.** `nextStart` null resolves to `cueOut`, which makes handover a hard
-cut — today's behaviour, unchanged, for every track nobody has prepped. The tick
+cut — today's behaviour, unchanged, for every track nobody has prepped, and for
+every track whose derived Next Start the operator has switched off
+(`autoCue.applyNextStart`, see
+[cue-auto-analysis.md](./cue-auto-analysis.md#the-switches)). The tick
 then fires as the sink empties, the tail runs dry within a tick, and the result
 is audibly identical to a hard cut with one code path instead of two: **handover
 wins whenever one was armed and ready, and `main-deck:ended` advances only when

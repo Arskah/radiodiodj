@@ -80,7 +80,10 @@ from the waveform pass's RMS windows, no second decode. Ownership is a per-track
 state (`pending` / `auto` / `manual`); an operator write that moves the trio
 makes it `manual` for good, and `set_auto_cue` only commits while the track is
 still automatic. Re-analysis is scheduled for `auto` tracks only; changing a
-threshold never re-analyses anything. See
+threshold never re-analyses anything. Two nested switches decide what the
+library _reports_ — `autoCue.apply` over the whole trio, `autoCue.applyNextStart`
+over the Next Start alone — and both gate in `effective_cue_points`, so nothing
+downstream of the library knows they exist. See
 [docs/cue-auto-analysis.md](docs/cue-auto-analysis.md).
 
 **Authoring cue points** — `CuePointOverlay.svelte` is the only surface that

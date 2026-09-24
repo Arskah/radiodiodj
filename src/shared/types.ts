@@ -294,6 +294,12 @@ export interface AutoCueConfig {
    * costs no second pass over the library.
    */
   apply: boolean;
+  /**
+   * Whether a derived Next Start takes effect. Off, a music track the analyser
+   * owns hands over at its Cue Out instead of overlapping the incoming item;
+   * the derived trims still apply. Nested under `apply`.
+   */
+  applyNextStart: boolean;
   /** Below this there is no programme audio, so Cue In and Cue Out trim it. */
   silenceDbfs: number;
   /** Below this a music track is quiet enough for the next item to begin. */
