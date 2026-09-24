@@ -28,7 +28,7 @@ symphonia = { version = "=0.6.1", default-features = false, features = ["aac", "
 parking_lot = "=0.12.5"
 anyhow = "=1.0.104"
 walkdir = "=2.5.0"
-lofty = "=0.25.2"
+lofty = "=0.25.4"
 base64 = "=0.23.1"
 tokio = { version = "=1.53.1", features = ["rt", "sync", "time"] }
 log = "=0.4.34"
