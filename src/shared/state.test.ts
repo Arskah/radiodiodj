@@ -117,7 +117,12 @@ function defaultTuning() {
       replayGain: "track" as const,
     },
     library: { checkIntervalMin: 15, writeTags: false, tagWriteTimeoutSec: 30 },
-    autoCue: { apply: true, silenceDbfs: -70, segueDbfs: -20 },
+    autoCue: {
+      apply: true,
+      applyNextStart: true,
+      silenceDbfs: -70,
+      segueDbfs: -20,
+    },
   };
 }
 
@@ -1287,6 +1292,24 @@ describe("AppState tuning", () => {
 
     expect(api.getTracksByIds).toHaveBeenCalledWith([1]);
     expect(app.cueTrack?.cue_points).toEqual(NO_CUE_POINTS);
+    expect(app.editingCuePoints?.cue_points).toEqual(NO_CUE_POINTS);
+  });
+
+  it("re-reads when automatic Next starts alone are switched off", async () => {
+    // The trims stay, so the rows' durations do not move — but the handover
+    // point every copy carries just changed.
+    const stale = { cue_in_ms: 10_000, next_start_ms: 29_000 };
+    app.editingCuePoints = t(1, { cue_points: stale as never });
+    const next = defaultTuning();
+    next.autoCue.applyNextStart = false;
+    api.setTuningConfig.mockResolvedValueOnce(next);
+    api.getTracksByIds.mockResolvedValueOnce([t(1)]);
+    api.search.mockClear();
+
+    await app.saveTuning(next);
+
+    expect(api.search).toHaveBeenCalled();
+    expect(api.getTracksByIds).toHaveBeenCalledWith([1]);
     expect(app.editingCuePoints?.cue_points).toEqual(NO_CUE_POINTS);
   });
 

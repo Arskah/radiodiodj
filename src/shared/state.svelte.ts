@@ -79,7 +79,12 @@ const DEFAULT_TUNING: TuningConfig = {
     replayGain: "track",
   },
   library: { checkIntervalMin: 15, writeTags: false, tagWriteTimeoutSec: 30 },
-  autoCue: { apply: true, silenceDbfs: -70, segueDbfs: -20 },
+  autoCue: {
+    apply: true,
+    applyNextStart: true,
+    silenceDbfs: -70,
+    segueDbfs: -20,
+  },
 };
 
 export const EMPTY_HEALTH: HealthReport = {
@@ -1082,14 +1087,17 @@ export class AppState {
   /// fields only take effect on restart (their worker threads capture them at
   /// startup); the renderer-side fields applied here take effect immediately.
   async saveTuning(next: TuningConfig): Promise<void> {
-    const wasApplying = this.tuning?.autoCue?.apply;
+    const was = this.tuning?.autoCue;
     this.applyTuning(await api.setTuningConfig(next));
-    if (this.tuning.autoCue.apply !== wasApplying) await this.rereadCuePoints();
+    const now = this.tuning.autoCue;
+    if (now.apply !== was?.apply || now.applyNextStart !== was?.applyNextStart)
+      await this.rereadCuePoints();
   }
 
   /**
-   * Switching automatic cue points on or off changes every derived set the
-   * library reports, so every copy the UI holds is stale at once. The queue
+   * Switching automatic cue points on or off — the whole trio, or the Next
+   * Start alone — changes every derived set the library reports, so every copy
+   * the UI holds is stale at once. The queue
    * arrives on its own — the backend re-reads what it holds and pushes a
    * snapshot — but the rest is ours.
    *

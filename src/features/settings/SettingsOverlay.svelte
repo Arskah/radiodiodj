@@ -1207,12 +1207,35 @@
                 </label>
               </div>
               <p class="settings-section-desc">
-                Trims and segues derived from the audio are used on air and in
-                every duration the app shows. Switched off, every track plays
-                whole — but the analysis still runs and keeps its results, so
-                switching back on takes effect immediately with no second pass
-                over the library. Radio edits you made by hand always apply.
+                Trims and handover points derived from the audio are used on air
+                and in every duration the app shows. Switched off, every track
+                plays whole — but the analysis still runs and keeps its results,
+                so switching back on takes effect immediately with no second
+                pass over the library. Radio edits you made by hand always
+                apply.
               </p>
+              <div class="np-subsetting">
+                <div class="np-group-header">
+                  <span class="np-group-title">Apply automatic Next starts</span
+                  >
+                  <label class="np-toggle" title="Apply automatic Next starts">
+                    <input
+                      id="setting-apply-auto-next-start"
+                      type="checkbox"
+                      bind:checked={tuning.autoCue.applyNextStart}
+                      disabled={!tuning.autoCue.apply}
+                      onchange={saveTuning}
+                    />
+                    <span class="np-toggle-track"></span>
+                  </label>
+                </div>
+                <p class="settings-section-desc">
+                  Music hands over before it has finished, overlapping the
+                  incoming item. Switched off, a track the analysis owns plays
+                  to its Cue out and the next one starts clean — the derived
+                  trims still apply. Next starts you set by hand always apply.
+                </p>
+              </div>
             </div>
             <div class="device-row">
               <label for="tune-silence-db">Silence threshold (dBFS)</label>
@@ -1249,7 +1272,9 @@
               <div class="hint">
                 How quiet a music track has to get before the next item may
                 start. Always kept above the silence threshold. Music only —
-                commercials and jingles get no automatic Next start.
+                commercials and jingles get no automatic Next start. Still
+                derived and stored while automatic Next starts are switched off,
+                so turning them back on costs no second pass.
               </div>
             </div>
 

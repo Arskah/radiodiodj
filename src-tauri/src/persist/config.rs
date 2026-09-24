@@ -78,6 +78,12 @@ pub struct AutoCueConfig {
     /// manually prepared track is unaffected either way.
     #[serde(default = "default_apply")]
     pub apply: bool,
+    /// Whether a derived Next Start takes effect. Switched off, a music track
+    /// the analyser owns hands over at its Cue Out instead of overlapping the
+    /// incoming item; the derived trims still apply and the derived position is
+    /// still stored. Nested under `apply`, which hides the whole trio.
+    #[serde(default = "default_apply")]
+    pub apply_next_start: bool,
     /// Below this there is no programme audio, so Cue In and Cue Out trim it.
     #[serde(default = "default_silence_dbfs")]
     pub silence_dbfs: f64,
@@ -109,6 +115,7 @@ impl Default for AutoCueConfig {
     fn default() -> Self {
         Self {
             apply: default_apply(),
+            apply_next_start: default_apply(),
             silence_dbfs: default_silence_dbfs(),
             segue_dbfs: default_segue_dbfs(),
         }
@@ -844,6 +851,44 @@ mod tests {
         assert_eq!(ac.segue_dbfs, -20.0);
     }
 
+    /// Both switches are on out of the box, and a `config.json` written before
+    /// the Next Start switch existed keeps the behaviour it had.
+    #[test]
+    fn both_auto_cue_switches_default_on() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("config.json"),
+            r#"{"tuning":{"autoCue":{"apply":true}}}"#,
+        )
+        .unwrap();
+
+        let ac = Config::open(dir.path()).unwrap().get_tuning().auto_cue;
+        assert!(ac.apply);
+        assert!(ac.apply_next_start);
+        assert!(AutoCueConfig::default().apply_next_start);
+    }
+
+    #[test]
+    fn the_next_start_switch_round_trips() {
+        let dir = tempdir().unwrap();
+        let cfg = Config::open(dir.path()).unwrap();
+        let stored = cfg
+            .set_tuning(TuningConfig {
+                auto_cue: AutoCueConfig {
+                    apply_next_start: false,
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(stored.auto_cue.apply);
+        assert!(!stored.auto_cue.apply_next_start);
+
+        let reopened = Config::open(dir.path()).unwrap().get_tuning();
+        assert!(reopened.auto_cue.apply);
+        assert!(!reopened.auto_cue.apply_next_start);
+    }
+
     /// The two thresholds answer different questions, and a segue threshold at
     /// or below the silence threshold could never fire.
     #[test]
@@ -854,6 +899,7 @@ mod tests {
             .set_tuning(TuningConfig {
                 auto_cue: AutoCueConfig {
                     apply: true,
+                    apply_next_start: true,
                     silence_dbfs: -40.0,
                     segue_dbfs: -55.0,
                 },
@@ -872,6 +918,7 @@ mod tests {
             .set_tuning(TuningConfig {
                 auto_cue: AutoCueConfig {
                     apply: true,
+                    apply_next_start: true,
                     silence_dbfs: -400.0,
                     segue_dbfs: 12.0,
                 },
@@ -913,6 +960,7 @@ mod tests {
             .set_tuning(TuningConfig {
                 auto_cue: AutoCueConfig {
                     apply: true,
+                    apply_next_start: true,
                     silence_dbfs: f64::NAN,
                     segue_dbfs: f64::NAN,
                 },
