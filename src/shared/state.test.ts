@@ -56,6 +56,7 @@ const { api } = vi.hoisted(() => {
     onCuePointsReady: vi.fn(),
     onWaveformProgress: vi.fn(),
     onWaveformStateChanged: vi.fn(),
+    onTagBackfillStateChanged: vi.fn(),
     getWaveformStatus: vi.fn(),
     listAudioDevices: vi.fn(),
     getMainDevice: vi.fn(),
@@ -888,6 +889,22 @@ describe("AppState waveform", () => {
     ) => void;
     onReady(999);
     expect(api.getWaveform).not.toHaveBeenCalled();
+  });
+
+  it("re-reads the library once the tag backfill finishes", async () => {
+    const onState = api.onTagBackfillStateChanged.mock.calls[0][0] as (s: {
+      status: string;
+    }) => void;
+    api.search.mockClear();
+
+    // Rows are a snapshot, so a running pass changing them under the panel is
+    // not worth a re-read until it has finished changing them.
+    onState({ status: "running" });
+    expect(api.search).not.toHaveBeenCalled();
+
+    onState({ status: "idle" });
+    await Promise.resolve();
+    expect(api.search).toHaveBeenCalledTimes(1);
   });
 
   it("tracks waveform-pass progress via state + progress events", () => {

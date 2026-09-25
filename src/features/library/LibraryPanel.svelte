@@ -12,6 +12,9 @@
   ];
 
   const sortableCols: { column: SortColumn; label: string; cls: string }[] = [
+    // Album order rather than a bare number sort, so searching an album and
+    // clicking # reads the record the way it was cut.
+    { column: "track_no", label: "#", cls: "track-no" },
     { column: "title", label: "Title", cls: "track-title" },
     { column: "artist", label: "Artist", cls: "track-artist" },
     { column: "album", label: "Album", cls: "track-album" },
@@ -247,6 +250,7 @@
           data-track-id={track.id}
           tabindex="0"
         >
+          <span class="track-no">{track.track_no ?? ""}</span>
           <span class="track-title">{track.title}</span>
           <span class="track-artist">{track.artist}</span>
           <span class="track-album">{track.album}</span>

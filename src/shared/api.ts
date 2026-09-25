@@ -342,6 +342,18 @@ export const api = {
       callback(e.payload),
     );
   },
+  /**
+   * Fires when the tag backfill starts and when it finishes. Going idle is the
+   * signal that tag columns changed under whatever the library panel last
+   * listed — the rows are a snapshot, so nothing refreshes on its own.
+   */
+  onTagBackfillStateChanged(
+    callback: (data: WaveformStatus) => void,
+  ): Promise<UnlistenFn> {
+    return listen<WaveformStatus>("tag-backfill-state-changed", (e) =>
+      callback(e.payload),
+    );
+  },
   listAudioDevices(): Promise<DeviceInfo[]> {
     return invoke<DeviceInfo[]>("audio_list_devices");
   },

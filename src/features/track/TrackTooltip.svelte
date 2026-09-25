@@ -49,6 +49,28 @@
     return v === UNKNOWN;
   }
 
+  /** `3 of 12` when the tag carried a total, plain `3` when it did not. */
+  function formatPosition(
+    no: number | null | undefined,
+    total: number | null | undefined,
+  ): string | null {
+    if (no == null) return null;
+    return total == null ? String(no) : `${no} of ${total}`;
+  }
+
+  /**
+   * A comment can be a paragraph. The tooltip positions itself from its own
+   * height, so an unbounded one would push it off the bottom of the screen with
+   * nothing to scroll — and the whole value is on every row a search returns.
+   */
+  function shorten(text: string | null | undefined): string | null {
+    if (!text || !text.trim()) return null;
+    const flat = text.trim().replace(/\s+/g, " ");
+    return flat.length > COMMENT_MAX ? `${flat.slice(0, COMMENT_MAX)}…` : flat;
+  }
+
+  const COMMENT_MAX = 140;
+
   /**
    * What the track airs, and — when cue points trim it — the file length too,
    * so the shorter number in the library column is explained rather than
@@ -63,17 +85,27 @@
 
 {#if app.hoveredTrack}
   {@const t = app.hoveredTrack}
+  <!-- The always-present rows read Unknown when a file lacks them, which is
+       information: those are the fields a track is expected to have. The newer
+       ones are absent far more often than not, so they are dropped instead —
+       nine Unknowns would bury the rows that matter. -->
   {@const fields = [
     { label: "Album", value: strOr(t.album) },
+    { label: "Album artist", value: t.album_artist ?? null },
+    { label: "Track", value: formatPosition(t.track_no, t.track_total) },
+    { label: "Disc", value: formatPosition(t.disc_no, t.disc_total) },
     { label: "Genre", value: strOr(t.genre) },
     { label: "Year", value: numOr(t.year) },
     { label: "Duration", value: formatDuration(t) },
     { label: "BPM", value: numOr(t.bpm) },
+    { label: "Key", value: t.initial_key ?? null },
     { label: "Format", value: t.format ? t.format.toUpperCase() : UNKNOWN },
     { label: "Bitrate", value: formatBitrate(t.bitrate) },
     { label: "Sample rate", value: formatRate(t.sample_rate) },
+    { label: "ISRC", value: t.isrc ?? null },
     { label: "Plays", value: String(t.play_count ?? 0) },
-  ]}
+    { label: "Comment", value: shorten(t.comment) },
+  ].filter((f): f is { label: string; value: string } => f.value !== null)}
   <div
     class="track-tooltip"
     bind:this={tooltip}

@@ -2088,22 +2088,95 @@ fn exclude_sql(exclude_ids: &[i64]) -> String {
     format!(" AND id NOT IN ({placeholders})")
 }
 
+/// One `ORDER BY` term of a [`SORTS`] entry.
+struct Term {
+    col: &'static str,
+    /// Text sorts case-insensitively; a count does not.
+    nocase: bool,
+    /// Put an absent value after every present one, whichever direction was
+    /// asked for.
+    nulls_last: bool,
+}
+
+impl Term {
+    const fn text(col: &'static str) -> Self {
+        Self {
+            col,
+            nocase: true,
+            nulls_last: true,
+        }
+    }
+
+    const fn num(col: &'static str) -> Self {
+        Self {
+            col,
+            nocase: false,
+            nulls_last: true,
+        }
+    }
+
+    /// A column that is `NOT NULL DEFAULT 0`, so the null guard would be dead
+    /// weight.
+    const fn count(col: &'static str) -> Self {
+        Self {
+            col,
+            nocase: false,
+            nulls_last: false,
+        }
+    }
+}
+
+/// The sorts the library offers, keyed by the name the renderer sends. This
+/// table *is* the allowlist: a name that is not in it sorts by nothing, and
+/// every column spelled into the SQL below comes from here rather than from the
+/// operator.
+///
+/// `track_no` is not the raw column. An operator asking for track order means
+/// *album* order — a bare track number interleaves every album's track 1 — so
+/// it expands to album, disc, track, title. Reversing it reverses every term,
+/// giving "last album first, still in track order" rather than a scattered
+/// disc.
+const SORTS: &[(&str, &[Term])] = &[
+    ("title", &[Term::text("title")]),
+    ("artist", &[Term::text("artist")]),
+    ("album", &[Term::text("album")]),
+    ("play_count", &[Term::count("play_count")]),
+    (
+        "track_no",
+        &[
+            Term::text("album"),
+            Term::num("disc_no"),
+            Term::num("track_no"),
+            Term::text("title"),
+        ],
+    ),
+];
+
 fn order_clause(sort_by: Option<&str>, sort_dir: Option<&str>) -> Option<String> {
     let col = sort_by?;
-    if !matches!(col, "title" | "artist" | "album" | "play_count") {
-        return None;
-    }
+    let terms = SORTS.iter().find(|(key, _)| *key == col).map(|(_, t)| *t)?;
     let dir = if matches!(sort_dir, Some("desc")) {
         "DESC"
     } else {
         "ASC"
     };
-    let collate = if col == "play_count" {
-        ""
-    } else {
-        "COLLATE NOCASE "
-    };
-    Some(format!("{} {}{}", col, collate, dir))
+
+    let mut out = Vec::with_capacity(terms.len() * 2);
+    for t in terms {
+        // Qualified, because the FTS branch joins `tracks_fts`, which carries
+        // columns of these same names. A bare name still resolves against the
+        // result columns of `SELECT tracks.*`, which is why the single-column
+        // sorts worked unqualified — but `album IS NULL` is an expression, and
+        // SQLite resolves that against the *tables* and refuses it as
+        // ambiguous. Only the FTS branch fails, so an empty-query test would
+        // not catch it.
+        if t.nulls_last {
+            out.push(format!("tracks.{} IS NULL", t.col));
+        }
+        let collate = if t.nocase { "COLLATE NOCASE " } else { "" };
+        out.push(format!("tracks.{} {collate}{dir}", t.col));
+    }
+    Some(out.join(", "))
 }
 
 /// What [`row_to_track`] reads, for queries that must not drag the waveform
@@ -5439,6 +5512,87 @@ mod tests {
             db.search(q, None, None, None)
                 .unwrap_or_else(|e| panic!("search({q:?}) errored: {e}"));
         }
+    }
+
+    fn numbered(db: &Db, path: &str, title: &str, album: &str, disc: Option<i64>, no: Option<i64>) {
+        let conn = db.conn.lock();
+        conn.execute(
+            "INSERT INTO tracks (path, content_type, title, artist, album, duration, \
+                                 play_count, disc_no, track_no) \
+             VALUES (?, 'music', ?, 'Band', ?, 100.0, 0, ?, ?)",
+            params![path, title, album, disc, no],
+        )
+        .unwrap();
+    }
+
+    /// Every sort has to run in *both* search branches. Only the non-empty
+    /// query joins `tracks_fts`, and that join is what makes an unqualified
+    /// column name ambiguous — a suite that exercised only the listing branch
+    /// would pass while search was broken for every sorted query.
+    #[test]
+    fn every_sort_runs_in_both_search_branches() {
+        let db = Db::open_in_memory().unwrap();
+        numbered(&db, "/a.mp3", "Seed", "Album", Some(1), Some(1));
+
+        for (key, _) in SORTS {
+            for dir in ["asc", "desc"] {
+                db.search("", None, Some(key), Some(dir))
+                    .unwrap_or_else(|e| panic!("listing sorted by {key} {dir} errored: {e}"));
+                db.search("seed", None, Some(key), Some(dir))
+                    .unwrap_or_else(|e| panic!("search sorted by {key} {dir} errored: {e}"));
+            }
+        }
+    }
+
+    /// Album order, not track-number order: the numbers only mean anything
+    /// inside one record.
+    #[test]
+    fn track_order_sorts_by_album_then_disc_then_track() {
+        let db = Db::open_in_memory().unwrap();
+        numbered(&db, "/b2.mp3", "Seed B2", "Beta", Some(1), Some(2));
+        numbered(&db, "/a1.mp3", "Seed A1", "Alpha", Some(1), Some(1));
+        numbered(&db, "/b1d2.mp3", "Seed B1D2", "Beta", Some(2), Some(1));
+        numbered(&db, "/b1.mp3", "Seed B1", "Beta", Some(1), Some(1));
+
+        let order: Vec<String> = db
+            .search("seed", None, Some("track_no"), Some("asc"))
+            .unwrap()
+            .into_iter()
+            .map(|t| t.title)
+            .collect();
+        assert_eq!(order, ["Seed A1", "Seed B1", "Seed B2", "Seed B1D2"]);
+    }
+
+    /// An unnumbered track has no place in album order, so it goes last — and
+    /// stays last when the arrow flips, which is why the null guard carries no
+    /// direction of its own.
+    #[test]
+    fn an_unnumbered_track_sorts_last_in_both_directions() {
+        let db = Db::open_in_memory().unwrap();
+        numbered(&db, "/a.mp3", "Seed One", "Album", Some(1), Some(1));
+        numbered(&db, "/b.mp3", "Seed Two", "Album", Some(1), Some(2));
+        numbered(&db, "/c.mp3", "Seed None", "Album", None, None);
+
+        for dir in ["asc", "desc"] {
+            let last = db
+                .search("seed", None, Some("track_no"), Some(dir))
+                .unwrap()
+                .pop()
+                .unwrap();
+            assert_eq!(last.title, "Seed None", "sorted {dir}");
+        }
+    }
+
+    /// The sort table is the allowlist, and it is the only thing between the
+    /// renderer's string and an interpolated `ORDER BY`.
+    #[test]
+    fn an_unknown_sort_column_is_refused() {
+        assert_eq!(
+            order_clause(Some("track_no; DROP TABLE tracks"), None),
+            None
+        );
+        assert_eq!(order_clause(Some("path"), None), None);
+        assert_eq!(order_clause(None, Some("asc")), None);
     }
 
     /// The queue is everything written at an older generation — including a

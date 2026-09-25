@@ -1,6 +1,12 @@
 export type ContentType = "music" | "commercial" | "jingle";
 
-export type SortColumn = "title" | "artist" | "album" | "play_count";
+export type SortColumn =
+  | "title"
+  | "artist"
+  | "album"
+  | "play_count"
+  /** Album order: album, then disc, then track. Not a bare number sort. */
+  | "track_no";
 export type SortDir = "asc" | "desc";
 
 export interface SortOption {

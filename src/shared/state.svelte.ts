@@ -427,6 +427,12 @@ export class AppState {
     api.onWaveformStateChanged((next) => {
       this.waveformStatus = next;
     });
+    // The backfill rewrites tag columns on rows the panel is already showing,
+    // and `tracks` is a snapshot from the last query. One re-read when the pass
+    // finishes, rather than one per track it touches.
+    api.onTagBackfillStateChanged((next) => {
+      if (next.status === "idle") void this.search();
+    });
   }
 
   get progressPct(): number {

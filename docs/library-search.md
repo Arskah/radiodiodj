@@ -10,14 +10,20 @@ this document is the design behind it. Tracked as
 ## Today
 
 `Db::search` (`src-tauri/src/library/db.rs`) runs SQLite FTS5 over an
-external-content index of **title, artist, album and genre**:
+external-content index of **title, artist, album, album artist and genre**:
 
 ```sql
 CREATE VIRTUAL TABLE tracks_fts USING fts5(
-  title, artist, album, genre,
+  title, artist, album, genre, album_artist,
   content='tracks', content_rowid='id'
 );
 ```
+
+Album artist is indexed because a compilation is otherwise unfindable by the act
+it belongs to — every track on it carries a different `artist`. The other tag
+columns stay out: a bare digit prefix-matches hundreds of rows, a two-character
+musical key collides with ordinary searches, free text in a comment dilutes the
+bm25 ranking of every query, and nobody types an ISRC.
 
 The query is built by splitting on whitespace and turning each word into a
 quoted prefix term, joined by the implicit `AND`:
