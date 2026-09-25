@@ -207,12 +207,16 @@ pub fn resolve(data_dir: &Path, id: &str) -> Result<Resolved, ThemeError> {
         }
     }
 
+    // A built-in has no directory to resolve a filename against, so an image it
+    // named resolves to `None` rather than panicking.
+    let image = |file: Option<String>| Some(dir.as_ref()?.join(file?));
+
     Ok(Resolved {
         id: id.to_string(),
         base: theme.base,
         tokens,
-        logo: theme.logo.map(|f| dir.as_ref().unwrap().join(f)),
-        label: theme.label.map(|f| dir.as_ref().unwrap().join(f)),
+        logo: image(theme.logo),
+        label: image(theme.label),
     })
 }
 

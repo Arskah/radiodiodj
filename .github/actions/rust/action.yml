@@ -1,0 +1,31 @@
+name: Setup Rust
+description: Installs the Rust toolchain pinned in .tool-versions
+
+inputs:
+  components:
+    description: Comma-separated list of components to additionally install
+    required: false
+  targets:
+    description: Comma-separated list of target triples to install for
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+    # .tool-versions is the one place the toolchain is named, so CI and a
+    # developer's machine cannot drift apart.
+    - id: toolchain
+      shell: bash
+      run: |
+        version=$(awk '$1 == "rust" { print $2 }' .tool-versions)
+        if [ -z "$version" ]; then
+          echo "no rust entry in .tool-versions" >&2
+          exit 1
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+    - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+      with:
+        toolchain: ${{ steps.toolchain.outputs.version }}
+        components: ${{ inputs.components }}
+        targets: ${{ inputs.targets }}

@@ -56,7 +56,7 @@ jobs:
       - uses: ./.github/actions/setup
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@a75363d06101555fc97c6c7e1e65670b99104d98 # 1.96.1
+        uses: ./.github/actions/rust
         with:
           targets: ${{ inputs.target }}
 

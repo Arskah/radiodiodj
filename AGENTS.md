@@ -230,6 +230,14 @@ is [CONTEXT.md](CONTEXT.md).
   to `Warn` (`symphonia_bundle_mp3` to `Error`, whose false-sync warnings on a
   non-MP3 file otherwise fill the 1 MB log) to keep the webview console
   readable.
+- The Rust toolchain is named once, in `.tool-versions`. CI installs it through
+  `.github/actions/rust`, so bumping that one line moves every workflow.
+  `rust-version` in `src-tauri/Cargo.toml` is a different number — the minimum
+  a consumer needs, not the one we build with.
+- `Dockerfile.e2e` installs dependencies from a copy of `package.json`,
+  `pnpm-lock.yaml` and `pnpm-workspace.yaml`. The last one carries `overrides`
+  and `allowBuilds`, and a frozen install fails without it, so a new root file
+  that `pnpm install` reads has to be added to that COPY.
 
 ## Data files and logs
 
