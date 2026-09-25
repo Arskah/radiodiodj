@@ -152,22 +152,35 @@ Adding another tag field later is a schema step plus a bump of
 A track is one row in the library database. Its id never changes, so the
 playlist, the history and the saved session refer to it by id.
 
-| part                   | source            | survives a rescan                |
-| ---------------------- | ----------------- | -------------------------------- |
-| path, content type     | where the file is | follows the file                 |
-| tags, duration, format | the file          | re-read when the file changes    |
-| tags edited in the app | the operator      | always                           |
-| cue points             | the operator      | always                           |
-| play count             | airings           | always                           |
-| waveform, fingerprint  | the analysis pass | always                           |
-| loudness               | the analysis pass | always, including a changed file |
-| automatic cue points   | the analysis pass | re-derived when the file changes |
+| part                   | source            | survives a rescan                    |
+| ---------------------- | ----------------- | ------------------------------------ |
+| path, content type     | where the file is | follows the file                     |
+| tags, duration, format | the file          | re-read when the file changes        |
+| tags edited in the app | the operator      | always                               |
+| cue points             | the operator      | always                               |
+| play count             | airings           | always                               |
+| waveform, loudness     | the analysis pass | re-measured when the _audio_ changes |
+| automatic cue points   | the analysis pass | re-derived when the _audio_ changes  |
+| fingerprint            | the scan          | recomputed when the file changes     |
 
-The automatic cue points are the only measurement a changed file gives up, and
-only because the rescan drops the level envelope they are derived from. The
-waveform and the loudness are kept: nothing clears them, so a re-encoded file
-keeps the curve and the ReplayGain of the audio it replaced until something
-else queues it for the pass.
+A file's modification time moving does not mean its audio did. An external
+tagger rewrites every file it touches, and so do `touch`, `rsync` and a share
+remounting — in each case the samples underneath are untouched and every
+measurement still describes them. So the scan re-fingerprints a known path
+whose modification time moved, and the fingerprint decides:
+
+- **the same audio** — nothing measured is disturbed. The tags are re-read and
+  that is all. This is the common case, and re-deriving here would be a full
+  decode per track for nothing.
+- **different audio** — a different recording, so a different track. The row
+  goes [missing](./track-identity.md#missing-not-deleted) and the file enters
+  the library as a track of its own. See
+  [track-identity.md](./track-identity.md#reconciling-a-scan).
+- **no answer** — the file's head could not be demuxed, or the row has no
+  fingerprint yet. The row is kept and its measurements are dropped, so the
+  pass measures the file as it is now. Not knowing costs a re-measurement,
+  because the alternative is a stale ReplayGain reaching air with nothing
+  queued to correct it.
 
 A track remembers which tag fields the operator edited (`edited_fields`). When
 the file changes, the scan re-reads it but keeps those fields. The other fields

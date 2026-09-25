@@ -425,6 +425,10 @@ pub struct Reconcile {
     pub upserts: Vec<TrackInsert>,
     /// Present rows whose file is gone.
     pub gone: Vec<i64>,
+    /// Present rows whose path now holds different audio. Marked missing
+    /// before the new files are matched, so the replacement can take the path
+    /// as a track of its own.
+    pub replaced: Vec<i64>,
     /// Files at paths the library does not hold. Matched by fingerprint
     /// after `gone` is marked, so a file moved within one scan reattaches.
     pub new_files: Vec<TrackInsert>,
@@ -437,6 +441,8 @@ pub struct Reconciled {
     pub reattached: usize,
     pub duplicated: usize,
     pub inserted: usize,
+    /// Rows marked missing because their path now holds different audio.
+    pub replaced: usize,
 }
 
 pub struct MediaTrack {
@@ -1437,6 +1443,21 @@ impl Db {
             );
             let params = std::iter::once(&change.now_ms).chain(chunk);
             done.missing += tx.execute(&sql, params_from_iter(params))?;
+        }
+        // Before the new-path ladder below, for the partial unique index on
+        // `path`: it holds present rows alone, so the row being replaced has to
+        // be missing before its replacement can be inserted at the same path.
+        for chunk in change.replaced.chunks(500) {
+            let sql = format!(
+                "UPDATE tracks SET missing_since = ?1 \
+                 WHERE missing_since IS NULL AND id IN ({})",
+                (0..chunk.len())
+                    .map(|i| format!("?{}", i + 2))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            let params = std::iter::once(&change.now_ms).chain(chunk);
+            done.replaced += tx.execute(&sql, params_from_iter(params))?;
         }
         {
             let mut missing_twin = tx.prepare(
@@ -2706,10 +2727,18 @@ INSERT INTO tracks_fts(tracks_fts) VALUES('rebuild');
 /// `edited_fields` keeps its value. A recorded analysis failure is cleared,
 /// since the upsert only runs for a file that changed.
 ///
-/// The level envelope goes, unlike the markers: it measures audio that is no
-/// longer there, and a recalculation reading it would derive from a file that
-/// has been replaced. The markers stand until a fresh result lands, which is
-/// the existing rule — old positions beat none while the pass catches up.
+/// **What the measurements hang on.** A moved modification time is not a
+/// changed file's audio — an external tagger rewrites every file it touches.
+/// The scan re-fingerprints such a path (`scanner::inspect`), and the
+/// fingerprint hashes packet payload with the tag blocks demuxed away, so it
+/// answers what the measurements actually care about. Each is therefore gated
+/// on `excluded.fingerprint = fingerprint`, keeping it through a tag edit.
+///
+/// `=` propagates `NULL`, so a fingerprint that could not be computed falls to
+/// the dropping side: not knowing costs a re-measurement rather than leaving a
+/// stale ReplayGain on air with nothing queued to correct it. Audio that is
+/// different *and* comparable never reaches here — the scanner routes it to
+/// [`Reconcile::replaced`] — so those two are the only cases this gate decides.
 ///
 /// `isrc` alone has no `edited_fields` guard, because it is the one tag column
 /// the operator cannot edit: the rights registry owns it, so the file always
@@ -2744,9 +2773,19 @@ const UPSERT_TRACK_SQL: &str = "INSERT INTO tracks \
         bpm=excluded.bpm, sample_rate=excluded.sample_rate, \
         bitrate=excluded.bitrate, format=excluded.format, mtime=excluded.mtime, \
         fingerprint=COALESCE(excluded.fingerprint, fingerprint), \
-        auto_cue_state=CASE auto_cue_state WHEN 'auto' THEN 'pending' \
+        waveform=CASE WHEN excluded.fingerprint = fingerprint \
+                 THEN waveform ELSE NULL END, \
+        rg_gain=CASE WHEN excluded.fingerprint = fingerprint \
+                THEN rg_gain ELSE NULL END, \
+        rg_peak=CASE WHEN excluded.fingerprint = fingerprint \
+                THEN rg_peak ELSE NULL END, \
+        rg_measured_at=CASE WHEN excluded.fingerprint = fingerprint \
+                       THEN rg_measured_at ELSE NULL END, \
+        auto_cue_state=CASE WHEN excluded.fingerprint = fingerprint THEN auto_cue_state \
+                       WHEN auto_cue_state = 'auto' THEN 'pending' \
                        ELSE auto_cue_state END, \
-        auto_cue_levels=NULL, \
+        auto_cue_levels=CASE WHEN excluded.fingerprint = fingerprint \
+                        THEN auto_cue_levels ELSE NULL END, \
         analysis_error=NULL, analysis_failed_at=NULL";
 
 /// A database this build must not touch.
@@ -5403,28 +5442,161 @@ mod tests {
         assert_eq!(db.get_waveform(id).unwrap(), Some(peaks));
     }
 
-    #[test]
-    fn metadata_reinsert_preserves_waveform() {
-        let db = Db::open_in_memory().unwrap();
+    /// Set up a measured row at `/wave.mp3` holding the audio `fingerprint`
+    /// identifies: a waveform, a loudness measurement, a level envelope and an
+    /// automatic cue set. Returns its id.
+    fn measured(db: &Db, fingerprint: Option<&str>) -> i64 {
         db.insert_track(&TrackInsert {
             path: "/wave.mp3".into(),
             content_type: "music".into(),
             title: Some("Old".into()),
+            fingerprint: fingerprint.map(Into::into),
             ..Default::default()
         })
         .unwrap();
-        let id = only_id(&db);
+        let id = only_id(db);
         db.set_waveform(id, &[1, 2, 3]).unwrap();
+        db.set_loudness(id, Some(-7.5), Some(0.9), 1234).unwrap();
+        db.conn
+            .lock()
+            .execute(
+                "UPDATE tracks SET auto_cue_levels = x'00', auto_cue_state = 'auto' \
+                 WHERE id = ?",
+                [id],
+            )
+            .unwrap();
+        id
+    }
 
-        // A metadata rescan (upsert on the same path) must not wipe the waveform.
+    /// Everything a rescan of a changed file decides the fate of.
+    #[derive(Debug, PartialEq)]
+    struct Measurements {
+        waveform: Option<Vec<u8>>,
+        rg_measured_at: Option<i64>,
+        auto_cue_levels: Option<Vec<u8>>,
+        auto_cue_state: String,
+    }
+
+    impl Measurements {
+        /// None of them left, which is what queues the track for a fresh
+        /// decode.
+        fn gone() -> Self {
+            Self {
+                waveform: None,
+                rg_measured_at: None,
+                auto_cue_levels: None,
+                auto_cue_state: "pending".into(),
+            }
+        }
+    }
+
+    /// The row's measurements, as the analysis pass's queue reads them.
+    fn measurements(db: &Db, id: i64) -> Measurements {
+        db.conn
+            .lock()
+            .query_row(
+                "SELECT waveform, rg_measured_at, auto_cue_levels, auto_cue_state \
+                 FROM tracks WHERE id = ?",
+                [id],
+                |r| {
+                    Ok(Measurements {
+                        waveform: r.get(0)?,
+                        rg_measured_at: r.get(1)?,
+                        auto_cue_levels: r.get(2)?,
+                        auto_cue_state: r.get(3)?,
+                    })
+                },
+            )
+            .unwrap()
+    }
+
+    /// Re-read the tags of the file at `/wave.mp3`, as a scan does for a path
+    /// whose modification time moved.
+    fn rescan(db: &Db, fingerprint: Option<&str>) {
         db.insert_track(&TrackInsert {
             path: "/wave.mp3".into(),
             content_type: "music".into(),
             title: Some("New".into()),
+            fingerprint: fingerprint.map(Into::into),
             ..Default::default()
         })
         .unwrap();
-        assert_eq!(db.get_waveform(id).unwrap(), Some(vec![1u8, 2, 3]));
+    }
+
+    /// An external tagger rewrites the whole file, so its modification time
+    /// moves and the scan re-reads it — but the audio underneath is untouched
+    /// and every measurement still describes it. Re-measuring here is a full
+    /// decode per track for nothing.
+    #[test]
+    fn a_rescan_of_the_same_audio_keeps_every_measurement() {
+        let db = Db::open_in_memory().unwrap();
+        let id = measured(&db, Some("v2:same"));
+
+        rescan(&db, Some("v2:same"));
+
+        assert_eq!(db.get_track(id).unwrap().unwrap().title, "New", "tags read");
+        assert_eq!(
+            measurements(&db, id),
+            Measurements {
+                waveform: Some(vec![1, 2, 3]),
+                rg_measured_at: Some(1234),
+                auto_cue_levels: Some(vec![0]),
+                auto_cue_state: "auto".into(),
+            }
+        );
+    }
+
+    /// Whether the audio changed is unanswerable when either side has no
+    /// fingerprint — an unreadable head, or a row the analysis pass has not
+    /// reached. Not knowing costs a re-measurement, because the alternative is
+    /// a stale ReplayGain reaching air with nothing queued to correct it.
+    #[test]
+    fn a_rescan_that_cannot_compare_the_audio_drops_the_measurements() {
+        for (stored, found) in [(Some("v2:a"), None), (None, Some("v2:a")), (None, None)] {
+            let db = Db::open_in_memory().unwrap();
+            let id = measured(&db, stored);
+
+            rescan(&db, found);
+
+            assert_eq!(
+                measurements(&db, id),
+                Measurements::gone(),
+                "{stored:?} -> {found:?}"
+            );
+        }
+    }
+
+    /// A fingerprint the row does not recognise never reaches this statement —
+    /// the scanner routes it to `Reconcile::replaced` — but the statement is
+    /// reachable from the revive path too, so it must not leave a measurement
+    /// describing audio that is gone.
+    #[test]
+    fn a_rescan_of_different_audio_drops_the_measurements() {
+        let db = Db::open_in_memory().unwrap();
+        let id = measured(&db, Some("v2:old"));
+
+        rescan(&db, Some("v2:new"));
+
+        assert_eq!(measurements(&db, id), Measurements::gone());
+    }
+
+    /// Ownership outranks the audio changing: a trio the operator authored is
+    /// never handed back to automatic derivation, whatever is in the file now.
+    #[test]
+    fn a_rescan_of_different_audio_leaves_a_manual_cue_set_owned() {
+        let db = Db::open_in_memory().unwrap();
+        let id = measured(&db, Some("v2:old"));
+        db.conn
+            .lock()
+            .execute(
+                "UPDATE tracks SET auto_cue_state = 'manual' WHERE id = ?",
+                [id],
+            )
+            .unwrap();
+
+        rescan(&db, Some("v2:new"));
+
+        assert_eq!(measurements(&db, id).auto_cue_state, "manual");
     }
 
     #[test]

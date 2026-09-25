@@ -41,8 +41,11 @@ _1 moved_.
 - **Files moved before they were fingerprinted.** After the first scan of a new
   library, fingerprints are computed in the background, alongside waveforms. A
   file moved before its fingerprint exists comes back as a new track.
-- **Re-encoded or otherwise changed audio.** Different audio is a different
-  track.
+- **Re-encoded or otherwise changed audio**, wherever it lands — including a
+  file overwritten in place. Different audio is a different track: the old one
+  goes missing, keeping its cue points and play count until you purge it, and
+  the file starts a track of its own. A tag edit in another app is _not_ this
+  case; the fingerprint ignores tags, so the track and its measurements stand.
 - **Files moved out of every library path.** They stay missing until they appear
   under one again.
 - **Two files that swap names** and keep their modification times. Each track
@@ -191,9 +194,20 @@ where needed) on a small thread pool. `Db::reconcile` then applies everything in
 1. **Revive.** A file back at a missing row's path revives that row when the
    fingerprints match, or when either one is unknown. This is the
    remove-and-re-add case, and it works before any fingerprint exists.
-2. **Update** known paths whose file changed (the existing mtime delta cache).
-3. **Mark missing** as above. This runs before step 4, so a file moved within a
-   single scan finds its old row already missing.
+2. **Update** known paths whose file changed (the existing mtime delta cache),
+   but only where the fresh fingerprint matches the stored one, or either is
+   unknown — the same test step 1 applies, for the same reason. A known path
+   that now holds audio its row does not recognise is a **replacement**: the
+   row is marked missing in step 3 and the file goes through step 4 as a new
+   path, where it may reattach elsewhere, duplicate a twin, or be inserted.
+   Measurements taken from the audio — waveform, loudness, the level envelope
+   and the automatic trio — are kept when the fingerprints match and dropped
+   when the answer is unknown. See
+   [library.md](./library.md#tracks).
+3. **Mark missing** as above, replacements included. This runs before step 4,
+   so a file moved within a single scan finds its old row already missing, and
+   so a replacement's row is out of the way of the partial unique index on
+   `path` before its file is inserted there.
 4. For each **new path**, the first match wins:
    1. **Reattach** — a missing row with the same fingerprint (newest
       `missing_since`, then highest id). Only `path`, `content_type`, `mtime`
@@ -214,7 +228,10 @@ A **canceled** scan commits updates and revivals only. New paths wait for the
 next complete scan, because committing them without step 3 could turn a file
 that merely moved into a duplicate.
 
-The scan summary reports how many files moved and how many went missing.
+The scan summary reports how many files moved, how many went missing and how
+many were replaced. A replacement is counted apart from the rest: nothing moved
+or vanished, so "missing" would read as a share dropping out when the file is
+sitting right there.
 
 ## Purge
 
@@ -230,8 +247,12 @@ drops purged tracks from the playlist. Purge stays explicit, with no retention.
 
 ## Accepted limits
 
-- **Moved and re-encoded or re-tagged in one step** — a new track. The old row
-  stays missing until purged.
+- **Moved and re-encoded in one step** — a new track. The old row stays missing
+  until purged. Re-encoding in place is the same case and has the same cost:
+  running a whole library through a normalizer or a transcoder retires every
+  row in it, and the operator's route back is _Settings → Purge_. Moving and
+  re-_tagging_ in one step is not this case — the fingerprint ignores tags, so
+  the track reattaches.
 - **Swapped by rename** (`a` ↔ `b`, with mtimes kept) — each path keeps its row.
   An unchanged path with an unchanged mtime is trusted without being re-read;
   that trust is what keeps a rescan fast.

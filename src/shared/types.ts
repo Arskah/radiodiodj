@@ -276,6 +276,8 @@ export interface ScanResult {
   reattached?: number;
   /** Tracks whose file the scan no longer found. */
   missing?: number;
+  /** Tracks whose file was overwritten with a different recording. */
+  replaced?: number;
 }
 
 export interface NowPlayingConfig {

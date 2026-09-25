@@ -43,11 +43,18 @@
       return `Scan failed: ${s.message}`;
     }
     if (s.status === "idle" && s.lastResult) {
-      const { total, added, reattached = 0, missing = 0 } = s.lastResult;
+      const {
+        total,
+        added,
+        reattached = 0,
+        missing = 0,
+        replaced = 0,
+      } = s.lastResult;
       const parts = [
         added > 0 && `${added} new/updated`,
         reattached > 0 && `${reattached} moved`,
         missing > 0 && `${missing} missing`,
+        replaced > 0 && `${replaced} replaced`,
       ].filter(Boolean);
       const detail = parts.length > 0 ? parts.join(", ") : "no changes";
       return `Scan complete — ${total} tracks (${detail})`;

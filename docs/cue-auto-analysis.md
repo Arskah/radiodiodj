@@ -20,7 +20,7 @@ The nested switch holds back the Next Start and nothing else: the trims still ap
 
 Both switches gate at one place, `effective_cue_points` in `library/db.rs`, so Handover, the air timeline, the cue deck, the cue editor and the library-health report all follow from the library's answer. Nothing in the program bus knows either switch exists — a `NULL` Next Start already resolves to Cue Out, which is a hard cut.
 
-A track whose state is `pending` is held back with the `auto` ones. A requeue — a rescan of a changed file, a reclassification, a move between roots — keeps the trio it was last given while the state goes back to `pending`, and that trio is still analysis's work. Only an operator save reaches `manual`, so a row that is not `manual` holds nothing of theirs.
+A track whose state is `pending` is held back with the `auto` ones. A requeue — a rescan that cannot vouch for the file's audio, a reclassification, a move between roots — keeps the trio it was last given while the state goes back to `pending`, and that trio is still analysis's work. Only an operator save reaches `manual`, so a row that is not `manual` holds nothing of theirs.
 
 Three things are never held back:
 
@@ -356,7 +356,7 @@ Three rules follow from what the table measures:
 
 - a **manually owned** track never gets one. The table feeds automatic derivation, and nothing derives for a track the operator owns;
 - a **fingerprint twin** inherits it, across content types as well as within one. It measures the audio, which the twin shares, and carries no decision about either class — unlike the trio, which does not cross classes;
-- a **changed file** drops it. It measures audio that is no longer there, and deriving from it would produce markers for a file that has been replaced. The trio stands until a fresh result lands, which is the existing rule.
+- a **file whose audio cannot be vouched for** drops it. The scan re-fingerprints a known path whose modification time moved; an unchanged fingerprint means a tag edit and nothing measured is disturbed, and audio that is genuinely different is a different track, so its row goes missing rather than being re-derived. What is left is the case with no answer — an unreadable head, or a row the pass has not fingerprinted yet — and there the envelope goes, because deriving from it could produce markers for a file that has been replaced. The trio stands until a fresh result lands, which is the existing rule. See [track-identity.md](./track-identity.md#reconciling-a-scan).
 
 Existing libraries get the table by backfill through the ordinary analysis pass, not by a synchronous migration: it is a full decode per track. A track picked up for its table alone keeps its markers — re-deriving them there would be exactly the implicit mass re-analysis the next section rules out.
 
@@ -543,10 +543,10 @@ A Track's content type follows the Library path the file sits under, and changes
 
 ## Source-file changes
 
-If the scanner detects that the underlying audio file has changed:
+A file's modification time moving is not evidence that its audio did — an external tagger rewrites every file it touches. The scan re-fingerprints such a path and the fingerprint settles it. Audio that is genuinely different is a different Track, so that row goes missing and the file enters as a new one with no trio to preserve. What reaches this rule is the case the fingerprint cannot answer:
 
 - an automatically owned Cue point set should be scheduled for fresh analysis;
-- a manually owned Cue point set must be preserved.
+- a manually owned Cue point set must be preserved, whatever the fingerprint says. Ownership outranks the audio changing: the operator authored that trio and nothing derives over it.
 
 Do not clear the old automatic values before replacement analysis succeeds.
 

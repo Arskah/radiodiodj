@@ -141,6 +141,17 @@ listed root or outside every root. New paths **reattach** by fingerprint,
 membership is `Path::starts_with`, never `LIKE`. Only _Settings → Purge_
 deletes. See [docs/track-identity.md](docs/track-identity.md).
 
+**A changed file is not changed audio** — an external tagger, `touch` and
+`rsync` all move an mtime without touching a sample. The scan re-fingerprints a
+known path whose mtime moved and the fingerprint decides: same → the tags are
+re-read and **nothing measured is disturbed**; different → a different track,
+so the row goes missing and the file enters through the new-path ladder
+(`Reconcile::replaced`); unknown → the row stands and its measurements are
+dropped. Every measurement in `UPSERT_TRACK_SQL` hangs on
+`excluded.fingerprint = fingerprint`, whose `NULL` propagation _is_ the unknown
+case. Never invalidate a measurement on the mtime alone. See
+[docs/library.md](docs/library.md#tracks).
+
 **Library health** — one report (missing, exact and possible duplicates,
 unreadable tracks, the latest library check), re-emitted as `library-health`
 after scans, the analysis pass, metadata edits, path changes and purges. The app
