@@ -66,6 +66,15 @@ export const EditedField = {
   album: 4,
   genre: 8,
   year: 16,
+  album_artist: 32,
+  track_no: 64,
+  track_total: 128,
+  disc_no: 256,
+  disc_total: 512,
+  initial_key: 1024,
+  comment: 2048,
+  // No bit for `isrc`: the file owns it, so there is nothing to protect from a
+  // rescan and nothing to edit.
 } as const;
 
 /**
@@ -149,7 +158,36 @@ export interface TrackMetadataInput {
   album?: string;
   genre?: string | null;
   year?: number | null;
+  album_artist?: string | null;
+  track_no?: number | null;
+  track_total?: number | null;
+  disc_no?: number | null;
+  disc_total?: number | null;
+  initial_key?: string | null;
+  comment?: string | null;
+  // `isrc` is absent on purpose: the file owns it, so there is nothing to send.
 }
+
+/**
+ * Every editable key of {@link TrackMetadataInput}, in one place. The payload
+ * is a partial patch forwarded key by key, and it is assembled twice — once in
+ * `state`, once in `api` — so a field listed in one and not the other silently
+ * stops being sent. Both walk this list instead.
+ */
+export const METADATA_KEYS = [
+  "title",
+  "artist",
+  "album",
+  "genre",
+  "year",
+  "album_artist",
+  "track_no",
+  "track_total",
+  "disc_no",
+  "disc_total",
+  "initial_key",
+  "comment",
+] as const satisfies readonly (keyof Omit<TrackMetadataInput, "id">)[];
 
 /** A track whose file a scan found gone. */
 export interface MissingTrack {

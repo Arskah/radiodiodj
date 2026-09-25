@@ -24,6 +24,7 @@ import type {
   TrackMetadataInput,
   TuningConfig,
 } from "./types";
+import { METADATA_KEYS } from "./types";
 
 export type PersistedPlaylistItem =
   | { kind: "track"; id: number; cue_override: CuePoints | null }
@@ -396,11 +397,13 @@ export const api = {
     // deserializes to `Some(None)` on the backend). Undefined keys are dropped
     // explicitly rather than relying on the serializer to omit them.
     const payload: TrackMetadataInput = { id: updates.id };
-    if (updates.title !== undefined) payload.title = updates.title;
-    if (updates.artist !== undefined) payload.artist = updates.artist;
-    if (updates.album !== undefined) payload.album = updates.album;
-    if (updates.genre !== undefined) payload.genre = updates.genre;
-    if (updates.year !== undefined) payload.year = updates.year;
+    for (const key of METADATA_KEYS) {
+      if (updates[key] !== undefined) {
+        // Each key's value type differs, and they line up by construction —
+        // the list is derived from the interface's own keys.
+        (payload[key] as unknown) = updates[key];
+      }
+    }
     return invoke<Track>("update_track_metadata", { updates: payload });
   },
   revertTrackTags(id: number): Promise<Track> {

@@ -18,7 +18,7 @@ use anyhow::{bail, Context, Result};
 use lofty::config::WriteOptions;
 use lofty::file::{AudioFile, FileType, TaggedFileExt};
 use lofty::probe::Probe;
-use lofty::tag::{ItemKey, Tag};
+use lofty::tag::{ItemKey, ItemValue, Tag, TagItem};
 use parking_lot::Mutex;
 use serde::Serialize;
 use std::collections::{BTreeMap, VecDeque};
@@ -237,6 +237,32 @@ fn retag(bytes: Vec<u8>, values: &TagValues, path: &Path) -> Result<Vec<u8>> {
     set(tag, ItemKey::AlbumTitle, values.album.clone());
     set(tag, ItemKey::Genre, values.genre.clone());
     set(tag, ItemKey::Year, values.year.map(|y| y.to_string()));
+    set(tag, ItemKey::AlbumArtist, values.album_artist.clone());
+    set(tag, ItemKey::InitialKey, values.initial_key.clone());
+    // Both halves of a pair go together. Writing the number alone would leave
+    // the total behind, and a single `TRCK` frame of "3/12" would come back as
+    // bare "3".
+    set(
+        tag,
+        ItemKey::TrackNumber,
+        values.track_no.map(|n| n.to_string()),
+    );
+    set(
+        tag,
+        ItemKey::TrackTotal,
+        values.track_total.map(|n| n.to_string()),
+    );
+    set(
+        tag,
+        ItemKey::DiscNumber,
+        values.disc_no.map(|n| n.to_string()),
+    );
+    set(
+        tag,
+        ItemKey::DiscTotal,
+        values.disc_total.map(|n| n.to_string()),
+    );
+    set_comment(tag, values.comment.clone());
 
     let mut out = Cursor::new(bytes);
     file.save_to(&mut out, WriteOptions::default())
@@ -250,6 +276,26 @@ fn set(tag: &mut Tag, key: ItemKey, value: Option<String>) {
             tag.insert_text(key, value);
         }
         _ => tag.remove_key(key),
+    }
+}
+
+/// Replace the track's own comment, leaving every *described* one alone.
+///
+/// lofty maps every ID3v2 `COMM` frame onto `ItemKey::Comment`, and
+/// `Tag::remove_key` removes all of them — so the ordinary [`set`] here would
+/// delete iTunes' `iTunSMPB` alongside the operator's note, and with it the
+/// file's gapless-playback data. Only the undescribed entry is ours to touch.
+/// On formats that carry a single undescribed comment this does exactly what
+/// [`set`] would.
+fn set_comment(tag: &mut Tag, value: Option<String>) {
+    tag.retain(|item| item.key() != ItemKey::Comment || !item.description().is_empty());
+    if let Some(value) = value {
+        if !value.is_empty() {
+            // `push`, not `insert_text`: the latter is defined as "replacing any
+            // existing one of the same key", which would drop the described
+            // frames just retained above.
+            tag.push(TagItem::new(ItemKey::Comment, ItemValue::Text(value)));
+        }
     }
 }
 
@@ -386,6 +432,116 @@ mod tests {
                 .filter(|p| p != &self.path)
                 .collect()
         }
+    }
+
+    /// One `TRCK` frame carries both halves, so writing the number without the
+    /// total would turn "3/12" into a bare "3".
+    #[test]
+    fn a_written_track_number_keeps_its_total() {
+        let f = fixture(true);
+        f.db.update_track_metadata(&TrackMetadataUpdate {
+            id: f.id,
+            track_no: Some(Some(3)),
+            track_total: Some(Some(12)),
+            disc_no: Some(Some(1)),
+            disc_total: Some(Some(2)),
+            album_artist: Some(Some("Various".into())),
+            initial_key: Some(Some("8A".into())),
+            ..Default::default()
+        })
+        .unwrap();
+        f.writer.request(f.id);
+        f.wait();
+
+        let on_disk = read_file_tags(&f.path.to_string_lossy()).unwrap();
+        assert_eq!(on_disk.track_no, Some(3));
+        assert_eq!(on_disk.track_total, Some(12));
+        assert_eq!(on_disk.disc_no, Some(1));
+        assert_eq!(on_disk.disc_total, Some(2));
+        assert_eq!(on_disk.album_artist.as_deref(), Some("Various"));
+        assert_eq!(on_disk.initial_key.as_deref(), Some("8A"));
+        assert_eq!(f.track().edited_fields, 0, "flags outlived the write");
+    }
+
+    /// lofty maps every `COMM` frame onto one key and `Tag::remove_key` removes
+    /// all of them, so writing the comment the ordinary way would delete
+    /// iTunes' `iTunSMPB` — the file's gapless-playback data — as a side effect
+    /// of an unrelated edit.
+    #[test]
+    fn writing_a_comment_leaves_the_itunes_frames_alone() {
+        use lofty::config::WriteOptions;
+        use lofty::file::AudioFile;
+        use lofty::tag::{ItemValue, Tag, TagItem};
+
+        let f = fixture(true);
+        {
+            let mut tagged = Probe::open(&f.path).unwrap().read().unwrap();
+            let mut tag = Tag::new(tagged.primary_tag_type());
+            let mut gapless = TagItem::new(
+                ItemKey::Comment,
+                ItemValue::Text("00000000 00000840 000002EA".into()),
+            );
+            gapless.set_description("iTunSMPB".into());
+            tag.push(gapless);
+            tag.push(TagItem::new(
+                ItemKey::Comment,
+                ItemValue::Text("original note".into()),
+            ));
+            tagged.insert_tag(tag);
+            tagged
+                .save_to_path(&f.path, WriteOptions::default())
+                .unwrap();
+        }
+
+        f.db.update_track_metadata(&TrackMetadataUpdate {
+            id: f.id,
+            comment: Some(Some("operator note".into())),
+            ..Default::default()
+        })
+        .unwrap();
+        f.writer.request(f.id);
+        f.wait();
+
+        let tagged = Probe::open(&f.path).unwrap().read().unwrap();
+        let tag = tagged.primary_tag().unwrap();
+        let described: Vec<&str> = tag
+            .get_items(ItemKey::Comment)
+            .filter(|i| i.description() == "iTunSMPB")
+            .filter_map(|i| i.value().text())
+            .collect();
+        assert_eq!(
+            described,
+            ["00000000 00000840 000002EA"],
+            "the gapless frame was destroyed by writing the comment"
+        );
+        let on_disk = read_file_tags(&f.path.to_string_lossy()).unwrap();
+        assert_eq!(on_disk.comment.as_deref(), Some("operator note"));
+    }
+
+    /// The rights registry owns the ISRC, so no edit can reach it and a
+    /// write-back must leave whatever the file holds untouched.
+    #[test]
+    fn a_write_back_never_touches_the_isrc() {
+        use lofty::config::WriteOptions;
+        use lofty::file::AudioFile;
+        use lofty::tag::Tag;
+
+        let f = fixture(true);
+        {
+            let mut tagged = Probe::open(&f.path).unwrap().read().unwrap();
+            let mut tag = Tag::new(tagged.primary_tag_type());
+            tag.insert_text(ItemKey::Isrc, "FIFIN2400123".into());
+            tagged.insert_tag(tag);
+            tagged
+                .save_to_path(&f.path, WriteOptions::default())
+                .unwrap();
+        }
+
+        f.edit("Written");
+        f.wait();
+
+        let on_disk = read_file_tags(&f.path.to_string_lossy()).unwrap();
+        assert_eq!(on_disk.isrc.as_deref(), Some("FIFIN2400123"));
     }
 
     #[test]
