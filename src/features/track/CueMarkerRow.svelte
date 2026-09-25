@@ -183,7 +183,7 @@
     align-items: center;
     gap: 10px;
     padding: 3px 6px;
-    border-radius: 4px;
+    border-radius: var(--r-lg);
     border: 1px solid transparent;
   }
 
@@ -195,7 +195,7 @@
   .cue-swatch {
     width: 10px;
     height: 10px;
-    border-radius: 2px;
+    border-radius: var(--r);
   }
 
   .cue-swatch.cue-in {
@@ -230,7 +230,7 @@
     background: transparent;
     border: 1px solid
       color-mix(in srgb, var(--outline-variant) 40%, transparent);
-    border-radius: 4px;
+    border-radius: var(--r-lg);
     padding: 5px 8px;
     color: var(--on-surface);
     font-family: var(--font-mono);
@@ -267,7 +267,7 @@
     background: transparent;
     border: 1px solid
       color-mix(in srgb, var(--outline-variant) 40%, transparent);
-    border-radius: 4px;
+    border-radius: var(--r-lg);
     color: var(--on-surface-variant);
     cursor: pointer;
   }

@@ -496,5 +496,3 @@ export const api = {
     return typeof dir === "string" ? dir : null;
   },
 };
-
-export type Api = typeof api;

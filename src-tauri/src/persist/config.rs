@@ -639,12 +639,6 @@ impl Config {
     }
 }
 
-/// Clamp tuning values to ranges that keep the backend and renderer safe:
-/// cadences/counters must be >= 1 (a `0` would divide-by-zero or spin), the
-/// refill threshold cannot exceed its buffer, the cache needs a floor so at
-/// least one track can stay resident, and retry/backoff lists must be non-empty
-/// with non-zero delays. Defaults are already in range, so an untouched config
-/// is unchanged.
 /// Trim and cap the station name; an empty name means "use the product name".
 fn normalize_appearance(mut appearance: AppearanceConfig) -> AppearanceConfig {
     appearance.station_name = appearance
@@ -659,6 +653,12 @@ fn normalize_appearance(mut appearance: AppearanceConfig) -> AppearanceConfig {
     appearance
 }
 
+/// Clamp tuning values to ranges that keep the backend and renderer safe:
+/// cadences/counters must be >= 1 (a `0` would divide-by-zero or spin), the
+/// refill threshold cannot exceed its buffer, the cache needs a floor so at
+/// least one track can stay resident, and retry/backoff lists must be non-empty
+/// with non-zero delays. Defaults are already in range, so an untouched config
+/// is unchanged.
 fn normalize_tuning(mut t: TuningConfig) -> TuningConfig {
     let il = &mut t.interleave;
     // 0 disables jingle/commercial insertion entirely.

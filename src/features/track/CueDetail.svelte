@@ -283,7 +283,7 @@
     background: var(--surface-container-lowest);
     border: 1px solid
       color-mix(in srgb, var(--outline-variant) 20%, transparent);
-    border-radius: var(--r-lg, 4px);
+    border-radius: var(--r-lg);
     overflow: hidden;
   }
 

@@ -9,11 +9,6 @@ export type SortColumn =
   | "track_no";
 export type SortDir = "asc" | "desc";
 
-export interface SortOption {
-  column: SortColumn;
-  dir: SortDir;
-}
-
 export interface Track {
   id: number;
   title: string;
@@ -293,7 +288,7 @@ export interface DeviceRef {
   description: string;
 }
 
-/// Playlist interleave cadence.
+/** Playlist interleave cadence. */
 export interface InterleaveConfig {
   jingleEvery: number;
   commercialEvery: number;
@@ -301,7 +296,7 @@ export interface InterleaveConfig {
   commercialBucketMin: number;
 }
 
-/// Renderer-side auto-playlist + session tuning. Read by `state.svelte.ts`.
+/** Renderer-side auto-playlist + session tuning. Read by `state.svelte.ts`. */
 export interface AutoPlaylistConfig {
   autoPlaylistBuffer: number;
   autoPlaylistThreshold: number;
@@ -310,7 +305,7 @@ export interface AutoPlaylistConfig {
   netRetryBackoffsMs: number[];
 }
 
-/// Auto-playlist no-repeat windows, in minutes. Music only; 0 disables a rule.
+/** Auto-playlist no-repeat windows, in minutes. Music only; 0 disables a rule. */
 export interface RotationConfig {
   /** A track that aired inside this window is not selected. */
   titleWindowMin: number;
@@ -318,12 +313,12 @@ export interface RotationConfig {
   artistWindowMin: number;
 }
 
-/// Prefetch byte-cache tuning (bytes).
+/** Prefetch byte-cache tuning (bytes). */
 export interface CacheConfig {
   maxCacheBytes: number;
 }
 
-/// Audio-player network-resilience timeouts (ms).
+/** Audio-player network-resilience timeouts (ms). */
 export interface PlayerConfig {
   readWatchdogTimeoutMs: number;
   openRetryIntervalMs: number;
@@ -339,7 +334,7 @@ export interface PlayerConfig {
 /** How much levelling the player applies to a loaded track. */
 export type ReplayGainMode = "off" | "track";
 
-/// Library health tuning.
+/** Library health tuning. */
 export interface LibraryConfig {
   /** Minutes between library checks; 0 turns the timer off. */
   checkIntervalMin: number;
@@ -349,9 +344,11 @@ export interface LibraryConfig {
   tagWriteTimeoutSec: number;
 }
 
-/// Whether derived cue points are applied, and the levels the analyser works
-/// to, in dBFS. Changing a level affects later analyses only. See
-/// `docs/cue-auto-analysis.md`.
+/**
+ * Whether derived cue points are applied, and the levels the analyser works
+ * to, in dBFS. Changing a level affects later analyses only. See
+ * `docs/cue-auto-analysis.md`.
+ */
 export interface AutoCueConfig {
   /**
    * Whether a derived set takes effect. Off, the analysis still runs and still
@@ -384,7 +381,7 @@ export interface Recalculated {
   manual: number;
 }
 
-/// User-tunable playback behaviour, persisted in `config.json`.
+/** User-tunable playback behaviour, persisted in `config.json`. */
 export interface TuningConfig {
   interleave: InterleaveConfig;
   autoPlaylist: AutoPlaylistConfig;

@@ -110,7 +110,7 @@
 
   .unlock-content {
     background: var(--surface-container);
-    border-radius: 8px;
+    border-radius: var(--r-xl);
     box-shadow: 0 16px 48px
       color-mix(in srgb, var(--shadow-color) 40%, transparent);
     width: min(360px, calc(100% - 32px));
@@ -142,7 +142,7 @@
   input {
     background: transparent;
     border: 1px solid var(--outline-variant);
-    border-radius: 4px;
+    border-radius: var(--r-lg);
     padding: 8px 10px;
     color: var(--on-surface);
     font-size: 14px;
@@ -159,7 +159,7 @@
     font-size: 13px;
     padding: 8px 10px;
     background: color-mix(in srgb, var(--error) 10%, transparent);
-    border-radius: 4px;
+    border-radius: var(--r-lg);
   }
 
   .unlock-footer {
@@ -173,7 +173,7 @@
     border: 1px solid var(--outline-variant);
     color: var(--on-surface-variant);
     padding: 8px 16px;
-    border-radius: 4px;
+    border-radius: var(--r-lg);
     cursor: pointer;
     font-size: 13px;
   }

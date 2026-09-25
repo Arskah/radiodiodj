@@ -492,9 +492,11 @@ export class AppState {
     this.scheduleSave();
   }
 
-  /// Re-query the library. Keeps the current rows on error rather than
-  /// rejecting into a void call, so a query the backend refuses leaves the
-  /// listing usable instead of silently frozen.
+  /**
+   * Re-query the library. Keeps the current rows on error rather than
+   * rejecting into a void call, so a query the backend refuses leaves the
+   * listing usable instead of silently frozen.
+   */
   async search(): Promise<void> {
     try {
       this.tracks = await api.search(
@@ -1103,8 +1105,10 @@ export class AppState {
     this.cueDevice = cue;
   }
 
-  /// Fetch persisted tuning from the backend. Falls back to defaults (already in
-  /// place) on error so a backend hiccup never leaves the app unusable.
+  /**
+   * Fetch persisted tuning from the backend. Falls back to defaults (already in
+   * place) on error so a backend hiccup never leaves the app unusable.
+   */
   async loadTuning(): Promise<void> {
     try {
       this.applyTuning(await api.getTuningConfig());
@@ -1113,9 +1117,11 @@ export class AppState {
     }
   }
 
-  /// Persist edited tuning and adopt the backend's clamped result. Cache/player
-  /// fields only take effect on restart (their worker threads capture them at
-  /// startup); the renderer-side fields applied here take effect immediately.
+  /**
+   * Persist edited tuning and adopt the backend's clamped result. Cache/player
+   * fields only take effect on restart (their worker threads capture them at
+   * startup); the renderer-side fields applied here take effect immediately.
+   */
   async saveTuning(next: TuningConfig): Promise<void> {
     const was = this.tuning?.autoCue;
     this.applyTuning(await api.setTuningConfig(next));
@@ -1158,8 +1164,10 @@ export class AppState {
     }
   }
 
-  /// Adopt a tuning config: store it and rebuild the session-save throttle,
-  /// since its interval is derived from `sessionSaveThrottleMs`.
+  /**
+   * Adopt a tuning config: store it and rebuild the session-save throttle,
+   * since its interval is derived from `sessionSaveThrottleMs`.
+   */
   private applyTuning(tuning: TuningConfig): void {
     this.tuning = tuning;
     this.throttledSave.cancel();
@@ -1169,9 +1177,11 @@ export class AppState {
     );
   }
 
-  /// Fetch and paint the appearance. Awaited before mount, so the first frame
-  /// is already the operator's theme. A failure is never fatal: the app starts
-  /// on the static :root palette and says so in the log.
+  /**
+   * Fetch and paint the appearance. Awaited before mount, so the first frame
+   * is already the operator's theme. A failure is never fatal: the app starts
+   * on the static :root palette and says so in the log.
+   */
   async loadAppearance(): Promise<void> {
     try {
       this.applyAppearance(await api.getAppearance());
@@ -1180,8 +1190,10 @@ export class AppState {
     }
   }
 
-  /// Re-enumerate the themes directory. Called when the Appearance tab opens
-  /// and after a reload, never on a timer — nothing repaints unasked.
+  /**
+   * Re-enumerate the themes directory. Called when the Appearance tab opens
+   * and after a reload, never on a timer — nothing repaints unasked.
+   */
   async loadThemes(): Promise<void> {
     try {
       this.themes = await api.listThemes();
@@ -1202,17 +1214,21 @@ export class AppState {
     this.applyAppearance(await api.clearStationImage(slot));
   }
 
-  /// Adopt the theme the backend resolved and return it, so a caller can read
-  /// `problem` off the result.
+  /**
+   * Adopt the theme the backend resolved and return it, so a caller can read
+   * `problem` off the result.
+   */
   async setTheme(themeId: string): Promise<Appearance> {
     const next = await api.setTheme(themeId);
     this.applyAppearance(next);
     return next;
   }
 
-  /// Re-read the themes directory and re-resolve the active theme. A theme that
-  /// has become invalid leaves the colours on screen alone — the backend falls
-  /// back and reports it in `problem`, mid-show safety over freshness.
+  /**
+   * Re-read the themes directory and re-resolve the active theme. A theme that
+   * has become invalid leaves the colours on screen alone — the backend falls
+   * back and reports it in `problem`, mid-show safety over freshness.
+   */
   async reloadThemes(): Promise<Appearance> {
     const next = await api.reloadThemes();
     this.applyAppearance(next);
@@ -1220,8 +1236,10 @@ export class AppState {
     return next;
   }
 
-  /// Paint a resolved appearance: the backend has already merged and validated
-  /// it, so this only writes it onto <html>.
+  /**
+   * Paint a resolved appearance: the backend has already merged and validated
+   * it, so this only writes it onto <html>.
+   */
   private applyAppearance(next: Appearance): void {
     const root = document.documentElement;
     for (const token of this.#appliedTokens) {
