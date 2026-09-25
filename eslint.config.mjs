@@ -4,6 +4,7 @@ import tseslint from "typescript-eslint";
 export default tseslint.config(
   {
     ignores: [
+      ".svelte-check/**",
       "coverage/**",
       "dist/**",
       "e2e-results/**",

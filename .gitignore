@@ -1,5 +1,6 @@
 .claude/
 .pnpm-store/
+.svelte-check/
 .tmp/
 coverage/
 dist/
