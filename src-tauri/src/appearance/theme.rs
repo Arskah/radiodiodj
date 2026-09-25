@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 /// Every token a theme may set. The same names are the `:root` block of
 /// `src/styles.css` and the key set of each built-in theme; `tools/themeContract.test.ts`
-/// and [`super::builtin`]'s tests keep the three in step.
+/// and [`super::store`]'s tests keep the three in step.
 pub const THEMEABLE_TOKENS: &[&str] = &[
     "--surface",
     "--surface-dim",

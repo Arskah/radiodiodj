@@ -6865,7 +6865,6 @@ mod tests {
         .unwrap();
         let t = db.get_track(1).unwrap().unwrap();
         assert_eq!(t.title, "Updated Title");
-        // Other fields unchanged
         assert_eq!(t.artist, "Old Artist");
         assert_eq!(t.album, "Old Album");
     }
@@ -6874,7 +6873,6 @@ mod tests {
     fn update_track_metadata_clears_nullable_fields() {
         let db = Db::open_in_memory().unwrap();
         insert(&db, "/a.mp3", "Title", "Artist", "Album", "music");
-        // Set genre and year first via a partial update
         db.update_track_metadata(&TrackMetadataUpdate {
             id: 1,
             genre: Some(Some("Rock".into())),
@@ -6886,7 +6884,6 @@ mod tests {
         assert_eq!(t.genre.as_deref(), Some("Rock"));
         assert_eq!(t.year, Some(2020));
 
-        // Clear them to NULL
         db.update_track_metadata(&TrackMetadataUpdate {
             id: 1,
             genre: Some(None),
@@ -6914,7 +6911,6 @@ mod tests {
     fn update_track_metadata_skips_update_when_no_fields_set() {
         let db = Db::open_in_memory().unwrap();
         insert(&db, "/a.mp3", "Original", "Artist", "Album", "music");
-        // No fields set — should return the track unchanged without error
         let t = db
             .update_track_metadata(&TrackMetadataUpdate {
                 id: 1,
@@ -6928,7 +6924,6 @@ mod tests {
     fn fts5_search_finds_genre_and_year_after_update() {
         let db = Db::open_in_memory().unwrap();
         insert(&db, "/a.mp3", "Hello World", "Band", "Album", "music");
-        // FTS5 triggers should pick up changes made via update_track_metadata
         db.update_track_metadata(&TrackMetadataUpdate {
             id: 1,
             genre: Some(Some("Jazz".into())),
@@ -6937,7 +6932,6 @@ mod tests {
         })
         .unwrap();
 
-        // Title should still be found by FTS
         let results = db.search("hello", None, None, None).unwrap();
         assert_eq!(results.len(), 1);
     }

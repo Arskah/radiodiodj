@@ -34,16 +34,13 @@ describe("playback", () => {
       { timeout: 15_000 },
     );
 
-    // Add to playlist via the + button on the track row
     await browser.$(".btn-add").click();
     await browser.$(`${sel.playlist} ${sel.playlistRow}`).waitForExist({
       timeout: 5_000,
     });
 
-    // Double-click playlist row to start playing
     await browser.$(`${sel.playlist} ${sel.playlistRow}`).doubleClick();
 
-    // Wait until time display advances past 0
     await browser.waitUntil(
       async () => parseTime(await browser.$(sel.timeDisplay).getText()) > 0,
       { timeout: 8_000, timeoutMsg: "player time never advanced" },
@@ -51,7 +48,6 @@ describe("playback", () => {
 
     const beforePause = parseTime(await browser.$(sel.timeDisplay).getText());
 
-    // Pause
     await browser.$(sel.btnPlay).click();
     await browser.pause(800);
     const afterPauseA = parseTime(await browser.$(sel.timeDisplay).getText());

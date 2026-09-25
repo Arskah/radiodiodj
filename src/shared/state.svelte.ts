@@ -49,8 +49,10 @@ const logger = {
 
 export type { Track };
 
-// Tuning defaults. Used until `loadTuning()` fetches the persisted config from
-// the backend, and as the fallback if that call fails.
+/**
+ * Tuning defaults. Used until `loadTuning()` fetches the persisted config from
+ * the backend, and as the fallback if that call fails.
+ */
 const DEFAULT_TUNING: TuningConfig = {
   interleave: {
     jingleEvery: 4,
@@ -59,15 +61,10 @@ const DEFAULT_TUNING: TuningConfig = {
     commercialBucketMin: 10,
   },
   autoPlaylist: {
-    // Number of upcoming tracks kept queued by the auto-playlist.
     autoPlaylistBuffer: 20,
-    // Refill threshold — below this the auto-playlist tops back up. Kept lower
-    // than the buffer to avoid excessive refilling.
     autoPlaylistThreshold: 5,
     historyCap: 100,
     sessionSaveThrottleMs: 500,
-    // Backoff schedule (ms) for retrying advancement while nothing playable is
-    // cached (network outage). The last value repeats until recovery.
     netRetryBackoffsMs: [1000, 2000, 5000],
   },
   rotation: { titleWindowMin: 180, artistWindowMin: 45 },
@@ -129,6 +126,7 @@ export class AppState {
     commercial: [],
     jingle: [],
   });
+
   /**
    * Whether `libraryPaths` has been read from the backend yet. The empty
    * object above is indistinguishable from a station with no directories
@@ -139,31 +137,41 @@ export class AppState {
   settingsOpen = $state(false);
   settingsTab = $state<SettingsTab>("library");
   scanStatus = $state<ScanStatus>({ status: "idle", lastResult: null });
-  // Progress of the background waveform pass (runs after the metadata scan).
+  /** Progress of the background waveform pass, which runs after the scan. */
   waveformStatus = $state<WaveformStatus>({ status: "idle" });
 
-  // Playlist state is owned by the backend and mirrored here from
-  // `program:playlist-state` snapshots. Assigning to these fields does not
-  // change what goes to air — the `playlist*` commands do.
+  /**
+   * The queue, mirrored from `program:playlist-state` snapshots. The backend
+   * owns it: assigning here does not change what goes to air, the `playlist*`
+   * commands do. The same holds for every mirrored field below.
+   */
   playlist = $state<PlaylistItem[]>([]);
   upcomingAirTime = $derived(queueAirTime(this.playlist));
-  // The override the track on air is playing under, when it came off an item
-  // that carried one. Mirrored from the snapshot like everything else here.
+
+  /**
+   * The override the track on air is playing under, when it came off an item
+   * that carried one.
+   */
   currentCueOverride = $state<CuePoints | null>(null);
   currentTrack = $state<Track | null>(null);
-  // Which live fade is running, for the button that started it. The ramp itself
-  // is the backend's; this only drives the progress the operator sees, animated
-  // locally over `fadeMs` rather than stepped over IPC.
+
+  /**
+   * Which live fade is running, for the button that started it. The ramp itself
+   * is the backend's; this only drives the progress the operator sees, animated
+   * locally over `fadeMs` rather than stepped over IPC.
+   */
   fading = $state<"out" | "next" | null>(null);
   fadeMs = $state(0);
   autoPlaylistActive = $state(false);
   autoAdvance = $state(true);
-  // What has aired, oldest first. Owned by the backend — this mirrors the
-  // `history` in each snapshot, which is the airing log's tail.
+  /** What has aired, oldest first: the airing log's tail, from the snapshot. */
   history = $state<Track[]>([]);
-  // The outgoing track of a handover while it is still audible on the program
-  // bus: the tail deck's track and how much of it is left. `null` whenever no
-  // overlap is in progress, which is most of the time.
+
+  /**
+   * The outgoing track of a handover while it is still audible on the program
+   * bus: the tail deck's track and how much of it is left. `null` whenever no
+   * overlap is in progress, which is most of the time.
+   */
   tailTrackId = $state<number | null>(null);
   tailDuration = $state(0);
   tailRemaining = $state(0);
@@ -172,41 +180,60 @@ export class AppState {
   volume = $state(1);
   currentTime = $state(0);
   duration = $state(0);
-  // Amplitude-curve peaks (0..=255 per bucket) for the current main-deck track,
-  // rendered behind the seek bar. `null` while none is loaded or the track has
-  // no stored waveform (falls back to a plain progress bar).
+
+  /**
+   * Amplitude-curve peaks (0..=255 per bucket) for the current main-deck track,
+   * rendered behind the seek bar. `null` while none is loaded or the track has
+   * no stored waveform, which falls back to a plain progress bar.
+   */
   waveform = $state<number[] | null>(null);
-  // Base64 `data:` URL of the current main-deck track's embedded cover art,
-  // shown on the spinning vinyl disc. `null` while none is loaded or the track
-  // has no artwork (the disc falls back to a note-icon placeholder).
+
+  /**
+   * Base64 `data:` URL of the current main-deck track's embedded cover art,
+   * shown on the spinning vinyl disc. `null` while none is loaded or the track
+   * has no artwork, which falls back to a note-icon placeholder.
+   */
   coverArt = $state<string | null>(null);
-  // True while no upcoming track is cached and the backend is waiting for the
-  // share to recover. Mirrored from the snapshot.
+
+  /**
+   * True while no upcoming track is cached and the backend is waiting for the
+   * share to recover.
+   */
   awaitingNetwork = $state(false);
-  // True while a prefetch read is failing — the share looks unreachable even
-  // if the current in-RAM track keeps playing. Set by prefetch-failed events,
-  // cleared by the next successful cache-state (a read succeeded).
+
+  /**
+   * True while a prefetch read is failing — the share looks unreachable even if
+   * the current in-RAM track keeps playing. Set by `prefetch-failed`, cleared
+   * by the next `cache-state`, which means a read succeeded.
+   */
   shareUnreachable = $state(false);
-  // True while the main deck cannot open an audio output device (none present,
-  // or the configured one won't open). The backend auto-retries every 2s and
-  // clears this on recovery. Distinct from a network outage: the device, not
-  // the media share, is the problem. See issue #259.
+
+  /**
+   * True while the main deck cannot open an audio output device: none present,
+   * or the configured one won't open. The backend auto-retries and clears it on
+   * recovery. Distinct from a network outage — the device, not the share.
+   */
   outputUnavailable = $state(false);
-  // True from a launch that replaced an older library database until the scan
-  // that repopulates it finishes.
+
+  /**
+   * True from a launch that replaced an older library database until the scan
+   * that repopulates it finishes.
+   */
   libraryReset = $state(false);
-  // Missing tracks, duplicates and disk changes, mirrored from the backend's
-  // `library-health` report.
+  /** Missing tracks, duplicates and disk changes, from `library-health`. */
   health = $state<HealthReport>(structuredClone(EMPTY_HEALTH));
-  // When each missing track went missing, keyed by id — what the playlist,
-  // history and deck badge their rows from.
+
+  /**
+   * When each missing track went missing, keyed by id — what the playlist,
+   * history and deck badge their rows from.
+   */
   missingSince = $derived(
     new Map(this.health.missing.map((t) => [t.id, t.missingSince])),
   );
-  // Findings that want the operator's attention; badges the Settings button.
+  /** Findings that want attention; badges the Settings button. */
   healthAttention = $derived(attentionOf(this.health));
 
-  // Cue deck (independent transport on a separate audio device)
+  // ----- Cue deck (independent transport on a separate audio device) -----
   cueTrack = $state<Track | null>(null);
   cueIsPlaying = $state(false);
   cueIsBuffering = $state(false);
@@ -214,32 +241,38 @@ export class AppState {
   cueDuration = $state(0);
   cueVolume = $state(1);
   cueError = $state<string | null>(null);
-  // True while the cue deck cannot open its audio output device (see
-  // `outputUnavailable` for the main deck). Backend auto-retries and clears it.
+  /** {@link AppState.outputUnavailable}, for the cue deck. */
   cueOutputUnavailable = $state(false);
-  // Amplitude-curve peaks for the current cue-deck track (see `waveform`).
+  /** {@link AppState.waveform}, for the cue deck. */
   cueWaveform = $state<number[] | null>(null);
-  // Cover-art data URL for the current cue-deck track (see `coverArt`).
+  /** {@link AppState.coverArt}, for the cue deck. */
   cueCoverArt = $state<string | null>(null);
-  // Cue points the cue deck was last loaded with, or `null` for an *Absolute*
-  // audition of the whole file. Drives `cueMode` and the cropped waveform.
+
+  /**
+   * Cue points the cue deck was last loaded with, or `null` for an *Absolute*
+   * audition of the whole file. Drives `cueMode` and the cropped waveform.
+   */
   cueAppliedPoints = $state<CuePoints | null>(null);
 
-  // Audio device config
+  // ----- Audio device config -----
   audioDevices = $state<DeviceInfo[]>([]);
   mainDevice = $state<DeviceRef | null>(null);
   cueDevice = $state<DeviceRef | null>(null);
 
-  // Initialized to defaults; `loadTuning()` replaces it with the persisted
-  // config at startup. Read for auto-playlist/history/retry behaviour and
-  // edited by the Settings → Advanced tab.
+  /**
+   * Initialized to defaults; `loadTuning()` replaces it with the persisted
+   * config at startup. Read for auto-playlist, history and retry behaviour,
+   * and edited by the Settings → Advanced tab.
+   */
   tuning = $state<TuningConfig>(structuredClone(DEFAULT_TUNING));
 
-  // The resolved appearance. Replaced by `loadAppearance()` before the app
-  // mounts; until then the static :root palette in styles.css is what paints.
+  /**
+   * The resolved appearance. Replaced by `loadAppearance()` before the app
+   * mounts; until then the static `:root` palette in `styles.css` paints.
+   */
   appearance = $state<Appearance | null>(null);
 
-  /** Token names currently set on <html>, so a theme switch can clear them. */
+  /** Token names currently set on &lt;html>, so a theme switch can clear them. */
   #appliedTokens: string[] = [];
 
   /**
@@ -250,19 +283,18 @@ export class AppState {
     return this.appearance?.stationName ?? APP_NAME;
   }
 
-  // Every theme the operator can pick, invalid ones included — a theme that
-  // "didn't show up" is the worst failure mode for a drop-in-a-folder feature.
+  /** Every theme the operator can pick, invalid ones included. */
   themes = $state<ThemeListing[]>([]);
 
   hoveredTrack = $state<Track | null>(null);
   hoverX = $state(0);
   hoverY = $state(0);
 
-  // Track whose tags are open in the metadata overlay. "Edit" in this codebase
-  // means metadata and nothing else; playback markers are cue points (#279).
+  /** Track whose tags are open in the metadata overlay. */
   editingMetadata = $state<Track | null>(null);
-  // Track whose cue points are open in the cue-point editor.
+  /** Track whose cue points are open in the cue-point editor. */
   editingCuePoints = $state<Track | null>(null);
+
   /**
    * Set by the cue editor: its draft differs from the stored markers. Read when
    * an automatic result lands for the track being edited — see
@@ -270,8 +302,10 @@ export class AppState {
    */
   cueEditorDirty = $state(false);
 
-  // Admin mode, mirrored from the backend. With no password set the app is
-  // always admin. See docs/admin-mode.md.
+  /**
+   * Admin mode, mirrored from the backend. With no password set the app is
+   * always admin. See `docs/admin-mode.md`.
+   */
   admin = $state<AdminStatus>({
     passwordSet: false,
     unlocked: true,
@@ -317,17 +351,12 @@ export class AppState {
           this.isBuffering = event.buffering;
           break;
         case "cache-state":
-          // A read succeeded, so the share is reachable again.
           this.shareUnreachable = false;
           break;
         case "prefetch-failed":
-          // A prefetch read failed — flag the share as unreachable so the UI
-          // can warn even while an in-RAM track keeps playing.
           this.shareUnreachable = true;
           break;
         case "output-unavailable":
-          // No audio device could be opened (or it recovered). The backend
-          // auto-retries; the banner shows until a device is available.
           this.outputUnavailable = event.unavailable;
           break;
         case "error":
@@ -481,8 +510,10 @@ export class AppState {
     return null;
   }
 
-  // Drives the "Reconnecting…" banner: playback is blocked waiting for the
-  // share, or a prefetch read is currently failing.
+  /**
+   * Drives the "Reconnecting…" banner: playback is blocked waiting for the
+   * share, or a prefetch read is currently failing.
+   */
   get reconnecting(): boolean {
     return this.awaitingNetwork || this.shareUnreachable;
   }
@@ -1245,7 +1276,7 @@ export class AppState {
 
   /**
    * Paint a resolved appearance: the backend has already merged and validated
-   * it, so this only writes it onto <html>.
+   * it, so this only writes it onto &lt;html>.
    */
   private applyAppearance(next: Appearance): void {
     const root = document.documentElement;
@@ -1280,10 +1311,7 @@ export class AppState {
   async setCueDeviceConfig(device: DeviceRef | null): Promise<void> {
     await api.setCueDevice(device);
     this.cueDevice = device;
-    if (device === null) {
-      // Cue disabled — clear local cue state.
-      this.cueStop();
-    }
+    if (device === null) this.cueStop();
   }
 
   async loadStats(): Promise<void> {
@@ -1301,9 +1329,8 @@ export class AppState {
     }
     const { state } = result;
     if (result.libraryReset) void this.noteLibraryReset();
-    // Master level is fixed at unity (#354): the volume slider left the operator
-    // UI, so a persisted value from an older session would be unrecoverable.
-    // Normalization is ReplayGain's job (#80), not the operator's.
+    // Master level is fixed at unity: the volume slider left the operator UI,
+    // so a persisted value from an older session would be unrecoverable.
     this.setVolume(1);
     this.setCueVolume(state.cueVolume);
 
@@ -1509,7 +1536,6 @@ export class AppState {
     if (index != null) {
       this.tracks[index] = updated;
     }
-    // If the currently playing track was edited, keep its title for document.title.
     if (this.currentTrack?.id === updated.id) {
       this.currentTrack = updated;
       if (oldTitle && oldTitle !== updated.title) {

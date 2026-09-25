@@ -22,11 +22,13 @@ export interface Track {
   sample_rate?: number | null;
   bitrate?: number | null;
   format?: string;
+
   /**
    * Album artist. On a compilation this is the only field naming the act the
    * record belongs to — every track's `artist` differs.
    */
   album_artist?: string | null;
+
   /**
    * Position on the record. The total sits beside the number because one tag
    * frame carries both, and a write-back sending only the number would drop
@@ -41,12 +43,14 @@ export interface Track {
   /** Musical key as the tagger wrote it — `Am` by the spec, `8A` in practice. */
   initial_key?: string | null;
   comment?: string | null;
+
   /**
    * The track's radio edit. Milliseconds from the start of the file, every
    * marker nullable. Optional here only so test fixtures need not spell it
    * out — the backend sends it on every track.
    */
   cue_points?: CuePoints;
+
   /**
    * Tag fields edited in the app, as {@link EditedField} bits. A rescan keeps
    * them instead of taking the file's tags.
@@ -102,6 +106,7 @@ export interface DeckRoleEntry {
 export type PlaylistTrackItem = {
   kind: "track";
   track: Track;
+
   /**
    * Cue points for this one airing, overriding the track's radio edit. Absent
    * — the common case — means the item references the track, so correcting a
@@ -298,10 +303,17 @@ export interface InterleaveConfig {
 
 /** Renderer-side auto-playlist + session tuning. Read by `state.svelte.ts`. */
 export interface AutoPlaylistConfig {
+  /** How many upcoming tracks the auto-playlist keeps queued. */
   autoPlaylistBuffer: number;
+  /** Queue length below which it tops back up. Lower than the buffer. */
   autoPlaylistThreshold: number;
   historyCap: number;
   sessionSaveThrottleMs: number;
+
+  /**
+   * Backoff schedule (ms) for retrying advancement while nothing playable is
+   * cached. The last value repeats until the share recovers.
+   */
   netRetryBackoffsMs: number[];
 }
 
@@ -356,6 +368,7 @@ export interface AutoCueConfig {
    * costs no second pass over the library.
    */
   apply: boolean;
+
   /**
    * Whether a derived Next Start takes effect. Off, a music track the analyser
    * owns hands over at its Cue Out instead of overlapping the incoming item;

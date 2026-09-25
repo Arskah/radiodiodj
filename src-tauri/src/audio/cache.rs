@@ -188,7 +188,6 @@ fn prefetch_worker(inner: Arc<Mutex<Inner>>, app: AppHandle, rx: Receiver<()>) {
 }
 
 fn run_prefetch(inner: &Arc<Mutex<Inner>>, app: &AppHandle) {
-    // Snapshot the window, generation, and byte cap we are fetching for.
     let (window, generation, cap) = {
         let guard = inner.lock();
         (guard.window.clone(), guard.generation, guard.cap)
@@ -233,7 +232,6 @@ fn run_prefetch(inner: &Arc<Mutex<Inner>>, app: &AppHandle) {
             if guard.generation != generation {
                 return;
             }
-            // Only insert if the id is still in the window.
             if !guard.window.iter().any(|(w, _)| w == id) {
                 continue;
             }

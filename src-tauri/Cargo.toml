@@ -11,6 +11,25 @@ rust-version = "1.95"
 name = "radiodiodj_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# Doc-comment hygiene, so the Rust side of the comment convention is enforced
+# rather than remembered. CI runs clippy with `-D warnings`, and the `cargo doc`
+# step next to it is what reaches the rustdoc group. See AGENTS.md → Comments.
+[lints.rust]
+# No doc group exists here; `missing_docs` is the whole of it.
+missing_docs = "warn"
+
+[lints.clippy]
+# `doc_markdown` is named rather than taken with its group: it lives in
+# `clippy::pedantic`, which has no doc-only subgroup and whose other 80-odd
+# warnings here are about casts and formatting, not comments.
+doc_markdown = "warn"
+
+# Taken whole, so a doc lint a later toolchain adds to the group arrives already
+# enabled. `priority` lets a specific lint below override the group if one ever
+# has to be loosened; nothing needs it today.
+[lints.rustdoc]
+all = { level = "deny", priority = -1 }
+
 [build-dependencies]
 tauri-build = { version = "=2.6.3", features = [] }
 

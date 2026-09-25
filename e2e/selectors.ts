@@ -22,17 +22,23 @@ export const sel = {
   btnStop: "#btn-stop",
   btnNext: "#btn-next",
   btnPrev: "#btn-prev",
-  // Scoped to the main deck: `.time-pill` alone also matches the cue deck's,
-  // and only resolved to this one because #now-playing happens to come first.
+
+  /**
+   * Scoped to the main deck: `.time-pill` alone also matches the cue deck's,
+   * and only resolved to this one because `#now-playing` comes first.
+   */
   timeDisplay: "#progress-bar .time-pill",
   npTitle: "#np-title",
   editButton: ".btn-edit",
   contextMenu: "#context-menu",
-  // Scope this from the menu element: WebdriverIO's `*=` text selectors accept
-  // only a tag with one class/id/attribute, never a descendant combinator.
+
+  /**
+   * Scope this from the menu element: WebdriverIO's `*=` text selectors
+   * accept only a tag with one class/id/attribute, never a descendant
+   * combinator.
+   */
   contextMenuItem: (label: string) => `button[role="menuitem"]*=${label}`,
-  // "Editor" in this codebase means metadata and nothing else; playback markers
-  // are cue points (#279), with their own dialog.
+  /** Metadata only — playback markers have their own dialog. */
   metadataDialog: "#metadata-dialog",
   metadataTitle: "#metadata-title",
   metadataArtist: "#metadata-artist",
@@ -69,10 +75,13 @@ export const sel = {
   cueStop: "#cue-deck .btn-cue-stop",
   cueEditPoints: "#cue-deck .btn-cue-points",
   cuePromote: "#cue-deck .btn-cue-promote",
-  // Scoped: the main deck has its own `.segmented` group (Auto/Manual).
+  /** Scoped: the main deck has its own `.segmented` group (Auto/Manual). */
   cueModeActive: '#cue-deck .segmented button[aria-pressed="true"]',
 
-  // Settings tabs carry no ids; WebdriverIO's `*=` accepts a tag plus one class.
+  /**
+   * Settings tabs carry no ids; WebdriverIO's `*=` accepts a tag plus one
+   * class.
+   */
   settingsTab: (label: string) => `button.settings-tab*=${label}`,
   cueDeviceSelect: "#cue-device",
   themeRow: (id: string) => `#appearance-theme-${id}`,

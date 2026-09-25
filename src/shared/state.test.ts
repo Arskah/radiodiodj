@@ -2197,7 +2197,7 @@ describe("AppState updateTrackMetadata", () => {
   it("updates a track not indexed in the byIndex map (not found)", async () => {
     const updated = t(8, { album: "Tour" });
     api.updateTrackMetadata.mockResolvedValue(updated);
-    // Track id=8 has index that doesn't exist in app.tracks (byIndex only stores [7→0])
+    // Id 8 is absent from `app.tracks`, so `byIndex` has no entry for it.
     app.tracks = [
       {
         id: 7,
@@ -2247,7 +2247,6 @@ describe("AppState updateTrackMetadata", () => {
     api.updateTrackMetadata.mockResolvedValue(updated);
     app.currentTrack = t(10, { title: "SameTitle" });
     await app.updateTrackMetadata(10, { artist: "Band" });
-    // document.title should remain the default "" (reset on stop or never set)
   });
 
   it("schedules save after update", async () => {
@@ -2256,10 +2255,9 @@ describe("AppState updateTrackMetadata", () => {
       const updated = t(5);
       api.updateTrackMetadata.mockResolvedValue(updated);
       app.tracks = [t(5)];
-      // Call updateTrackMetadata first — this will trigger scheduleSave.
       await app.updateTrackMetadata(5, { title: "x" });
       const callsBeforeFlush = api.saveSession.mock.calls.length;
-      // The throttled timer hasn't fired yet (no timers advanced).
+      // No timers advanced, so the throttled save has not fired.
       expect(callsBeforeFlush).toBeLessThanOrEqual(1);
     } finally {
       vi.useRealTimers();

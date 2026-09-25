@@ -15,11 +15,13 @@ export const APP_BINARY: string = path.join(
 const RESULTS_DIR = path.join(REPO_ROOT, "e2e-results");
 const APP_IDENTIFIER = "com.radiodiodj";
 
-// Fixed XDG_DATA_HOME for the whole run. Each test rewrites
-// `${XDG_DATA_HOME}/${APP_IDENTIFIER}/config.json` and forces an app respawn via
-// `browser.reloadSession()`. The env var is set BEFORE tauri-driver spawns so
-// the child app inherits it; tauri-driver does not honour mid-run capability
-// changes for `tauri:options.env`.
+/**
+ * Fixed `XDG_DATA_HOME` for the whole run. Each test rewrites
+ * `${XDG_DATA_HOME}/${APP_IDENTIFIER}/config.json` and forces an app respawn
+ * via `browser.reloadSession()`. The env var is set BEFORE tauri-driver
+ * spawns so the child app inherits it; tauri-driver does not honour mid-run
+ * capability changes for `tauri:options.env`.
+ */
 export const E2E_XDG_DATA_HOME: string = fs.mkdtempSync(
   path.join(os.tmpdir(), "radiodiodj-e2e-xdg-"),
 );

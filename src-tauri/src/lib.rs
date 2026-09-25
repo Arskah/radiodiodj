@@ -1,3 +1,12 @@
+//! The backend: the Tauri command surface and the state every command
+//! reaches through.
+//!
+//! The domains behind it live in their own modules — `audio`, `library`,
+//! `playlist`, `broadcast`, `appearance`, `persist` and `admin`. What is here
+//! is the boundary: one `#[tauri::command]` per renderer call, [`AppState`]
+//! holding the handles they share, and [`run`] wiring the two together. See
+//! `docs/architecture.md`.
+
 use parking_lot::Mutex;
 use serde::Serialize;
 use std::collections::HashSet;
@@ -15,6 +24,7 @@ mod playlist;
 use audio::cache::Cache;
 use audio::devices::{list_output_devices, DeviceInfo};
 
+/// The product name, as it appears in window titles and dialogs.
 pub const APP_NAME: &str = "RadiodioDJ";
 
 use admin::{AdminLock, AdminStatus};
@@ -70,6 +80,10 @@ fn refuse_to_start(app: &AppHandle, refusal: &OpenError) {
         .show(move |_| handle.exit(1));
 }
 
+/// Everything a command handler can reach, managed by Tauri.
+///
+/// The argument is named `app` in handlers, not `state`: a command argument
+/// called `state` collides with the `State<AppState>` injection.
 pub struct AppState {
     db: Arc<Db>,
     config: Arc<Config>,
@@ -1004,6 +1018,8 @@ fn admin_set_idle_lock_min(state: State<'_, AppState>, minutes: u64) -> Result<(
     state.admin.set_idle_lock_min(minutes).map_err(err)
 }
 
+/// Build the Tauri app and run it: plugins, then the data directory and the
+/// library, then the decks, the playlist and the background jobs.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let log_level = std::env::var("RUST_LOG")

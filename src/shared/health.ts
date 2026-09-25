@@ -30,7 +30,7 @@ export function healthAttention(report: HealthReport): number {
   return count;
 }
 
-/** "just now", "5 min ago", "3 h ago", "2 d ago". */
+/** Relative time, as "just now", "5 min ago", "3 h ago" or "2 d ago". */
 export function formatAgo(ms: number, now = Date.now()): string {
   const minutes = Math.floor((now - ms) / 60_000);
   if (minutes < 1) return "just now";

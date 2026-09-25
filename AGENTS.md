@@ -193,6 +193,46 @@ can lock but never unlock. Not a security boundary. See
 (`CuePointOverlay.svelte`, `app.editingCuePoints`). The rest of the vocabulary
 is [CONTEXT.md](CONTEXT.md).
 
+## Comments
+
+A comment earns its place by explaining something the code cannot: an ordering
+hazard, why a listener uses capture, which of two plausible readings of an
+invariant is the real one. One that narrates the next line, or re-argues the
+issue the change came from, is noise — the commit and the issue already carry
+it. When in doubt, write fewer.
+
+Doc comments are the exception and survive on their own: a caller reads them
+without the git history. They go on every exported or public member.
+
+- **TypeScript and Svelte** — `/** … */`, never `///`. Rust-style doc comments
+  read as ordinary line comments here, invisible to every tool that consumes
+  JSDoc, so `local/no-rust-doc-comments` rejects them. No types in the prose
+  (`@param {number}`): TypeScript states them once already.
+- **Rust** — `///` on items, `//!` at the top of a module, `//` inside a body
+  and on a local. A `//` block directly above an item is for a note about the
+  `#[allow]` under it, not for the item's own documentation.
+- Code identifiers are backticked in both. `clippy::doc_markdown` enforces it
+  on the Rust side; the prose words it should leave alone are the allowlist in
+  `src-tauri/clippy.toml`.
+
+Both linters are configured **strict baseline first, loosened after**, so a rule
+a later version adds arrives already enabled instead of waiting to be noticed:
+
+- `eslint.config.mjs` extends all four of eslint-plugin-jsdoc's
+  `*-typescript-error` categories — every rule it has, taken whole — and then
+  switches four off in one block that says why. Three of those demand a doc
+  comment per declaration and a tag per parameter and return, which is the
+  opposite of the rule above; the fourth wants `@example`.
+- `src-tauri/Cargo.toml` takes `rustdoc::all` the same way, with `priority = -1`
+  so a specific lint can override it if one ever has to be. `missing_docs` and
+  `clippy::doc_markdown` are named instead, for want of a group: the first is a
+  lint on its own, and the second lives in `clippy::pedantic`, whose other
+  warnings here are about casts, not comments.
+
+Adding a loosening means adding a line with a reason, not editing a list of
+what is on. `pnpm lint` gates the renderer, `cargo clippy` the backend, and CI
+runs `cargo doc` next to clippy because the rustdoc group only fires there.
+
 ## Gotchas
 
 - A new colour token must land in three places — the `:root` block in

@@ -164,8 +164,9 @@ pub const LEVELS: usize = (LEVEL_MAX_DBFS - LEVEL_MIN_DBFS + 1) as usize;
 /// whole library against a table of crossings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Envelope {
-    /// One code per window, in order. See [`Envelope::code_of`] for what a code
-    /// means; a window's code is all the detector needs of it.
+    /// One code per window, in order: the number of resolved levels that window
+    /// is strictly above, as [`code_of`] assigns them. A window's code is all
+    /// the detector needs of it.
     codes: Vec<u8>,
     /// Decoded length of the file, as [`RmsWindows::duration_ms`].
     duration_ms: i64,
@@ -257,9 +258,6 @@ impl Envelope {
     /// its duration here — so this is the authority on whether a stored
     /// envelope is usable, and callers treat a `None` as "decode this track
     /// again" rather than as an error.
-    // The first production reader lands with the recalculation command; until
-    // then only the round-trip tests call it.
-    #[allow(dead_code)]
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         if bytes.len() < LEVELS_HEADER_LEN || bytes[0] != LEVELS_FORMAT_VERSION {
             return None;

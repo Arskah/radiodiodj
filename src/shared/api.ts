@@ -97,6 +97,7 @@ export const api = {
   getTracksByIds(ids: number[]): Promise<Track[]> {
     return invoke<Track[]>("get_tracks_by_ids", { ids });
   },
+
   /**
    * Fetch a track's amplitude-curve peaks (one byte per bucket, 0..=255) for
    * the seek UI, or `null` when the track has no stored waveform.
@@ -104,6 +105,7 @@ export const api = {
   getWaveform(id: number): Promise<number[] | null> {
     return invoke<number[] | null>("get_waveform", { id });
   },
+
   /**
    * Decode a track into the cue editor's fine curve: one byte (0..=255) per
    * 10 ms of audio. Computed on demand, so this can take a few seconds.
@@ -112,6 +114,7 @@ export const api = {
     const buf = await invoke<ArrayBuffer>("get_waveform_detail", { id });
     return new Uint8Array(buf);
   },
+
   /**
    * Fetch a track's embedded cover art as a base64 `data:` URL for the deck's
    * vinyl disc, or `null` when the file has no artwork. Read on demand.
@@ -128,6 +131,7 @@ export const api = {
   trackPlayed(id: number): Promise<void> {
     return invoke<void>("track_played", { id });
   },
+
   /**
    * Whether the main deck is playing right now. `pause-state` is an event, so a
    * window that attaches late — a reload, or a session the backend restored
@@ -136,6 +140,7 @@ export const api = {
   mainDeckIsPlaying(): Promise<boolean> {
     return invoke<boolean>("main_deck_is_playing");
   },
+
   /**
    * Ramp the on-air deck to silence and stop it. The playlist stays where it
    * is, as it does for Stop. Omit `ms` to use the configured duration.
@@ -143,6 +148,7 @@ export const api = {
   mainDeckFadeOut(ms?: number): Promise<void> {
     return invoke<void>("main_deck_fade_out", { ms: ms ?? null });
   },
+
   /**
    * Start the next item now and fade the outgoing track out underneath it.
    * With nothing armed to overlap with, the fade ends the track instead and
@@ -162,6 +168,7 @@ export const api = {
       callback(e.payload),
     );
   },
+
   /**
    * Which program deck holds which role, and what is on it. The transport and
    * Now playing speak role-mapped `main-deck:*` events instead; this is what
@@ -185,6 +192,7 @@ export const api = {
   playlistAdd(id: number): Promise<void> {
     return invoke<void>("playlist_add", { id });
   },
+
   /**
    * Insert at the head as next-up — cue promotion. `cuePoints` overrides the
    * track's radio edit for that one airing; `null` references the track.
@@ -257,6 +265,7 @@ export const api = {
   removePath(type: ContentType, dirPath: string): Promise<boolean> {
     return invoke<boolean>("remove_path", { type, dirPath });
   },
+
   /**
    * Permanently delete the given missing tracks. Ids of tracks that are not
    * missing are ignored; resolves to how many were deleted.
@@ -264,6 +273,7 @@ export const api = {
   purgeTracks(ids: number[]): Promise<number> {
     return invoke<number>("purge_tracks", { ids });
   },
+
   /**
    * Apply the current automatic-analysis thresholds to material already in
    * the library. Rejects while a scan is running.
@@ -309,6 +319,7 @@ export const api = {
   ): Promise<UnlistenFn> {
     return listen<ScanStatus>("scan-state-changed", (e) => callback(e.payload));
   },
+
   /**
    * Fires when the background worker has stored a track's waveform. Payload is
    * the track id; the renderer refetches the curve if that track is loaded.
@@ -316,6 +327,7 @@ export const api = {
   onWaveformReady(callback: (id: number) => void): Promise<UnlistenFn> {
     return listen<number>("waveform-ready", (e) => callback(e.payload));
   },
+
   /**
    * Fires when the background worker has derived a track's cue points. Every
    * copy of the track the UI holds takes the new markers, since durations are
@@ -346,6 +358,7 @@ export const api = {
       callback(e.payload),
     );
   },
+
   /**
    * Fires when the tag backfill starts and when it finishes. Going idle is the
    * signal that tag columns changed under whatever the library panel last
@@ -382,8 +395,11 @@ export const api = {
   getTuningConfig(): Promise<TuningConfig> {
     return invoke<TuningConfig>("get_tuning_config");
   },
-  // Returns the clamped config the backend actually persisted, so the UI can
-  // reflect any values that were coerced into range.
+
+  /**
+   * Returns the clamped config the backend actually persisted, so the UI can
+   * reflect any values that were coerced into range.
+   */
   setTuningConfig(config: TuningConfig): Promise<TuningConfig> {
     return invoke<TuningConfig>("set_tuning_config", { config });
   },
@@ -393,17 +409,18 @@ export const api = {
   broadcastShutdown(): Promise<void> {
     return invoke<void>("broadcast_shutdown");
   },
+
+  /**
+   * Partial patch (RFC 7396 style): an absent key leaves that column
+   * unchanged, a present value sets it (the empty string included), and a
+   * present `null` clears it — a JSON `null` deserializes to `Some(None)` on
+   * the backend. Undefined keys are dropped here rather than left to the
+   * serializer to omit.
+   */
   updateTrackMetadata(updates: TrackMetadataInput): Promise<Track> {
-    // Partial patch (RFC 7396 style): forward only the keys the caller set.
-    // Absent key → leave unchanged; present value → set (empty string
-    // included); present `null` → clear the column (a present JSON `null`
-    // deserializes to `Some(None)` on the backend). Undefined keys are dropped
-    // explicitly rather than relying on the serializer to omit them.
     const payload: TrackMetadataInput = { id: updates.id };
     for (const key of METADATA_KEYS) {
       if (updates[key] !== undefined) {
-        // Each key's value type differs, and they line up by construction —
-        // the list is derived from the interface's own keys.
         (payload[key] as unknown) = updates[key];
       }
     }
@@ -418,8 +435,11 @@ export const api = {
   dismissTagWrite(id: number): Promise<void> {
     return invoke<void>("dismiss_tag_write", { id });
   },
-  // Returns the clamped points the backend actually stored, so the UI reflects
-  // any marker that was coerced into order or inside the file.
+
+  /**
+   * Returns the clamped points the backend actually stored, so the UI reflects
+   * any marker that was coerced into order or inside the file.
+   */
   setCuePoints(id: number, points: CuePoints): Promise<CuePoints> {
     return invoke<CuePoints>("set_cue_points", { id, points });
   },
@@ -449,6 +469,7 @@ export const api = {
       callback(e.payload),
     );
   },
+
   /**
    * The resolved appearance to paint. Called before the app mounts, so it must
    * stay ungated — a launch starts locked.
