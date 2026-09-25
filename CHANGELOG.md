@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.23.0](https://github.com/Arskah/radiodiodj/compare/v0.22.0...v0.23.0) (2026-09-25)
+
+
+### Features
+
+* **library:** backfill tag columns a row predates ([#464](https://github.com/Arskah/radiodiodj/issues/464)) ([a7ab78e](https://github.com/Arskah/radiodiodj/commit/a7ab78e967ba575f7df710606febb7cb57e967a2))
+* **library:** edit the new tag fields and write them back ([#466](https://github.com/Arskah/radiodiodj/issues/466)) ([fb94ad3](https://github.com/Arskah/radiodiodj/commit/fb94ad3a3682589ecd8a1ec2fc0634f42f418e58))
+* **library:** read the rest of the tag metadata ([#463](https://github.com/Arskah/radiodiodj/issues/463)) ([3ced312](https://github.com/Arskah/radiodiodj/commit/3ced3125a2fce440be963ed0d14d14266324051b))
+* **library:** recalculate automatic cue points on demand ([#454](https://github.com/Arskah/radiodiodj/issues/454)) ([b1e4c35](https://github.com/Arskah/radiodiodj/commit/b1e4c35100da4833da137d73660149f3b5d97b3a))
+* **library:** show the track number and sort by album order ([#465](https://github.com/Arskah/radiodiodj/issues/465)) ([d30b83d](https://github.com/Arskah/radiodiodj/commit/d30b83d7e741178020041af001d685223fb5f827))
+* **library:** store the level envelope with every automatic cue result ([#453](https://github.com/Arskah/radiodiodj/issues/453)) ([c4d50fb](https://github.com/Arskah/radiodiodj/commit/c4d50fb7974853c8dc10b1e2bfd2bd1daab853ae))
+
+
+### Bug Fixes
+
+* **deps:** update dependency material-symbols to v0.47.5 ([#462](https://github.com/Arskah/radiodiodj/issues/462)) ([2a36a9a](https://github.com/Arskah/radiodiodj/commit/2a36a9a639d63661c10dc23fd151cc6feca347b9))
+* **library:** let the fingerprint decide what a rescan invalidates ([#470](https://github.com/Arskah/radiodiodj/issues/470)) ([02fec20](https://github.com/Arskah/radiodiodj/commit/02fec20a2794f3fa6d1896d4f1f61fcb0b2b479a)), closes [#460](https://github.com/Arskah/radiodiodj/issues/460)
+* **library:** let the operator stop the analysis pass ([#468](https://github.com/Arskah/radiodiodj/issues/468)) ([9b341dd](https://github.com/Arskah/radiodiodj/commit/9b341ddc2af66bb0412db20935cbb8e5376d1951)), closes [#455](https://github.com/Arskah/radiodiodj/issues/455)
+* **library:** read cover-art-heavy MP3s; split the settings overlay ([#472](https://github.com/Arskah/radiodiodj/issues/472)) ([b9f39fb](https://github.com/Arskah/radiodiodj/commit/b9f39fb99e79de35f870ecad07a71ba5e69d0ce9))
+* **settings:** let the Library tab read its own directories ([#477](https://github.com/Arskah/radiodiodj/issues/477)) ([defc263](https://github.com/Arskah/radiodiodj/commit/defc263a1483c10040c437580fe6548ffe002ffd))
+
+
+### Miscellaneous Chores
+
+* clear out dead code, stray docs and untokenized radii ([#473](https://github.com/Arskah/radiodiodj/issues/473)) ([64484d6](https://github.com/Arskah/radiodiodj/commit/64484d6a9442821c7835a956ff99fb3b3f4c77e7))
+* **deps:** update dependency jsdom to v30.1.1 ([#461](https://github.com/Arskah/radiodiodj/issues/461)) ([d316896](https://github.com/Arskah/radiodiodj/commit/d316896cb36567342ab2dfed20aac2e360ed3121))
+* **deps:** update pnpm to v12.6.0 ([#469](https://github.com/Arskah/radiodiodj/issues/469)) ([9495328](https://github.com/Arskah/radiodiodj/commit/94953284cc9058112e16cb28bf6b95f42222e4ef))
+* lint the comment conventions instead of remembering them ([#478](https://github.com/Arskah/radiodiodj/issues/478)) ([ffb00de](https://github.com/Arskah/radiodiodj/commit/ffb00de0c0c51a600a5c359d5329cdc18d6e253a))
+
+
+### Documentation
+
+* catch the docs up with what v1 actually ships ([#471](https://github.com/Arskah/radiodiodj/issues/471)) ([f012100](https://github.com/Arskah/radiodiodj/commit/f012100462c8898f0bb7c2edc3aa175b1b6e0d30))
+
+
+### Code Refactoring
+
+* **audio:** reduce a decode to a per-window level envelope ([#452](https://github.com/Arskah/radiodiodj/issues/452)) ([0a0d342](https://github.com/Arskah/radiodiodj/commit/0a0d342914be9dce8f942133c70d1baec904570c))
+* **library:** give db.rs one way to build an id list ([#474](https://github.com/Arskah/radiodiodj/issues/474)) ([e791433](https://github.com/Arskah/radiodiodj/commit/e791433c1fff7a02d6a37ebc41e88d5a8502340f))
+* **state:** one race guard behind the four deck fetches ([#475](https://github.com/Arskah/radiodiodj/issues/475)) ([25ef654](https://github.com/Arskah/radiodiodj/commit/25ef65454326cb8ca59d4a1f8c790b84ea5b5604))
+* **ui:** share the scrim, card and header the three dialogs had copied ([#476](https://github.com/Arskah/radiodiodj/issues/476)) ([7556469](https://github.com/Arskah/radiodiodj/commit/75564698cb2989afd0999bc4abfb3fba0acd4c5b))
+
 ## [0.22.0](https://github.com/Arskah/radiodiodj/compare/v0.21.2...v0.22.0) (2026-09-24)
 
 
