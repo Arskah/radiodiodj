@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::audio::auto_cue::{AutoCue, Thresholds};
+use crate::audio::auto_cue::{self, Analysed, Envelope};
 use crate::audio::cue_points::CuePoints;
 use crate::library::fingerprint;
 
@@ -275,6 +275,12 @@ pub struct AnalysisJob {
     pub needs_fingerprint: bool,
     pub needs_loudness: bool,
     pub needs_auto_cue: bool,
+    /// The row has a derived trio but no level table — analysed before the
+    /// table existed. The decode fills the table in and leaves the trio alone:
+    /// re-deriving it here would apply today's thresholds to a track analysed
+    /// under yesterday's, which is the implicit mass re-analysis
+    /// `docs/cue-auto-analysis.md` rules out.
+    pub needs_auto_cue_levels: bool,
 }
 
 /// One row as the scanner sees it.
@@ -776,12 +782,16 @@ impl Db {
     pub fn set_auto_cue(
         &self,
         id: i64,
-        cue: AutoCue,
-        thresholds: Thresholds,
+        analysed: &Analysed,
         content_type: &str,
         mtime: Option<i64>,
-        at_ms: i64,
     ) -> Result<Option<CuePoints>> {
+        let Analysed {
+            cue,
+            levels,
+            thresholds,
+            at_ms,
+        } = analysed;
         let music = content_type == "music";
         let conn = self.conn.lock();
         // `clamp` with no duration applies the ordering rules alone, which is
@@ -805,14 +815,15 @@ impl Db {
             "UPDATE tracks SET cue_in_ms = ?1, cue_out_ms = ?2, next_start_ms = ?3, \
                     fade_in_ms = ?10, fade_out_ms = ?11, \
                     auto_cue_state = 'auto', auto_cue_version = ?4, \
-                    auto_cue_silence_db = ?5, auto_cue_segue_db = ?6, auto_cue_at = ?7 \
+                    auto_cue_silence_db = ?5, auto_cue_segue_db = ?6, auto_cue_at = ?7, \
+                    auto_cue_levels = ?13 \
              WHERE id = ?8 AND auto_cue_state <> 'manual' AND content_type = ?9 \
                AND mtime IS ?12",
             params![
                 cue.cue_in_ms,
                 cue.cue_out_ms,
                 cue.next_start_ms,
-                crate::audio::auto_cue::ALGORITHM_VERSION,
+                auto_cue::ALGORITHM_VERSION,
                 thresholds.silence_dbfs,
                 // A commercial or jingle got no automatic Next Start, so no
                 // segue threshold was used on it.
@@ -822,7 +833,8 @@ impl Db {
                 content_type,
                 sorted.fade_in_ms,
                 sorted.fade_out_ms,
-                mtime
+                mtime,
+                levels.encode()
             ],
         )?;
         if changed == 0 {
@@ -844,19 +856,37 @@ impl Db {
     /// older [`fingerprint::VERSION`], ordered by id. Drives the background
     /// analysis worker (backfill included). A track whose analysis failed is
     /// left out until its file changes.
+    ///
+    /// A `manual` row is never queued for its level table: the table feeds
+    /// automatic derivation, and nothing derives for a track the operator owns.
     pub fn tracks_needing_analysis(&self) -> Result<Vec<AnalysisJob>> {
         let stale_fingerprint = format!(
             "(fingerprint IS NULL OR fingerprint NOT LIKE '{}:%')",
             fingerprint::VERSION
         );
+        // An envelope this build cannot read counts as missing. SQL screens as
+        // far as it can — absent, too short to hold the header, or a layout
+        // version it does not know, the version being the first byte — so a row
+        // written by an older build is requeued without decoding every blob in
+        // the library to find out. It cannot screen the codes themselves, since
+        // a row's length is a function of its duration; `Envelope::decode` is
+        // the authority on that, and the one caller that reads a stored
+        // envelope queues whatever fails it rather than trusting the two to
+        // agree. See `Db::recalculate_auto_cue`.
+        let missing_levels = format!(
+            "(auto_cue_state <> 'manual' AND {})",
+            Self::unreadable_levels()
+        );
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(&format!(
             "SELECT id, path, mtime, content_type, waveform IS NULL, {stale_fingerprint}, \
-                    rg_measured_at IS NULL, auto_cue_state = 'pending' \
+                    rg_measured_at IS NULL, auto_cue_state = 'pending', \
+                    {missing_levels} \
              FROM tracks \
              WHERE missing_since IS NULL AND analysis_failed_at IS NULL \
                AND (waveform IS NULL OR {stale_fingerprint} \
-                    OR rg_measured_at IS NULL OR auto_cue_state = 'pending') \
+                    OR rg_measured_at IS NULL OR auto_cue_state = 'pending' \
+                    OR {missing_levels}) \
              ORDER BY id"
         ))?;
         let rows = stmt.query_map([], |r| {
@@ -869,9 +899,42 @@ impl Db {
                 needs_fingerprint: r.get(5)?,
                 needs_loudness: r.get(6)?,
                 needs_auto_cue: r.get(7)?,
+                needs_auto_cue_levels: r.get(8)?,
             })
         })?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+    }
+
+    /// Store the level table for a track whose trio is already derived.
+    ///
+    /// The backfill counterpart to [`Db::set_auto_cue`], which writes both at
+    /// once for a track being analysed. It deliberately touches nothing else:
+    /// the trio on the row was derived under whatever thresholds were set at
+    /// the time, and re-deriving it here would be an implicit mass re-analysis.
+    ///
+    /// Guarded like the full commit — a row the operator took over while the
+    /// decode ran, one reclassified under it, or one whose file was replaced,
+    /// is refused and reported as `false`, leaving it queued for the next pass.
+    /// `content_type` is checked only so a reclassification is not silently
+    /// stamped over; the envelope itself is a property of the audio, not the
+    /// class. Refusing on it costs nothing: a reclassified row is already
+    /// `pending`, so the next pass runs the full commit and writes the envelope
+    /// with the trio anyway.
+    pub fn set_auto_cue_levels(
+        &self,
+        id: i64,
+        levels: &Envelope,
+        content_type: &str,
+        mtime: Option<i64>,
+    ) -> Result<bool> {
+        let conn = self.conn.lock();
+        let changed = conn.execute(
+            "UPDATE tracks SET auto_cue_levels = ?1 \
+             WHERE id = ?2 AND auto_cue_state <> 'manual' AND content_type = ?3 \
+               AND mtime IS ?4",
+            params![levels.encode(), id, content_type, mtime],
+        )?;
+        Ok(changed > 0)
     }
 
     /// Store a completed loudness measurement. `gain`/`peak` are `None` for a
@@ -1046,7 +1109,14 @@ impl Db {
             // and "wait until Cue Out" is the conservative reading, and a
             // music Next Start on a jingle would segue early on every airing
             // until the pass reaches it — for good, if its decode fails.
-            // The fades are not inferred by anything, so they travel.
+            // The fades are not inferred by anything, so they travel. So does
+            // the level envelope: it measures the audio, which the twin shares,
+            // and it carries no decision about either class.
+            //
+            // It is the one auto-cue column copied unconditionally, so a source
+            // that has none nulls the target. That is only safe because this
+            // runs source -> freshly inserted row; pointed at a row that has
+            // already been analysed it would erase a good envelope.
             let mut copy_state = tx.prepare(
                 "UPDATE tracks SET title = s.title, artist = s.artist, album = s.album, \
                         genre = s.genre, year = s.year, bpm = s.bpm, \
@@ -1070,7 +1140,8 @@ impl Db {
                         auto_cue_segue_db = CASE WHEN s.content_type = tracks.content_type \
                           THEN s.auto_cue_segue_db ELSE NULL END, \
                         auto_cue_at = CASE WHEN s.content_type = tracks.content_type \
-                          THEN s.auto_cue_at ELSE NULL END \
+                          THEN s.auto_cue_at ELSE NULL END, \
+                        auto_cue_levels = s.auto_cue_levels \
                  FROM (SELECT * FROM tracks WHERE id = ?1) AS s \
                  WHERE tracks.id = ?2",
             )?;
@@ -1305,6 +1376,24 @@ impl Db {
                 .collect()
         };
         self.get_tracks_by_ids(&ids)
+    }
+
+    /// Rows whose stored envelope this build cannot use, as far as SQL can
+    /// tell: absent, too short to hold the header, or a layout version it does
+    /// not know.
+    ///
+    /// Deliberately not the whole of [`auto_cue::Envelope::decode`] — the codes
+    /// cannot be screened in SQL, because a readable length depends on the
+    /// track's duration. Every caller therefore treats this as a pre-filter and
+    /// lets `decode` decide, so a row can never fall between the two.
+    fn unreadable_levels() -> String {
+        format!(
+            "(auto_cue_levels IS NULL \
+              OR length(auto_cue_levels) < {header} \
+              OR substr(auto_cue_levels, 1, 1) <> x'{version:02x}')",
+            header = auto_cue::LEVELS_HEADER_LEN,
+            version = auto_cue::LEVELS_FORMAT_VERSION,
+        )
     }
 
     /// Set what a derived cue set reports. Taken from the tuning config at
@@ -1811,6 +1900,7 @@ const MIGRATION_STEPS: &[M] = &[
     M::up(PLAY_LOG),
     M::up(LOUDNESS),
     M::up(AUTO_CUE),
+    M::up(AUTO_CUE_LEVELS),
 ];
 const MIGRATIONS: Migrations = Migrations::from_slice(MIGRATION_STEPS);
 
@@ -1972,12 +2062,35 @@ UPDATE tracks SET auto_cue_state = 'manual'
  WHERE cue_in_ms IS NOT NULL OR cue_out_ms IS NOT NULL OR next_start_ms IS NOT NULL;
 "#;
 
+/// The decode reduced to the level of each window, so a later threshold change
+/// can re-derive a track's markers without reading the file again. See
+/// `audio::auto_cue::Envelope`.
+///
+/// Existing rows get it by backfill through the ordinary analysis pass, not by
+/// a synchronous migration: it is a full decode per track. Until a row has one,
+/// a recalculation sends it back through that pass instead.
+///
+/// `ADD COLUMN` is the cheap form — SQLite rewrites the stored schema and
+/// nothing else, so this is O(1) whatever the library size. Existing records
+/// simply hold fewer fields than the schema declares and read back as `NULL`,
+/// which is exactly the state the backfill screens for. The migration and the
+/// backfill are therefore the same mechanism, which is why 12,000 rows do not
+/// have to be touched to add the column.
+const AUTO_CUE_LEVELS: &str = r#"
+ALTER TABLE tracks ADD COLUMN auto_cue_levels BLOB;
+"#;
+
 /// Upsert one present track's metadata by path. The operator-work columns are
 /// deliberately absent: the waveform is filled asynchronously by the waveform
 /// worker (`set_waveform`), and cue points and play counts are operator work a
 /// metadata rescan must never clobber. A tag column flagged in
 /// `edited_fields` keeps its value. A recorded analysis failure is cleared,
 /// since the upsert only runs for a file that changed.
+///
+/// The level table goes, unlike the markers: it measures audio that is no
+/// longer there, and a recalculation reading it would derive from a file that
+/// has been replaced. The markers stand until a fresh result lands, which is
+/// the existing rule — old positions beat none while the pass catches up.
 const UPSERT_TRACK_SQL: &str = "INSERT INTO tracks \
      (path, content_type, title, artist, album, genre, year, duration, bpm, \
       sample_rate, bitrate, format, mtime, fingerprint) \
@@ -1995,6 +2108,7 @@ const UPSERT_TRACK_SQL: &str = "INSERT INTO tracks \
         fingerprint=COALESCE(excluded.fingerprint, fingerprint), \
         auto_cue_state=CASE auto_cue_state WHEN 'auto' THEN 'pending' \
                        ELSE auto_cue_state END, \
+        auto_cue_levels=NULL, \
         analysis_error=NULL, analysis_failed_at=NULL";
 
 /// A database this build must not touch.
@@ -2105,7 +2219,7 @@ fn backup(conn: &Connection, path: &Path, version: usize) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::auto_cue;
+    use crate::audio::auto_cue::{self, AutoCue, Thresholds};
 
     const THRESHOLDS: Thresholds = Thresholds {
         silence_dbfs: -70.0,
@@ -2253,6 +2367,19 @@ mod tests {
                         analysis_error = 'bad', analysis_failed_at = 5, \
                         rg_gain = -6.5, rg_peak = 0.98, rg_measured_at = 7, \
                         auto_cue_state = 'manual'; \
+                 INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
+                 SELECT id, 1000, artist, title, duration FROM tracks",
+            )
+            .unwrap();
+        },
+        |conn| {
+            seed_track(conn);
+            seed_dismissal(conn);
+            conn.execute_batch(
+                "UPDATE tracks SET edited_fields = 1, \
+                        analysis_error = 'bad', analysis_failed_at = 5, \
+                        rg_gain = -6.5, rg_peak = 0.98, rg_measured_at = 7, \
+                        auto_cue_state = 'manual', auto_cue_levels = x'00'; \
                  INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
                  SELECT id, 1000, artist, title, duration FROM tracks",
             )
@@ -2765,6 +2892,26 @@ mod tests {
         .unwrap()
     }
 
+    /// Drop a row's level table, as a database written before it existed has.
+    fn clear_levels(db: &Db, id: i64) {
+        let conn = db.conn.lock();
+        conn.execute(
+            "UPDATE tracks SET auto_cue_levels = NULL WHERE id = ?",
+            [id],
+        )
+        .unwrap();
+    }
+
+    /// Write a raw blob into a row's level table, as another build might have.
+    fn put_levels(db: &Db, id: i64, blob: &[u8]) {
+        let conn = db.conn.lock();
+        conn.execute(
+            "UPDATE tracks SET auto_cue_levels = ?1 WHERE id = ?2",
+            params![blob, id],
+        )
+        .unwrap();
+    }
+
     fn music_track(db: &Db, path: &str) -> i64 {
         typed_track(db, path, "music")
     }
@@ -2807,18 +2954,218 @@ mod tests {
         next_start_ms: AUTO.next_start_ms,
     };
 
+    /// A completed analysis to commit, with [`AUTO`]'s trio or another.
+    fn one_analysis(cue: AutoCue, at_ms: i64) -> Analysed {
+        Analysed {
+            cue,
+            levels: levels(),
+            thresholds: THRESHOLDS,
+            at_ms,
+        }
+    }
+
+    /// A level table to commit alongside [`AUTO`]. Its contents do not matter
+    /// here — only that a commit carries one and a read gets it back.
+    fn levels() -> auto_cue::Envelope {
+        auto_cue::RmsWindows {
+            rms: vec![0.0, 0.5, 0.5, 0.0],
+            duration_ms: 200,
+        }
+        .envelope()
+    }
+
     const AUTO: AutoCue = AutoCue {
         cue_in_ms: Some(100),
         cue_out_ms: Some(190_000),
         next_start_ms: Some(189_000),
     };
 
+    /// The level table as the row holds it.
+    fn stored_levels(db: &Db, id: i64) -> Option<Envelope> {
+        let conn = db.conn.lock();
+        let blob: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT auto_cue_levels FROM tracks WHERE id = ?",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        blob.map(|b| Envelope::decode(&b).expect("a table this build wrote"))
+    }
+
+    /// The table lands with the trio, in the one statement, so a reader can
+    /// never see markers without the measurements they came from.
+    #[test]
+    fn an_automatic_result_lands_with_its_level_envelope() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/a.mp3");
+        db.set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
+            .unwrap()
+            .expect("committed");
+        assert_eq!(stored_levels(&db, id), Some(levels()));
+    }
+
+    /// The backfill: a row analysed before the table existed gets one without
+    /// its markers moving. Re-deriving here would apply today's thresholds to a
+    /// track analysed under yesterday's.
+    #[test]
+    fn a_level_envelope_can_be_backfilled_without_touching_the_trio() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/a.mp3");
+        db.set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
+            .unwrap()
+            .expect("committed");
+        clear_levels(&db, id);
+
+        let other = auto_cue::RmsWindows {
+            rms: vec![0.9; 8],
+            duration_ms: 400,
+        }
+        .envelope();
+        assert!(db.set_auto_cue_levels(id, &other, "music", None).unwrap());
+
+        assert_eq!(stored_levels(&db, id), Some(other));
+        let points = db.get_track(id).unwrap().unwrap().cue_points;
+        assert_eq!(points.cue_out_ms, AUTO.cue_out_ms, "the trio stands");
+        assert_eq!(points.next_start_ms, AUTO.next_start_ms);
+    }
+
+    /// The same three-way guard the full commit runs: a row the operator took
+    /// over, one reclassified, or one whose file was replaced under the decode.
+    #[test]
+    fn a_backfilled_envelope_is_refused_once_the_row_has_moved_on() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/a.mp3");
+        db.set_cue_points(
+            id,
+            CuePoints {
+                cue_in_ms: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            !db.set_auto_cue_levels(id, &levels(), "music", None)
+                .unwrap(),
+            "the row is the operator's now"
+        );
+
+        let other = music_track(&db, "/b.mp3");
+        assert!(
+            !db.set_auto_cue_levels(other, &levels(), "jingle", None)
+                .unwrap(),
+            "reclassified under the decode"
+        );
+        assert!(
+            !db.set_auto_cue_levels(other, &levels(), "music", Some(9))
+                .unwrap(),
+            "the file was replaced under the decode"
+        );
+        assert_eq!(stored_levels(&db, other), None);
+    }
+
+    /// A row with a table is done; one without is queued for the decode that
+    /// fills it, and a row the operator owns is never queued for one at all.
+    #[test]
+    fn a_missing_level_envelope_queues_the_track() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/a.mp3");
+        db.set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
+            .unwrap()
+            .expect("committed");
+        db.set_waveform(id, &[0]).unwrap();
+        db.set_loudness(id, Some(-6.0), Some(0.9), 1).unwrap();
+        db.set_fingerprint(id, "x").ok();
+
+        let queued = |db: &Db| {
+            db.tracks_needing_analysis()
+                .unwrap()
+                .into_iter()
+                .find(|j| j.id == id)
+        };
+        assert!(
+            queued(&db).is_none_or(|j| !j.needs_auto_cue_levels),
+            "a row with a table is not queued for one"
+        );
+
+        clear_levels(&db, id);
+        let job = queued(&db).expect("queued for its table");
+        assert!(job.needs_auto_cue_levels);
+        assert!(!job.needs_auto_cue, "the trio is already derived");
+    }
+
+    /// A table written by a build with a different layout counts as missing:
+    /// the row goes back through the decode rather than having its markers
+    /// derived from bytes this build cannot read.
+    #[test]
+    fn an_envelope_this_build_cannot_read_queues_the_track() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/a.mp3");
+        db.set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
+            .unwrap()
+            .expect("committed");
+        db.set_waveform(id, &[0]).unwrap();
+        db.set_loudness(id, Some(-6.0), Some(0.9), 1).unwrap();
+
+        let queued = |db: &Db| {
+            db.tracks_needing_analysis()
+                .unwrap()
+                .into_iter()
+                .find(|j| j.id == id)
+                .is_some_and(|j| j.needs_auto_cue_levels)
+        };
+
+        let mut future = levels().encode();
+        future[0] = auto_cue::LEVELS_FORMAT_VERSION.wrapping_add(1);
+        put_levels(&db, id, &future);
+        assert!(queued(&db), "a layout this build does not know");
+
+        put_levels(&db, id, &future[..future.len() - 1]);
+        assert!(queued(&db), "a length that does not match the layout");
+
+        put_levels(&db, id, &levels().encode());
+        assert!(!queued(&db), "a table this build wrote");
+    }
+
+    /// A rescan of a changed file drops the table — it measures audio that is
+    /// gone, and a recalculation reading it would derive from a file that has
+    /// been replaced. The markers stand, as they always do, until a fresh
+    /// result lands.
+    #[test]
+    fn a_replaced_file_drops_the_level_envelope() {
+        let db = Db::open_in_memory().unwrap();
+        let id = music_track(&db, "/a.mp3");
+        db.set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
+            .unwrap()
+            .expect("committed");
+
+        db.insert_track(&TrackInsert {
+            path: "/a.mp3".into(),
+            content_type: "music".into(),
+            duration: Some(200.0),
+            mtime: Some(99),
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(
+            stored_levels(&db, id),
+            None,
+            "it measures audio that is gone"
+        );
+        assert_eq!(
+            db.get_track(id).unwrap().unwrap().cue_points.cue_out_ms,
+            AUTO.cue_out_ms,
+            "the markers stand until a fresh result lands"
+        );
+    }
+
     #[test]
     fn an_automatic_result_lands_with_its_provenance() {
         let db = Db::open_in_memory().unwrap();
         let id = music_track(&db, "/a.mp3");
         let stored = db
-            .set_auto_cue(id, AUTO, THRESHOLDS, "music", None, 7)
+            .set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
             .unwrap()
             .expect("committed");
 
@@ -2843,7 +3190,7 @@ mod tests {
     fn a_commercial_records_no_segue_threshold() {
         let db = Db::open_in_memory().unwrap();
         let id = typed_track(&db, "/ad.mp3", "commercial");
-        db.set_auto_cue(id, AUTO, THRESHOLDS, "commercial", None, 7)
+        db.set_auto_cue(id, &one_analysis(AUTO, 7), "commercial", None)
             .unwrap();
         assert_eq!(auto_cue_row(&db, id).3, None);
     }
@@ -2852,7 +3199,7 @@ mod tests {
     fn an_operator_edit_takes_the_trio_off_automatic() {
         let db = Db::open_in_memory().unwrap();
         let id = music_track(&db, "/a.mp3");
-        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", None, 7)
+        db.set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
             .unwrap();
 
         db.set_cue_points(
@@ -2874,7 +3221,7 @@ mod tests {
     fn clearing_a_marker_takes_the_trio_off_automatic() {
         let db = Db::open_in_memory().unwrap();
         let id = music_track(&db, "/a.mp3");
-        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", None, 7)
+        db.set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
             .unwrap();
 
         db.set_cue_points(
@@ -2894,7 +3241,7 @@ mod tests {
     fn a_fade_edit_leaves_the_trio_automatic() {
         let db = Db::open_in_memory().unwrap();
         let id = music_track(&db, "/a.mp3");
-        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", None, 7)
+        db.set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
             .unwrap();
 
         db.set_cue_points(
@@ -2928,7 +3275,7 @@ mod tests {
         db.set_cue_points(id, manual).unwrap();
 
         assert!(db
-            .set_auto_cue(id, AUTO, THRESHOLDS, "music", None, 7)
+            .set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
             .unwrap()
             .is_none());
         assert_eq!(db.get_track(id).unwrap().unwrap().cue_points, manual);
@@ -2939,7 +3286,7 @@ mod tests {
     fn a_reclassification_requeues_an_automatic_track() {
         let db = Db::open_in_memory().unwrap();
         let id = music_track(&db, "/a.mp3");
-        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", None, 7)
+        db.set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
             .unwrap();
 
         db.update_track_metadata(&TrackMetadataUpdate {
@@ -2991,7 +3338,7 @@ mod tests {
     fn a_tag_edit_leaves_an_automatic_track_analysed() {
         let db = Db::open_in_memory().unwrap();
         let id = music_track(&db, "/a.mp3");
-        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", None, 7)
+        db.set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
             .unwrap();
 
         db.update_track_metadata(&TrackMetadataUpdate {
@@ -3011,7 +3358,7 @@ mod tests {
     fn an_automatic_set_is_held_back_while_the_feature_is_off() {
         let db = Db::open_in_memory().unwrap();
         let id = music_track(&db, "/a.mp3");
-        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", None, 7)
+        db.set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
             .unwrap();
 
         db.set_auto_cue_policy(false, true);
@@ -3048,7 +3395,7 @@ mod tests {
     fn only_the_next_start_is_held_back_while_its_switch_is_off() {
         let db = Db::open_in_memory().unwrap();
         let id = music_track(&db, "/a.mp3");
-        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", None, 7)
+        db.set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
             .unwrap();
 
         db.set_auto_cue_policy(true, false);
@@ -3089,7 +3436,7 @@ mod tests {
     fn a_requeued_next_start_is_held_back_too() {
         let db = Db::open_in_memory().unwrap();
         let id = music_track(&db, "/a.mp3");
-        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", None, 7)
+        db.set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
             .unwrap();
         db.conn
             .lock()
@@ -3111,7 +3458,7 @@ mod tests {
     fn a_fade_save_keeps_a_hidden_next_start() {
         let db = Db::open_in_memory().unwrap();
         let id = music_track(&db, "/a.mp3");
-        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", None, 7)
+        db.set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
             .unwrap();
         db.set_auto_cue_policy(true, false);
 
@@ -3138,7 +3485,7 @@ mod tests {
     fn moving_the_trio_clears_a_hidden_next_start() {
         let db = Db::open_in_memory().unwrap();
         let id = music_track(&db, "/a.mp3");
-        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", None, 7)
+        db.set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
             .unwrap();
         db.set_auto_cue_policy(true, false);
 
@@ -3234,7 +3581,7 @@ mod tests {
         let untouched = another_music_track(&db, "/untouched.mp3");
 
         for id in [analysed, faded, edited] {
-            db.set_auto_cue(id, AUTO, THRESHOLDS, "music", None, 7)
+            db.set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
                 .unwrap();
         }
         db.set_cue_points(
@@ -3304,12 +3651,12 @@ mod tests {
         .unwrap();
 
         assert!(db
-            .set_auto_cue(id, AUTO, THRESHOLDS, "music", job.mtime, 7)
+            .set_auto_cue(id, &one_analysis(AUTO, 7), "music", job.mtime)
             .unwrap()
             .is_none());
         assert_eq!(auto_cue_row(&db, id).0, "pending", "still queued");
         assert!(db
-            .set_auto_cue(id, AUTO, THRESHOLDS, "music", Some(2), 8)
+            .set_auto_cue(id, &one_analysis(AUTO, 8), "music", Some(2))
             .unwrap()
             .is_some());
     }
@@ -3333,7 +3680,7 @@ mod tests {
         assert_eq!(auto_cue_row(&db, id).0, "pending");
 
         let stored = db
-            .set_auto_cue(id, AUTO, THRESHOLDS, "music", None, 7)
+            .set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
             .unwrap()
             .expect("committed");
 
@@ -3359,7 +3706,7 @@ mod tests {
         .unwrap();
 
         let stored = db
-            .set_auto_cue(id, AUTO, THRESHOLDS, "music", None, 7)
+            .set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
             .unwrap()
             .expect("committed");
 
@@ -3374,7 +3721,7 @@ mod tests {
     fn a_requeued_track_is_held_back_as_well() {
         let db = Db::open_in_memory().unwrap();
         let id = music_track(&db, "/a.mp3");
-        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", None, 7)
+        db.set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
             .unwrap();
         db.set_auto_cue_policy(false, true);
 
@@ -3404,7 +3751,7 @@ mod tests {
     fn a_fade_saved_with_the_feature_off_stays_inside_the_hidden_cue_out() {
         let db = Db::open_in_memory().unwrap();
         let id = music_track(&db, "/a.mp3");
-        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", None, 7)
+        db.set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
             .unwrap(); // cue out 190 s
         db.set_auto_cue_policy(false, true);
 
@@ -3432,7 +3779,7 @@ mod tests {
     fn a_save_made_with_the_feature_off_keeps_the_derived_trio() {
         let db = Db::open_in_memory().unwrap();
         let id = music_track(&db, "/a.mp3");
-        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", None, 7)
+        db.set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
             .unwrap();
         db.set_auto_cue_policy(false, true);
 
@@ -3477,7 +3824,7 @@ mod tests {
 
         // The in-flight decode reports what it analysed: the old class.
         assert!(db
-            .set_auto_cue(id, AUTO, THRESHOLDS, "music", None, 7)
+            .set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
             .unwrap()
             .is_none());
         assert_eq!(auto_cue_row(&db, id).0, "pending");
@@ -3489,7 +3836,7 @@ mod tests {
         assert!(db.tracks_needing_analysis().unwrap()[0].needs_auto_cue);
 
         assert!(db
-            .set_auto_cue(id, AUTO, THRESHOLDS, "jingle", None, 8)
+            .set_auto_cue(id, &one_analysis(AUTO, 8), "jingle", None)
             .unwrap()
             .is_some());
     }
@@ -3505,7 +3852,7 @@ mod tests {
             cue_out_ms: Some(204_000),
             next_start_ms: Some(203_000),
         };
-        db.set_auto_cue(id, decoded, THRESHOLDS, "music", None, 7)
+        db.set_auto_cue(id, &one_analysis(decoded, 7), "music", None)
             .unwrap();
 
         let saved = db
@@ -3541,7 +3888,7 @@ mod tests {
             cue_out_ms: Some(203_500),
             next_start_ms: Some(203_000),
         };
-        db.set_auto_cue(id, decoded, THRESHOLDS, "music", None, 7)
+        db.set_auto_cue(id, &one_analysis(decoded, 7), "music", None)
             .unwrap();
 
         let saved = db
@@ -3568,7 +3915,7 @@ mod tests {
     fn an_edit_past_the_tag_duration_is_still_clamped() {
         let db = Db::open_in_memory().unwrap();
         let id = music_track(&db, "/a.mp3");
-        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", None, 7)
+        db.set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
             .unwrap();
 
         let saved = db
@@ -3594,7 +3941,7 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         db.insert_track(&new_file("/music/a.mp3", "v1:x")).unwrap();
         let id = only_id(&db);
-        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", None, 7)
+        db.set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
             .unwrap();
         db.reconcile(&Reconcile {
             gone: vec![id],
@@ -3631,7 +3978,7 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         db.insert_track(&new_file("/music/a.mp3", "v1:x")).unwrap();
         let id = only_id(&db);
-        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", None, 7)
+        db.set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
             .unwrap();
         db.reconcile(&Reconcile {
             gone: vec![id],
@@ -3694,7 +4041,7 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         db.insert_track(&new_file("/music/a.mp3", "v1:x")).unwrap();
         let id = only_id(&db);
-        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", None, 7)
+        db.set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
             .unwrap();
 
         let done = db
@@ -3725,6 +4072,11 @@ mod tests {
             "nor a music trio on a jingle"
         );
         assert_eq!(auto_cue_row(&db, id).0, "auto", "the twin is untouched");
+        assert_eq!(
+            stored_levels(&db, copy.id),
+            Some(levels()),
+            "the table still travels: it measures the audio, not the class"
+        );
     }
 
     #[test]
@@ -3732,7 +4084,7 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         db.insert_track(&new_file("/music/a.mp3", "v1:x")).unwrap();
         let id = only_id(&db);
-        db.set_auto_cue(id, AUTO, THRESHOLDS, "music", None, 7)
+        db.set_auto_cue(id, &one_analysis(AUTO, 7), "music", None)
             .unwrap();
 
         db.reconcile(&Reconcile {
@@ -3749,6 +4101,11 @@ mod tests {
             .unwrap();
         assert_eq!(auto_cue_row(&db, copy.id).0, "auto");
         assert_eq!(copy.cue_points.next_start_ms, AUTO.next_start_ms);
+        assert_eq!(
+            stored_levels(&db, copy.id),
+            Some(levels()),
+            "the table measures audio the twin shares"
+        );
     }
 
     /// Cue points ride along on the one query a deck load already runs.
@@ -4020,7 +4377,7 @@ mod tests {
         db.set_fingerprint(b, &format!("{}:b", fingerprint::VERSION))
             .unwrap();
         db.set_loudness(b, Some(-6.0), Some(0.9), 1).unwrap();
-        db.set_auto_cue(b, AutoCue::default(), THRESHOLDS, "music", None, 1)
+        db.set_auto_cue(b, &one_analysis(AutoCue::default(), 1), "music", None)
             .unwrap();
 
         let jobs = db.tracks_needing_analysis().unwrap();
@@ -4046,7 +4403,7 @@ mod tests {
         let id = only_id(&db);
         db.set_waveform(id, &[9]).unwrap();
         db.set_loudness(id, Some(-6.0), Some(0.9), 1).unwrap();
-        db.set_auto_cue(id, AutoCue::default(), THRESHOLDS, "music", None, 1)
+        db.set_auto_cue(id, &one_analysis(AutoCue::default(), 1), "music", None)
             .unwrap();
 
         db.set_fingerprint(id, "v1:stale").unwrap();
@@ -4076,7 +4433,7 @@ mod tests {
         db.set_fingerprint(id, &format!("{}:s", fingerprint::VERSION))
             .unwrap();
         db.set_loudness(id, None, None, 42).unwrap();
-        db.set_auto_cue(id, AutoCue::default(), THRESHOLDS, "music", None, 42)
+        db.set_auto_cue(id, &one_analysis(AutoCue::default(), 42), "music", None)
             .unwrap();
 
         assert!(db.tracks_needing_analysis().unwrap().is_empty());

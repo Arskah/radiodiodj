@@ -73,7 +73,7 @@ pub struct Analysis {
     /// `None` when the file is silent, empty, or shorter than the one 400 ms
     /// block integrated loudness needs.
     pub loudness: Option<Loudness>,
-    /// Fixed-width RMS windows, for [`super::auto_cue::detect`].
+    /// Fixed-width RMS windows, for [`RmsWindows::envelope`].
     pub windows: RmsWindows,
 }
 
@@ -480,15 +480,14 @@ mod tests {
     /// must come back from the same `analyze` call the curve does.
     #[test]
     fn the_same_decode_yields_the_automatic_cue_windows() {
-        use crate::audio::auto_cue::{detect, Thresholds, WINDOW_MS};
+        use crate::audio::auto_cue::{Thresholds, WINDOW_MS};
 
         // 1 s at 8 kHz: silent first half, full-scale second.
         let a = analyze(bytes_of(synth_wav(8_000, 8_000))).expect("analyze");
         assert_eq!(a.windows.duration_ms, 1_000);
         assert_eq!(a.windows.rms.len(), 1_000 / WINDOW_MS as usize);
 
-        let cue = detect(
-            &a.windows,
+        let cue = a.windows.envelope().detect(
             true,
             Thresholds {
                 silence_dbfs: -70.0,

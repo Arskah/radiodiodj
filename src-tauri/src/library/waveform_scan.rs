@@ -293,7 +293,11 @@ fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle, config: &Config) -> Outc
     let path = Path::new(&job.path);
     let mut retry = false;
     let mut errors: Vec<String> = Vec::new();
-    let fingerprint = if job.needs_waveform || job.needs_loudness || job.needs_auto_cue {
+    let fingerprint = if job.needs_waveform
+        || job.needs_loudness
+        || job.needs_auto_cue
+        || job.needs_auto_cue_levels
+    {
         let start = Instant::now();
         let bytes: Bytes = match std::fs::read(path) {
             Ok(v) => Arc::from(v.into_boxed_slice()),
@@ -336,8 +340,16 @@ fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle, config: &Config) -> Outc
                         );
                     }
                 }
-                if job.needs_auto_cue {
-                    store_auto_cue(job, db, app, config, &analysis.windows, &mut retry);
+                let levels = (job.needs_auto_cue || job.needs_auto_cue_levels)
+                    .then(|| analysis.windows.envelope());
+                if let Some(levels) = &levels {
+                    if job.needs_auto_cue {
+                        store_auto_cue(job, db, app, config, levels, &mut retry);
+                    } else {
+                        // The trio is already derived and belongs to whatever
+                        // thresholds produced it. Only the table is missing.
+                        store_auto_cue_levels(job, db, levels, &mut retry);
+                    }
                 }
             }
             Err(e) => {
@@ -389,24 +401,22 @@ fn store_auto_cue(
     db: &Db,
     app: &AppHandle,
     config: &Config,
-    windows: &auto_cue::RmsWindows,
+    levels: &auto_cue::Envelope,
     retry: &mut bool,
 ) {
     // Read per track rather than once per run: a threshold changed mid-backfill
     // then applies from the next file, matching "future analyses only".
     let thresholds = config.get_tuning().auto_cue.thresholds();
     let music = job.content_type == "music";
-    let cue = auto_cue::detect(windows, music, thresholds);
-    match db.set_auto_cue(
-        job.id,
-        cue,
+    let analysed = auto_cue::Analysed {
+        cue: levels.detect(music, thresholds),
+        levels: levels.clone(),
         thresholds,
-        &job.content_type,
-        job.mtime,
-        now_ms(),
-    ) {
+        at_ms: now_ms(),
+    };
+    match db.set_auto_cue(job.id, &analysed, &job.content_type, job.mtime) {
         Ok(Some(cue_points)) => {
-            log::debug!("auto cue: {} {:?}", job.path, cue);
+            log::debug!("auto cue: {} {:?}", job.path, analysed.cue);
             let _ = app.emit(
                 CUE_POINTS_READY_EVENT,
                 CuePointsReady {
@@ -418,6 +428,29 @@ fn store_auto_cue(
         Ok(None) => log::debug!("auto cue: {} moved on under us", job.path),
         Err(e) => {
             log::error!("auto cue: store {} failed: {}", job.id, e);
+            *retry = true;
+        }
+    }
+}
+
+/// Store the level table for a track that already has a derived trio, leaving
+/// the trio alone.
+///
+/// The backfill path. Re-deriving here would apply today's thresholds to a
+/// track analysed under yesterday's, which is exactly the implicit mass
+/// re-analysis `docs/cue-auto-analysis.md` rules out; the operator asks for that
+/// explicitly or not at all.
+fn store_auto_cue_levels(
+    job: &AnalysisJob,
+    db: &Db,
+    levels: &auto_cue::Envelope,
+    retry: &mut bool,
+) {
+    match db.set_auto_cue_levels(job.id, levels, &job.content_type, job.mtime) {
+        Ok(true) => log::debug!("auto cue levels: {}", job.path),
+        Ok(false) => log::debug!("auto cue levels: {} moved on under us", job.path),
+        Err(e) => {
+            log::error!("auto cue levels: store {} failed: {}", job.id, e);
             *retry = true;
         }
     }

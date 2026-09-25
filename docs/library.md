@@ -80,10 +80,14 @@ new, changed and gone files without changing anything; see
 ### The analysis pass
 
 Every launch and every completed scan starts the **analysis pass**
-(`library/waveform_scan.rs`). It works through present tracks that lack a
-waveform or a fingerprint, decoding on several threads (the core count less two,
-kept between 2 and 8) so playback and the UI stay responsive. A second bar under
-the scan bar shows its progress.
+(`library/waveform_scan.rs`). It works through present tracks missing any of the
+things below, decoding on several threads (the core count less two, kept between
+2 and 8) so playback and the UI stay responsive. A second bar under the scan bar
+shows its progress.
+
+One decode yields all of them. `waveform::analyze` walks the samples once and
+measures the curve, the loudness and the automatic-cue levels together, so a
+track missing only one of them costs no more than a track missing all four.
 
 - The **waveform** is the amplitude curve drawn behind the deck's seek bar and in
   the cue editor. It needs a full decode, which is why it is not part of the
@@ -94,6 +98,16 @@ the scan bar shows its progress.
   current algorithm is picked up by this pass too, so a version bump costs one
   extra read per track and nothing else. See
   [track-identity.md](./track-identity.md#fingerprint).
+- The **loudness** is the EBU R128 measurement the deck plays a track back at.
+  Measured here, never read from tags. See [audio.md](./audio.md#replaygain).
+- The **automatic cue points** are the derived trio, and the **level envelope**
+  the trio is derived from — the decode reduced to one byte per window, so a
+  later threshold change can re-derive a track's markers without reading the
+  file again. A track analysed before the envelope existed is picked up by this
+  pass for the envelope alone; its markers are left exactly where they are, since
+  re-deriving them would apply today's thresholds to a track analysed under
+  yesterday's. See
+  [cue-auto-analysis.md](./cue-auto-analysis.md).
 
 A file that fails to decode is recorded on its track and skipped until a scan
 sees the file change; it is listed under [Unreadable
@@ -106,14 +120,22 @@ next one picks up where it stopped.
 A track is one row in the library database. Its id never changes, so the
 playlist, the history and the saved session refer to it by id.
 
-| part                   | source            | survives a rescan             |
-| ---------------------- | ----------------- | ----------------------------- |
-| path, content type     | where the file is | follows the file              |
-| tags, duration, format | the file          | re-read when the file changes |
-| tags edited in the app | the operator      | always                        |
-| cue points             | the operator      | always                        |
-| play count             | airings           | always                        |
-| waveform, fingerprint  | the analysis pass | always                        |
+| part                   | source            | survives a rescan                |
+| ---------------------- | ----------------- | -------------------------------- |
+| path, content type     | where the file is | follows the file                 |
+| tags, duration, format | the file          | re-read when the file changes    |
+| tags edited in the app | the operator      | always                           |
+| cue points             | the operator      | always                           |
+| play count             | airings           | always                           |
+| waveform, fingerprint  | the analysis pass | always                           |
+| loudness               | the analysis pass | always, including a changed file |
+| automatic cue points   | the analysis pass | re-derived when the file changes |
+
+The automatic cue points are the only measurement a changed file gives up, and
+only because the rescan drops the level envelope they are derived from. The
+waveform and the loudness are kept: nothing clears them, so a re-encoded file
+keeps the curve and the ReplayGain of the audio it replaced until something
+else queues it for the pass.
 
 A track remembers which tag fields the operator edited (`edited_fields`). When
 the file changes, the scan re-reads it but keeps those fields. The other fields

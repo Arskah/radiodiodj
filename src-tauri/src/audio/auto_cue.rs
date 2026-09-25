@@ -194,7 +194,87 @@ impl RmsWindows {
     }
 }
 
+/// One completed automatic analysis: the trio it derived, the envelope it
+/// derived them from, the levels it worked to, and when it finished. These
+/// belong to each other — the provenance is only meaningful against the markers
+/// it produced — so they are committed as one thing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Analysed {
+    pub cue: AutoCue,
+    pub levels: Envelope,
+    pub thresholds: Thresholds,
+    pub at_ms: i64,
+}
+
+/// Layout version of a stored envelope. A blob written by any other version
+/// decodes to `None`, which sends the track back through the decode path rather
+/// than deriving markers from bytes this build cannot read.
+///
+/// **Bump this for more than a change to the bytes.** The layout is only half
+/// of what a stored envelope means; the rest is constants that are not in the
+/// blob, and a build that changes one of them reads every existing row as
+/// version 1 and derives from it anyway:
+///
+/// - [`WINDOW_MS`], which turns a window index into a timestamp. Halving it
+///   would put every re-derived marker at half its true position, library-wide,
+///   with no decode and no error;
+/// - [`LEVEL_MIN_DBFS`] and [`LEVEL_MAX_DBFS`], which decide what a code counts.
+///   Widening the range shifts the meaning of every code by the change in the
+///   floor;
+/// - what [`Envelope::detect`] asks of the windows. The envelope answers where
+///   the audio crosses a level; a rule needing something else — a crossing held
+///   for some duration, say — is not answerable from a v1 blob at all, and
+///   `ALGORITHM_VERSION` alone would not requeue anything, since nothing
+///   screens on it.
+///
+/// Bumping is cheap: every row fails the screen and rides the ordinary backfill
+/// through one decode. Not bumping is silent and wrong.
+pub const LEVELS_FORMAT_VERSION: u8 = 1;
+
+/// Version byte, then the decoded duration. The codes follow, one per window,
+/// so a stored envelope is `LEVELS_HEADER_LEN + windows` bytes — variable,
+/// unlike a fixed table of crossings, which is why the library screens a stored
+/// blob in SQL only as far as SQL can go and lets [`Envelope::decode`] be the
+/// authority. See `Db::recalculate_auto_cue`.
+pub const LEVELS_HEADER_LEN: usize = 1 + 8;
+
 impl Envelope {
+    /// The envelope as it is stored on the track row.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(LEVELS_HEADER_LEN + self.codes.len());
+        out.push(LEVELS_FORMAT_VERSION);
+        out.extend_from_slice(&self.duration_ms.to_le_bytes());
+        out.extend_from_slice(&self.codes);
+        out
+    }
+
+    /// Read a stored envelope back, or `None` for one this build cannot use: a
+    /// different layout version, a length that cannot hold the header, or a
+    /// code outside the resolved range.
+    ///
+    /// The code check is what a fixed-width layout got from its length alone.
+    /// It is the one screen SQL cannot make — a row's length is a function of
+    /// its duration here — so this is the authority on whether a stored
+    /// envelope is usable, and callers treat a `None` as "decode this track
+    /// again" rather than as an error.
+    // The first production reader lands with the recalculation command; until
+    // then only the round-trip tests call it.
+    #[allow(dead_code)]
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < LEVELS_HEADER_LEN || bytes[0] != LEVELS_FORMAT_VERSION {
+            return None;
+        }
+        let duration_ms = i64::from_le_bytes(bytes[1..LEVELS_HEADER_LEN].try_into().ok()?);
+        let codes = &bytes[LEVELS_HEADER_LEN..];
+        if codes.iter().any(|&c| c as usize > LEVELS) {
+            return None;
+        }
+        Some(Self {
+            codes: codes.to_vec(),
+            duration_ms,
+        })
+    }
+
     /// Derive the automatic trio at a pair of thresholds.
     ///
     /// `music` decides whether a Next Start is produced at all: commercials and
@@ -284,15 +364,6 @@ impl Envelope {
     fn window_end(&self, index: usize) -> i64 {
         ((index as i64 + 1) * WINDOW_MS).min(self.duration_ms)
     }
-}
-
-/// Derive the automatic trio from the windows.
-///
-/// `music` decides whether a Next Start is produced at all: commercials and
-/// jingles get trimmed ends and nothing else, because a station segues out of
-/// music, not out of an ad break.
-pub fn detect(windows: &RmsWindows, music: bool, thresholds: Thresholds) -> AutoCue {
-    windows.envelope().detect(music, thresholds)
 }
 
 /// The amplitude of each resolved level, ascending.
@@ -505,6 +576,54 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_stored_envelope_round_trips() {
+        let mut rng = Rng(0x00DE_C0DE);
+        for _ in 0..8 {
+            let envelope = random_windows(&mut rng).envelope();
+            let blob = envelope.encode();
+            assert_eq!(blob.len(), LEVELS_HEADER_LEN + envelope.windows());
+            assert_eq!(Envelope::decode(&blob), Some(envelope));
+        }
+    }
+
+    /// A blob this build cannot read must send the track back to the decoder
+    /// rather than yield half an envelope.
+    ///
+    /// The out-of-range code is the case a fixed-width layout caught by length
+    /// alone. It is also the one the SQL screen cannot make, which is why
+    /// `Db::recalculate_auto_cue` queues whatever fails here rather than
+    /// trusting the two to agree.
+    #[test]
+    fn an_unreadable_envelope_decodes_to_nothing() {
+        let good = windows(run(-6.0, 12)).envelope().encode();
+
+        let mut wrong_version = good.clone();
+        wrong_version[0] = LEVELS_FORMAT_VERSION.wrapping_add(1);
+        assert_eq!(
+            Envelope::decode(&wrong_version),
+            None,
+            "a layout it cannot read"
+        );
+
+        let mut bad_code = good.clone();
+        *bad_code.last_mut().unwrap() = LEVELS as u8 + 1;
+        assert_eq!(Envelope::decode(&bad_code), None, "a code past the range");
+
+        assert_eq!(
+            Envelope::decode(&good[..LEVELS_HEADER_LEN - 1]),
+            None,
+            "too short to hold the header"
+        );
+        assert_eq!(Envelope::decode(&[]), None);
+
+        assert_eq!(
+            Envelope::decode(&good[..LEVELS_HEADER_LEN]).map(|e| e.windows()),
+            Some(0),
+            "a header alone is a readable envelope of no windows"
+        );
+    }
+
     /// The whole safety argument for the envelope: it must answer exactly what
     /// a fresh scan would, for every threshold pair an operator can reach.
     #[test]
@@ -548,27 +667,27 @@ mod tests {
         let mut w = run(-120.0, 10);
         w.extend(run(-6.0, 20));
         w.extend(run(-120.0, 10));
-        let cue = detect(&windows(w), false, DEFAULTS);
+        let cue = windows(w).envelope().detect(false, DEFAULTS);
         assert_eq!(cue.cue_in_ms, Some(500));
         assert_eq!(cue.cue_out_ms, Some(1500));
     }
 
     #[test]
     fn audio_at_the_file_edges_stores_null() {
-        let cue = detect(&windows(run(-6.0, 40)), false, DEFAULTS);
+        let cue = windows(run(-6.0, 40)).envelope().detect(false, DEFAULTS);
         assert_eq!(cue.cue_in_ms, None, "no leading silence to trim");
         assert_eq!(cue.cue_out_ms, None, "audio runs to EOF");
     }
 
     #[test]
     fn a_silent_file_yields_nothing() {
-        let cue = detect(&windows(run(-120.0, 40)), true, DEFAULTS);
+        let cue = windows(run(-120.0, 40)).envelope().detect(true, DEFAULTS);
         assert_eq!(cue, AutoCue::default());
     }
 
     #[test]
     fn an_empty_decode_yields_nothing() {
-        let cue = detect(&RmsWindows::default(), true, DEFAULTS);
+        let cue = RmsWindows::default().envelope().detect(true, DEFAULTS);
         assert_eq!(cue, AutoCue::default());
     }
 
@@ -578,7 +697,7 @@ mod tests {
         // candidate exists below the segue threshold, so the 500 ms rule wins.
         let mut w = run(-6.0, 40); // 2000 ms
         w.extend(run(-120.0, 4)); // → cue out 2000 ms
-        let cue = detect(&windows(w), true, DEFAULTS);
+        let cue = windows(w).envelope().detect(true, DEFAULTS);
         assert_eq!(cue.cue_out_ms, Some(2000));
         assert_eq!(cue.next_start_ms, Some(1500));
     }
@@ -589,7 +708,7 @@ mod tests {
         let mut w = run(-6.0, 40);
         w.extend(run(-40.0, 20));
         w.extend(run(-120.0, 4));
-        let cue = detect(&windows(w), true, DEFAULTS);
+        let cue = windows(w).envelope().detect(true, DEFAULTS);
         assert_eq!(cue.cue_out_ms, Some(3000));
         assert_eq!(cue.next_start_ms, Some(2000), "last window above -20 dBFS");
     }
@@ -600,7 +719,7 @@ mod tests {
         let mut w = run(-6.0, 20);
         w.extend(run(-40.0, 200));
         w.extend(run(-120.0, 4));
-        let cue = detect(&windows(w), true, DEFAULTS);
+        let cue = windows(w).envelope().detect(true, DEFAULTS);
         assert_eq!(cue.cue_out_ms, Some(11_000));
         assert_eq!(cue.next_start_ms, Some(5_000), "cue out − 6 s");
     }
@@ -612,7 +731,7 @@ mod tests {
         let mut w = run(-120.0, 20);
         w.extend(run(-6.0, 14));
         w.extend(run(-120.0, 2));
-        let cue = detect(&windows(w), true, DEFAULTS);
+        let cue = windows(w).envelope().detect(true, DEFAULTS);
         assert_eq!(cue.cue_in_ms, Some(1000));
         assert_eq!(cue.cue_out_ms, Some(1700));
         assert_eq!(cue.next_start_ms, Some(1500));
@@ -624,7 +743,7 @@ mod tests {
         // room for a segue.
         let mut w = run(-6.0, 10);
         w.extend(run(-120.0, 2));
-        let cue = detect(&windows(w), true, DEFAULTS);
+        let cue = windows(w).envelope().detect(true, DEFAULTS);
         assert_eq!(cue.cue_out_ms, Some(500));
         assert_eq!(cue.next_start_ms, None);
     }
@@ -634,7 +753,7 @@ mod tests {
         let mut w = run(-6.0, 40);
         w.extend(run(-40.0, 20));
         w.extend(run(-120.0, 4));
-        let cue = detect(&windows(w), false, DEFAULTS);
+        let cue = windows(w).envelope().detect(false, DEFAULTS);
         assert_eq!(cue.cue_out_ms, Some(3000));
         assert_eq!(cue.next_start_ms, None);
     }
@@ -642,7 +761,7 @@ mod tests {
     #[test]
     fn a_jingle_that_runs_to_eof_is_all_null() {
         // Same rule as a commercial; nothing to trim, nothing to segue.
-        let cue = detect(&windows(run(-6.0, 20)), false, DEFAULTS);
+        let cue = windows(run(-6.0, 20)).envelope().detect(false, DEFAULTS);
         assert_eq!(cue, AutoCue::default());
     }
 
@@ -651,7 +770,7 @@ mod tests {
         let mut w = run(-120.0, 4);
         w.extend(run(-6.0, 100));
         w.extend(run(-120.0, 4));
-        let cue = detect(&windows(w), true, DEFAULTS);
+        let cue = windows(w).envelope().detect(true, DEFAULTS);
         let start = cue.next_start_ms.expect("music segues");
         assert!(start >= cue.cue_in_ms.unwrap());
         assert!(start <= cue.cue_out_ms.unwrap());
@@ -662,10 +781,9 @@ mod tests {
         let mut w = run(-50.0, 10);
         w.extend(run(-6.0, 20));
         w.extend(run(-50.0, 10));
-        let quiet = detect(&windows(w.clone()), false, DEFAULTS);
+        let quiet = windows(w.clone()).envelope().detect(false, DEFAULTS);
         assert_eq!(quiet.cue_in_ms, None, "-50 dBFS is above -70 dBFS");
-        let loud = detect(
-            &windows(w),
+        let loud = windows(w).envelope().detect(
             false,
             Thresholds {
                 silence_dbfs: -40.0,
@@ -684,7 +802,7 @@ mod tests {
             rms: run(-6.0, 60),
             duration_ms: 2_980,
         };
-        let cue = detect(&w, true, DEFAULTS);
+        let cue = w.envelope().detect(true, DEFAULTS);
         assert_eq!(cue.cue_out_ms, None);
         assert_eq!(cue.next_start_ms, Some(2_480), "file end − 500 ms");
     }
@@ -728,7 +846,7 @@ mod tests {
         }
         let w = c.finish();
 
-        let cue_in = detect(&w, false, DEFAULTS).cue_in_ms.unwrap();
+        let cue_in = w.envelope().detect(false, DEFAULTS).cue_in_ms.unwrap();
         assert_eq!(cue_in, 110_200);
         assert!(
             f64::from(cue_in as i32) <= f64::from(onset) / 22.05,
