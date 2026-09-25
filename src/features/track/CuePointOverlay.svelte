@@ -511,7 +511,7 @@
 
 {#if track}
   <div
-    class="cue-overlay"
+    class="dialog-scrim cue-overlay"
     role="presentation"
     bind:this={overlay}
     onmousedown={(e) => {
@@ -521,13 +521,13 @@
   >
     <div
       id="cue-point-dialog"
-      class="cue-dialog"
+      class="dialog-card"
       role="dialog"
       aria-modal="true"
       aria-label="Edit cue points"
       tabindex="-1"
     >
-      <div class="cue-dialog-header">
+      <div class="dialog-header">
         <div class="cue-dialog-heading">
           <h2>Cue Points</h2>
           <span class="cue-dialog-track">{track.title} — {track.artist}</span>
@@ -728,61 +728,16 @@
 {/if}
 
 <style lang="css">
+  /* Chrome is .dialog-scrim / .dialog-card / .dialog-header in styles.css.
+     The editor is the wide one. */
   .cue-overlay {
-    position: fixed;
-    inset: 0;
-    background: var(--scrim);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-  }
-
-  .cue-dialog {
-    background: var(--surface-container);
-    border-radius: var(--r-lg);
-    box-shadow: 0 16px 48px
-      color-mix(in srgb, var(--shadow-color) 45%, transparent);
-    width: min(1200px, calc(100% - 32px));
-    max-height: 92vh;
-    overflow-y: auto;
-  }
-
-  .cue-dialog-header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 16px;
-    padding: 12px 20px;
-    border-bottom: 1px solid
-      color-mix(in srgb, var(--outline-variant) 30%, transparent);
-  }
-
-  .cue-dialog-heading h2 {
-    margin: 0;
-    font-size: 18px;
-    font-weight: 600;
-    color: var(--on-surface);
+    --dialog-width: 1200px;
+    --dialog-height: 92vh;
   }
 
   .cue-dialog-track {
     font-size: 12px;
     color: var(--on-surface-variant);
-  }
-
-  .btn-close {
-    background: none;
-    border: none;
-    color: var(--on-surface-variant);
-    cursor: pointer;
-    padding: 4px;
-    border-radius: var(--r-lg);
-    display: flex;
-  }
-
-  .btn-close:hover {
-    color: var(--on-surface);
-    background: color-mix(in srgb, var(--on-surface) 10%, transparent);
   }
 
   .cue-dialog-body {

@@ -210,7 +210,7 @@
 
 {#if app.editingMetadata}
   <div
-    class="editor-overlay"
+    class="dialog-scrim editor-overlay"
     role="presentation"
     bind:this={overlay}
     onmousedown={(e) => {
@@ -220,14 +220,14 @@
   >
     <div
       id="metadata-dialog"
-      class="editor-content"
+      class="dialog-card editor-content"
       role="dialog"
       aria-modal="true"
       aria-label="Edit track metadata"
       tabindex="-1"
     >
-      <div class="editor-header">
-        <h2 class="editor-title">Edit Metadata</h2>
+      <div class="dialog-header">
+        <h2>Edit Metadata</h2>
         <button
           id="btn-metadata-close"
           class="btn-close"
@@ -459,59 +459,14 @@
 {/if}
 
 <style lang="css">
+  /* Chrome is .dialog-scrim / .dialog-card in styles.css; this is the one
+     dialog that animates in, and that is all these two carry. */
   .editor-overlay {
-    position: fixed;
-    inset: 0;
-    background: var(--scrim);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
     animation: fadeIn 0.15s ease-out;
   }
 
   .editor-content {
-    background: var(--surface-container);
-    border-radius: var(--r-xl);
-    box-shadow: 0 16px 48px
-      color-mix(in srgb, var(--shadow-color) 40%, transparent);
-    max-width: 520px;
-    width: calc(100% - 32px);
-    max-height: 90vh;
-    overflow-y: auto;
     animation: slideUp 0.2s ease-out;
-  }
-
-  .editor-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 16px 20px;
-    border-bottom: 1px solid var(--outline-variant);
-  }
-
-  .editor-title {
-    margin: 0;
-    font-size: 18px;
-    font-weight: 600;
-    color: var(--on-surface);
-  }
-
-  .btn-close {
-    background: none;
-    border: none;
-    color: var(--on-surface-variant);
-    cursor: pointer;
-    padding: 4px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: var(--r-lg);
-  }
-
-  .btn-close:hover {
-    color: var(--on-surface);
-    background: color-mix(in srgb, var(--on-surface) 10%, transparent);
   }
 
   .editor-body {

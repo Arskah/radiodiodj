@@ -2957,3 +2957,69 @@ body {
 .identity-preview.round img {
   object-fit: cover;
 }
+
+/* ---------------------------------------------------------------------------
+   Modal chrome
+
+   Three dialogs — metadata, cue points and the admin unlock — each grew their
+   own scrim and card. The scrim was identical in all three, so it lives here;
+   the card differs only in how wide it may grow and how tall, which come in as
+   `--dialog-width` and `--dialog-height`. A dialog that wants something else
+   overrides it locally, where the divergence is visible rather than buried in
+   a fourth copy.
+   ------------------------------------------------------------------------- */
+
+.dialog-scrim {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.dialog-card {
+  background: var(--surface-container);
+  border-radius: var(--r-xl);
+  box-shadow: 0 16px 48px
+    color-mix(in srgb, var(--shadow-color) 40%, transparent);
+  /* 16px of gutter on each side once the viewport is narrower than the cap. */
+  width: min(var(--dialog-width, 520px), calc(100% - 32px));
+  max-height: var(--dialog-height, 90vh);
+  overflow-y: auto;
+}
+
+.dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 20px;
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--outline-variant) 30%, transparent);
+}
+
+.dialog-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--on-surface);
+}
+
+.btn-close {
+  background: none;
+  border: none;
+  color: var(--on-surface-variant);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--r-lg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-close:hover {
+  color: var(--on-surface);
+  background: color-mix(in srgb, var(--on-surface) 10%, transparent);
+}
