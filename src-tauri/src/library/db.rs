@@ -220,8 +220,10 @@ impl<'a> SelectionFilter<'a> {
             );
         }
         if !self.artist_keys.is_empty() {
-            let placeholders = vec!["?"; self.artist_keys.len()].join(", ");
-            sql.push_str(&format!(" AND lower(trim(artist)) NOT IN ({placeholders})"));
+            sql.push_str(&format!(
+                " AND lower(trim(artist)) NOT IN ({})",
+                placeholders(self.artist_keys.len())
+            ));
         }
         sql
     }
@@ -692,23 +694,20 @@ impl Db {
     }
 
     pub fn get_tracks_by_ids(&self, ids: &[i64]) -> Result<Vec<Track>> {
-        let policy = self.auto_cue_policy();
         if ids.is_empty() {
             return Ok(vec![]);
         }
+        let policy = self.auto_cue_policy();
         let conn = self.conn.lock();
-        let placeholders = std::iter::repeat_n("?", ids.len())
-            .collect::<Vec<_>>()
-            .join(",");
-        let sql = format!("SELECT * FROM tracks WHERE id IN ({})", placeholders);
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params_from_iter(ids.iter()), |r| row_to_track(r, policy))?;
-        let by_id: HashMap<i64, Track> = rows
-            .collect::<rusqlite::Result<Vec<Track>>>()?
-            .into_iter()
-            .map(|t| (t.id, t))
-            .collect();
-        Ok(ids.iter().filter_map(|i| by_id.get(i).cloned()).collect())
+        let sql = format!(
+            "SELECT * FROM tracks WHERE id IN ({})",
+            placeholders(ids.len())
+        );
+        let rows = fetch_by_ids(&conn, &sql, ids, |r| {
+            let t = row_to_track(r, policy)?;
+            Ok((t.id, t))
+        })?;
+        Ok(rows.into_iter().map(|(_, t)| t).collect())
     }
 
     /// Resolve `(id, path)` for the given ids, preserving the input order and
@@ -719,25 +718,13 @@ impl Db {
             return Ok(vec![]);
         }
         let conn = self.conn.lock();
-        let placeholders = std::iter::repeat_n("?", ids.len())
-            .collect::<Vec<_>>()
-            .join(",");
         let sql = format!(
             "SELECT id, path FROM tracks WHERE missing_since IS NULL AND id IN ({})",
-            placeholders
+            placeholders(ids.len())
         );
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params_from_iter(ids.iter()), |r| {
+        fetch_by_ids(&conn, &sql, ids, |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
-        })?;
-        let by_id: HashMap<i64, String> = rows
-            .collect::<rusqlite::Result<Vec<_>>>()?
-            .into_iter()
-            .collect();
-        Ok(ids
-            .iter()
-            .filter_map(|i| by_id.get(i).map(|p| (*i, p.clone())))
-            .collect())
+        })
     }
 
     /// Fetch a track's stored amplitude-curve peaks, or `None` when the track is
@@ -1437,10 +1424,10 @@ impl Db {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         let mut done = Reconciled::default();
-        for chunk in change.revive.chunks(500) {
+        for chunk in change.revive.chunks(ID_CHUNK) {
             let sql = format!(
                 "UPDATE tracks SET missing_since = NULL WHERE id IN ({})",
-                vec!["?"; chunk.len()].join(",")
+                placeholders(chunk.len())
             );
             tx.execute(&sql, params_from_iter(chunk))?;
         }
@@ -1450,33 +1437,26 @@ impl Db {
                 upsert.execute(upsert_params(t))?;
             }
         }
-        for chunk in change.gone.chunks(500) {
-            let sql = format!(
-                "UPDATE tracks SET missing_since = ?1 \
-                 WHERE missing_since IS NULL AND id IN ({})",
-                (0..chunk.len())
-                    .map(|i| format!("?{}", i + 2))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            );
-            let params = std::iter::once(&change.now_ms).chain(chunk);
-            done.missing += tx.execute(&sql, params_from_iter(params))?;
-        }
+        // A file that is gone and a file that was replaced are both retired
+        // the same way; only the count they land in differs.
+        let retire = |ids: &[i64]| -> Result<usize> {
+            let mut retired = 0;
+            for chunk in ids.chunks(ID_CHUNK) {
+                let sql = format!(
+                    "UPDATE tracks SET missing_since = ?1 \
+                     WHERE missing_since IS NULL AND id IN ({})",
+                    placeholders_from(chunk.len(), 2)
+                );
+                let params = std::iter::once(&change.now_ms).chain(chunk);
+                retired += tx.execute(&sql, params_from_iter(params))?;
+            }
+            Ok(retired)
+        };
+        done.missing += retire(&change.gone)?;
         // Before the new-path ladder below, for the partial unique index on
         // `path`: it holds present rows alone, so the row being replaced has to
         // be missing before its replacement can be inserted at the same path.
-        for chunk in change.replaced.chunks(500) {
-            let sql = format!(
-                "UPDATE tracks SET missing_since = ?1 \
-                 WHERE missing_since IS NULL AND id IN ({})",
-                (0..chunk.len())
-                    .map(|i| format!("?{}", i + 2))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            );
-            let params = std::iter::once(&change.now_ms).chain(chunk);
-            done.replaced += tx.execute(&sql, params_from_iter(params))?;
-        }
+        done.replaced += retire(&change.replaced)?;
         {
             let mut missing_twin = tx.prepare(
                 "SELECT id FROM tracks WHERE fingerprint = ?1 AND missing_since IS NOT NULL \
@@ -1711,10 +1691,10 @@ impl Db {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         let mut deleted = Vec::new();
-        for chunk in ids.chunks(500) {
+        for chunk in ids.chunks(ID_CHUNK) {
             let sql = format!(
                 "DELETE FROM tracks WHERE missing_since IS NOT NULL AND id IN ({}) RETURNING id",
-                vec!["?"; chunk.len()].join(",")
+                placeholders(chunk.len())
             );
             let mut stmt = tx.prepare(&sql)?;
             let rows = stmt.query_map(params_from_iter(chunk), |r| r.get::<_, i64>(0))?;
@@ -1722,10 +1702,10 @@ impl Db {
                 deleted.push(id?);
             }
         }
-        for chunk in deleted.chunks(500) {
+        for chunk in deleted.chunks(ID_CHUNK) {
             let sql = format!(
                 "UPDATE play_log SET track_id = NULL WHERE track_id IN ({})",
-                vec!["?"; chunk.len()].join(",")
+                placeholders(chunk.len())
             );
             tx.execute(&sql, params_from_iter(chunk))?;
         }
@@ -2275,6 +2255,41 @@ fn fts5_prefix_term(word: &str) -> String {
     format!("\"{}\"*", word.replace('"', "\"\""))
 }
 
+/// `?, ?, ?` for `n` positional parameters. Callers guard `n == 0` themselves,
+/// because SQLite rejects an empty `IN ()` and the fix is always to skip the
+/// statement rather than to emit one that cannot run.
+fn placeholders(n: usize) -> String {
+    vec!["?"; n].join(", ")
+}
+
+/// `?first, ?first+1, ...` — the numbered form, for a statement that binds
+/// something ahead of the id list.
+fn placeholders_from(n: usize, first: usize) -> String {
+    (first..first + n)
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Run an `id IN (...)` query and hand the rows back in the order the caller
+/// listed the ids, dropping ids with no row. `sql` already carries the
+/// placeholder list and `ids` must be non-empty.
+fn fetch_by_ids<T: Clone>(
+    conn: &Connection,
+    sql: &str,
+    ids: &[i64],
+    map: impl Fn(&Row) -> rusqlite::Result<(i64, T)>,
+) -> Result<Vec<(i64, T)>> {
+    let mut stmt = conn.prepare(sql)?;
+    let by_id: HashMap<i64, T> = stmt
+        .query_map(params_from_iter(ids.iter()), |r| map(r))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(ids
+        .iter()
+        .filter_map(|id| by_id.get(id).map(|v| (*id, v.clone())))
+        .collect())
+}
+
 /// Build a ` AND id NOT IN (?, ?, ...)` fragment with one placeholder per
 /// excluded id, or an empty string when there is nothing to exclude (SQLite
 /// rejects an empty `NOT IN ()`). Placeholders are bound separately, so the
@@ -2283,8 +2298,7 @@ fn exclude_sql(exclude_ids: &[i64]) -> String {
     if exclude_ids.is_empty() {
         return String::new();
     }
-    let placeholders = vec!["?"; exclude_ids.len()].join(", ");
-    format!(" AND id NOT IN ({placeholders})")
+    format!(" AND id NOT IN ({})", placeholders(exclude_ids.len()))
 }
 
 /// One `ORDER BY` term of a [`SORTS`] entry.
@@ -2474,6 +2488,10 @@ fn row_to_cue_points(row: &Row) -> rusqlite::Result<CuePoints> {
 /// `PRAGMA application_id` ("RDJ1"). Pre-1.0 the schema may be squashed into a
 /// new baseline: bump this, move the old value into [`LEGACY_EPOCHS`], and every
 /// older database is reset on its next open.
+/// How many ids go into one `IN (...)` statement. SQLite's default parameter
+/// ceiling is 999, and a scan or a purge can carry far more than that.
+const ID_CHUNK: usize = 500;
+
 const DB_EPOCH: i32 = 0x5244_4a31;
 
 /// Epochs this build knows to be older than [`DB_EPOCH`]. `0` is every
