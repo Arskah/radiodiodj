@@ -166,8 +166,8 @@ describe("NativeBackend (deckId='cue')", () => {
   });
 
   // Staging is silent; the editor's transport is the explicit ask, and
-  /// it travels with the load because the deck parks the sink when the read
-  /// lands.
+  // it travels with the load because the deck parks the sink when the read
+  // lands.
   it("asks the load to play when an audition requests it", async () => {
     const b = new NativeBackend("cue");
     await b.load(42, null, true);

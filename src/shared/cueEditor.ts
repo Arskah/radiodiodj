@@ -8,7 +8,7 @@
  * backend's sort would silently rearrange. The backend clamp stays the
  * authority on what is stored; this only shapes input.
  */
-import { NO_CUE_POINTS, resolveCuePoints, type CueMarker } from "./cuePoints";
+import { resolveCuePoints, type CueMarker } from "./cuePoints";
 import type { CuePoints } from "./types";
 
 /** A window onto the file, in seconds. */
@@ -232,10 +232,6 @@ export function nudge(
 
 export function clearMarker(draft: CuePoints, key: CueMarker): CuePoints {
   return { ...draft, [key]: null };
-}
-
-export function emptyDraft(): CuePoints {
-  return { ...NO_CUE_POINTS };
 }
 
 /**

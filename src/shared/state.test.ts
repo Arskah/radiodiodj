@@ -2430,8 +2430,8 @@ describe("AppState cue points", () => {
     expect(app.currentTrack?.cue_points).toBeUndefined();
   });
 
-  /// The editor's draft was built before the analysis existed. Saving it would
-  /// write those nulls back over the result and take the trio off automatic.
+  // The editor's draft was built before the analysis existed. Saving it would
+  // write those nulls back over the result and take the trio off automatic.
   it("an automatic cue result refreshes an untouched editor", () => {
     app.editingCuePoints = t(1);
     app.cueEditorDirty = false;
@@ -2530,7 +2530,7 @@ describe("AppState cue points", () => {
   });
 
   // A Preview restores to the track's markers as they are *now*, so closing
-  /// the editor after a save shows the edit that was just stored.
+  // the editor after a save shows the edit that was just stored.
   it("restoring a Preview re-reads the track's current markers", async () => {
     const track = t(1, { cue_points: trimmed });
     app.cueLoad(track, trimmed);
@@ -2618,7 +2618,7 @@ describe("AppState item cue overrides", () => {
   });
 
   // Freezing an item to markers it would have inherited anyway would stop a
-  /// later correction to the track from reaching the queued airing.
+  // later correction to the track from reaching the queued airing.
   it("promotes an audition matching the radio edit without an override", async () => {
     app.cueLoad(t(1, { cue_points: radioEdit }), radioEdit);
     await flushAsync();

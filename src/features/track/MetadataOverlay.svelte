@@ -472,7 +472,7 @@
 
   .editor-content {
     background: var(--surface-container);
-    border-radius: 8px;
+    border-radius: var(--r-xl);
     box-shadow: 0 16px 48px
       color-mix(in srgb, var(--shadow-color) 40%, transparent);
     max-width: 520px;
@@ -506,7 +506,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 4px;
+    border-radius: var(--r-lg);
   }
 
   .btn-close:hover {
@@ -538,7 +538,7 @@
   .field textarea {
     background: transparent;
     border: 1px solid var(--outline-variant);
-    border-radius: 4px;
+    border-radius: var(--r-lg);
     padding: 8px 10px;
     color: var(--on-surface);
     font-size: 14px;
@@ -587,7 +587,7 @@
     font-size: 13px;
     padding: 8px 10px;
     background: color-mix(in srgb, var(--error) 10%, transparent);
-    border-radius: 4px;
+    border-radius: var(--r-lg);
   }
 
   .edited-mark {
@@ -621,7 +621,7 @@
     border: 1px solid var(--outline-variant);
     color: var(--on-surface-variant);
     padding: 8px 16px;
-    border-radius: 4px;
+    border-radius: var(--r-lg);
     cursor: pointer;
     font-size: 13px;
     transition: all 0.15s;

@@ -163,9 +163,11 @@
 
   // ----- Opening and closing -----
 
-  /// The track this dialog opened on. The store hands the editor a fresh copy
-  /// whenever the markers change underneath it — a save, or an automatic result
-  /// landing on a pristine draft — and that is a refresh, not an opening.
+  /**
+   * The track this dialog opened on. The store hands the editor a fresh copy
+   * whenever the markers change underneath it — a save, or an automatic result
+   * landing on a pristine draft — and that is a refresh, not an opening.
+   */
   let openedId: number | null = null;
 
   $effect(() => {
@@ -774,7 +776,7 @@
     color: var(--on-surface-variant);
     cursor: pointer;
     padding: 4px;
-    border-radius: 4px;
+    border-radius: var(--r-lg);
     display: flex;
   }
 
@@ -844,7 +846,7 @@
     font-size: 13px;
     padding: 8px 10px;
     background: color-mix(in srgb, var(--error) 12%, transparent);
-    border-radius: 4px;
+    border-radius: var(--r-lg);
   }
 
   .cue-dialog-footer {
@@ -870,7 +872,7 @@
     border: 1px solid
       color-mix(in srgb, var(--outline-variant) 40%, transparent);
     color: var(--on-surface-variant);
-    border-radius: 4px;
+    border-radius: var(--r-lg);
     cursor: pointer;
     font-size: 13px;
     padding: 8px 16px;
