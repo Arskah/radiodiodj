@@ -47,10 +47,10 @@ CREATE TABLE tracks (
   fingerprint   TEXT,
   missing_since INTEGER
 , edited_fields INTEGER NOT NULL DEFAULT 0, analysis_error TEXT, analysis_failed_at INTEGER, rg_gain REAL, rg_peak REAL, rg_measured_at INTEGER, auto_cue_state TEXT NOT NULL DEFAULT 'pending'
-  CHECK (auto_cue_state IN ('pending', 'auto', 'manual')), auto_cue_version INTEGER, auto_cue_silence_db REAL, auto_cue_segue_db REAL, auto_cue_at INTEGER, auto_cue_levels BLOB);
+  CHECK (auto_cue_state IN ('pending', 'auto', 'manual')), auto_cue_version INTEGER, auto_cue_silence_db REAL, auto_cue_segue_db REAL, auto_cue_at INTEGER, auto_cue_levels BLOB, track_no          INTEGER, track_total       INTEGER, disc_no           INTEGER, disc_total        INTEGER, album_artist      TEXT, isrc              TEXT, initial_key       TEXT, comment           TEXT, tags_read_version INTEGER);
 
 CREATE VIRTUAL TABLE tracks_fts USING fts5(
-  title, artist, album, genre,
+  title, artist, album, genre, album_artist,
   content='tracks',
   content_rowid='id'
 );
@@ -64,18 +64,18 @@ CREATE TABLE 'tracks_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB);
 CREATE TABLE 'tracks_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID;
 
 CREATE TRIGGER tracks_ad AFTER DELETE ON tracks BEGIN
-  INSERT INTO tracks_fts(tracks_fts, rowid, title, artist, album, genre)
-  VALUES ('delete', old.id, old.title, old.artist, old.album, old.genre);
+  INSERT INTO tracks_fts(tracks_fts, rowid, title, artist, album, genre, album_artist)
+  VALUES ('delete', old.id, old.title, old.artist, old.album, old.genre, old.album_artist);
 END;
 
 CREATE TRIGGER tracks_ai AFTER INSERT ON tracks BEGIN
-  INSERT INTO tracks_fts(rowid, title, artist, album, genre)
-  VALUES (new.id, new.title, new.artist, new.album, new.genre);
+  INSERT INTO tracks_fts(rowid, title, artist, album, genre, album_artist)
+  VALUES (new.id, new.title, new.artist, new.album, new.genre, new.album_artist);
 END;
 
-CREATE TRIGGER tracks_au AFTER UPDATE OF title, artist, album, genre ON tracks BEGIN
-  INSERT INTO tracks_fts(tracks_fts, rowid, title, artist, album, genre)
-  VALUES ('delete', old.id, old.title, old.artist, old.album, old.genre);
-  INSERT INTO tracks_fts(rowid, title, artist, album, genre)
-  VALUES (new.id, new.title, new.artist, new.album, new.genre);
+CREATE TRIGGER tracks_au AFTER UPDATE OF title, artist, album, genre, album_artist ON tracks BEGIN
+  INSERT INTO tracks_fts(tracks_fts, rowid, title, artist, album, genre, album_artist)
+  VALUES ('delete', old.id, old.title, old.artist, old.album, old.genre, old.album_artist);
+  INSERT INTO tracks_fts(rowid, title, artist, album, genre, album_artist)
+  VALUES (new.id, new.title, new.artist, new.album, new.genre, new.album_artist);
 END;

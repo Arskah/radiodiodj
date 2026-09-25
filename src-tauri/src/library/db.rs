@@ -10,8 +10,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::audio::auto_cue::{self, Analysed, Envelope, Thresholds};
 use crate::audio::cue_points::CuePoints;
 use crate::library::fingerprint;
+use crate::library::scanner;
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+/// `Default` exists for test fixtures, which would otherwise have to name every
+/// column each time one is added. Nothing in the app builds a `Track` that way —
+/// `row_to_track` names every field, so a new column that is forgotten there
+/// fails to compile rather than silently reading back empty.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct Track {
     pub id: i64,
     pub title: String,
@@ -25,6 +30,24 @@ pub struct Track {
     pub sample_rate: Option<i64>,
     pub bitrate: Option<i64>,
     pub format: Option<String>,
+    /// Album artist, which on a compilation is the only field that names the
+    /// act the record belongs to — every track's `artist` differs.
+    pub album_artist: Option<String>,
+    /// Position on the record. The total is stored beside the number because a
+    /// single `TRCK` frame carries both, and a write-back that sent only the
+    /// number would drop the `/12`.
+    pub track_no: Option<i64>,
+    pub track_total: Option<i64>,
+    pub disc_no: Option<i64>,
+    pub disc_total: Option<i64>,
+    /// The recording's identifier in the rights registry. Read-only: a typo
+    /// here is silently wrong in a reporting export, and the file is the
+    /// authority.
+    pub isrc: Option<String>,
+    /// Musical key, as the tagger wrote it. Not normalised — `TKEY` holds
+    /// `Am` by the spec but Camelot (`8A`) in practice.
+    pub initial_key: Option<String>,
+    pub comment: Option<String>,
     /// The track's radio edit. Arrives with every `SELECT *`, so nothing can
     /// reach air with stale markers.
     pub cue_points: CuePoints,
@@ -257,6 +280,14 @@ pub struct TrackInsert {
     pub bitrate: Option<i64>,
     pub format: Option<String>,
     pub mtime: Option<i64>,
+    pub album_artist: Option<String>,
+    pub track_no: Option<i64>,
+    pub track_total: Option<i64>,
+    pub disc_no: Option<i64>,
+    pub disc_total: Option<i64>,
+    pub isrc: Option<String>,
+    pub initial_key: Option<String>,
+    pub comment: Option<String>,
     /// Left as stored when `None`.
     pub fingerprint: Option<String>,
 }
@@ -1298,6 +1329,11 @@ impl Db {
             let mut copy_state = tx.prepare(
                 "UPDATE tracks SET title = s.title, artist = s.artist, album = s.album, \
                         genre = s.genre, year = s.year, bpm = s.bpm, \
+                        album_artist = s.album_artist, track_no = s.track_no, \
+                        track_total = s.track_total, disc_no = s.disc_no, \
+                        disc_total = s.disc_total, isrc = s.isrc, \
+                        initial_key = s.initial_key, comment = s.comment, \
+                        tags_read_version = s.tags_read_version, \
                         play_count = s.play_count, waveform = s.waveform, \
                         cue_in_ms = CASE WHEN s.content_type = tracks.content_type \
                           THEN s.cue_in_ms ELSE NULL END, \
@@ -1906,7 +1942,7 @@ impl Db {
 
 /// Bind params for [`UPSERT_TRACK_SQL`], in column order. Shared by the single
 /// and batch insert paths so the two never drift.
-fn upsert_params(t: &TrackInsert) -> [&dyn rusqlite::ToSql; 14] {
+fn upsert_params(t: &TrackInsert) -> [&dyn rusqlite::ToSql; 23] {
     [
         &t.path,
         &t.content_type,
@@ -1922,6 +1958,18 @@ fn upsert_params(t: &TrackInsert) -> [&dyn rusqlite::ToSql; 14] {
         &t.format,
         &t.mtime,
         &t.fingerprint,
+        &t.album_artist,
+        &t.track_no,
+        &t.track_total,
+        &t.disc_no,
+        &t.disc_total,
+        &t.isrc,
+        &t.initial_key,
+        &t.comment,
+        // A `&'static` borrow outlives the one the array is built from, so the
+        // marker rides along without having to sit on `TrackInsert`: a parsed
+        // track is by definition read at the current version.
+        &scanner::TAG_READ_VERSION,
     ]
 }
 
@@ -1974,7 +2022,8 @@ fn order_clause(sort_by: Option<&str>, sort_dir: Option<&str>) -> Option<String>
 /// What [`row_to_track`] reads, for queries that must not drag the waveform
 /// blob along with `SELECT *`.
 const TRACK_COLUMNS: &str = "id, title, artist, album, duration, play_count, genre, year, bpm, \
-     sample_rate, bitrate, format, cue_in_ms, fade_in_ms, fade_out_ms, cue_out_ms, next_start_ms, \
+     sample_rate, bitrate, format, album_artist, track_no, track_total, disc_no, disc_total, \
+     isrc, initial_key, comment, cue_in_ms, fade_in_ms, fade_out_ms, cue_out_ms, next_start_ms, \
      auto_cue_state, edited_fields";
 
 /// The markers as they take effect. A derived trio is held back while the
@@ -2024,6 +2073,14 @@ fn row_to_track(row: &Row, policy: AutoCuePolicy) -> rusqlite::Result<Track> {
         sample_rate: row.get("sample_rate")?,
         bitrate: row.get("bitrate")?,
         format: row.get("format")?,
+        album_artist: row.get("album_artist")?,
+        track_no: row.get("track_no")?,
+        track_total: row.get("track_total")?,
+        disc_no: row.get("disc_no")?,
+        disc_total: row.get("disc_total")?,
+        isrc: row.get("isrc")?,
+        initial_key: row.get("initial_key")?,
+        comment: row.get("comment")?,
         cue_points: effective_cue_points(row, policy)?,
         edited_fields: row.get("edited_fields")?,
     })
@@ -2079,6 +2136,7 @@ const MIGRATION_STEPS: &[M] = &[
     M::up(LOUDNESS),
     M::up(AUTO_CUE),
     M::up(AUTO_CUE_LEVELS),
+    M::up(TRACK_METADATA),
 ];
 const MIGRATIONS: Migrations = Migrations::from_slice(MIGRATION_STEPS);
 
@@ -2258,6 +2316,69 @@ const AUTO_CUE_LEVELS: &str = r#"
 ALTER TABLE tracks ADD COLUMN auto_cue_levels BLOB;
 "#;
 
+/// Step 9: the rest of the tag-derived metadata, and the marker that records
+/// which generation of the tag read a row holds.
+///
+/// Only `album_artist` joins the search index. A bare digit prefix-matches
+/// hundreds of rows, which is why `year` was never indexed either; a
+/// two-character key like `Am` collides with ordinary prefix searches; free-text
+/// comments dilute bm25 across every query; and nobody types an ISRC. fts5 has
+/// no `ALTER TABLE ... ADD COLUMN`, so the index and its three triggers are
+/// dropped and recreated. The `'rebuild'` is not about the new column, which is
+/// `NULL` everywhere at this point — it restores the title, artist, album and
+/// genre entries the `DROP` just threw away. Note this is not the table-rebuild
+/// procedure in `docs/database.md`: `tracks` itself is untouched, so the partial
+/// indexes on it stand.
+///
+/// `tags_read_version` is the "done" marker that rule requires, because `NULL`
+/// is a legitimate value for every one of these columns: a file genuinely
+/// without an ISRC is otherwise indistinguishable from one never read. `NULL`
+/// is version 0. Existing rows are filled by `library::tag_backfill`, not here —
+/// a tag read per track is I/O against every file in the library, and a scan
+/// cannot do it either, since `listing::should_rescan` never opens a file whose
+/// mtime is unchanged.
+const TRACK_METADATA: &str = r#"
+ALTER TABLE tracks ADD COLUMN track_no          INTEGER;
+ALTER TABLE tracks ADD COLUMN track_total       INTEGER;
+ALTER TABLE tracks ADD COLUMN disc_no           INTEGER;
+ALTER TABLE tracks ADD COLUMN disc_total        INTEGER;
+ALTER TABLE tracks ADD COLUMN album_artist      TEXT;
+ALTER TABLE tracks ADD COLUMN isrc              TEXT;
+ALTER TABLE tracks ADD COLUMN initial_key       TEXT;
+ALTER TABLE tracks ADD COLUMN comment           TEXT;
+ALTER TABLE tracks ADD COLUMN tags_read_version INTEGER;
+
+DROP TRIGGER tracks_ai;
+DROP TRIGGER tracks_ad;
+DROP TRIGGER tracks_au;
+DROP TABLE tracks_fts;
+
+CREATE VIRTUAL TABLE tracks_fts USING fts5(
+  title, artist, album, genre, album_artist,
+  content='tracks',
+  content_rowid='id'
+);
+
+CREATE TRIGGER tracks_ai AFTER INSERT ON tracks BEGIN
+  INSERT INTO tracks_fts(rowid, title, artist, album, genre, album_artist)
+  VALUES (new.id, new.title, new.artist, new.album, new.genre, new.album_artist);
+END;
+
+CREATE TRIGGER tracks_ad AFTER DELETE ON tracks BEGIN
+  INSERT INTO tracks_fts(tracks_fts, rowid, title, artist, album, genre, album_artist)
+  VALUES ('delete', old.id, old.title, old.artist, old.album, old.genre, old.album_artist);
+END;
+
+CREATE TRIGGER tracks_au AFTER UPDATE OF title, artist, album, genre, album_artist ON tracks BEGIN
+  INSERT INTO tracks_fts(tracks_fts, rowid, title, artist, album, genre, album_artist)
+  VALUES ('delete', old.id, old.title, old.artist, old.album, old.genre, old.album_artist);
+  INSERT INTO tracks_fts(rowid, title, artist, album, genre, album_artist)
+  VALUES (new.id, new.title, new.artist, new.album, new.genre, new.album_artist);
+END;
+
+INSERT INTO tracks_fts(tracks_fts) VALUES('rebuild');
+"#;
+
 /// Upsert one present track's metadata by path. The operator-work columns are
 /// deliberately absent: the waveform is filled asynchronously by the waveform
 /// worker (`set_waveform`), and cue points and play counts are operator work a
@@ -2269,10 +2390,16 @@ ALTER TABLE tracks ADD COLUMN auto_cue_levels BLOB;
 /// longer there, and a recalculation reading it would derive from a file that
 /// has been replaced. The markers stand until a fresh result lands, which is
 /// the existing rule — old positions beat none while the pass catches up.
+///
+/// `isrc` alone has no `edited_fields` guard, because it is the one tag column
+/// the operator cannot edit: the rights registry owns it, so the file always
+/// wins. `tags_read_version` records that this read was a current one, which is
+/// what keeps the row out of `library::tag_backfill`'s queue.
 const UPSERT_TRACK_SQL: &str = "INSERT INTO tracks \
      (path, content_type, title, artist, album, genre, year, duration, bpm, \
-      sample_rate, bitrate, format, mtime, fingerprint) \
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
+      sample_rate, bitrate, format, mtime, fingerprint, album_artist, track_no, \
+      track_total, disc_no, disc_total, isrc, initial_key, comment, tags_read_version) \
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
      ON CONFLICT(path) WHERE missing_since IS NULL DO UPDATE SET \
         content_type=excluded.content_type, \
         title=CASE WHEN edited_fields & 1 THEN title ELSE excluded.title END, \
@@ -2280,6 +2407,19 @@ const UPSERT_TRACK_SQL: &str = "INSERT INTO tracks \
         album=CASE WHEN edited_fields & 4 THEN album ELSE excluded.album END, \
         genre=CASE WHEN edited_fields & 8 THEN genre ELSE excluded.genre END, \
         year=CASE WHEN edited_fields & 16 THEN year ELSE excluded.year END, \
+        album_artist=CASE WHEN edited_fields & 32 THEN album_artist \
+                     ELSE excluded.album_artist END, \
+        track_no=CASE WHEN edited_fields & 64 THEN track_no ELSE excluded.track_no END, \
+        track_total=CASE WHEN edited_fields & 128 THEN track_total \
+                    ELSE excluded.track_total END, \
+        disc_no=CASE WHEN edited_fields & 256 THEN disc_no ELSE excluded.disc_no END, \
+        disc_total=CASE WHEN edited_fields & 512 THEN disc_total \
+                   ELSE excluded.disc_total END, \
+        initial_key=CASE WHEN edited_fields & 1024 THEN initial_key \
+                    ELSE excluded.initial_key END, \
+        comment=CASE WHEN edited_fields & 2048 THEN comment ELSE excluded.comment END, \
+        isrc=excluded.isrc, \
+        tags_read_version=excluded.tags_read_version, \
         duration=excluded.duration, \
         bpm=excluded.bpm, sample_rate=excluded.sample_rate, \
         bitrate=excluded.bitrate, format=excluded.format, mtime=excluded.mtime, \
@@ -2558,6 +2698,22 @@ mod tests {
                         analysis_error = 'bad', analysis_failed_at = 5, \
                         rg_gain = -6.5, rg_peak = 0.98, rg_measured_at = 7, \
                         auto_cue_state = 'manual', auto_cue_levels = x'00'; \
+                 INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
+                 SELECT id, 1000, artist, title, duration FROM tracks",
+            )
+            .unwrap();
+        },
+        |conn| {
+            seed_track(conn);
+            seed_dismissal(conn);
+            conn.execute_batch(
+                "UPDATE tracks SET edited_fields = 1, \
+                        analysis_error = 'bad', analysis_failed_at = 5, \
+                        rg_gain = -6.5, rg_peak = 0.98, rg_measured_at = 7, \
+                        auto_cue_state = 'manual', auto_cue_levels = x'00', \
+                        album_artist = 'Various', track_no = 3, track_total = 12, \
+                        disc_no = 1, disc_total = 2, isrc = 'FIFIN2400123', \
+                        initial_key = '8A', comment = 'note', tags_read_version = 1; \
                  INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
                  SELECT id, 1000, artist, title, duration FROM tracks",
             )
@@ -5196,6 +5352,137 @@ mod tests {
             db.search(q, None, None, None)
                 .unwrap_or_else(|e| panic!("search({q:?}) errored: {e}"));
         }
+    }
+
+    /// Step 9 drops and recreates `tracks_fts`, which throws away every row
+    /// already indexed. Only the `'rebuild'` puts them back, and nothing else
+    /// would notice it missing: the new triggers index every *subsequent*
+    /// insert correctly, so a forgotten rebuild is invisible except to rows
+    /// that predate the migration.
+    #[test]
+    fn the_metadata_migration_reindexes_rows_it_inherited() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        MIGRATIONS.to_version(&mut conn, 8).unwrap();
+        conn.execute_batch(
+            "INSERT INTO tracks (path, content_type, title, artist, album, duration) \
+             VALUES ('/old.mp3', 'music', 'Inherited', 'Band', 'Record', 100.0)",
+        )
+        .unwrap();
+        MIGRATIONS.to_latest(&mut conn).unwrap();
+        let db = Db {
+            conn: Mutex::new(conn),
+            apply_auto_cue: AtomicBool::new(true),
+            apply_auto_next_start: AtomicBool::new(true),
+        };
+
+        let hits = db.search("inherited", None, None, None).unwrap();
+        assert_eq!(hits.len(), 1, "a pre-migration row fell out of the index");
+    }
+
+    /// `TRACK_COLUMNS` is a hand-written list that five queries use instead of
+    /// `SELECT *`. A field added to `row_to_track` but forgotten there compiles
+    /// and passes every `SELECT *` test, then fails at runtime on those five.
+    #[test]
+    fn track_columns_names_everything_row_to_track_reads() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&tagged("/a.mp3", "T", "A")).unwrap();
+        let policy = db.auto_cue_policy();
+        let conn = db.conn.lock();
+        conn.query_row(&format!("SELECT {TRACK_COLUMNS} FROM tracks"), [], |r| {
+            row_to_track(r, policy)
+        })
+        .expect("TRACK_COLUMNS is missing a column row_to_track reads");
+    }
+
+    /// A duplicate starts as a copy of its twin, so the tag columns travel with
+    /// everything else — including the marker, or the backfill would re-read a
+    /// file whose tags the twin already holds.
+    #[test]
+    fn a_duplicate_inherits_the_new_tag_columns() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&tagged("/a.mp3", "File", "Artist"))
+            .unwrap();
+        let id = only_id(&db);
+        db.conn
+            .lock()
+            .execute(
+                "UPDATE tracks SET album_artist = 'Various', track_no = 3, track_total = 12, \
+                        disc_no = 1, disc_total = 2, isrc = 'FIFIN2400123', \
+                        initial_key = '8A', comment = 'note' WHERE id = ?",
+                [id],
+            )
+            .unwrap();
+
+        db.reconcile(&Reconcile {
+            new_files: vec![tagged("/b.mp3", "File", "Artist")],
+            ..Default::default()
+        })
+        .unwrap();
+
+        let copy = db
+            .search("", None, None, None)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id != id)
+            .unwrap();
+        assert_eq!(copy.album_artist.as_deref(), Some("Various"));
+        assert_eq!(copy.track_no, Some(3));
+        assert_eq!(copy.track_total, Some(12));
+        assert_eq!(copy.disc_no, Some(1));
+        assert_eq!(copy.disc_total, Some(2));
+        assert_eq!(copy.isrc.as_deref(), Some("FIFIN2400123"));
+        assert_eq!(copy.initial_key.as_deref(), Some("8A"));
+        assert_eq!(copy.comment.as_deref(), Some("note"));
+        let version: Option<i64> = db
+            .conn
+            .lock()
+            .query_row(
+                "SELECT tags_read_version FROM tracks WHERE id = ?",
+                [copy.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, Some(scanner::TAG_READ_VERSION));
+    }
+
+    /// Album artist is the fifth indexed column, and the reason a compilation
+    /// is findable at all: every track on it has a different `artist`.
+    #[test]
+    fn search_finds_a_compilation_by_its_album_artist() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&TrackInsert {
+            album_artist: Some("Kraftwerk".into()),
+            ..tagged("/a.mp3", "Autobahn", "Some Guest")
+        })
+        .unwrap();
+
+        let hits = db.search("kraftwerk", None, None, None).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "Autobahn");
+    }
+
+    /// The index is external-content, so it only tracks what the triggers tell
+    /// it. `tracks_au` has to name `album_artist` in its `OF` list or an edit
+    /// to that column never reaches the index.
+    #[test]
+    fn editing_the_album_artist_reindexes_the_row() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&TrackInsert {
+            album_artist: Some("Before".into()),
+            ..tagged("/a.mp3", "T", "A")
+        })
+        .unwrap();
+        let id = only_id(&db);
+        db.conn
+            .lock()
+            .execute(
+                "UPDATE tracks SET album_artist = 'After' WHERE id = ?",
+                [id],
+            )
+            .unwrap();
+
+        assert_eq!(db.search("after", None, None, None).unwrap().len(), 1);
+        assert!(db.search("before", None, None, None).unwrap().is_empty());
     }
 
     #[test]

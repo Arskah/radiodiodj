@@ -22,6 +22,25 @@ export interface Track {
   bitrate?: number | null;
   format?: string;
   /**
+   * Album artist. On a compilation this is the only field naming the act the
+   * record belongs to — every track's `artist` differs.
+   */
+  album_artist?: string | null;
+  /**
+   * Position on the record. The total sits beside the number because one tag
+   * frame carries both, and a write-back sending only the number would drop
+   * the `/12`.
+   */
+  track_no?: number | null;
+  track_total?: number | null;
+  disc_no?: number | null;
+  disc_total?: number | null;
+  /** Rights-registry identifier. Read-only: the file is the authority. */
+  isrc?: string | null;
+  /** Musical key as the tagger wrote it — `Am` by the spec, `8A` in practice. */
+  initial_key?: string | null;
+  comment?: string | null;
+  /**
    * The track's radio edit. Milliseconds from the start of the file, every
    * marker nullable. Optional here only so test fixtures need not spell it
    * out — the backend sends it on every track.

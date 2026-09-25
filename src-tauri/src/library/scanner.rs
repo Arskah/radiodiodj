@@ -23,6 +23,14 @@ use super::listing::{find_audio_files, should_rescan};
 /// hammer the share.
 const SCAN_CONCURRENCY: usize = 4;
 
+/// What a complete tag read stores today, recorded per row in
+/// `tracks.tags_read_version`. Bump it whenever a tag-derived column is added:
+/// every row falls back into `library::tag_backfill`'s queue and the background
+/// pass fills the new column in, without a rescan and without the file's mtime
+/// having to change. `NULL` in the column is version 0 — a row written before
+/// the column existed.
+pub const TAG_READ_VERSION: i64 = 1;
+
 #[derive(Debug, Default, PartialEq)]
 pub struct ScanOutcome {
     pub total: usize,
@@ -268,6 +276,16 @@ fn parse_track(
         t.get_string(ItemKey::Bpm)
             .and_then(|s| s.parse::<f64>().ok())
     });
+    let album_artist = primary.and_then(|t| t.get_string(ItemKey::AlbumArtist).map(str::to_string));
+    let isrc = primary.and_then(|t| t.get_string(ItemKey::Isrc).map(str::to_string));
+    let initial_key = primary.and_then(|t| t.get_string(ItemKey::InitialKey).map(str::to_string));
+    let comment = primary.and_then(comment_of);
+    // `Accessor` splits the pair forms — a single ID3v2 `TRCK` of "3/12" is two
+    // columns here — so the number and its total both survive a write-back.
+    let track_no = primary.and_then(Accessor::track).map(i64::from);
+    let track_total = primary.and_then(Accessor::track_total).map(i64::from);
+    let disc_no = primary.and_then(Accessor::disk).map(i64::from);
+    let disc_total = primary.and_then(Accessor::disk_total).map(i64::from);
 
     let props = tagged.properties();
     let duration = props.duration().as_secs_f64();
@@ -288,8 +306,35 @@ fn parse_track(
         bitrate,
         format,
         mtime: Some(mtime_ms),
+        album_artist,
+        track_no,
+        track_total,
+        disc_no,
+        disc_total,
+        isrc,
+        initial_key,
+        comment,
         fingerprint,
     })
+}
+
+/// The track's own comment, which is not simply `ItemKey::Comment`.
+///
+/// lofty maps *every* ID3v2 `COMM` frame onto that one key, keeping the frame's
+/// description only when it is non-empty, and `get_string` returns whichever
+/// came first. On an iTunes-processed file that is usually `COMM:iTunNORM` or
+/// `COMM:iTunSMPB` — a hex blob, not a comment. The operator's comment is the
+/// one with an empty descriptor. Other formats carry a single undescribed
+/// comment, where this picks the same item `get_string` would.
+///
+/// Stored whole, never truncated: the write-back in `tag_write` sends this
+/// value to the file, so a shortened copy would delete the rest of the
+/// operator's text. Display does the shortening.
+fn comment_of(tag: &lofty::tag::Tag) -> Option<String> {
+    tag.get_items(ItemKey::Comment)
+        .find(|item| item.description().is_empty())
+        .and_then(|item| item.value().text())
+        .map(str::to_string)
 }
 
 /// The tags `path` holds now, as a scan would store them.
@@ -371,6 +416,89 @@ mod tests {
         assert_eq!(outcome.added, 2);
         assert!(!outcome.canceled);
         assert_eq!(titles(&db), ["a", "b"]);
+    }
+
+    /// lofty maps every ID3v2 `COMM` frame onto `ItemKey::Comment`, so
+    /// `get_string` hands back whichever frame came first. On an
+    /// iTunes-processed file that is a hex blob like `iTunNORM`, not a comment.
+    #[test]
+    fn the_comment_is_the_one_without_a_descriptor() {
+        use lofty::tag::{ItemValue, Tag, TagItem, TagType};
+
+        let mut tag = Tag::new(TagType::Id3v2);
+        let mut itunes = TagItem::new(ItemKey::Comment, ItemValue::Text("0000A1B2 0000".into()));
+        itunes.set_description("iTunNORM".into());
+        tag.push(itunes);
+        tag.push(TagItem::new(
+            ItemKey::Comment,
+            ItemValue::Text("the operator's note".into()),
+        ));
+
+        assert_eq!(comment_of(&tag).as_deref(), Some("the operator's note"));
+    }
+
+    /// A file with only described comments has none of its own — better empty
+    /// than a hex blob shown to the operator as their note.
+    #[test]
+    fn a_described_only_comment_reads_as_none() {
+        use lofty::tag::{ItemValue, Tag, TagItem, TagType};
+
+        let mut tag = Tag::new(TagType::Id3v2);
+        let mut itunes = TagItem::new(ItemKey::Comment, ItemValue::Text("0000A1B2".into()));
+        itunes.set_description("iTunSMPB".into());
+        tag.push(itunes);
+
+        assert_eq!(comment_of(&tag), None);
+    }
+
+    /// One tag field, two columns. The pair forms (`TRCK` of "3/12") are split
+    /// by `Accessor`, so the total survives to be written back.
+    #[test]
+    fn a_track_number_pair_is_read_as_a_number_and_a_total() {
+        use lofty::tag::{Tag, TagType};
+
+        let mut tag = Tag::new(TagType::Id3v2);
+        tag.insert_text(ItemKey::TrackNumber, "3".into());
+        tag.insert_text(ItemKey::TrackTotal, "12".into());
+
+        assert_eq!(tag.track(), Some(3));
+        assert_eq!(tag.track_total(), Some(12));
+    }
+
+    /// The scan reads the tag columns into the row, and stamps the generation
+    /// of the read so the backfill knows to leave the row alone.
+    #[test]
+    fn a_scan_stores_the_extra_tag_columns() {
+        let (dir, db) = library();
+        let path = dir.path().join("a.wav");
+        write_wav(&path, 1, 1);
+        // The WAV's primary tag carries the track number, its total and the
+        // comment, but has no key for album artist, disc, ISRC or musical key —
+        // those are covered at the tag level above rather than through a file.
+        {
+            use lofty::config::WriteOptions;
+            use lofty::file::AudioFile;
+            use lofty::tag::Tag;
+
+            let mut tagged = Probe::open(&path).unwrap().read().unwrap();
+            let mut tag = Tag::new(tagged.primary_tag_type());
+            tag.insert_text(ItemKey::TrackTitle, "Autobahn".into());
+            tag.insert_text(ItemKey::TrackNumber, "3".into());
+            tag.insert_text(ItemKey::TrackTotal, "12".into());
+            tag.insert_text(ItemKey::Comment, "a note".into());
+            tagged.insert_tag(tag);
+            tagged.save_to_path(&path, WriteOptions::default()).unwrap();
+        }
+
+        scan(&db, &[music(dir.path())]);
+
+        let track = &db.search("", None, None, None).unwrap()[0];
+        assert_eq!(track.track_no, Some(3));
+        assert_eq!(track.track_total, Some(12));
+        assert_eq!(track.comment.as_deref(), Some("a note"));
+        let parsed = read_file_tags(&path.to_string_lossy()).unwrap();
+        assert_eq!(parsed.track_no, Some(3));
+        assert_eq!(parsed.comment.as_deref(), Some("a note"));
     }
 
     #[test]
