@@ -46,7 +46,7 @@
 
 {#if app.unlockOpen}
   <div
-    class="unlock-overlay"
+    class="dialog-scrim unlock-overlay"
     role="presentation"
     onmousedown={(e) => {
       if (e.target === e.currentTarget) close();
@@ -54,7 +54,7 @@
   >
     <div
       id="unlock-dialog"
-      class="unlock-content"
+      class="dialog-card unlock-content"
       role="dialog"
       aria-modal="true"
       aria-label="Unlock admin mode"
@@ -98,22 +98,14 @@
 {/if}
 
 <style>
+  /* Chrome is .dialog-scrim / .dialog-card in styles.css. The narrow one, and
+     the only one whose card holds its content directly rather than a header
+     and a body, so the padding is on the card. */
   .unlock-overlay {
-    position: fixed;
-    inset: 0;
-    background: var(--scrim);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
+    --dialog-width: 360px;
   }
 
   .unlock-content {
-    background: var(--surface-container);
-    border-radius: var(--r-xl);
-    box-shadow: 0 16px 48px
-      color-mix(in srgb, var(--shadow-color) 40%, transparent);
-    width: min(360px, calc(100% - 32px));
     padding: 20px;
   }
 
