@@ -50,7 +50,8 @@ Grouped by domain.
   (root listing plus the changed/gone rules, shared by scan and check),
   `fingerprint.rs` (tag-independent content hash of the first MiB of demuxed
   packets), `waveform_scan.rs` (the background analysis pass filling waveforms,
-  fingerprints, loudness and automatic cue points), `health.rs`, `check.rs`
+  fingerprints, loudness and automatic cue points), `tag_backfill.rs` (the
+  background pass filling tag columns a row predates), `health.rs`, `check.rs`
   (timed, listing-and-stat only, never writes) and `tag_write.rs` (opt-in
   write-back of metadata edits).
 - **`playlist/`** — the playlist and everything that advances it: `generate.rs`,
