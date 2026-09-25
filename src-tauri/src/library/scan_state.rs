@@ -41,6 +41,10 @@ pub struct ScanResult {
     pub reattached: usize,
     /// Tracks whose file this scan no longer found.
     pub missing: usize,
+    /// Tracks whose file this scan found holding a different recording. They
+    /// are missing too, reported apart because nothing moved or vanished — the
+    /// operator overwrote the file.
+    pub replaced: usize,
 }
 
 #[derive(Serialize, Clone)]
@@ -179,6 +183,7 @@ fn run(
                         added: o.added,
                         reattached: o.reattached,
                         missing: o.missing,
+                        replaced: o.replaced,
                     }),
                 },
             );

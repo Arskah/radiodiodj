@@ -40,6 +40,9 @@ pub struct ScanOutcome {
     pub missing: usize,
     /// Moved files matched back to their missing rows.
     pub reattached: usize,
+    /// Rows whose own path turned out to hold a different recording. They are
+    /// missing too, counted apart because the file is still there.
+    pub replaced: usize,
 }
 
 /// Scan every root and bring the library in line with what is on disk.
@@ -100,6 +103,13 @@ pub fn scan_all(
             // leaves new files for the next one.
             Step::New(t) if !canceled => change.new_files.push(t),
             Step::New(_) => {}
+            // A replacement is half a new file and inherits its rule: the row
+            // is only retired once the file taking its place is committed.
+            Step::Replaced { id, new } if !canceled => {
+                change.replaced.push(id);
+                change.new_files.push(new);
+            }
+            Step::Replaced { .. } => {}
         }
     }
     if !canceled {
@@ -108,12 +118,13 @@ pub fn scan_all(
 
     let updated = change.upserts.len();
     let done = db.reconcile(&change)?;
-    if done.missing + done.reattached + done.duplicated > 0 {
+    if done.missing + done.reattached + done.duplicated + done.replaced > 0 {
         log::info!(
-            "scan: {} missing, {} reattached, {} duplicated",
+            "scan: {} missing, {} reattached, {} duplicated, {} replaced",
             done.missing,
             done.reattached,
-            done.duplicated
+            done.duplicated,
+            done.replaced
         );
     }
     Ok(ScanOutcome {
@@ -122,6 +133,7 @@ pub fn scan_all(
         canceled,
         missing: done.missing,
         reattached: done.reattached,
+        replaced: done.replaced,
     })
 }
 
@@ -141,8 +153,12 @@ struct Known<'a> {
 
 /// What one found file asks of the library.
 enum Step {
-    /// A known path whose file changed.
+    /// A known path whose file changed, carrying the same audio as before or
+    /// audio that cannot be compared.
     Update(TrackInsert),
+    /// A known path whose file is now a different recording. The row it
+    /// belonged to goes missing and the file enters as a track of its own.
+    Replaced { id: i64, new: TrackInsert },
     /// A missing row whose file is back at its path — the same audio, or audio
     /// that cannot be compared. `update` carries new tags if the file changed.
     Revive {
@@ -210,10 +226,24 @@ fn inspect(file: &Found, known: &Known) -> Option<Step> {
     };
 
     if let Some(row) = known.present.get(file.path.as_str()) {
-        return changed(row)
-            .then(|| parse(fingerprint_of(&file.path)))
-            .flatten()
-            .map(Step::Update);
+        if !changed(row) {
+            return None;
+        }
+        let fingerprint = fingerprint_of(&file.path);
+        let track = parse(fingerprint.clone())?;
+        // The same test the revive branch below applies, and for the same
+        // reason: a row is only reused for audio it recognises. A fingerprint
+        // that is absent on either side is not evidence, so it reads as the
+        // same audio — a row is never retired on a guess.
+        let replaced = matches!((&row.fingerprint, &fingerprint), (Some(a), Some(b)) if a != b);
+        return Some(if replaced {
+            Step::Replaced {
+                id: row.id,
+                new: track,
+            }
+        } else {
+            Step::Update(track)
+        });
     }
 
     let returning = known.missing_at.get(file.path.as_str());
@@ -764,14 +794,25 @@ mod tests {
     fn backfill(db: &Db) {
         for job in db.tracks_needing_analysis().unwrap() {
             let fp = fingerprint::of_file(Path::new(&job.path)).unwrap();
-            db.set_fingerprint(job.id, &fp).unwrap();
+            assert!(db.set_fingerprint(job.id, &fp, job.mtime).unwrap());
         }
+    }
+
+    /// The modification time the library holds for a row — what the analysis
+    /// pass's stores are checked against.
+    fn row_mtime(db: &Db, id: i64) -> Option<i64> {
+        db.track_index()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == id)
+            .expect("row kept")
+            .mtime
     }
 
     /// A prepared track with a waveform and an in-app title edit.
     fn prepare_fully(db: &Db, id: i64) {
         prepare(db, id);
-        db.set_waveform(id, &[1, 2, 3]).unwrap();
+        db.set_waveform(id, &[1, 2, 3], row_mtime(db, id)).unwrap();
         db.update_track_metadata(&TrackMetadataUpdate {
             id,
             title: Some("Edited".into()),
@@ -913,6 +954,77 @@ mod tests {
         assert_eq!(tracks[0].play_count, 0);
         assert!(missing_since(&db, id).is_some());
         assert_prepared(&db, id);
+    }
+
+    /// Push a file's modification time a minute forward, so the delta cache
+    /// sees it as changed. Rewriting a file in a test is far quicker than the
+    /// timestamp resolution the scan compares against.
+    fn touch(path: &Path) {
+        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        let at = file.metadata().unwrap().modified().unwrap() + std::time::Duration::from_secs(60);
+        file.set_modified(at).unwrap();
+    }
+
+    /// The same rule as `different_audio_at_a_missing_tracks_path_is_a_new_track`,
+    /// for a path the library still holds. A file overwritten in place is the
+    /// only way the two can differ, and the row is reused for audio it
+    /// recognises or not at all.
+    #[test]
+    fn different_audio_at_a_present_tracks_path_is_a_new_track() {
+        let (dir, db) = library();
+        let file = dir.path().join("a.wav");
+        write_wav(&file, 1, 1);
+        scan(&db, &[music(dir.path())]);
+        backfill(&db);
+        let id = id_of(&db, "a");
+        prepare_fully(&db, id);
+
+        write_wav(&file, 2, 1);
+        touch(&file);
+        let outcome = scan(&db, &[music(dir.path())]);
+
+        assert_eq!(outcome.replaced, 1);
+        assert_eq!(outcome.missing, 0, "nothing went away — the file is there");
+        let tracks = db.search("", None, None, None).unwrap();
+        assert_eq!(tracks.len(), 1, "the replaced row is hidden");
+        assert_ne!(tracks[0].id, id);
+        assert_eq!(tracks[0].play_count, 0, "the new track starts clean");
+        assert_eq!(tracks[0].cue_points.cue_in_ms, None);
+        assert!(missing_since(&db, id).is_some());
+        assert_fully_prepared(&db, id);
+    }
+
+    /// An external tagger rewrites the file whole, which moves its
+    /// modification time without touching a sample. The track stands, and so
+    /// does every measurement taken from the audio — re-deriving them would be
+    /// a full decode per track, for a file whose audio nobody touched.
+    #[test]
+    fn a_tag_edit_in_another_app_keeps_the_track_and_its_measurements() {
+        let (dir, db) = library();
+        let file = dir.path().join("a.wav");
+        write_wav(&file, 1, 1);
+        scan(&db, &[music(dir.path())]);
+        backfill(&db);
+        let id = id_of(&db, "a");
+        db.set_waveform(id, &[1, 2, 3], row_mtime(&db, id)).unwrap();
+        db.set_loudness(id, Some(-7.5), Some(0.9), 1234, row_mtime(&db, id))
+            .unwrap();
+        prepare(&db, id);
+
+        retag_externally(&file, "Retagged", "Tagger");
+        let outcome = scan(&db, &[music(dir.path())]);
+
+        assert_eq!(outcome.replaced, 0);
+        assert_eq!(id_of(&db, "Retagged"), id, "the tags were read");
+        assert_prepared(&db, id);
+        assert_eq!(db.get_waveform(id).unwrap(), Some(vec![1, 2, 3]));
+        assert!(
+            db.tracks_needing_analysis()
+                .unwrap()
+                .iter()
+                .all(|j| j.id != id),
+            "a tag edit sent the track back through a full decode"
+        );
     }
 
     #[test]
