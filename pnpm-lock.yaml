@@ -187,8 +187,8 @@ importers:
         specifier: 2.9.2
         version: 2.9.2
       material-symbols:
-        specifier: 0.47.4
-        version: 0.47.4
+        specifier: 0.47.5
+        version: 0.47.5
     devDependencies:
       '@commitlint/cli':
         specifier: 21.2.3
@@ -2486,8 +2486,8 @@ packages:
   magicast@0.5.5:
     resolution: {integrity: sha512-UicdXN8zQ3JHlxVq+28afMXPr1z7WNY6+7EJnzTdQWkTAlMLF5fNCCKxJHBQwGaNGR11581EiQmQzx73+MvszA==}
 
-  material-symbols@0.47.4:
-    resolution: {integrity: sha512-ip1Tu6iNi48Xd8NzAEMgGoukMBuyoyvC5pX9IxmPaSguTyGAvNHLF6bJGu9599yUzdgdylZ/XpweVmjgwS5NVQ==}
+  material-symbols@0.47.5:
+    resolution: {integrity: sha512-bry9rHVqF7HewbSK9Yb77obFoDvQsEot8IrW9+F179iEkcg7P/zYv2zuwBRU1oFkA5Ez0MpDAintffdtqL70Eg==}
 
   mdn-data@2.27.1:
     resolution: {integrity: sha512-9Yubnt3e8A0OKwxYSXyhLymGW4sCufcLG6VdiDdUGVkPhpqLxlvP5vl1983gQjJl3tqbrM731mjaZaP68AgosQ==}
@@ -5626,7 +5626,7 @@ snapshots:
       '@babel/types': 7.29.8
       source-map-js: 1.2.1
 
-  material-symbols@0.47.4: {}
+  material-symbols@0.47.5: {}
 
   mdn-data@2.27.1: {}
 
