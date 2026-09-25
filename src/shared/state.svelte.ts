@@ -11,6 +11,7 @@ import type {
   FindingKind,
   LibraryStats,
   PlaylistItem,
+  Recalculated,
   SortColumn,
   SortDir,
   Track,
@@ -1347,6 +1348,18 @@ export class AppState {
       logger.error("Purge failed:", err);
     }
     await Promise.all([this.loadStats(), this.search()]);
+  }
+
+  /**
+   * Apply the current thresholds to material already analysed. The rows the
+   * backend re-derived on the spot are stale in every copy the UI holds, which
+   * is the same problem flipping an apply switch causes — so it is the same
+   * re-read. Rows it queued arrive later as `cue-points-ready`, one by one.
+   */
+  async recalculateAutoCue(): Promise<Recalculated> {
+    const done = await api.recalculateAutoCue();
+    if (done.updated > 0) await this.rereadCuePoints();
+    return done;
   }
 
   /** Stop a health finding from lighting the badge while it stays as it is. */

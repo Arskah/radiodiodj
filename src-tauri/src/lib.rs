@@ -25,7 +25,7 @@ use audio::cue_points::CuePoints;
 use audio::player::{Cmd, PlayerTuning, RampDone};
 use broadcast::{service::default_now_playing_dir, BroadcastService};
 use library::check::LibraryCheck;
-use library::db::{Db, LibraryStats, OpenError, Track, TrackMetadataUpdate};
+use library::db::{Db, LibraryStats, OpenError, Recalculated, Track, TrackMetadataUpdate};
 use library::health::{FindingKind, Health, HealthReport};
 use library::scan_state::{ScanState, ScanStatus, StartResult};
 use library::tag_write::TagWriter;
@@ -838,6 +838,57 @@ fn purge_tracks(state: State<'_, AppState>, ids: Vec<i64>) -> Result<usize, Stri
     Ok(deleted.len())
 }
 
+/// Apply the current automatic-analysis thresholds to material already in the
+/// library. Changing a threshold never re-analyses anything by itself, so this
+/// is how an operator makes a new one reach what they already have.
+///
+/// Rows carrying a readable level envelope are re-derived on the spot, with no
+/// decode. The rest go back to the analysis pass, kicked once here — `start`
+/// rather than `nudge`, so a pass stopped earlier does not swallow it. Radio
+/// edits the operator made are left alone and only counted.
+///
+/// Refused mid-scan, like a purge: a scan rewrites these rows underneath.
+///
+/// The work runs on `spawn_blocking`, like every other command here that takes
+/// more than a moment: it holds the DB mutex for a statement per row, and a
+/// blocking call in the command body itself would hold an async runtime worker
+/// for the duration.
+#[tauri::command(rename_all = "camelCase")]
+async fn recalculate_auto_cue(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Recalculated, String> {
+    if state.scan.is_running() {
+        return Err("a library scan is running; recalculate when it finishes".into());
+    }
+    let thresholds = state.config.get_tuning().auto_cue.thresholds();
+    let db = Arc::clone(&state.db);
+    let done = tauri::async_runtime::spawn_blocking(move || {
+        db.recalculate_auto_cue(thresholds, library::scanner::now_ms())
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)?;
+
+    // Kicked whatever the count says. `queued` reports only the rows that left
+    // a settled result, but a row already waiting may have had a recorded
+    // decode failure cleared just now — and that is precisely the row the pass
+    // could not see before. `start` is single-flight and drains to nothing when
+    // there is no work, so being wrong here costs a thread that exits.
+    Arc::clone(&state.waveform).start(app, Arc::clone(&state.db), Arc::clone(&state.config));
+
+    // Every derived set the library reports has just changed, so the copies the
+    // playlist holds are stale — the same re-read a switch flip runs.
+    if done.updated > 0 {
+        state.playlist.reload_cue_points();
+    }
+    // `health` is not refreshed here on purpose: the pass kicked above emits
+    // `waveform-state-changed`, which `Health::attach_to_app` already listens
+    // for, and a cleared `analysis_failed_at` is the only thing here the report
+    // counts.
+    Ok(done)
+}
+
 #[tauri::command(rename_all = "camelCase")]
 fn library_health(state: State<'_, AppState>) -> HealthReport {
     state.health.report()
@@ -1129,6 +1180,7 @@ pub fn run() {
             cancel_scan,
             get_scan_status,
             purge_tracks,
+            recalculate_auto_cue,
             library_health,
             library_check_now,
             health_dismiss,

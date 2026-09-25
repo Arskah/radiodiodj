@@ -34,6 +34,15 @@
   });
   let testResult = $state<string | null>(null);
   let testing = $state(false);
+  let recalcResult = $state<string | null>(null);
+  let recalculating = $state(false);
+  // Clicking Recalculate now is what blurs a threshold input, so the save and
+  // the recalculation are two handlers in one gesture, and the recalculation
+  // reads the thresholds on the backend. It waits for this.
+  let tuningSave: Promise<unknown> | null = null;
+  // A scan rewrites the rows a recalculation reads, so the backend refuses
+  // one while it runs. Say so before the press rather than after.
+  const scanning = $derived(app.scanStatus.status === "running");
   let showSecret = $state(false);
   let newPassword = $state("");
   let confirmPassword = $state("");
@@ -49,6 +58,7 @@
       passwordFormOpen = false;
       confirmingRemove = false;
       passwordError = null;
+      recalcResult = null;
       void app.loadAudioConfig();
       void loadNowPlayingConfig();
       // Covers "I dropped a folder in, then came here to look for it".
@@ -134,8 +144,56 @@
     ) {
       el.value = shownOnFocus.get(el) ?? el.value;
     }
-    await app.saveTuning($state.snapshot(tuning));
-    tuning = $state.snapshot(app.tuning);
+    const save = app.saveTuning($state.snapshot(tuning));
+    tuningSave = save;
+    try {
+      await save;
+      tuning = $state.snapshot(app.tuning);
+    } finally {
+      if (tuningSave === save) tuningSave = null;
+    }
+  }
+
+  /**
+   * Edit one of the automatic-cue thresholds. The result line under the button
+   * names the levels the last recalculation ran at, so a fresh edit makes it a
+   * lie — drop it on the first keystroke.
+   */
+  function thresholdInput(e: Event, apply: (v: number) => void): void {
+    recalcResult = null;
+    numInput(e, apply);
+  }
+
+  /**
+   * Apply the thresholds above to material already analysed. Says what it did
+   * rather than how far it got: the rows it re-derived are done when this
+   * resolves, and the rows it queued are the analysis bar's business.
+   *
+   * The levels come back from `app.tuning` rather than the inputs, because the
+   * backend rounds and clamps them — the line has to name what was applied, not
+   * what was typed.
+   */
+  async function recalculateAutoCue(): Promise<void> {
+    recalculating = true;
+    recalcResult = null;
+    try {
+      await tuningSave;
+      const done = await app.recalculateAutoCue();
+      const { silenceDbfs, segueDbfs } = app.tuning.autoCue;
+      const at = `at ${silenceDbfs} / ${segueDbfs} dBFS`;
+      const parts = [`${done.updated.toLocaleString()} re-derived ${at}`];
+      if (done.queued > 0) {
+        parts.push(`${done.queued.toLocaleString()} queued for analysis`);
+      }
+      if (done.manual > 0) {
+        parts.push(`${done.manual.toLocaleString()} radio edits left alone`);
+      }
+      recalcResult = parts.join(" · ");
+    } catch (err) {
+      recalcResult = err instanceof Error ? err.message : String(err);
+    } finally {
+      recalculating = false;
+    }
   }
 
   // Parse a number input, ignoring empty/NaN so a mid-edit blank doesn't wipe
@@ -1247,7 +1305,7 @@
                 step="1"
                 value={tuning.autoCue.silenceDbfs}
                 oninput={(e) =>
-                  numInput(e, (v) => (tuning.autoCue.silenceDbfs = v))}
+                  thresholdInput(e, (v) => (tuning.autoCue.silenceDbfs = v))}
                 onchange={saveTuning}
               />
               <div class="hint">
@@ -1266,7 +1324,7 @@
                 step="1"
                 value={tuning.autoCue.segueDbfs}
                 oninput={(e) =>
-                  numInput(e, (v) => (tuning.autoCue.segueDbfs = v))}
+                  thresholdInput(e, (v) => (tuning.autoCue.segueDbfs = v))}
                 onchange={saveTuning}
               />
               <div class="hint">
@@ -1277,6 +1335,26 @@
                 so turning them back on costs no second pass.
               </div>
             </div>
+            <div class="np-action-row">
+              <button
+                class="btn-scan-now"
+                onclick={recalculateAutoCue}
+                disabled={recalculating || scanning}
+                title={scanning
+                  ? "A library scan is running; recalculate when it finishes"
+                  : "Apply these levels to tracks already analysed"}
+                >{recalculating ? "Recalculating…" : "Recalculate now"}</button
+              >
+              {#if recalcResult}
+                <span class="np-test-result">{recalcResult}</span>
+              {/if}
+            </div>
+            <p class="settings-section-desc">
+              New levels reach later analyses on their own. This applies them to
+              everything already in the library — from each track's stored
+              measurements where it has them, and by decoding again where it
+              does not. Radio edits you made by hand are left alone.
+            </p>
 
             <h5 class="tuning-group-title">Fades</h5>
             <div class="device-row">

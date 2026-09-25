@@ -306,6 +306,19 @@ export interface AutoCueConfig {
   segueDbfs: number;
 }
 
+/**
+ * What one explicit recalculation of the automatic cue points did.
+ * `updated` were re-derived from their stored level envelope on the spot;
+ * `queued` had none this build could read and left a settled result for the
+ * analysis pass — rows already waiting for it are not counted; `manual` are radio edits the operator made, counted so the
+ * result can say they were left alone.
+ */
+export interface Recalculated {
+  updated: number;
+  queued: number;
+  manual: number;
+}
+
 /// User-tunable playback behaviour, persisted in `config.json`.
 export interface TuningConfig {
   interleave: InterleaveConfig;

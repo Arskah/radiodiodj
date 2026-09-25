@@ -41,6 +41,7 @@ const { api } = vi.hoisted(() => {
     addPath: vi.fn(),
     removePath: vi.fn(),
     purgeTracks: vi.fn(),
+    recalculateAutoCue: vi.fn(),
     libraryHealth: vi.fn(),
     onLibraryHealth: vi.fn(),
     libraryCheckNow: vi.fn(),
@@ -1311,6 +1312,42 @@ describe("AppState tuning", () => {
     expect(api.search).toHaveBeenCalled();
     expect(api.getTracksByIds).toHaveBeenCalledWith([1]);
     expect(app.editingCuePoints?.cue_points).toEqual(NO_CUE_POINTS);
+  });
+
+  it("re-reads the library after a recalculation re-derived rows", async () => {
+    // Every derived set the library reports has just changed, which is the
+    // same staleness a switch flip causes.
+    app.editingCuePoints = t(1, {
+      cue_points: { cue_in_ms: 10_000 } as never,
+    });
+    api.recalculateAutoCue.mockResolvedValueOnce({
+      updated: 12,
+      queued: 3,
+      manual: 4,
+    });
+    api.getTracksByIds.mockResolvedValueOnce([t(1)]);
+    api.search.mockClear();
+
+    const done = await app.recalculateAutoCue();
+
+    expect(done.updated).toBe(12);
+    expect(api.search).toHaveBeenCalled();
+    expect(app.editingCuePoints?.cue_points).toEqual(NO_CUE_POINTS);
+  });
+
+  it("leaves the library alone when a recalculation only queued rows", async () => {
+    // Nothing was re-derived, so no copy the UI holds is stale yet; those
+    // tracks arrive one by one as `cue-points-ready`.
+    api.recalculateAutoCue.mockResolvedValueOnce({
+      updated: 0,
+      queued: 9,
+      manual: 0,
+    });
+    api.search.mockClear();
+
+    await app.recalculateAutoCue();
+
+    expect(api.search).not.toHaveBeenCalled();
   });
 
   it("leaves the library alone when the switch did not move", async () => {
