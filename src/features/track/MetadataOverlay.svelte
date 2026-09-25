@@ -70,15 +70,18 @@
    * once it has been cleared, so this normalises both plus the string it was
    * seeded with. An empty box clears the column.
    */
-  function parsePositive(
+  function parsePosition(
     v: string | number | null,
     label: string,
   ): number | null | typeof INVALID {
     const s = v == null ? "" : String(v).trim();
     if (s === "") return null;
     const n = Number(s);
-    if (!Number.isInteger(n) || n < 1 || n > 9999) {
-      error = `${label} must be a whole number between 1 and 9999`;
+    // `0` is accepted because taggers write it and the scan stores it. Refusing
+    // it would block every other edit to such a track behind a complaint about
+    // a box the operator never touched.
+    if (!Number.isInteger(n) || n < 0 || n > 9999) {
+      error = `${label} must be a whole number between 0 and 9999`;
       return INVALID;
     }
     return n;
@@ -119,15 +122,17 @@
       parsedYear = n;
     }
 
-    const positions = {
-      track_no: parsePositive(trackNo, "Track number"),
-      track_total: parsePositive(trackTotal, "Track total"),
-      disc_no: parsePositive(discNo, "Disc number"),
-      disc_total: parsePositive(discTotal, "Disc total"),
-    };
-    // `parsePositive` sets `error` itself, so the first bad box is the one
-    // reported and the rest are not second-guessed.
-    if (Object.values(positions).includes(INVALID)) return;
+    // Checked in order and stopped at the first bad box: each call overwrites
+    // `error`, so evaluating all four would report the last complaint rather
+    // than the one nearest the top of the form.
+    const trackNoValue = parsePosition(trackNo, "Track number");
+    if (trackNoValue === INVALID) return;
+    const trackTotalValue = parsePosition(trackTotal, "Track total");
+    if (trackTotalValue === INVALID) return;
+    const discNoValue = parsePosition(discNo, "Disc number");
+    if (discNoValue === INVALID) return;
+    const discTotalValue = parsePosition(discTotal, "Disc total");
+    if (discTotalValue === INVALID) return;
 
     saving = true;
     error = null;
@@ -141,10 +146,10 @@
         album_artist: orNull(albumArtist),
         initial_key: orNull(initialKey),
         comment: orNull(comment),
-        track_no: positions.track_no as number | null,
-        track_total: positions.track_total as number | null,
-        disc_no: positions.disc_no as number | null,
-        disc_total: positions.disc_total as number | null,
+        track_no: trackNoValue,
+        track_total: trackTotalValue,
+        disc_no: discNoValue,
+        disc_total: discTotalValue,
       });
       if (updated) {
         close();
@@ -330,7 +335,7 @@
               type="number"
               aria-label="Track number"
               bind:value={trackNo}
-              min="1"
+              min="0"
               max="9999"
               inputmode="numeric"
             />
@@ -340,7 +345,7 @@
               type="number"
               aria-label="Tracks on the record"
               bind:value={trackTotal}
-              min="1"
+              min="0"
               max="9999"
               inputmode="numeric"
             />
@@ -358,7 +363,7 @@
               type="number"
               aria-label="Disc number"
               bind:value={discNo}
-              min="1"
+              min="0"
               max="9999"
               inputmode="numeric"
             />
@@ -368,7 +373,7 @@
               type="number"
               aria-label="Discs in the set"
               bind:value={discTotal}
-              min="1"
+              min="0"
               max="9999"
               inputmode="numeric"
             />

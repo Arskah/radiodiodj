@@ -432,7 +432,17 @@ export class AppState {
     // and `tracks` is a snapshot from the last query. One re-read when the pass
     // finishes, rather than one per track it touches.
     api.onTagBackfillStateChanged((next) => {
-      if (next.status === "idle") void this.search();
+      if (next.status !== "idle") return;
+      void this.search().then(() => {
+        // An editor opened before the pass ran holds a snapshot with the tag
+        // columns still empty. Saving it would send those blanks back as
+        // deliberate clears — flagged as operator edits, and so written to the
+        // file. Re-point it at the refreshed row.
+        const open = this.editingMetadata;
+        if (!open) return;
+        const fresh = this.tracks.find((t) => t.id === open.id);
+        if (fresh) this.editingMetadata = fresh;
+      });
     });
   }
 

@@ -28,8 +28,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use super::db::{Db, TagValues};
+use super::db::{Db, EditedFields, TagValues};
 use super::fingerprint;
+use super::scanner;
 use crate::persist::config::Config;
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -237,32 +238,54 @@ fn retag(bytes: Vec<u8>, values: &TagValues, path: &Path) -> Result<Vec<u8>> {
     set(tag, ItemKey::AlbumTitle, values.album.clone());
     set(tag, ItemKey::Genre, values.genre.clone());
     set(tag, ItemKey::Year, values.year.map(|y| y.to_string()));
-    set(tag, ItemKey::AlbumArtist, values.album_artist.clone());
-    set(tag, ItemKey::InitialKey, values.initial_key.clone());
+    // The columns added in #463 are only the file's truth once the row has been
+    // read at the current generation. Before that they are `NULL` meaning
+    // "nobody has looked", and writing them would delete the file's album
+    // artist, track and disc numbers, key and comment — as a side effect of an
+    // edit to something else entirely. A column the operator edited is written
+    // regardless: that value came from them, not from an unread row.
+    let known = values.tags_read_version == Some(scanner::TAG_READ_VERSION);
+    let mut write = |bit: i64, key: ItemKey, value: Option<String>| {
+        if known || values.edited_fields & bit != 0 {
+            set(tag, key, value);
+        }
+    };
+    write(
+        EditedFields::ALBUM_ARTIST,
+        ItemKey::AlbumArtist,
+        values.album_artist.clone(),
+    );
+    write(
+        EditedFields::INITIAL_KEY,
+        ItemKey::InitialKey,
+        values.initial_key.clone(),
+    );
     // Both halves of a pair go together. Writing the number alone would leave
     // the total behind, and a single `TRCK` frame of "3/12" would come back as
     // bare "3".
-    set(
-        tag,
+    write(
+        EditedFields::TRACK_NO,
         ItemKey::TrackNumber,
         values.track_no.map(|n| n.to_string()),
     );
-    set(
-        tag,
+    write(
+        EditedFields::TRACK_TOTAL,
         ItemKey::TrackTotal,
         values.track_total.map(|n| n.to_string()),
     );
-    set(
-        tag,
+    write(
+        EditedFields::DISC_NO,
         ItemKey::DiscNumber,
         values.disc_no.map(|n| n.to_string()),
     );
-    set(
-        tag,
+    write(
+        EditedFields::DISC_TOTAL,
         ItemKey::DiscTotal,
         values.disc_total.map(|n| n.to_string()),
     );
-    set_comment(tag, values.comment.clone());
+    if known || values.edited_fields & EditedFields::COMMENT != 0 {
+        set_comment(tag, values.comment.clone());
+    }
 
     let mut out = Cursor::new(bytes);
     file.save_to(&mut out, WriteOptions::default())
@@ -516,6 +539,110 @@ mod tests {
         );
         let on_disk = read_file_tags(&f.path.to_string_lossy()).unwrap();
         assert_eq!(on_disk.comment.as_deref(), Some("operator note"));
+    }
+
+    /// A file's tags, as `TagValues` for a row in a given read generation.
+    fn values_for(path: &std::path::Path, version: Option<i64>, edited: i64) -> TagValues {
+        TagValues {
+            path: path.to_string_lossy().into_owned(),
+            title: Some("Corrected".into()),
+            artist: Some("Artist".into()),
+            album: Some("Album".into()),
+            genre: None,
+            year: None,
+            // Every new column NULL, which is what a row holds before the
+            // backfill has read it.
+            album_artist: None,
+            track_no: None,
+            track_total: None,
+            disc_no: None,
+            disc_total: None,
+            initial_key: None,
+            comment: None,
+            fingerprint: None,
+            tags_read_version: version,
+            edited_fields: edited,
+        }
+    }
+
+    fn richly_tagged(path: &std::path::Path) {
+        use lofty::config::WriteOptions;
+        use lofty::file::AudioFile;
+        use lofty::tag::Tag;
+
+        let mut tagged = Probe::open(path).unwrap().read().unwrap();
+        let mut tag = Tag::new(tagged.primary_tag_type());
+        tag.insert_text(ItemKey::AlbumArtist, "Kraftwerk".into());
+        tag.insert_text(ItemKey::TrackNumber, "3".into());
+        tag.insert_text(ItemKey::TrackTotal, "12".into());
+        tag.insert_text(ItemKey::InitialKey, "8A".into());
+        tag.insert_text(ItemKey::Comment, "sleeve note".into());
+        tagged.insert_tag(tag);
+        tagged.save_to_path(path, WriteOptions::default()).unwrap();
+    }
+
+    /// A row that predates the new columns holds `NULL` for them meaning
+    /// "nobody has looked", not "the file has none". Writing those `NULL`s back
+    /// would strip the file's album artist, numbers, key and comment as a side
+    /// effect of correcting a title — the whole library is in that state
+    /// between the migration and the backfill finishing.
+    #[test]
+    fn a_write_back_keeps_tags_the_row_has_not_read_yet() {
+        let f = fixture(true);
+        richly_tagged(&f.path);
+        let bytes = std::fs::read(&f.path).unwrap();
+
+        let out = retag(bytes, &values_for(&f.path, None, 1), &f.path).unwrap();
+
+        std::fs::write(&f.path, out).unwrap();
+        let on_disk = read_file_tags(&f.path.to_string_lossy()).unwrap();
+        assert_eq!(
+            on_disk.title.as_deref(),
+            Some("Corrected"),
+            "the edit landed"
+        );
+        assert_eq!(on_disk.album_artist.as_deref(), Some("Kraftwerk"));
+        assert_eq!(on_disk.track_no, Some(3));
+        assert_eq!(on_disk.track_total, Some(12));
+        assert_eq!(on_disk.initial_key.as_deref(), Some("8A"));
+        assert_eq!(on_disk.comment.as_deref(), Some("sleeve note"));
+    }
+
+    /// Clearing a box is an instruction, not an absence: an edited column is
+    /// written even on a row the backfill has not reached.
+    #[test]
+    fn a_write_back_clears_a_column_the_operator_edited() {
+        let f = fixture(true);
+        richly_tagged(&f.path);
+        let bytes = std::fs::read(&f.path).unwrap();
+
+        let values = values_for(&f.path, None, EditedFields::ALBUM_ARTIST);
+        let out = retag(bytes, &values, &f.path).unwrap();
+
+        std::fs::write(&f.path, out).unwrap();
+        let on_disk = read_file_tags(&f.path.to_string_lossy()).unwrap();
+        assert_eq!(
+            on_disk.album_artist, None,
+            "the operator's clear was ignored"
+        );
+        assert_eq!(on_disk.track_no, Some(3), "an unedited column still stands");
+    }
+
+    /// Once the row has been read at the current generation its `NULL` does
+    /// mean the file has none, so a write-back may remove the frame.
+    #[test]
+    fn a_write_back_clears_a_column_a_current_row_says_is_empty() {
+        let f = fixture(true);
+        richly_tagged(&f.path);
+        let bytes = std::fs::read(&f.path).unwrap();
+
+        let values = values_for(&f.path, Some(scanner::TAG_READ_VERSION), 0);
+        let out = retag(bytes, &values, &f.path).unwrap();
+
+        std::fs::write(&f.path, out).unwrap();
+        let on_disk = read_file_tags(&f.path.to_string_lossy()).unwrap();
+        assert_eq!(on_disk.album_artist, None);
+        assert_eq!(on_disk.track_no, None);
     }
 
     /// The rights registry owns the ISRC, so no edit can reach it and a

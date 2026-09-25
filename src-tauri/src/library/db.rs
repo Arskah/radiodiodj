@@ -100,6 +100,10 @@ pub struct TagValues {
     pub comment: Option<String>,
     // `isrc` is absent so a write-back structurally cannot touch it.
     pub fingerprint: Option<String>,
+    /// Which generation of the tag read the row holds, so a write-back can tell
+    /// "this file has no album artist" from "nobody has looked yet". Below
+    /// [`scanner::TAG_READ_VERSION`] the newer columns are unknown, not empty.
+    pub tags_read_version: Option<i64>,
     pub edited_fields: i64,
 }
 
@@ -2005,7 +2009,7 @@ impl Db {
         conn.query_row(
             "SELECT path, title, artist, album, genre, year, album_artist, track_no, \
                     track_total, disc_no, disc_total, initial_key, comment, \
-                    fingerprint, edited_fields \
+                    fingerprint, tags_read_version, edited_fields \
              FROM tracks WHERE id = ? AND missing_since IS NULL",
             [id],
             |r| {
@@ -2024,7 +2028,8 @@ impl Db {
                     initial_key: r.get(11)?,
                     comment: r.get(12)?,
                     fingerprint: r.get(13)?,
-                    edited_fields: r.get(14)?,
+                    tags_read_version: r.get(14)?,
+                    edited_fields: r.get(15)?,
                 })
             },
         )
