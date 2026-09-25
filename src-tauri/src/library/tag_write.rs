@@ -401,7 +401,8 @@ mod tests {
         };
         scan_all(&db, &[root], &|| false, |_, _| {}).unwrap();
         let id = db.search("", None, None, None).unwrap()[0].id;
-        db.set_fingerprint(id, &fingerprint::of_file(&path).unwrap())
+        let scanned_mtime = db.track_index().unwrap()[0].mtime;
+        db.set_fingerprint(id, &fingerprint::of_file(&path).unwrap(), scanned_mtime)
             .unwrap();
         let config = Arc::new(Config::open(dir.path()).unwrap());
         let mut tuning = config.get_tuning();
@@ -801,7 +802,8 @@ mod tests {
     #[test]
     fn a_copy_that_would_change_identity_is_not_written() {
         let f = fixture(true);
-        f.db.set_fingerprint(f.id, "v1:someone-else").unwrap();
+        f.db.set_fingerprint(f.id, "v1:someone-else", f.stored_mtime())
+            .unwrap();
         let before = std::fs::read(&f.path).unwrap();
 
         f.edit("Mismatch");

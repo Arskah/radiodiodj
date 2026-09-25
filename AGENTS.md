@@ -149,7 +149,14 @@ so the row goes missing and the file enters through the new-path ladder
 (`Reconcile::replaced`); unknown → the row stands and its measurements are
 dropped. Every measurement in `UPSERT_TRACK_SQL` hangs on
 `excluded.fingerprint = fingerprint`, whose `NULL` propagation _is_ the unknown
-case. Never invalidate a measurement on the mtime alone. See
+case. The automatic trio hangs on `excluded.content_type = content_type` too,
+because a reclassified root rescans files whose audio never moved and a
+music-derived Next Start must not stand on a jingle; the level envelope
+deliberately does not, being a measurement of audio no reclassification
+touched. A measurement is also refused at the other end: `set_waveform`,
+`set_loudness` and `set_fingerprint` check the `mtime` the decode read, so a
+file replaced mid-decode cannot land a stale result over the invalidation.
+Never invalidate a measurement on the mtime alone. See
 [docs/library.md](docs/library.md#tracks).
 
 **Library health** — one report (missing, exact and possible duplicates,

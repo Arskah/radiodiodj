@@ -294,6 +294,10 @@ fn run(job: &WaveformJob, app: &AppHandle, db: &Db, config: &Config) -> Stop {
 }
 
 /// What analysing one track came to.
+///
+/// A store the row refused — the file moved on while the decode ran — is none
+/// of these. It is `Done`: the rescan that moved it left the row queued, so
+/// the drain loop takes it again against the file that is there now.
 enum Outcome {
     Done,
     /// The file could not be read, or a result could not be stored. Worth
@@ -326,33 +330,39 @@ fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle, config: &Config) -> Outc
                 let decode_ms = start.elapsed().as_millis();
                 let store_start = Instant::now();
                 if job.needs_waveform {
-                    if let Err(e) = db.set_waveform(job.id, &analysis.curve) {
-                        log::error!("waveform: store {} failed: {}", job.id, e);
-                        retry = true;
-                    } else {
-                        log::debug!(
-                            "waveform: {} decode {}ms write {}ms",
-                            job.path,
-                            decode_ms,
-                            store_start.elapsed().as_millis()
-                        );
-                        let _ = app.emit(WAVEFORM_READY_EVENT, job.id);
+                    match db.set_waveform(job.id, &analysis.curve, job.mtime) {
+                        Err(e) => {
+                            log::error!("waveform: store {} failed: {}", job.id, e);
+                            retry = true;
+                        }
+                        Ok(false) => log::debug!("waveform: {} moved on", job.path),
+                        Ok(true) => {
+                            log::debug!(
+                                "waveform: {} decode {}ms write {}ms",
+                                job.path,
+                                decode_ms,
+                                store_start.elapsed().as_millis()
+                            );
+                            let _ = app.emit(WAVEFORM_READY_EVENT, job.id);
+                        }
                     }
                 }
                 if job.needs_loudness {
                     let m = analysis.loudness;
                     let gain = m.map(|l| loudness::gain_db(l.lufs));
                     let peak = m.map(|l| f64::from(l.peak));
-                    if let Err(e) = db.set_loudness(job.id, gain, peak, now_ms()) {
-                        log::error!("loudness: store {} failed: {}", job.id, e);
-                        retry = true;
-                    } else {
-                        log::debug!(
+                    match db.set_loudness(job.id, gain, peak, now_ms(), job.mtime) {
+                        Err(e) => {
+                            log::error!("loudness: store {} failed: {}", job.id, e);
+                            retry = true;
+                        }
+                        Ok(false) => log::debug!("loudness: {} moved on", job.path),
+                        Ok(true) => log::debug!(
                             "loudness: {} {:?} LUFS gain {:?} dB",
                             job.path,
                             m.map(|l| l.lufs),
                             gain
-                        );
+                        ),
                     }
                 }
                 let levels = (job.needs_auto_cue || job.needs_auto_cue_levels)
@@ -381,7 +391,7 @@ fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle, config: &Config) -> Outc
     };
     match fingerprint {
         Some(Ok(fp)) => {
-            if let Err(e) = db.set_fingerprint(job.id, &fp) {
+            if let Err(e) = db.set_fingerprint(job.id, &fp, job.mtime) {
                 log::error!("fingerprint: store {} failed: {}", job.id, e);
                 retry = true;
             }

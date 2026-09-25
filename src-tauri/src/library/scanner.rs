@@ -794,14 +794,25 @@ mod tests {
     fn backfill(db: &Db) {
         for job in db.tracks_needing_analysis().unwrap() {
             let fp = fingerprint::of_file(Path::new(&job.path)).unwrap();
-            db.set_fingerprint(job.id, &fp).unwrap();
+            assert!(db.set_fingerprint(job.id, &fp, job.mtime).unwrap());
         }
+    }
+
+    /// The modification time the library holds for a row — what the analysis
+    /// pass's stores are checked against.
+    fn row_mtime(db: &Db, id: i64) -> Option<i64> {
+        db.track_index()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == id)
+            .expect("row kept")
+            .mtime
     }
 
     /// A prepared track with a waveform and an in-app title edit.
     fn prepare_fully(db: &Db, id: i64) {
         prepare(db, id);
-        db.set_waveform(id, &[1, 2, 3]).unwrap();
+        db.set_waveform(id, &[1, 2, 3], row_mtime(db, id)).unwrap();
         db.update_track_metadata(&TrackMetadataUpdate {
             id,
             title: Some("Edited".into()),
@@ -995,8 +1006,9 @@ mod tests {
         scan(&db, &[music(dir.path())]);
         backfill(&db);
         let id = id_of(&db, "a");
-        db.set_waveform(id, &[1, 2, 3]).unwrap();
-        db.set_loudness(id, Some(-7.5), Some(0.9), 1234).unwrap();
+        db.set_waveform(id, &[1, 2, 3], row_mtime(&db, id)).unwrap();
+        db.set_loudness(id, Some(-7.5), Some(0.9), 1234, row_mtime(&db, id))
+            .unwrap();
         prepare(&db, id);
 
         retag_externally(&file, "Retagged", "Tagger");

@@ -171,7 +171,11 @@ whose modification time moved, and the fingerprint decides:
 
 - **the same audio** — nothing measured is disturbed. The tags are re-read and
   that is all. This is the common case, and re-deriving here would be a full
-  decode per track for nothing.
+  decode per track for nothing. The one exception is a root the operator
+  reclassified, which rescans its files without their audio moving: the
+  automatic trio was derived for the other class and goes back to the pass,
+  while the waveform, the loudness and the level envelope stand. See
+  [cue-auto-analysis.md](./cue-auto-analysis.md).
 - **different audio** — a different recording, so a different track. The row
   goes [missing](./track-identity.md#missing-not-deleted) and the file enters
   the library as a track of its own. See
@@ -181,6 +185,13 @@ whose modification time moved, and the fingerprint decides:
   pass measures the file as it is now. Not knowing costs a re-measurement,
   because the alternative is a stale ReplayGain reaching air with nothing
   queued to correct it.
+
+The analysis pass checks the same thing from its own end. A decode takes
+seconds, and a file replaced inside that window would otherwise have the pass
+write the old audio's result back over the invalidation the scan just made —
+onto a row whose emptiness is the only thing that would have queued it again.
+Each store is refused unless the row still holds the modification time the
+decode read.
 
 A track remembers which tag fields the operator edited (`edited_fields`). When
 the file changes, the scan re-reads it but keeps those fields. The other fields
