@@ -45,7 +45,7 @@
     "@tauri-apps/api": "2.11.1",
     "@tauri-apps/plugin-dialog": "2.7.3",
     "@tauri-apps/plugin-log": "2.9.2",
-    "material-symbols": "0.47.4"
+    "material-symbols": "0.47.5"
   },
   "devDependencies": {
     "@commitlint/cli": "21.2.3",
