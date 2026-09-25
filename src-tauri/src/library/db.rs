@@ -57,6 +57,11 @@ pub struct Track {
     pub edited_fields: i64,
 }
 
+/// One position column of a metadata edit: its `SET` fragment, the value asked
+/// for, the value the row holds, and the [`EditedFields`] bit to raise when the
+/// two differ.
+type NumberEdit = (&'static str, Option<Option<i64>>, Option<i64>, i64);
+
 /// Bits of `tracks.edited_fields`, one per tag column.
 pub struct EditedFields;
 
@@ -66,6 +71,15 @@ impl EditedFields {
     pub const ALBUM: i64 = 4;
     pub const GENRE: i64 = 8;
     pub const YEAR: i64 = 16;
+    pub const ALBUM_ARTIST: i64 = 32;
+    pub const TRACK_NO: i64 = 64;
+    pub const TRACK_TOTAL: i64 = 128;
+    pub const DISC_NO: i64 = 256;
+    pub const DISC_TOTAL: i64 = 512;
+    pub const INITIAL_KEY: i64 = 1024;
+    pub const COMMENT: i64 = 2048;
+    // No bit for `isrc`: the rights registry owns it, so the file always wins
+    // and there is nothing for the operator to protect from a rescan.
 }
 
 /// A track's tag columns, as a tag write-back reads and compares them.
@@ -77,7 +91,19 @@ pub struct TagValues {
     pub album: Option<String>,
     pub genre: Option<String>,
     pub year: Option<i64>,
+    pub album_artist: Option<String>,
+    pub track_no: Option<i64>,
+    pub track_total: Option<i64>,
+    pub disc_no: Option<i64>,
+    pub disc_total: Option<i64>,
+    pub initial_key: Option<String>,
+    pub comment: Option<String>,
+    // `isrc` is absent so a write-back structurally cannot touch it.
     pub fingerprint: Option<String>,
+    /// Which generation of the tag read the row holds, so a write-back can tell
+    /// "this file has no album artist" from "nobody has looked yet". Below
+    /// [`scanner::TAG_READ_VERSION`] the newer columns are unknown, not empty.
+    pub tags_read_version: Option<i64>,
     pub edited_fields: i64,
 }
 
@@ -261,6 +287,49 @@ pub struct TrackMetadataUpdate {
         skip_serializing_if = "Option::is_none"
     )]
     pub year: Option<Option<i64>>,
+    #[serde(
+        default,
+        deserialize_with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub album_artist: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub track_no: Option<Option<i64>>,
+    #[serde(
+        default,
+        deserialize_with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub track_total: Option<Option<i64>>,
+    #[serde(
+        default,
+        deserialize_with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub disc_no: Option<Option<i64>>,
+    #[serde(
+        default,
+        deserialize_with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub disc_total: Option<Option<i64>>,
+    #[serde(
+        default,
+        deserialize_with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub initial_key: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub comment: Option<Option<String>>,
+    // `isrc` is deliberately absent: with no field, no payload can set it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
 }
@@ -1785,6 +1854,63 @@ impl Db {
                 edited |= EditedFields::YEAR;
             }
         }
+        if let Some(v) = &updates.album_artist {
+            setters.push("album_artist=?");
+            params.push(text(v));
+            if *v != current.album_artist {
+                edited |= EditedFields::ALBUM_ARTIST;
+            }
+        }
+        if let Some(v) = &updates.initial_key {
+            setters.push("initial_key=?");
+            params.push(text(v));
+            if *v != current.initial_key {
+                edited |= EditedFields::INITIAL_KEY;
+            }
+        }
+        if let Some(v) = &updates.comment {
+            setters.push("comment=?");
+            params.push(text(v));
+            if *v != current.comment {
+                edited |= EditedFields::COMMENT;
+            }
+        }
+        // The four position numbers behave alike, so they share a shape: set
+        // the column, and flag its bit only when the value actually moved.
+        let numbers: [NumberEdit; 4] = [
+            (
+                "track_no=?",
+                updates.track_no,
+                current.track_no,
+                EditedFields::TRACK_NO,
+            ),
+            (
+                "track_total=?",
+                updates.track_total,
+                current.track_total,
+                EditedFields::TRACK_TOTAL,
+            ),
+            (
+                "disc_no=?",
+                updates.disc_no,
+                current.disc_no,
+                EditedFields::DISC_NO,
+            ),
+            (
+                "disc_total=?",
+                updates.disc_total,
+                current.disc_total,
+                EditedFields::DISC_TOTAL,
+            ),
+        ];
+        for (setter, update, now, bit) in numbers {
+            let Some(v) = update else { continue };
+            setters.push(setter);
+            params.push(v.map_or(Value::Null, Value::Integer));
+            if v != now {
+                edited |= bit;
+            }
+        }
         // A reclassification changes what automatic analysis would infer — a
         // music Next Start has no business surviving a move to jingle — so an
         // automatically owned track goes back in the queue. Its current markers
@@ -1841,14 +1967,28 @@ impl Db {
                 album = CASE WHEN edited_fields & 4 THEN ?3 ELSE album END, \
                 genre = CASE WHEN edited_fields & 8 THEN ?4 ELSE genre END, \
                 year = CASE WHEN edited_fields & 16 THEN ?5 ELSE year END, \
-                mtime = ?6, edited_fields = 0 \
-             WHERE id = ?7",
+                album_artist = CASE WHEN edited_fields & 32 THEN ?6 ELSE album_artist END, \
+                track_no = CASE WHEN edited_fields & 64 THEN ?7 ELSE track_no END, \
+                track_total = CASE WHEN edited_fields & 128 THEN ?8 ELSE track_total END, \
+                disc_no = CASE WHEN edited_fields & 256 THEN ?9 ELSE disc_no END, \
+                disc_total = CASE WHEN edited_fields & 512 THEN ?10 ELSE disc_total END, \
+                initial_key = CASE WHEN edited_fields & 1024 THEN ?11 ELSE initial_key END, \
+                comment = CASE WHEN edited_fields & 2048 THEN ?12 ELSE comment END, \
+                mtime = ?13, edited_fields = 0 \
+             WHERE id = ?14",
             params![
                 parsed.title,
                 parsed.artist,
                 parsed.album,
                 parsed.genre,
                 parsed.year,
+                parsed.album_artist,
+                parsed.track_no,
+                parsed.track_total,
+                parsed.disc_no,
+                parsed.disc_total,
+                parsed.initial_key,
+                parsed.comment,
                 parsed.mtime,
                 id
             ],
@@ -1867,7 +2007,9 @@ impl Db {
     pub fn tag_values(&self, id: i64) -> Result<Option<TagValues>> {
         let conn = self.conn.lock();
         conn.query_row(
-            "SELECT path, title, artist, album, genre, year, fingerprint, edited_fields \
+            "SELECT path, title, artist, album, genre, year, album_artist, track_no, \
+                    track_total, disc_no, disc_total, initial_key, comment, \
+                    fingerprint, tags_read_version, edited_fields \
              FROM tracks WHERE id = ? AND missing_since IS NULL",
             [id],
             |r| {
@@ -1878,8 +2020,16 @@ impl Db {
                     album: r.get(3)?,
                     genre: r.get(4)?,
                     year: r.get(5)?,
-                    fingerprint: r.get(6)?,
-                    edited_fields: r.get(7)?,
+                    album_artist: r.get(6)?,
+                    track_no: r.get(7)?,
+                    track_total: r.get(8)?,
+                    disc_no: r.get(9)?,
+                    disc_total: r.get(10)?,
+                    initial_key: r.get(11)?,
+                    comment: r.get(12)?,
+                    fingerprint: r.get(13)?,
+                    tags_read_version: r.get(14)?,
+                    edited_fields: r.get(15)?,
                 })
             },
         )
@@ -1896,7 +2046,10 @@ impl Db {
         let n = conn.execute(
             "UPDATE tracks SET edited_fields = 0, mtime = ?1 \
              WHERE id = ?2 AND path = ?3 AND title IS ?4 AND artist IS ?5 \
-               AND album IS ?6 AND genre IS ?7 AND year IS ?8",
+               AND album IS ?6 AND genre IS ?7 AND year IS ?8 \
+               AND album_artist IS ?9 AND track_no IS ?10 AND track_total IS ?11 \
+               AND disc_no IS ?12 AND disc_total IS ?13 AND initial_key IS ?14 \
+               AND comment IS ?15",
             params![
                 mtime,
                 id,
@@ -1905,7 +2058,14 @@ impl Db {
                 written.artist,
                 written.album,
                 written.genre,
-                written.year
+                written.year,
+                written.album_artist,
+                written.track_no,
+                written.track_total,
+                written.disc_no,
+                written.disc_total,
+                written.initial_key,
+                written.comment
             ],
         )?;
         Ok(n > 0)
@@ -5593,6 +5753,136 @@ mod tests {
         );
         assert_eq!(order_clause(Some("path"), None), None);
         assert_eq!(order_clause(None, Some("asc")), None);
+    }
+
+    /// A bit is set only when the value actually moved, because the editor
+    /// sends every field on every save — flagging on presence would mark the
+    /// whole row edited the first time anything was corrected.
+    #[test]
+    fn editing_the_new_columns_flags_only_what_changed() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&TrackInsert {
+            track_no: Some(3),
+            ..tagged("/a.mp3", "T", "A")
+        })
+        .unwrap();
+        let id = only_id(&db);
+
+        let track = db
+            .update_track_metadata(&TrackMetadataUpdate {
+                id,
+                album_artist: Some(Some("Various".into())),
+                initial_key: Some(Some("8A".into())),
+                comment: Some(Some("note".into())),
+                track_no: Some(Some(3)),
+                disc_no: Some(Some(1)),
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(track.album_artist.as_deref(), Some("Various"));
+        assert_eq!(track.disc_no, Some(1));
+        let expected = EditedFields::ALBUM_ARTIST
+            | EditedFields::INITIAL_KEY
+            | EditedFields::COMMENT
+            | EditedFields::DISC_NO;
+        assert_eq!(track.edited_fields, expected, "track_no did not change");
+    }
+
+    /// A rescan must not undo an edit, which is what the bits are for.
+    #[test]
+    fn a_rescan_keeps_an_edited_album_artist() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&TrackInsert {
+            album_artist: Some("FromFile".into()),
+            ..tagged("/a.mp3", "T", "A")
+        })
+        .unwrap();
+        let id = only_id(&db);
+        db.update_track_metadata(&TrackMetadataUpdate {
+            id,
+            album_artist: Some(Some("Corrected".into())),
+            ..Default::default()
+        })
+        .unwrap();
+
+        db.insert_track(&TrackInsert {
+            album_artist: Some("FromFile".into()),
+            initial_key: Some("Am".into()),
+            ..tagged("/a.mp3", "T", "A")
+        })
+        .unwrap();
+
+        let track = db.get_track(id).unwrap().unwrap();
+        assert_eq!(track.album_artist.as_deref(), Some("Corrected"));
+        assert_eq!(track.initial_key.as_deref(), Some("Am"), "unedited column");
+    }
+
+    #[test]
+    fn revert_restores_the_new_columns_from_the_file() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&tagged("/a.mp3", "T", "A")).unwrap();
+        let id = only_id(&db);
+        db.update_track_metadata(&TrackMetadataUpdate {
+            id,
+            album_artist: Some(Some("Mine".into())),
+            track_no: Some(Some(9)),
+            comment: Some(Some("mine".into())),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let track = db
+            .revert_track_tags(
+                id,
+                &TrackInsert {
+                    album_artist: Some("FromFile".into()),
+                    track_no: Some(3),
+                    comment: Some("from file".into()),
+                    mtime: Some(42),
+                    ..tagged("/a.mp3", "T", "A")
+                },
+            )
+            .unwrap();
+
+        assert_eq!(track.album_artist.as_deref(), Some("FromFile"));
+        assert_eq!(track.track_no, Some(3));
+        assert_eq!(track.comment.as_deref(), Some("from file"));
+        assert_eq!(track.edited_fields, 0);
+    }
+
+    /// The flags clear only while the row still holds exactly what went to the
+    /// file, so an edit made during the write keeps its flags and is written
+    /// next time. Every editable column has to be in that comparison.
+    #[test]
+    fn finishing_a_write_refuses_a_row_edited_during_it() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&tagged("/a.mp3", "T", "A")).unwrap();
+        let id = only_id(&db);
+        db.update_track_metadata(&TrackMetadataUpdate {
+            id,
+            album_artist: Some(Some("Written".into())),
+            ..Default::default()
+        })
+        .unwrap();
+        let written = db.tag_values(id).unwrap().unwrap();
+
+        // The operator corrects it again while the file is being written.
+        db.update_track_metadata(&TrackMetadataUpdate {
+            id,
+            album_artist: Some(Some("Newer".into())),
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert!(!db.finish_tag_write(id, &written, 99).unwrap());
+        let track = db.get_track(id).unwrap().unwrap();
+        assert_eq!(track.album_artist.as_deref(), Some("Newer"));
+        assert_eq!(
+            track.edited_fields,
+            EditedFields::ALBUM_ARTIST,
+            "the newer edit lost its flag and would never be written"
+        );
     }
 
     /// The queue is everything written at an older generation — including a

@@ -14,6 +14,13 @@
   // `type=number` bind:value hands us a number (or null when empty), not the
   // string we seed — normalise on read in handleSave.
   let year = $state<string | number | null>("");
+  let albumArtist = $state("");
+  let initialKey = $state("");
+  let comment = $state("");
+  let trackNo = $state<string | number | null>("");
+  let trackTotal = $state<string | number | null>("");
+  let discNo = $state<string | number | null>("");
+  let discTotal = $state<string | number | null>("");
   let saving = $state(false);
   let error = $state<string | null>(null);
   let confirmingRevert = $state(false);
@@ -27,6 +34,13 @@
       album = app.editingMetadata.album;
       genre = app.editingMetadata.genre ?? "";
       year = app.editingMetadata.year ? String(app.editingMetadata.year) : "";
+      albumArtist = app.editingMetadata.album_artist ?? "";
+      initialKey = app.editingMetadata.initial_key ?? "";
+      comment = app.editingMetadata.comment ?? "";
+      trackNo = num(app.editingMetadata.track_no);
+      trackTotal = num(app.editingMetadata.track_total);
+      discNo = num(app.editingMetadata.disc_no);
+      discTotal = num(app.editingMetadata.disc_total);
       error = null;
       confirmingRevert = false;
     } else {
@@ -35,9 +49,50 @@
       album = "";
       genre = "";
       year = "";
+      albumArtist = "";
+      initialKey = "";
+      comment = "";
+      trackNo = "";
+      trackTotal = "";
+      discNo = "";
+      discTotal = "";
       error = null;
     }
   });
+
+  /** Seed a numeric box: an absent value is an empty box, not a `0`. */
+  function num(v: number | null | undefined): string {
+    return v == null ? "" : String(v);
+  }
+
+  /**
+   * Read a numeric box back. Svelte binds `type=number` to a number, or `null`
+   * once it has been cleared, so this normalises both plus the string it was
+   * seeded with. An empty box clears the column.
+   */
+  function parsePosition(
+    v: string | number | null,
+    label: string,
+  ): number | null | typeof INVALID {
+    const s = v == null ? "" : String(v).trim();
+    if (s === "") return null;
+    const n = Number(s);
+    // `0` is accepted because taggers write it and the scan stores it. Refusing
+    // it would block every other edit to such a track behind a complaint about
+    // a box the operator never touched.
+    if (!Number.isInteger(n) || n < 0 || n > 9999) {
+      error = `${label} must be a whole number between 0 and 9999`;
+      return INVALID;
+    }
+    return n;
+  }
+
+  const INVALID = Symbol("invalid");
+
+  /** An empty text box clears its column rather than writing `""`. */
+  function orNull(v: string): string | null {
+    return v.trim() === "" ? null : v;
+  }
 
   async function handleSave(): Promise<void> {
     const track = app.editingMetadata;
@@ -67,6 +122,18 @@
       parsedYear = n;
     }
 
+    // Checked in order and stopped at the first bad box: each call overwrites
+    // `error`, so evaluating all four would report the last complaint rather
+    // than the one nearest the top of the form.
+    const trackNoValue = parsePosition(trackNo, "Track number");
+    if (trackNoValue === INVALID) return;
+    const trackTotalValue = parsePosition(trackTotal, "Track total");
+    if (trackTotalValue === INVALID) return;
+    const discNoValue = parsePosition(discNo, "Disc number");
+    if (discNoValue === INVALID) return;
+    const discTotalValue = parsePosition(discTotal, "Disc total");
+    if (discTotalValue === INVALID) return;
+
     saving = true;
     error = null;
     try {
@@ -76,6 +143,13 @@
         album,
         genre: genre || null,
         year: parsedYear,
+        album_artist: orNull(albumArtist),
+        initial_key: orNull(initialKey),
+        comment: orNull(comment),
+        track_no: trackNoValue,
+        track_total: trackTotalValue,
+        disc_no: discNoValue,
+        disc_total: discTotalValue,
       });
       if (updated) {
         close();
@@ -233,6 +307,104 @@
             inputmode="numeric"
           />
         </label>
+        <label class="field">
+          <span
+            >Album artist{#if edited & EditedField.album_artist}<em
+                class="edited-mark">edited</em
+              >{/if}</span
+          >
+          <input
+            id="metadata-album-artist"
+            type="text"
+            bind:value={albumArtist}
+            autocomplete="off"
+            placeholder="Clear with ⌫ + Save"
+          />
+        </label>
+        <!-- Number and total on one row: they are two halves of one tag frame,
+             and writing the number without the total would drop the "/12". -->
+        <div class="field">
+          <span
+            >Track{#if edited & (EditedField.track_no | EditedField.track_total)}<em
+                class="edited-mark">edited</em
+              >{/if}</span
+          >
+          <div class="field-pair">
+            <input
+              id="metadata-track-no"
+              type="number"
+              aria-label="Track number"
+              bind:value={trackNo}
+              min="0"
+              max="9999"
+              inputmode="numeric"
+            />
+            <span class="field-sep" aria-hidden="true">of</span>
+            <input
+              id="metadata-track-total"
+              type="number"
+              aria-label="Tracks on the record"
+              bind:value={trackTotal}
+              min="0"
+              max="9999"
+              inputmode="numeric"
+            />
+          </div>
+        </div>
+        <div class="field">
+          <span
+            >Disc{#if edited & (EditedField.disc_no | EditedField.disc_total)}<em
+                class="edited-mark">edited</em
+              >{/if}</span
+          >
+          <div class="field-pair">
+            <input
+              id="metadata-disc-no"
+              type="number"
+              aria-label="Disc number"
+              bind:value={discNo}
+              min="0"
+              max="9999"
+              inputmode="numeric"
+            />
+            <span class="field-sep" aria-hidden="true">of</span>
+            <input
+              id="metadata-disc-total"
+              type="number"
+              aria-label="Discs in the set"
+              bind:value={discTotal}
+              min="0"
+              max="9999"
+              inputmode="numeric"
+            />
+          </div>
+        </div>
+        <label class="field">
+          <span
+            >Key{#if edited & EditedField.initial_key}<em class="edited-mark"
+                >edited</em
+              >{/if}</span
+          >
+          <input
+            id="metadata-key"
+            type="text"
+            bind:value={initialKey}
+            autocomplete="off"
+            placeholder="Am, 8A — stored as typed"
+          />
+        </label>
+        <label class="field">
+          <span
+            >Comment{#if edited & EditedField.comment}<em class="edited-mark"
+                >edited</em
+              >{/if}</span
+          >
+          <textarea
+            id="metadata-comment"
+            rows="2"
+            bind:value={comment}
+            placeholder="Clear with ⌫ + Save"></textarea>
+        </label>
         {#if error}
           <div id="metadata-error" class="editor-error">{error}</div>
         {/if}
@@ -362,7 +534,8 @@
     text-transform: uppercase;
   }
 
-  .field input {
+  .field input,
+  .field textarea {
     background: transparent;
     border: 1px solid var(--outline-variant);
     border-radius: 4px;
@@ -373,12 +546,39 @@
     transition: border-color 0.15s;
   }
 
-  .field input:focus {
+  .field textarea {
+    resize: vertical;
+    font-family: inherit;
+    min-height: 2.5em;
+  }
+
+  /* Number and its total, side by side. The boxes are narrow because they hold
+     at most four digits, and the separator carries no width of its own. */
+  .field-pair {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-sm);
+  }
+
+  .field-pair input {
+    width: 5.5em;
+    flex: 0 0 auto;
+  }
+
+  .field-sep {
+    font-size: 12px;
+    color: var(--outline);
+    text-transform: none;
+  }
+
+  .field input:focus,
+  .field textarea:focus {
     border-color: var(--primary);
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 15%, transparent);
   }
 
-  .field input::placeholder {
+  .field input::placeholder,
+  .field textarea::placeholder {
     color: var(--outline);
   }
 

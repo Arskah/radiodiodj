@@ -229,11 +229,22 @@ knows.
 
 ## Editing a track
 
-**Edit metadata…** opens a form for title, artist, album, genre and year. The
-title is required, and the year must be a whole number from 1900 to 2100. Saving
-updates the database, and the change shows in the library, the playlist and the
-deck at once. Artist and title changes can also make or break a
+**Edit metadata…** opens a form for title, artist, album, album artist, track
+and disc position, genre, year, musical key and comment. The title is required,
+the year must be a whole number from 1900 to 2100, and each position number must
+be a whole number from 1 to 9999. Saving updates the database, and the change
+shows in the library, the playlist and the deck at once. Artist and title
+changes can also make or break a
 [possible duplicate](./library-health.md#possible-duplicates).
+
+A position is edited as a pair — _3 of 12_ — because one tag frame carries both
+halves, and writing the number without its total would leave the record's length
+behind.
+
+The **ISRC** cannot be edited. It identifies the recording in the rights
+registry, so the file is the authority and a typo would be silently wrong in
+anything reported from the airing log. It is shown on hover and read from the
+file on every scan.
 
 Only a field whose value actually changes is marked as edited. The form marks
 those fields, and **Revert to file tags** discards them: it reads the file's tags
@@ -244,7 +255,15 @@ the edit into the file, so it survives moving the file to another library and a
 database reset. The write runs on a background worker, never inside a scan or
 playback, and never edits the file in place:
 
-1. Read the whole file into memory and set the tags there with `lofty`.
+1. Read the whole file into memory and set the tags there with `lofty`. The
+   comment replaces only the file's own, undescribed comment — an
+   iTunes-processed file keeps frames like `iTunSMPB`, its gapless-playback
+   data, which a plain overwrite of the comment would destroy. Album artist,
+   the track and disc positions, the key and the comment are written only once
+   the row has been read at the current tag generation, or for a field the
+   operator edited: until the [tag backfill](#tag-backfill) reaches a row those
+   columns are empty because nobody has looked, not because the file has none,
+   and writing them back would strip the file's own.
 2. Fingerprint the tagged copy. If the fingerprint differs from the stored one,
    stop, because the write would cost the track its identity.
 3. Write a sibling `<name>.rdj-tmp`, flush it, copy the file's permissions, and

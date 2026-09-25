@@ -18,6 +18,7 @@ import type {
   TrackMetadataInput,
   TuningConfig,
 } from "./types";
+import { METADATA_KEYS } from "./types";
 import { isStopMarker, isTrackItem } from "./types";
 import {
   airDuration,
@@ -431,7 +432,17 @@ export class AppState {
     // and `tracks` is a snapshot from the last query. One re-read when the pass
     // finishes, rather than one per track it touches.
     api.onTagBackfillStateChanged((next) => {
-      if (next.status === "idle") void this.search();
+      if (next.status !== "idle") return;
+      void this.search().then(() => {
+        // An editor opened before the pass ran holds a snapshot with the tag
+        // columns still empty. Saving it would send those blanks back as
+        // deliberate clears — flagged as operator edits, and so written to the
+        // file. Re-point it at the refreshed row.
+        const open = this.editingMetadata;
+        if (!open) return;
+        const fresh = this.tracks.find((t) => t.id === open.id);
+        if (fresh) this.editingMetadata = fresh;
+      });
     });
   }
 
@@ -1390,10 +1401,7 @@ export class AppState {
   /** Update a track's embedded metadata fields and reflect the change in the local tracks array. */
   async updateTrackMetadata(
     id: number,
-    input: Partial<Pick<Track, "title" | "artist" | "album">> & {
-      genre?: string | null;
-      year?: number | null;
-    },
+    input: Omit<TrackMetadataInput, "id">,
   ): Promise<Track | null> {
     const byIndex = new Map(this.tracks.map((t, i) => [t.id, i]));
     const index = byIndex.get(id);
@@ -1404,11 +1412,11 @@ export class AppState {
     // Forward only the fields the caller actually set (partial patch); an
     // absent key leaves that column unchanged on the backend.
     const payload: TrackMetadataInput = { id };
-    if (input.title !== undefined) payload.title = input.title;
-    if (input.artist !== undefined) payload.artist = input.artist;
-    if (input.album !== undefined) payload.album = input.album;
-    if (input.genre !== undefined) payload.genre = input.genre;
-    if (input.year !== undefined) payload.year = input.year;
+    for (const key of METADATA_KEYS) {
+      if (input[key] !== undefined) {
+        (payload[key] as unknown) = input[key];
+      }
+    }
     let updatedTrack: Track;
     try {
       updatedTrack = await api.updateTrackMetadata(payload);
