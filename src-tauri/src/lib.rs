@@ -28,7 +28,7 @@ use library::check::LibraryCheck;
 use library::db::{Db, LibraryStats, OpenError, Recalculated, Track, TrackMetadataUpdate};
 use library::health::{FindingKind, Health, HealthReport};
 use library::scan_state::{ScanState, ScanStatus, StartResult};
-use library::tag_backfill::{TagBackfillJob, TagBackfillStatus};
+use library::tag_backfill::TagBackfillJob;
 use library::tag_write::TagWriter;
 use library::waveform_scan::{WaveformJob, WaveformStatus};
 use persist::config::{Config, DeviceRef, NowPlayingConfig, TuningConfig};
@@ -811,6 +811,10 @@ fn broadcast_shutdown(state: State<'_, AppState>) {
 
 #[tauri::command(rename_all = "camelCase")]
 fn scan_libraries(app: AppHandle, state: State<'_, AppState>) -> StartResult {
+    // A scan is the operator asking for the library to be brought up to date,
+    // which includes any row a cancelled backfill left behind: `cancel` is only
+    // cleared by `start`, and launch is otherwise the one place that calls it.
+    Arc::clone(&state.tag_backfill).start(app.clone(), Arc::clone(&state.db));
     Arc::clone(&state.scan).start(
         app,
         Arc::clone(&state.db),
@@ -931,11 +935,6 @@ fn get_scan_status(state: State<'_, AppState>) -> ScanStatus {
 #[tauri::command(rename_all = "camelCase")]
 fn get_waveform_status(state: State<'_, AppState>) -> WaveformStatus {
     state.waveform.status()
-}
-
-#[tauri::command(rename_all = "camelCase")]
-fn get_tag_backfill_status(state: State<'_, AppState>) -> TagBackfillStatus {
-    state.tag_backfill.status()
 }
 
 /// Wrap the command handler so admin-only commands are refused while admin
@@ -1201,7 +1200,6 @@ pub fn run() {
             health_dismiss,
             health_undismiss,
             get_waveform_status,
-            get_tag_backfill_status,
             audio_list_devices,
             get_main_device,
             set_main_device,

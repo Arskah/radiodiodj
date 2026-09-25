@@ -28,18 +28,19 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 use super::db::{Db, TagReadJob, TrackInsert};
 use super::scanner::{self, read_file_tags};
 
-/// Throttled `{processed, total}` progress updates.
-const PROGRESS_EVENT: &str = "tag-backfill-progress";
 /// Running/idle transitions. Going idle is the signal that library rows changed
 /// underneath whatever the renderer last listed.
+///
+/// There is deliberately no per-track progress event. The pass is a header read
+/// per row, so it is far quicker than the decode the waveform bar exists for,
+/// and nothing in the UI shows it — an event nobody listens to is just noise on
+/// the channel.
 pub const STATE_EVENT: &str = "tag-backfill-state-changed";
-const PROGRESS_THROTTLE: Duration = Duration::from_millis(200);
 /// Parallel tag readers. A tag read is a `stat` plus a header read, so this is
 /// latency-bound on the library share rather than CPU-bound — the same reason
 /// [`scanner::SCAN_CONCURRENCY`](super::scanner) uses a small fixed number
@@ -49,20 +50,16 @@ const READ_CONCURRENCY: usize = 4;
 /// the index, so committing per row would pay an fsync for every track.
 const COMMIT_BATCH: usize = 200;
 
-/// Progress of the backfill, mirrored to the UI.
+/// Whether the pass is working, as [`STATE_EVENT`] reports it. `total` is what
+/// the drain found, so a listener can say how much there was to do; there is no
+/// running count, because nothing displays one.
 #[derive(Serialize, Clone, Default, PartialEq)]
 #[serde(tag = "status", rename_all = "camelCase")]
 pub enum TagBackfillStatus {
     #[default]
     Idle,
     #[serde(rename_all = "camelCase")]
-    Running { processed: usize, total: usize },
-}
-
-#[derive(Serialize, Clone)]
-struct Progress {
-    processed: usize,
-    total: usize,
+    Running { total: usize },
 }
 
 #[derive(Default)]
@@ -71,15 +68,9 @@ pub struct TagBackfillJob {
     /// Work arrived while a worker was running. See [`TagBackfillJob::start`].
     kicked: AtomicBool,
     cancel: AtomicBool,
-    status: Mutex<TagBackfillStatus>,
 }
 
 impl TagBackfillJob {
-    /// Current progress, for hydration when the UI mounts mid-run.
-    pub fn status(&self) -> TagBackfillStatus {
-        self.status.lock().clone()
-    }
-
     /// Request the running worker (if any) to stop after the current batch.
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::SeqCst);
@@ -115,8 +106,7 @@ impl TagBackfillJob {
             && !self.running.swap(true, Ordering::SeqCst)
     }
 
-    fn set_status(&self, app: &AppHandle, next: TagBackfillStatus) {
-        *self.status.lock() = next.clone();
+    fn announce(&self, app: &AppHandle, next: TagBackfillStatus) {
         let _ = app.emit(STATE_EVENT, &next);
     }
 }
@@ -140,16 +130,13 @@ fn run(job: &TagBackfillJob, app: &AppHandle, db: &Db) {
         return;
     }
 
-    let total = pending.len();
-    job.set_status(
+    job.announce(
         app,
         TagBackfillStatus::Running {
-            processed: 0,
-            total,
+            total: pending.len(),
         },
     );
 
-    let mut processed = 0;
     for chunk in pending.chunks(COMMIT_BATCH) {
         if job.cancel.load(Ordering::SeqCst) {
             break;
@@ -161,30 +148,11 @@ fn run(job: &TagBackfillJob, app: &AppHandle, db: &Db) {
             log::error!("tag backfill: store failed: {e}");
             break;
         }
-        processed += chunk.len();
-        *job.status.lock() = TagBackfillStatus::Running { processed, total };
-        emit_progress(app, processed, total);
     }
 
     // Going idle is what tells the renderer these rows changed under whatever
     // it last listed.
-    job.set_status(app, TagBackfillStatus::Idle);
-}
-
-fn emit_progress(app: &AppHandle, processed: usize, total: usize) {
-    thread_local! {
-        static LAST: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
-    }
-    let due = LAST.with(|l| match l.get() {
-        Some(at) if at.elapsed() < PROGRESS_THROTTLE => false,
-        _ => {
-            l.set(Some(Instant::now()));
-            true
-        }
-    });
-    if due {
-        let _ = app.emit(PROGRESS_EVENT, Progress { processed, total });
-    }
+    job.announce(app, TagBackfillStatus::Idle);
 }
 
 /// Read one chunk's tags across [`READ_CONCURRENCY`] threads, dropping the
