@@ -52,7 +52,7 @@ jobs:
           pactl list short sinks
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@a75363d06101555fc97c6c7e1e65670b99104d98 # 1.96.1
+        uses: ./.github/actions/rust
 
       - name: Install tauri-driver
         run: cargo install tauri-driver --version ${{ env.TAURI_DRIVER_VERSION }} --locked

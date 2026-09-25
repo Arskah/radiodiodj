@@ -24,7 +24,7 @@ serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
 rusqlite_migration = "=2.6.0"
-symphonia = { version = "=0.6.1", default-features = false, features = ["aac", "flac", "isomp4", "mp3", "ogg", "pcm", "vorbis", "wav"] }
+symphonia = { version = "=0.6.1", default-features = false, features = ["aac", "flac", "id3v2", "isomp4", "mp3", "ogg", "pcm", "vorbis", "wav"] }
 parking_lot = "=0.12.5"
 anyhow = "=1.0.104"
 walkdir = "=2.5.0"

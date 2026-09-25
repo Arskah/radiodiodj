@@ -48,7 +48,9 @@ WORKDIR /work
 # strict-dep-builds=false silences ERR_PNPM_IGNORED_BUILDS for
 # edgedriver/geckodriver — only esbuild's postinstall is needed.
 FROM base AS pnpm-deps
-COPY package.json pnpm-lock.yaml ./
+# pnpm-workspace.yaml carries the overrides and allowBuilds settings, and a
+# frozen install refuses to run without it.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN HUSKY=0 pnpm install --frozen-lockfile --config.strict-dep-builds=false
 
 
