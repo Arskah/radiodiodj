@@ -28,6 +28,7 @@ use library::check::LibraryCheck;
 use library::db::{Db, LibraryStats, OpenError, Recalculated, Track, TrackMetadataUpdate};
 use library::health::{FindingKind, Health, HealthReport};
 use library::scan_state::{ScanState, ScanStatus, StartResult};
+use library::tag_backfill::TagBackfillJob;
 use library::tag_write::TagWriter;
 use library::waveform_scan::{WaveformJob, WaveformStatus};
 use persist::config::{Config, DeviceRef, NowPlayingConfig, TuningConfig};
@@ -78,6 +79,9 @@ pub struct AppState {
     scan: Arc<ScanState>,
     /// Background job that fills track waveforms after a metadata scan.
     waveform: Arc<WaveformJob>,
+    /// Background job that fills tag columns a row predates. Separate from
+    /// `waveform` because a file whose audio will not decode still has tags.
+    tag_backfill: Arc<TagBackfillJob>,
     /// Missing tracks and duplicates, kept current for the renderer.
     health: Arc<Health>,
     /// Compares the disk with the library between scans.
@@ -807,6 +811,10 @@ fn broadcast_shutdown(state: State<'_, AppState>) {
 
 #[tauri::command(rename_all = "camelCase")]
 fn scan_libraries(app: AppHandle, state: State<'_, AppState>) -> StartResult {
+    // A scan is the operator asking for the library to be brought up to date,
+    // which includes any row a cancelled backfill left behind: `cancel` is only
+    // cleared by `start`, and launch is otherwise the one place that calls it.
+    Arc::clone(&state.tag_backfill).start(app.clone(), Arc::clone(&state.db));
     Arc::clone(&state.scan).start(
         app,
         Arc::clone(&state.db),
@@ -819,6 +827,7 @@ fn scan_libraries(app: AppHandle, state: State<'_, AppState>) -> StartResult {
 fn cancel_scan(state: State<'_, AppState>) {
     state.scan.cancel();
     state.waveform.cancel();
+    state.tag_backfill.cancel();
 }
 
 /// Permanently delete the chosen missing tracks. Ids of tracks that are not
@@ -1102,6 +1111,10 @@ pub fn run() {
             // already-indexed track that lacks one, without waiting for the
             // next scan. No-op on an empty library.
             Arc::clone(&waveform).start(app.handle().clone(), Arc::clone(&db), Arc::clone(&config));
+            let tag_backfill = Arc::new(TagBackfillJob::default());
+            // Fill tag columns added after a row was last read. No-op once
+            // every row is at the current version, which is the steady state.
+            Arc::clone(&tag_backfill).start(app.handle().clone(), Arc::clone(&db));
             let tag_writer = TagWriter::new(Arc::clone(&db), Arc::clone(&config));
             let health = Health::new(
                 app.handle().clone(),
@@ -1133,6 +1146,7 @@ pub fn run() {
                 session,
                 scan,
                 waveform,
+                tag_backfill,
                 health,
                 check,
                 tag_writer,

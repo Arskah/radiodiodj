@@ -292,6 +292,16 @@ pub struct TrackInsert {
     pub fingerprint: Option<String>,
 }
 
+/// A track whose tag columns the backfill still has to read.
+#[derive(Clone, Debug)]
+pub struct TagReadJob {
+    pub id: i64,
+    pub path: String,
+    /// What the row held when the job was queued, so a file the scan re-read in
+    /// the meantime is not overwritten with a staler parse.
+    pub mtime: Option<i64>,
+}
+
 /// A track the analysis worker still has to read.
 pub struct AnalysisJob {
     pub id: i64,
@@ -1144,6 +1154,83 @@ impl Db {
             params![levels.encode(), id, content_type, mtime],
         )?;
         Ok(changed > 0)
+    }
+
+    /// Tracks whose tag columns predate `version`, oldest id first.
+    ///
+    /// Unlike [`Db::tracks_needing_analysis`] this does **not** exclude rows
+    /// with a recorded analysis failure. That failure means the audio would not
+    /// decode, which says nothing about whether the tags parse — and the tag
+    /// read is a header read, not a decode.
+    pub fn tracks_needing_tag_read(&self, version: i64) -> Result<Vec<TagReadJob>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, path, mtime FROM tracks \
+             WHERE missing_since IS NULL \
+               AND (tags_read_version IS NULL OR tags_read_version < ?) \
+             ORDER BY id",
+        )?;
+        let rows = stmt.query_map([version], |r| {
+            Ok(TagReadJob {
+                id: r.get(0)?,
+                path: r.get(1)?,
+                mtime: r.get(2)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+    }
+
+    /// Write the tag columns a backfill read, and stamp the generation it read
+    /// them at. Returns how many rows took the update.
+    ///
+    /// This is deliberately not [`UPSERT_TRACK_SQL`]: that statement runs for a
+    /// file that *changed*, so it also clears the recorded analysis failure and
+    /// requeues an automatic cue set. Nothing changed here — the row simply
+    /// predates these columns — so the audio-derived work is left exactly as it
+    /// is, and `mtime` with it.
+    ///
+    /// Each row is guarded on the `mtime` its job was queued with. A scan or a
+    /// write-back that touched the file in between has already stored the
+    /// current tags and stamped the version, so a miss means the work is done,
+    /// not that it must be retried.
+    ///
+    /// The six columns the scan has always read are left alone: the file has
+    /// not changed, so the values already in the row are current.
+    pub fn store_backfilled_tags(&self, batch: &[(TagReadJob, TrackInsert)]) -> Result<usize> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let mut written = 0;
+        {
+            let mut stmt = tx.prepare(
+                "UPDATE tracks SET \
+                    album_artist = CASE WHEN edited_fields & 32 THEN album_artist ELSE ?1 END, \
+                    track_no     = CASE WHEN edited_fields & 64 THEN track_no ELSE ?2 END, \
+                    track_total  = CASE WHEN edited_fields & 128 THEN track_total ELSE ?3 END, \
+                    disc_no      = CASE WHEN edited_fields & 256 THEN disc_no ELSE ?4 END, \
+                    disc_total   = CASE WHEN edited_fields & 512 THEN disc_total ELSE ?5 END, \
+                    initial_key  = CASE WHEN edited_fields & 1024 THEN initial_key ELSE ?6 END, \
+                    comment      = CASE WHEN edited_fields & 2048 THEN comment ELSE ?7 END, \
+                    isrc = ?8, tags_read_version = ?9 \
+                 WHERE id = ?10 AND mtime IS ?11",
+            )?;
+            for (job, parsed) in batch {
+                written += stmt.execute(params![
+                    parsed.album_artist,
+                    parsed.track_no,
+                    parsed.track_total,
+                    parsed.disc_no,
+                    parsed.disc_total,
+                    parsed.initial_key,
+                    parsed.comment,
+                    parsed.isrc,
+                    scanner::TAG_READ_VERSION,
+                    job.id,
+                    job.mtime,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(written)
     }
 
     /// Store a completed loudness measurement. `gain`/`peak` are `None` for a
@@ -5352,6 +5439,170 @@ mod tests {
             db.search(q, None, None, None)
                 .unwrap_or_else(|e| panic!("search({q:?}) errored: {e}"));
         }
+    }
+
+    /// The queue is everything written at an older generation — including a
+    /// row the analysis pass gave up on. That pass excludes a recorded decode
+    /// failure because it is about to decode; this one only reads a header, and
+    /// a file whose audio is broken can still have perfectly good tags.
+    #[test]
+    fn the_tag_queue_includes_rows_analysis_gave_up_on() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&tagged("/broken.mp3", "T", "A")).unwrap();
+        let id = only_id(&db);
+        db.set_analysis_failed(id, "not audio", 5).unwrap();
+        db.conn
+            .lock()
+            .execute("UPDATE tracks SET tags_read_version = NULL", [])
+            .unwrap();
+
+        assert!(db.tracks_needing_analysis().unwrap().is_empty());
+        let queued = db.tracks_needing_tag_read(1).unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].id, id);
+    }
+
+    #[test]
+    fn the_tag_queue_skips_current_and_missing_rows() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&tagged("/a.mp3", "T", "A")).unwrap();
+        db.insert_track(&tagged("/b.mp3", "T", "B")).unwrap();
+        // A fresh insert is read at the current version, so nothing is queued
+        // on a library this build has already scanned.
+        assert!(db.tracks_needing_tag_read(1).unwrap().is_empty());
+
+        db.conn
+            .lock()
+            .execute_batch(
+                "UPDATE tracks SET tags_read_version = 0 WHERE path = '/a.mp3'; \
+                 UPDATE tracks SET missing_since = 1, tags_read_version = NULL \
+                  WHERE path = '/b.mp3'",
+            )
+            .unwrap();
+
+        let queued = db.tracks_needing_tag_read(1).unwrap();
+        assert_eq!(queued.len(), 1, "a missing row has no file to read");
+        assert_eq!(queued[0].path, "/a.mp3");
+    }
+
+    /// Nothing about the file changed — the row simply predates the columns —
+    /// so the backfill must leave every audio-derived result, and the mtime the
+    /// delta cache keys on, exactly as it found them.
+    #[test]
+    fn the_backfill_writes_tags_and_touches_nothing_else() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&tagged("/a.mp3", "T", "A")).unwrap();
+        let id = only_id(&db);
+        db.conn
+            .lock()
+            .execute(
+                "UPDATE tracks SET mtime = 111, tags_read_version = NULL, \
+                        analysis_error = 'bad', analysis_failed_at = 5, \
+                        auto_cue_levels = x'00', auto_cue_state = 'auto', \
+                        cue_in_ms = 1000 WHERE id = ?",
+                [id],
+            )
+            .unwrap();
+        let job = db.tracks_needing_tag_read(1).unwrap().pop().unwrap();
+
+        let written = db
+            .store_backfilled_tags(&[(
+                job,
+                TrackInsert {
+                    album_artist: Some("Kraftwerk".into()),
+                    track_no: Some(3),
+                    track_total: Some(12),
+                    isrc: Some("FIFIN2400123".into()),
+                    ..Default::default()
+                },
+            )])
+            .unwrap();
+        assert_eq!(written, 1);
+
+        let track = db.get_track(id).unwrap().unwrap();
+        assert_eq!(track.album_artist.as_deref(), Some("Kraftwerk"));
+        assert_eq!(track.track_no, Some(3));
+        assert_eq!(track.isrc.as_deref(), Some("FIFIN2400123"));
+        assert_eq!(track.cue_points.cue_in_ms, Some(1000), "cue points moved");
+
+        let conn = db.conn.lock();
+        let (mtime, error, levels, state): (i64, Option<String>, Option<Vec<u8>>, String) = conn
+            .query_row(
+                "SELECT mtime, analysis_error, auto_cue_levels, auto_cue_state \
+                 FROM tracks WHERE id = ?",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(mtime, 111, "mtime moved, so the delta cache would re-read");
+        assert_eq!(error.as_deref(), Some("bad"), "analysis failure cleared");
+        assert_eq!(levels, Some(vec![0]), "level envelope cleared");
+        assert_eq!(state, "auto", "an automatic cue set was requeued");
+    }
+
+    #[test]
+    fn the_backfill_leaves_an_edited_column_alone() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&tagged("/a.mp3", "T", "A")).unwrap();
+        let id = only_id(&db);
+        db.conn
+            .lock()
+            .execute(
+                "UPDATE tracks SET tags_read_version = NULL, album_artist = 'Mine', \
+                        edited_fields = 32 WHERE id = ?",
+                [id],
+            )
+            .unwrap();
+        let job = db.tracks_needing_tag_read(1).unwrap().pop().unwrap();
+
+        db.store_backfilled_tags(&[(
+            job,
+            TrackInsert {
+                album_artist: Some("FromFile".into()),
+                initial_key: Some("8A".into()),
+                ..Default::default()
+            },
+        )])
+        .unwrap();
+
+        let track = db.get_track(id).unwrap().unwrap();
+        assert_eq!(track.album_artist.as_deref(), Some("Mine"));
+        assert_eq!(track.initial_key.as_deref(), Some("8A"), "unedited column");
+    }
+
+    /// A scan or a write-back that touched the file between the queue and the
+    /// commit already stored current tags and stamped the version, so the
+    /// staler parse in hand must not land.
+    #[test]
+    fn the_backfill_declines_a_row_whose_file_moved_on() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&tagged("/a.mp3", "T", "A")).unwrap();
+        let id = only_id(&db);
+        db.conn
+            .lock()
+            .execute(
+                "UPDATE tracks SET mtime = 111, tags_read_version = NULL WHERE id = ?",
+                [id],
+            )
+            .unwrap();
+        let job = db.tracks_needing_tag_read(1).unwrap().pop().unwrap();
+        db.conn
+            .lock()
+            .execute("UPDATE tracks SET mtime = 222 WHERE id = ?", [id])
+            .unwrap();
+
+        let written = db
+            .store_backfilled_tags(&[(
+                job,
+                TrackInsert {
+                    album_artist: Some("Stale".into()),
+                    ..Default::default()
+                },
+            )])
+            .unwrap();
+
+        assert_eq!(written, 0);
+        assert_eq!(db.get_track(id).unwrap().unwrap().album_artist, None);
     }
 
     /// Step 9 drops and recreates `tracks_fts`, which throws away every row

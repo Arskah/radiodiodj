@@ -67,6 +67,9 @@ A scan:
      [library-search.md](./library-search.md).
    - A new file is also fingerprinted, except on the first scan into an empty
      library.
+   - Every read stamps the row with `scanner::TAG_READ_VERSION`, the generation
+     of the tag read. A row at an older generation is filled in after launch by
+     the **tag backfill** below, since a scan alone would never reopen it.
 3. **Reconciles** everything in one database transaction: changed files are
    re-tagged, moved files are **reattached** to their old track, copies become
    **duplicates**, files that are gone make their track **missing**, and the rest
@@ -121,6 +124,28 @@ sees the file change; it is listed under [Unreadable
 tracks](./library-health.md#unreadable-tracks). A file that could not be read is
 skipped for the rest of the run only. Cancelling a scan cancels the pass too; the
 next one picks up where it stopped.
+
+### Tag backfill
+
+Adding a tag-derived column leaves every existing row empty: the delta cache
+skips a file whose modification time has not changed without opening it, and
+there is no command that forces a full re-read. A background pass after launch
+closes that gap, reading tags for every row written at an older
+`TAG_READ_VERSION` and filling the new columns in.
+
+It is separate from the waveform pass on purpose. That one skips a track whose
+audio failed to decode — but a file whose audio is broken usually still has
+readable tags, and a tag read that failed there would block the track's
+waveform, loudness and cue points for good.
+
+The pass never disturbs what it did not read: the modification time stands, so
+the delta cache is unaffected; a recorded analysis failure, the level envelope
+and the cue points are left alone; and a column the operator edited keeps the
+operator's value. Each row is written only while its modification time still
+matches what the queue saw, so a scan running alongside it always wins.
+
+Adding another tag field later is a schema step plus a bump of
+`TAG_READ_VERSION` — the whole library requeues and fills itself in.
 
 ## Tracks
 
@@ -301,6 +326,7 @@ pre-1.0 resets are in [database.md](./database.md).
 | scan and reconcile                 | `library/scanner.rs`, `library/scan_state.rs`, `Db::reconcile` |
 | fingerprint                        | `library/fingerprint.rs`                                       |
 | waveforms and fingerprints         | `library/waveform_scan.rs`                                     |
+| tag backfill                       | `library/tag_backfill.rs`                                      |
 | health report                      | `library/health.rs`                                            |
 | library check                      | `library/check.rs`                                             |
 | queries and schema                 | `library/db.rs`, `library/schema.sql`                          |
