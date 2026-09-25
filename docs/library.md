@@ -187,19 +187,27 @@ file reappears, at the same path or, by fingerprint, at a new one. See
 The library panel shows one library at a time: _Music_,
 _Commercials_ or _Jingles_.
 
-- **Search** matches title, artist, album and genre. Each word is a prefix, so
+- **Search** matches title, artist, album, album artist and genre. Each word is a prefix, so
   `beat abb` finds _Abbey Road_ by _The Beatles_. The search runs a quarter of a
   second after typing stops, and shows at most 200 tracks, best match first.
   It does not match inside a word or forgive a typo — see
   [library-search.md](./library-search.md) for why, and the fuzzy matching
   planned to fix it.
-- **Sort** by title, artist, album or plays by clicking a column header; click
-  again to reverse. Text sorts ignore case. With no sort and no search, the list
-  is ordered by artist, album and title.
+- **Sort** by number, title, artist, album or plays by clicking a column header;
+  click again to reverse. Text sorts ignore case. With no sort and no search,
+  the list is ordered by artist, album and title.
+- **#** is the track's number on its record, and sorting by it is _album order_:
+  album, then disc, then track. A bare track-number sort would interleave every
+  album's track 1, which is no use for reading a record in order. A track with
+  no number sorts last whichever way the arrow points.
 - **Time** is the track's [air time](./cue-points.md#air-time): what reaches air
   once its cue points apply. A trimmed track shows its time in the cue colour.
-- **Hovering** a row shows album, genre, year, duration (the file length too
-  when cue points trim it), BPM, format, bitrate, sample rate and plays.
+- **Hovering** a row shows album, album artist, track and disc position, genre,
+  year, duration (the file length too when cue points trim it), BPM, musical
+  key, format, bitrate, sample rate, ISRC, plays and the comment. The first six
+  rows read _Unknown_ when a file lacks them; the fields most files never carry
+  are left out of the tooltip entirely rather than filling it with _Unknown_.
+  A long comment is shortened.
 
 On each row:
 

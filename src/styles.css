@@ -1484,6 +1484,23 @@ body {
   white-space: nowrap;
 }
 
+/* Track number. Narrow and tabular so the digits line up down the column. The
+   width is shared with the header cell below — the two rows are separate flex
+   containers, so a wider header would shift every column after it. */
+.track-no {
+  width: 34px;
+  flex-shrink: 0;
+  text-align: right;
+  color: var(--on-surface-variant);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+#track-headers .track-no {
+  justify-content: flex-end;
+}
+
 .track-plays {
   width: 55px;
   text-align: right;
