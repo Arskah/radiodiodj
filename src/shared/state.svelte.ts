@@ -1534,6 +1534,11 @@ export class AppState {
     await api.cancelScan();
   }
 
+  /** Stop the analysis pass without touching a scan. */
+  async cancelAnalysis(): Promise<void> {
+    await api.cancelAnalysis();
+  }
+
   /** Show the rebuild notice unless the rescan already finished. */
   private async noteLibraryReset(): Promise<void> {
     this.libraryReset = true;

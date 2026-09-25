@@ -18,8 +18,11 @@
 //! counts are cumulative across all libraries (the worker drains one flat
 //! missing-waveform list spanning every library).
 //!
-//! The job is single-flight (only one worker at a time) and cancelable. It
-//! drains [`Db::tracks_needing_analysis`] in a loop so tracks added while it runs
+//! The job is single-flight (only one worker at a time) and cancelable. A
+//! cancel stops the pass after the file each worker is on, and is consumed by
+//! that pass: it means "not right now", so the next kick — a scan, a
+//! reclassification, a launch — starts a fresh one. It drains
+//! [`Db::tracks_needing_analysis`] in a loop so tracks added while it runs
 //! are still picked up. A file that cannot be decoded is recorded in the DB and
 //! left alone until a scan sees it change; one that merely could not be read
 //! (a share dropping out) is skipped for the rest of the run and tried again on
@@ -129,24 +132,27 @@ impl WaveformJob {
         std::thread::spawn(move || loop {
             // Cleared before the drain, so a kick during it is never lost.
             self.kicked.store(false, Ordering::SeqCst);
-            run(&self, &app, &db, &config);
-            self.running.store(false, Ordering::SeqCst);
-            if !self.claim_rerun() {
+            let stop = run(&self, &app, &db, &config);
+            if !self.finish(stop) {
                 break;
             }
         });
     }
 
-    /// Kick the worker for work that turned up on its own, rather than for an
-    /// operator asking for a pass. A cancelled pass stays cancelled: the
-    /// operator stopped the decoder, and one track changing class is not a
-    /// reason to put the whole library back through it. The track keeps its
-    /// `pending` state and the next scan takes it.
-    pub fn nudge(self: Arc<Self>, app: AppHandle, db: Arc<Db>, config: Arc<Config>) {
-        if self.cancel.load(Ordering::SeqCst) {
-            return;
+    /// Release the single-flight slot after a drain and say whether to take it
+    /// back and drain again.
+    ///
+    /// A cancel is consumed here, by the pass it stopped, while the slot is
+    /// still held — so no other pass can be in flight to have it taken from
+    /// underneath. A cancel therefore means "not right now": the next kick
+    /// starts a fresh pass instead of being swallowed until the next launch.
+    fn finish(&self, stop: Stop) -> bool {
+        let cancelled = matches!(stop, Stop::Cancelled);
+        if cancelled {
+            self.cancel.store(false, Ordering::SeqCst);
         }
-        self.start(app, db, config);
+        self.running.store(false, Ordering::SeqCst);
+        !cancelled && self.claim_rerun()
     }
 
     /// Whether the worker that has just released the slot should take it back
@@ -167,7 +173,15 @@ impl WaveformJob {
     }
 }
 
-fn run(job: &WaveformJob, app: &AppHandle, db: &Db, config: &Config) {
+/// Why a drain loop ended.
+enum Stop {
+    /// Nothing left to analyse, or the work list could not be read.
+    Drained,
+    /// The operator stopped the pass.
+    Cancelled,
+}
+
+fn run(job: &WaveformJob, app: &AppHandle, db: &Db, config: &Config) -> Stop {
     // Ids that could not be read or stored this run — skipped on subsequent
     // passes so the drain loop cannot spin on them. Shared across the decode
     // threads.
@@ -189,15 +203,15 @@ fn run(job: &WaveformJob, app: &AppHandle, db: &Db, config: &Config) {
         .clamp(2, MAX_CONCURRENCY);
     let mut started = false;
 
-    loop {
+    let stop = loop {
         if job.cancel.load(Ordering::SeqCst) {
-            break;
+            break Stop::Cancelled;
         }
         let missing = match db.tracks_needing_analysis() {
             Ok(m) => m,
             Err(e) => {
                 log::error!("waveform: query missing failed: {}", e);
-                break;
+                break Stop::Drained;
             }
         };
         let pending: Vec<AnalysisJob> = {
@@ -208,7 +222,7 @@ fn run(job: &WaveformJob, app: &AppHandle, db: &Db, config: &Config) {
                 .collect()
         };
         if pending.is_empty() {
-            break;
+            break Stop::Drained;
         }
 
         // Announce Running only once real work exists — avoids a bar flash when
@@ -271,11 +285,12 @@ fn run(job: &WaveformJob, app: &AppHandle, db: &Db, config: &Config) {
                 });
             }
         });
-    }
+    };
 
     if started {
         job.set_status(app, WaveformStatus::Idle);
     }
+    stop
 }
 
 /// What analysing one track came to.
@@ -484,15 +499,52 @@ mod tests {
     #[test]
     fn a_cancelled_worker_stops_despite_a_kick() {
         let job = WaveformJob::default();
+        job.running.store(true, Ordering::SeqCst);
         job.kicked.store(true, Ordering::SeqCst);
         job.cancel();
 
-        assert!(!job.claim_rerun());
+        assert!(!job.finish(Stop::Cancelled));
         assert!(!job.running.load(Ordering::SeqCst));
         assert!(
             job.kicked.load(Ordering::SeqCst),
             "the kick stands for the next start"
         );
+    }
+
+    /// The cancel dies with the pass it stopped, so the next kick is served
+    /// rather than swallowed until the next launch.
+    #[test]
+    fn a_cancel_is_consumed_by_the_pass_it_stopped() {
+        let job = WaveformJob::default();
+        job.running.store(true, Ordering::SeqCst);
+        job.cancel();
+
+        assert!(!job.finish(Stop::Cancelled));
+        assert!(!job.cancel.load(Ordering::SeqCst), "the cancel is consumed");
+    }
+
+    /// A cancel that lands between the last drain and the release still keeps
+    /// the worker from taking the slot back, and stands for the next `start`
+    /// to clear.
+    #[test]
+    fn a_cancel_after_the_last_drain_holds_the_worker_back() {
+        let job = WaveformJob::default();
+        job.running.store(true, Ordering::SeqCst);
+        job.kicked.store(true, Ordering::SeqCst);
+        job.cancel();
+
+        assert!(!job.finish(Stop::Drained));
+        assert!(!job.running.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_drained_worker_with_a_kick_drains_again() {
+        let job = WaveformJob::default();
+        job.running.store(true, Ordering::SeqCst);
+        job.kicked.store(true, Ordering::SeqCst);
+
+        assert!(job.finish(Stop::Drained));
+        assert!(job.running.load(Ordering::SeqCst), "the slot is held again");
     }
 
     /// A fresh kick claimed the slot the instant it was released; it drains.

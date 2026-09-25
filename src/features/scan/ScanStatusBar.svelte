@@ -75,6 +75,10 @@
     void app.cancelScan();
   }
 
+  function onCancelWaveform(): void {
+    void app.cancelAnalysis();
+  }
+
   function onDismiss(): void {
     dismissed = true;
     visible = false;
@@ -123,6 +127,15 @@
         <div class="scan-status-bar-track">
           <div class="scan-status-bar-fill" style:width="{wfPct}%"></div>
         </div>
+        <button
+          type="button"
+          class="scan-status-cancel"
+          onclick={onCancelWaveform}
+          disabled={!app.isAdmin}
+          title={app.isAdmin ? undefined : "Unlock admin mode to cancel"}
+        >
+          Cancel
+        </button>
       </div>
     {/if}
   </div>
