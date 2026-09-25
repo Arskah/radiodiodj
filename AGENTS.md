@@ -5,7 +5,7 @@
 ```bash
 pnpm dev                                          # tauri dev (Vite HMR for renderer, cargo watch for backend)
 pnpm build                                        # tauri build → src-tauri/target/release/bundle/<format>/
-pnpm typecheck                                    # svelte-check + tsc on tsconfig.node.json
+pnpm typecheck                                    # svelte-check (--tsgo) + tsgo on tsconfig.node.json/e2e
 pnpm test                                         # vitest watch
 pnpm test -- run                                  # vitest single run
 pnpm e2e                                          # tauri-driver + WebdriverIO (Linux only — see e2e/README.md)
@@ -213,6 +213,17 @@ is [CONTEXT.md](CONTEXT.md).
 - pnpm `minimumReleaseAge` constraint blocks plugin versions younger than
   ~3 days; pin to a slightly older stable version when adding `tauri-plugin-*`
   deps.
+- Two TypeScript compilers are installed: `typescript` (6.x, the API
+  typescript-eslint and svelte-check load) and `@typescript/native`
+  (an npm alias for TypeScript 7, used by `tsc -p` runs and
+  `svelte-check --tsgo`). `node_modules/.bin/tsc` is ambiguous between them, so
+  the typecheck scripts spell out `node_modules/@typescript/native/bin/tsc`.
+  `renovate.json` caps `typescript` below 7 until typescript-eslint supports it
+  ([#10940](https://github.com/typescript-eslint/typescript-eslint/issues/10940)).
+- `svelte-check --tsgo` writes transpiled Svelte files to `.svelte-check/` and
+  never prunes them, so a deleted component keeps reporting its old errors. The
+  `svelte-check` script wipes the directory first; re-running `svelte-check`
+  directly needs the same wipe.
 - A new admin-only command must be added to `admin::ADMIN_COMMANDS`, or it runs
   while admin mode is locked. See [docs/admin-mode.md](docs/admin-mode.md).
 - Tauri command argument name `state` collides with the `State<AppState>`

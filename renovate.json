@@ -15,5 +15,12 @@
   "timezone": "Europe/Helsinki",
   "postUpdateOptions": ["pnpmDedupe"],
   "minimumReleaseAge": "3 days",
-  "semanticCommits": "enabled"
+  "semanticCommits": "enabled",
+  "packageRules": [
+    {
+      "description": "typescript-eslint and svelte-check still need the TypeScript 6 API; TypeScript 7 rides along as the @typescript/native alias. Lift when typescript-eslint ships TS 7 support (https://github.com/typescript-eslint/typescript-eslint/issues/10940).",
+      "matchDepNames": ["typescript"],
+      "allowedVersions": "<7"
+    }
+  ]
 }
