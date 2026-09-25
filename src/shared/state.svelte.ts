@@ -129,6 +129,13 @@ export class AppState {
     commercial: [],
     jingle: [],
   });
+  /**
+   * Whether `libraryPaths` has been read from the backend yet. The empty
+   * object above is indistinguishable from a station with no directories
+   * configured, and "no directories defined" is the wrong thing to tell an
+   * operator who has three.
+   */
+  libraryPathsLoaded = $state(false);
   settingsOpen = $state(false);
   settingsTab = $state<SettingsTab>("library");
   scanStatus = $state<ScanStatus>({ status: "idle", lastResult: null });
@@ -1362,8 +1369,18 @@ export class AppState {
       });
   }
 
+  /**
+   * Read the configured directories. Failure keeps whatever is already shown
+   * and leaves `libraryPathsLoaded` alone, so a backend hiccup never turns a
+   * configured library into an invitation to add one.
+   */
   async loadLibraryPaths(): Promise<void> {
-    this.libraryPaths = await api.getAllPaths();
+    try {
+      this.libraryPaths = await api.getAllPaths();
+      this.libraryPathsLoaded = true;
+    } catch (err) {
+      logger.error("Library paths load failed:", err);
+    }
   }
 
   async addPath(type: ContentType): Promise<void> {
