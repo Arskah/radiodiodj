@@ -234,6 +234,12 @@ is [CONTEXT.md](CONTEXT.md).
   `.github/actions/rust`, so bumping that one line moves every workflow.
   `rust-version` in `src-tauri/Cargo.toml` is a different number — the minimum
   a consumer needs, not the one we build with.
+- symphonia's `id3v2` feature is load-bearing, not metadata decoration: it is
+  what registers the reader the probe uses to step over a leading ID3v2 tag.
+  The probe searches about a megabyte for a format marker, so without it a
+  track whose cover art pushes the tag past that fails to probe at all — no
+  fingerprint, no identity. `cover_art_past_the_probe_window_keeps_the_fingerprint`
+  pins it. Tags are still read with lofty, never with symphonia.
 - `Dockerfile.e2e` installs dependencies from a copy of `package.json`,
   `pnpm-lock.yaml` and `pnpm-workspace.yaml`. The last one carries `overrides`
   and `allowBuilds`, and a frozen install fails without it, so a new root file

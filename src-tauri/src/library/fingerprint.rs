@@ -188,6 +188,56 @@ mod tests {
         assert_eq!(of_file(&path).unwrap(), before);
     }
 
+    /// `[ID3v2.3 tag holding one APIC frame][payload]`, the layout a tagger
+    /// writes when a track carries cover art. Built by hand because lofty puts
+    /// a WAV's ID3v2 in a RIFF chunk, and it is the leading tag that the probe
+    /// has to step over.
+    fn behind_cover_art(payload: &[u8], image_len: usize) -> Vec<u8> {
+        let mut frame = vec![0u8]; // latin-1 text encoding
+        frame.extend_from_slice(b"image/jpeg\0");
+        frame.push(3); // front cover
+        frame.push(0); // empty description
+        frame.extend(std::iter::repeat_n(0x5A, image_len));
+
+        let mut body = Vec::new();
+        body.extend_from_slice(b"APIC");
+        body.extend_from_slice(&(frame.len() as u32).to_be_bytes());
+        body.extend_from_slice(&[0, 0]); // frame flags
+        body.extend_from_slice(&frame);
+
+        let n = body.len() as u32;
+        let mut out = Vec::new();
+        out.extend_from_slice(b"ID3");
+        out.extend_from_slice(&[3, 0, 0]); // v2.3, no flags
+        for shift in [21, 14, 7, 0] {
+            out.push(((n >> shift) & 0x7F) as u8); // synchsafe length
+        }
+        out.extend_from_slice(&body);
+        out.extend_from_slice(payload);
+        out
+    }
+
+    #[test]
+    fn cover_art_past_the_probe_window_keeps_the_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join("plain.wav");
+        write_wav(&plain, 1, 2);
+        let audio = std::fs::read(&plain).unwrap();
+        let bare = of_file(&plain).unwrap();
+
+        // The probe searches about a megabyte for a format marker. A small
+        // cover leaves the audio inside that window whether or not the ID3v2
+        // reader is registered; one past it is only found because the reader
+        // steps over the tag, so this is what fails when `id3v2` is not among
+        // symphonia's features.
+        for image_len in [4 * 1024, 2 * 1024 * 1024] {
+            let path = dir.path().join(format!("cover-{image_len}.wav"));
+            std::fs::write(&path, behind_cover_art(&audio, image_len)).unwrap();
+            let got = of_file(&path).unwrap_or_else(|e| panic!("{image_len} byte cover: {e:#}"));
+            assert_eq!(got, bare, "{image_len} byte cover");
+        }
+    }
+
     #[test]
     fn a_file_that_is_not_audio_has_no_fingerprint() {
         let dir = tempfile::tempdir().unwrap();
