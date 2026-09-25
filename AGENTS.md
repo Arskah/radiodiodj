@@ -130,8 +130,9 @@ never relaxed. Jingles and commercials are untouched by both rules. See
 `try_seek` to ~200 ms short, then `skip_duration` for the remainder, so a marker
 lands sample-exactly. See [docs/audio.md](docs/audio.md#seek).
 
-**Search** — FTS5 virtual table on title/artist/album/genre, kept in sync by
-triggers. A query is tokenized as prefix match: `foo bar` → `"foo"* "bar"*`. See
+**Search** — FTS5 virtual table on title, artist, album, genre and album
+artist, kept in sync by triggers. A query is tokenized as prefix match:
+`foo bar` → `"foo"* "bar"*`. See
 [docs/library-search.md](docs/library-search.md) for the planned fuzzy pass.
 
 **Scan + prune** — a scan never deletes a track. One `Db::reconcile` transaction
@@ -217,10 +218,11 @@ is [CONTEXT.md](CONTEXT.md).
   while admin mode is locked. See [docs/admin-mode.md](docs/admin-mode.md).
 - Tauri command argument name `state` collides with the `State<AppState>`
   injection; the managed state arg is named `app` in command handlers.
-- `release-please-config.json` bumps `package.json`,
-  `src-tauri/tauri.conf.json` (jsonpath `$.version`), and `src-tauri/Cargo.toml`
-  (`# x-release-please-version` annotation) on each release. Keep all three in
-  sync.
+- `release-please-config.json` bumps four files on each release:
+  `package.json`, `src-tauri/tauri.conf.json` (jsonpath `$.version`),
+  `src-tauri/Cargo.toml` (jsonpath `$.package.version`) and
+  `src-tauri/Cargo.lock` (jsonpath on the `radiodiodj` package entry). Keep all
+  four in sync.
 - `tauri-plugin-log` is initialized first in the builder chain so panics before
   later plugin setup still reach the file sink. Renderer `console.*` is
   intercepted by `attachConsole()` in `main.ts`; vitest must not import

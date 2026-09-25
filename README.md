@@ -42,7 +42,10 @@ browser audio pipeline, no external transcoder, no subscription.
   ([docs](docs/cue-points.md#authoring))
 - **Automatic cue points** — silence-trimmed starts and ends, and a music segue
   point, derived from the analysis decode. An unprepared library airs tight
-  without anyone touching a marker ([docs](docs/cue-auto-analysis.md))
+  without anyone touching a marker. Change a threshold and _Recalculate now_
+  re-derives the whole library from the stored level envelope, with no second
+  decode and without touching a marker anyone placed by hand
+  ([docs](docs/cue-auto-analysis.md))
 - **Use once** — shorten a track for tonight's show only, without changing its
   stored radio edit ([docs](docs/playlist.md#item-overrides))
 
@@ -50,11 +53,14 @@ browser audio pipeline, no external transcoder, no subscription.
 
 - **Three content libraries** — separate folders and browsing for music,
   commercials and jingles ([docs](docs/library.md))
-- **Fast search** — full-text search across title, artist, album and genre
-  (SQLite FTS5)
+- **Fast search** — full-text search across title, artist, album, genre and
+  album artist (SQLite FTS5)
 - **Stable track identity** — moving, renaming or re-adding files keeps each
   track's cue points, play count and edits
   ([docs](docs/track-identity.md#for-the-operator--moving-and-reorganising-files))
+- **Full tag set** — title, artist, album, album artist, genre, year, track and
+  disc numbers, initial key, ISRC and comment, read from the file, with the
+  library sortable in album order ([docs](docs/library.md))
 - **Metadata editing** — fix a title or artist in the app; a rescan cannot
   clobber the edit, and with write-back enabled it is written into the file's
   tags ([docs](docs/library.md#editing-a-track))
@@ -91,19 +97,25 @@ browser audio pipeline, no external transcoder, no subscription.
 
 ## Usage
 
-1. Click **Paths** to configure folders for music, commercials and jingles
-2. Click **Scan** to index audio files and extract metadata
+1. Open **Settings → Library** and use **Add Directory** to point music,
+   commercials and jingles at their folders
+2. **Scan Library Now** on the same tab indexes the files and reads their tags.
+   The status bar at the bottom shows progress; the analysis pass that follows
+   can be stopped from there and picks up where it left off
 3. Use the **library tabs** to browse by content type
 4. Double-click a track or use **+** to add it to the playlist; right-click a
    row for cueing, cue points, metadata editing and play-now
-5. Toggle **Auto Playlist** for continuous playback
-6. Switch between **AUTO** and **MANUAL** playback modes
+5. Toggle **Auto Mode** in the toolbar to let the playlist keep filling itself
+6. Switch the deck between **Auto** and **Manual** to choose whether it
+   advances on its own
 
 ## Prerequisites
 
-- [Node.js](https://nodejs.org/) >= 20
+- [Node.js](https://nodejs.org/) — the version in `.tool-versions`, which is
+  what CI installs
 - [pnpm](https://pnpm.io/)
-- [Rust toolchain](https://rustup.rs/) (stable)
+- [Rust toolchain](https://rustup.rs/) — stable, at least the `rust-version` in
+  `src-tauri/Cargo.toml`
 - Linux only: `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libasound2-dev`
 
 ## Development

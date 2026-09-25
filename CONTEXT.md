@@ -30,6 +30,22 @@ _Avoid_: Ads, spots
 A user-configured filesystem root the scanner recurses into. Feeds tracks into one or more typed libraries.
 _Avoid_: Folder, source, watch dir
 
+**Tag metadata**:
+The fields a Track carries from its file's tags: title, artist, album, album artist, genre, year, track number and total, disc number and total, initial key, ISRC and comment. Read by a **Scan**, or by **Tag backfill** for a row that predates a field.
+_Avoid_: ID3, tags, properties
+
+**Metadata edit**:
+An operator's change to a Track's **Tag metadata**. Flags the columns it touched as **Edited fields**, which a later **Scan** will not overwrite.
+_Avoid_: Tag edit, correction, fix
+
+**Edited field**:
+One **Tag metadata** column an operator has changed. The flag is per column, so an edited title survives a rescan while the same row's genre still follows the file.
+_Avoid_: Dirty field, override, lock
+
+**Tag write-back**:
+Writing an operator's **Metadata edit** into the audio file's tags. Off by default, never in place: the file is rewritten and renamed over the original.
+_Avoid_: Save to file, export tags, sync
+
 > "Library" alone is ambiguous — always qualify with the content type.
 
 ### Scan lifecycle
@@ -81,6 +97,14 @@ _Avoid_: Library status, diagnostics
 **Dismissal**:
 The operator's acknowledgement of one health finding. Silences the badge only while the finding stays exactly as it was dismissed.
 _Avoid_: Ignore, mute, snooze
+
+**Analysis pass**:
+The background decode that follows a **Scan**, producing a Track's waveform, loudness, **Level envelope** and **Automatic cue points**. Stoppable on its own; the queue is row state, so the next pass resumes where it stopped.
+_Avoid_: Waveform scan, indexing, processing
+
+**Tag backfill**:
+The background pass that re-reads **Tag metadata** for rows written before a field existed. Reads headers only, never audio, and is separate from the **Analysis pass** so a file whose audio will not decode still gets its tags.
+_Avoid_: Migration, repair, re-scan
 
 **Delta cache**:
 mtime + content-type cache letting the scanner skip unchanged files.
@@ -158,6 +182,22 @@ _Avoid_: Preset, default edit
 Cue points carried by a single Playlist item, overriding that track's Radio edit for one airing only. Never written back to the Track.
 _Avoid_: Temp edit, local edit
 
+**Automatic cue points**:
+Cue in, Cue out and — for music — Next start derived from the **Analysis pass**, so a library nobody has cue-prepped still airs tight.
+_Avoid_: Auto-trim, silence detection, generated markers
+
+**Cue point ownership**:
+Per-Track state saying who placed the trio: `pending` (not analysed yet), `auto` (derived), `manual` (an operator moved it). `manual` is permanent, and only an `auto` Track is ever re-derived.
+_Avoid_: Source, origin, locked
+
+**Level envelope**:
+The **Analysis pass** decode reduced to one byte per RMS window — the levels that window is above. Stored with the trio so a later threshold change re-derives markers without reading the file again, which is why thresholds round to whole decibels.
+_Avoid_: Waveform, RMS data, peaks
+
+**Recalculate**:
+The operator's explicit re-derivation of **Automatic cue points** under today's thresholds. Re-derives from the stored **Level envelope** where it is readable, queues the rest for the **Analysis pass**, and skips `manual` Tracks, counting them. The only thing that applies new thresholds to existing material.
+_Avoid_: Re-analyse, refresh, regenerate
+
 **Air time**:
 `cueOut - cueIn` — the duration that actually reaches air. Distinct from the Track's file duration.
 _Avoid_: Effective duration, real length
@@ -181,8 +221,24 @@ The buffer of tracks the auto-playlist keeps ahead of Now playing. Target size i
 _Avoid_: Buffer, preload
 
 **Interleave**:
-Insertion of one Jingle library track every 4 music tracks and one Commercial library track every 8.
-_Avoid_: Rotation, scheduling
+Insertion of one Jingle library track every 4 music tracks and one Commercial library track every 8. Distinct from a **Rotation rule**: interleaving decides what _kind_ of track comes next, a rotation rule decides which ones are still eligible.
+_Avoid_: Scheduling, rotation
+
+**Airing**:
+One record of a Track reaching air, written to the **Airing log** with the artist, title and duration as they read at the time, so a later **Metadata edit** or **Purge** cannot rewrite history.
+_Avoid_: Play, spin, history entry
+
+**Airing log**:
+The persistent record of every **Airing**. Survives restarts, backs the **Rotation rules**, and is the basis for a future royalty-reporting export.
+_Avoid_: Play log, play count
+
+**History**:
+The tail of the **Airing log** the backend puts in each playlist snapshot and the Playlist panel shows on its History tab, capped at `historyCap` (100). Bounded and in-memory, where the log is neither.
+_Avoid_: Recently played, log, previous tracks
+
+**Rotation rule**:
+A constraint on what the **Auto-playlist** may select: never reselect a Track, or an artist, that aired inside a configurable window. Both run in SQL, the Playlist counts as already aired, and one generated block never repeats an artist. Jingles and Commercials are exempt.
+_Avoid_: Repeat protection, cooldown, interleave
 
 ### Appearance
 
@@ -248,6 +304,11 @@ _Avoid_: Persist, sync
 - A **Track** may carry a **Radio edit**; a **Playlist** item may carry an **Item override** that wins for that airing
 - **Air time** derives from the **Cue points** that apply to an airing, not from the **Track**'s file duration
 - A **Library check** predicts what the next **Scan** would do; only the **Scan** applies it, and only **Purge** deletes
+- A **Scan** reads **Tag metadata**; **Tag backfill** reads it for rows a new field predates, and the **Analysis pass** reads audio for everything else
+- An **Edited field** survives a **Scan**; with **Tag write-back** on, the **Metadata edit** also reaches the file
+- The **Analysis pass** produces the **Level envelope**, and the **Automatic cue points** are derived from it; **Recalculate** re-derives them without a second decode
+- **Cue point ownership** decides what may be re-derived: an `auto` **Track** yes, a `manual` one never
+- An **Airing** is written to the **Airing log** when a **Track** reaches air; the **Rotation rules** read that log to decide what the **Auto-playlist** may select next
 - A **Dismissal** silences a **Library health** finding without hiding it
 - A **Track** is identified by its row, not its path: **Prune** makes it **Missing**, **Reattach** or a returning path restores it, and only **Purge** deletes it
 
@@ -311,7 +372,9 @@ _Avoid_: Persist, sync
 - "Cue point" is a position in a Track; "Cue deck" is the off-air deck; the "Cue editor" is where points are placed. The overlap is inherited from playout software convention.
 - Bare "edit" means **metadata/tag editing** and nothing else. The playback markers are **Cue points**; the stored set of them is a **Radio edit**. Tag-editing code says `metadata` explicitly for this reason.
 - "Segue" and "crossfade" are not domain terms → use **Handover**, which is triggered by a Cue point rather than a configured duration.
-- "Check" vs "Scan" → a **Library check** only reads the disk and reports; a **Scan** changes the library. Never call a check a "quick scan".
+- "Check" vs "Scan" vs "Analysis pass" → a **Library check** only reads the disk and reports; a **Scan** changes the library; the **Analysis pass** is the decode that follows a **Scan**. Never call a check a "quick scan", and never call the analysis pass a scan.
+- "Rotation" is a **Rotation rule** and nothing else — a constraint on what the **Auto-playlist** may select. It is not **Interleave**, which is the jingle/commercial cadence, and it is not a programming clock or a playlist category. The word was retired from the glossary before the rules existed; it is a domain term now.
+- "Play count" is not the **Airing log**. The count is a number on the **Track**; the log is the record of each **Airing**, with its own snapshot of the metadata.
 - "Ignore" is not a domain term → a **Dismissal** silences a finding, and there is no ignored-track state. An unwanted **Duplicate** is removed by deleting its file.
 - "Content type" is a closed enum: `music | jingle | commercial`. New types require deliberate domain extension.
 - "Theme" is colours only. A change that needs different spacing, fonts or wording is a redesign, not a theme.

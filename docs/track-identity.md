@@ -109,9 +109,10 @@ that path as a new track.
 **Why packets.** Symphonia's demuxers already step over the tag blocks: ID3v2
 and APE, FLAC metadata blocks, RIFF `LIST` and `id3 ` chunks, MP4 `udta`. They
 also reassemble Ogg packets, so a comment edit that re-pages the stream changes
-nothing. An external tag edit therefore keeps the identity, as does the
-metadata write-back planned in
-[#313](https://github.com/Arskah/radiodiodj/issues/313).
+nothing. An external tag edit therefore keeps the identity, as does the app's
+own metadata write-back
+([#313](https://github.com/Arskah/radiodiodj/issues/313), `library/tag_write.rs`
+— see [library.md](./library.md#editing-a-track)).
 
 **Why no decode.** A decoded-PCM hash is tag-proof too, but lossy decoders
 produce floats that a symphonia upgrade may shift, and that would orphan the

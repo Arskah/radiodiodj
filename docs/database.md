@@ -74,8 +74,8 @@ The library lives in SQLite (`radiodiodj.db`, WAL mode) and is opened by
   air time, so a purge or a later tag fix cannot rewrite the record. See
   [rotation.md](./rotation.md).
 - **Index only what search needs.** `tracks_au` fires on
-  `UPDATE OF title, artist, album, genre`, so writing a waveform or bumping a
-  play count does not rewrite the FTS row.
+  `UPDATE OF title, artist, album, genre, album_artist`, so writing a waveform
+  or bumping a play count does not rewrite the FTS row.
 - **Update the snapshot in the same commit.** `src-tauri/src/library/schema.sql`
   is what a fresh database looks like, and the test `schema_matches_snapshot`
   compares against it. Regenerate it with:
