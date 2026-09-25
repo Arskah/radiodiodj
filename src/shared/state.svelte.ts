@@ -639,54 +639,66 @@ export class AppState {
   }
 
   /**
-   * Fetch the amplitude curve for `id` and store it, guarding against a race:
-   * a slower fetch for a track the user has already skipped past must not
-   * overwrite the current one. The result is dropped unless `id` is still the
-   * loaded track when it arrives.
+   * Fetch something that belongs to the track on `deck` and store it, guarding
+   * against a race: a slower fetch for a track the operator has already
+   * skipped past must not overwrite what is on screen now. The field is
+   * cleared on the way in, and the result is dropped unless `id` is still the
+   * track on that deck when it arrives.
    */
-  private loadWaveform(id: number): void {
-    this.waveform = null;
-    void api
-      .getWaveform(id)
-      .then((peaks) => {
-        if (this.currentTrack?.id === id) this.waveform = peaks;
+  private loadForDeck<T>(
+    deck: "main" | "cue",
+    id: number,
+    fetch: (id: number) => Promise<T>,
+    store: (value: T | null) => void,
+    what: string,
+  ): void {
+    store(null);
+    void fetch(id)
+      .then((value) => {
+        const on = deck === "main" ? this.currentTrack : this.cueTrack;
+        if (on?.id === id) store(value);
       })
-      .catch((err) => logger.error("Waveform load failed:", err));
+      .catch((err) => logger.error(`${what} load failed:`, err));
+  }
+
+  private loadWaveform(id: number): void {
+    this.loadForDeck(
+      "main",
+      id,
+      (i) => api.getWaveform(i),
+      (v) => (this.waveform = v),
+      "Waveform",
+    );
   }
 
   private loadCueWaveform(id: number): void {
-    this.cueWaveform = null;
-    void api
-      .getWaveform(id)
-      .then((peaks) => {
-        if (this.cueTrack?.id === id) this.cueWaveform = peaks;
-      })
-      .catch((err) => logger.error("Cue waveform load failed:", err));
+    this.loadForDeck(
+      "cue",
+      id,
+      (i) => api.getWaveform(i),
+      (v) => (this.cueWaveform = v),
+      "Cue waveform",
+    );
   }
 
-  /**
-   * Fetch the current main-deck track's cover art, with the same race guard as
-   * `loadWaveform`: a slow fetch for a track the user has skipped past must not
-   * overwrite the art now showing.
-   */
   private loadCoverArt(id: number): void {
-    this.coverArt = null;
-    void api
-      .getCoverArt(id)
-      .then((art) => {
-        if (this.currentTrack?.id === id) this.coverArt = art;
-      })
-      .catch((err) => logger.error("Cover art load failed:", err));
+    this.loadForDeck(
+      "main",
+      id,
+      (i) => api.getCoverArt(i),
+      (v) => (this.coverArt = v),
+      "Cover art",
+    );
   }
 
   private loadCueCoverArt(id: number): void {
-    this.cueCoverArt = null;
-    void api
-      .getCoverArt(id)
-      .then((art) => {
-        if (this.cueTrack?.id === id) this.cueCoverArt = art;
-      })
-      .catch((err) => logger.error("Cue cover art load failed:", err));
+    this.loadForDeck(
+      "cue",
+      id,
+      (i) => api.getCoverArt(i),
+      (v) => (this.cueCoverArt = v),
+      "Cue cover art",
+    );
   }
 
   togglePlay(): void {
