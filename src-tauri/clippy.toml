@@ -1,0 +1,3 @@
+# Prose words `clippy::doc_markdown` would otherwise want backticked. `..` keeps
+# clippy's own defaults; these are the names this codebase writes as prose.
+doc-valid-idents = ["..", "ReplayGain", "mAirList", "PlayIt", "lofty", "ID3v2"]

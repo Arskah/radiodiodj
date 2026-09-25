@@ -119,7 +119,8 @@ impl BroadcastService {
     }
 
     /// Synchronous shutdown: fire final stop if needed, wait up to 2s.
-    /// Idempotent. Safe to call from frontend close hook and RunEvent::Exit.
+    /// Idempotent. Safe to call from the frontend close hook and
+    /// `RunEvent::Exit`.
     pub fn shutdown_blocking(&self) {
         {
             let mut done = self.inner.shutdown_done.lock();
@@ -137,7 +138,6 @@ impl BroadcastService {
             });
         }
 
-        // Abort any still-running in-flight task; we ignore its result.
         if let Some(h) = self.inner.in_flight.lock().take() {
             h.abort();
         }

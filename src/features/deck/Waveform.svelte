@@ -127,7 +127,6 @@
       vector-effect="non-scaling-stroke"
     />
   {/if}
-  <!-- Glowing red playhead at the current play position. -->
   <line
     class="wf-playhead"
     x1={playedX}

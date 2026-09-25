@@ -45,6 +45,11 @@ jobs:
         working-directory: src-tauri
         run: cargo clippy --all-targets -- -D warnings
 
+      - name: rustdoc
+        working-directory: src-tauri
+        # Doc-link lints only fire under rustdoc, so clippy never reaches them.
+        run: cargo doc --no-deps --document-private-items
+
       - name: cargo test
         working-directory: src-tauri
         run: cargo test
