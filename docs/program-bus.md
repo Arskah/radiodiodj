@@ -80,9 +80,13 @@ holds a deck and the loop that ticks a set of them; `audio/output.rs` holds the
 shared self-healing open; `audio/cue.rs` is the off-bus cue deck reusing the
 same deck worker on its own stream. Roles are static (A `main`, B `arm` and
 idle — B connects no sink until handover gives it something to play), and
-`program:roles` is emitted but not yet consumed. The 176 backend and 132
-renderer tests passed unmodified; four new tests cover role routing and the
-role snapshot. Next: handover.
+`program:roles` was emitted but not yet consumed. The whole suite passed
+unmodified; four new tests cover role routing and the role snapshot. Next:
+handover.
+
+Handover landed after it, and `program:roles` has a consumer now: the renderer
+subscribes through `api.onDeckRoles` and reads the `tail` entry to tell which
+outgoing track is still audible underneath the one on air.
 
 ## Roles, not identities
 
@@ -255,7 +259,7 @@ the now-playing webhook, and everything else continue to refer to `main`:
 | `main-deck:*`       | emitted for whichever deck currently holds the `main` role     |
 | `arm-deck:*`        | same shape, for the armed deck — lets the UI show what is next |
 | `tail-deck:*`       | same shape, for a deck playing an outgoing track out           |
-| `program:roles`     | slot → role plus the track in each; debugging and future UI    |
+| `program:roles`     | slot → role plus the track in each; drives the tail readout    |
 | `program:handover`  | the `main` role moved: outgoing and incoming track ids         |
 | `program:faded-out` | a fade to silence finished on air; the playlist stops          |
 | `cue:*`             | unchanged; the cue deck is not on the bus                      |

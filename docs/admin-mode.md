@@ -13,20 +13,28 @@ access to the data directory can edit `config.json` and remove the password.
 
 While locked:
 
-- The whole _Settings_ overlay: Audio, Library (paths, scan, library health,
-  purge), Now Playing, Appearance (picking a theme, reloading themes, the
-  station name and its images) and Advanced. The toolbar's Settings button is
-  disabled.
+- The whole _Settings_ overlay: Audio Output, Library (paths, scan, library
+  health, purge, recalculating automatic cue points), Playlist, Now Playing,
+  Appearance (picking a theme, reloading themes, the station name and its
+  images) and Advanced. The toolbar's Settings button is disabled, so none of
+  it is reachable in the first place.
 - Metadata edits: the _Edit metadata…_ row action and the row's edit button are
   hidden. Revert, retry and dismiss for tag writes live in the metadata editor
   and the health view, so they are out of reach too.
 - _Save to track_ in the cue-point editor. It changes every future airing, the
   same way a metadata edit does.
-- Cancelling a running scan from the status bar.
+- Cancelling a running scan, or the analysis pass behind it, from the status
+  bar.
 
 Still open while locked: playback, the playlist, library search and browsing,
 the cue deck, _Show in folder_, and the cue-point editor's _Use once_ and
 auditioning, which only affect one airing.
+
+`library_check_now` is open too, even though the button that calls it sits
+behind the disabled Settings overlay. A check reads the disk and reports; it
+changes nothing and deletes nothing, so there is no reason for the backend to
+refuse one. `ADMIN_COMMANDS` gates the commands that _change_ the library, and a
+test pins `library_check_now` as deliberately outside it.
 
 Reading the appearance is **not** gated, and cannot be: the renderer paints
 itself from `get_appearance` before it mounts, on a launch that starts locked.

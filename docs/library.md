@@ -122,8 +122,10 @@ track missing only one of them costs no more than a track missing all four.
 A file that fails to decode is recorded on its track and skipped until a scan
 sees the file change; it is listed under [Unreadable
 tracks](./library-health.md#unreadable-tracks). A file that could not be read is
-skipped for the rest of the run only. Cancelling a scan cancels the pass too; the
-next one picks up where it stopped.
+skipped for the rest of the run only. Cancelling a scan cancels the pass too,
+and the pass can be stopped on its own from the status bar without stopping the
+scan that started it. Either way the queue is row state, so the next pass picks
+up where the last one stopped.
 
 ### Tag backfill
 
