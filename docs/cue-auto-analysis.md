@@ -338,6 +338,28 @@ Likewise, a cold-ending song may have its final syllable or hit overlapped by th
 
 Both are accepted consequences of a deliberately small, predictable algorithm. Manual Radio edits remain the escape hatch for exceptional material.
 
+## The level envelope
+
+The decode is reduced to one byte per RMS window: the number of whole dBFS levels in `-100..=-3` that window is strictly above. That is about 20 bytes per second of audio, and it captures the decode exactly rather than approximately — everything the detector does is arithmetic on where the codes cross a level, plus the window count and the decoded duration.
+
+A code is defined by the comparison the detector itself makes, not by converting an amplitude back to decibels: `rms > amplitude(level)` holds for a prefix of the ascending levels, and the code is the length of that prefix. There is no logarithm in the path, so there is no rounding that could put a window on the wrong side of a threshold.
+
+That envelope is stored on the track row as `auto_cue_levels`, written by `set_auto_cue` in the same statement as the trio, so a reader never sees markers without the measurements they came from. It exists so that re-deriving a track's markers under different thresholds costs a SQL read rather than a decode: the windows themselves live only for the duration of `waveform::analyze`, and the stored waveform curve is normalised, so nothing else on disk can answer what level a passage was at.
+
+Thresholds are rounded to whole decibels on the way into `config.json` for the same reason — a fractional one would fall between two levels, and the envelope would stop answering it exactly.
+
+Keeping the measurement rather than a table of answers is deliberate. A table of the three crossings the detector asks about today would be smaller and fixed-width, but only those three questions could ever be put to it. A later rule that wants a crossing sustained for some duration — the usual fix for a click at the head of a file setting Cue In early — or a level after a given position, or the loudest passage, can be written against a stored envelope. Against a table it would need a fresh decode of the whole library. The table is derivable from the envelope in one pass; the reverse is not.
+
+An envelope this build cannot read — a different layout version, a length too short to hold the header, or a code outside the resolved range — counts as missing, and the track is queued for a fresh decode rather than having markers derived from bytes that cannot be trusted. The first two screens run in SQL, so an upgrade does not decode every blob in the library to find out. The third cannot: a readable length is a function of the track's duration, so `Envelope::decode` is the authority, and the one caller that reads a stored envelope queues whatever fails it rather than trusting the SQL screen and the decoder to agree.
+
+Three rules follow from what the table measures:
+
+- a **manually owned** track never gets one. The table feeds automatic derivation, and nothing derives for a track the operator owns;
+- a **fingerprint twin** inherits it, across content types as well as within one. It measures the audio, which the twin shares, and carries no decision about either class — unlike the trio, which does not cross classes;
+- a **changed file** drops it. It measures audio that is no longer there, and deriving from it would produce markers for a file that has been replaced. The trio stands until a fresh result lands, which is the existing rule.
+
+Existing libraries get the table by backfill through the ordinary analysis pass, not by a synchronous migration: it is a full decode per track. A track picked up for its table alone keeps its markers — re-deriving them there would be exactly the implicit mass re-analysis the next section rules out.
+
 ## Background analysis
 
 Automatic cue analysis belongs in the existing heavy audio-analysis path, not the fast metadata scan.
