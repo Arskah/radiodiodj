@@ -723,14 +723,22 @@ fn normalize_tuning(mut t: TuningConfig) -> TuningConfig {
     t
 }
 
-/// Clamp a dBFS setting, falling back to `fallback` for a value that is not a
-/// number at all — `clamp` panics on NaN, and `config.json` is a text file an
-/// operator may have edited by hand.
+/// Round a dBFS setting to whole decibels and clamp it, falling back to
+/// `fallback` for a value that is not a number at all — `clamp` panics on NaN,
+/// and `config.json` is a text file an operator may have edited by hand.
+///
+/// Whole decibels are what the analyser resolves: a decode is reduced to the
+/// level of each window, at whole levels in
+/// `auto_cue::LEVEL_MIN_DBFS..=LEVEL_MAX_DBFS`, so a later threshold change can
+/// re-derive a track's markers without reading the file again. A fractional
+/// threshold would fall between two levels and the stored envelope would stop
+/// answering it exactly. The number inputs have always offered whole steps, so
+/// this only folds a hand-edited `-70.5`.
 fn clamp_db(v: f64, fallback: f64, lo: f64, hi: f64) -> f64 {
     if v.is_nan() {
         fallback
     } else {
-        v.clamp(lo, hi)
+        v.round().clamp(lo, hi)
     }
 }
 
@@ -908,6 +916,28 @@ mod tests {
             .unwrap();
         assert_eq!(stored.auto_cue.silence_dbfs, -40.0);
         assert_eq!(stored.auto_cue.segue_dbfs, -39.0);
+    }
+
+    /// The analyser resolves whole levels only, so a threshold has to land on
+    /// one. Only a hand-edited `config.json` can carry a fraction —
+    /// the inputs step in whole decibels.
+    #[test]
+    fn a_fractional_threshold_is_rounded_to_a_whole_decibel() {
+        let dir = tempdir().unwrap();
+        let cfg = Config::open(dir.path()).unwrap();
+        let stored = cfg
+            .set_tuning(TuningConfig {
+                auto_cue: AutoCueConfig {
+                    silence_dbfs: -70.5,
+                    segue_dbfs: -20.4,
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(stored.auto_cue.silence_dbfs, -71.0, "-70.5 rounds away");
+        assert_eq!(stored.auto_cue.segue_dbfs, -20.0);
+        assert!(stored.auto_cue.segue_dbfs >= stored.auto_cue.silence_dbfs + AUTO_CUE_DB_GAP);
     }
 
     #[test]
