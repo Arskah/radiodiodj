@@ -1164,6 +1164,21 @@ describe("AppState library + paths", () => {
     expect(app.libraryPaths.music).toEqual(["/m"]);
   });
 
+  it("loadLibraryPaths marks the paths read", async () => {
+    expect(app.libraryPathsLoaded).toBe(false);
+    await app.loadLibraryPaths();
+    expect(app.libraryPathsLoaded).toBe(true);
+  });
+
+  // The empty state hangs off this flag, and "no directories defined" is the
+  // wrong thing to tell an operator whose backend call merely failed.
+  it("a failed path read leaves the paths unread rather than empty", async () => {
+    api.getAllPaths.mockRejectedValueOnce(new Error("nope"));
+    await app.loadLibraryPaths();
+    expect(app.libraryPathsLoaded).toBe(false);
+    expect(app.libraryPaths.music).toEqual([]);
+  });
+
   it("addPath skips reload when api returns null", async () => {
     api.addPath.mockResolvedValueOnce(null);
     await app.addPath("music");

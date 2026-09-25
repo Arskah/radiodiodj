@@ -14,6 +14,13 @@
 
   let { tuning = $bindable(), saveTuning }: Props = $props();
 
+  // The tab reads its own directories, the way Appearance and Now playing read
+  // theirs. They used to arrive from whoever opened the overlay, which left the
+  // list empty for anything that opened it another way.
+  $effect(() => {
+    if (app.settingsOpen) void app.loadLibraryPaths();
+  });
+
   const sections: { type: ContentType; label: string }[] = [
     { type: "music", label: "Music" },
     { type: "commercial", label: "Commercials" },
@@ -48,7 +55,10 @@
             Add Directory
           </button>
         </div>
-        {#if (app.libraryPaths[type] ?? []).length === 0}
+        {#if !app.libraryPathsLoaded}
+          <!-- Nothing until the read lands: the empty state is a claim about
+               the configuration, not about the fetch. -->
+        {:else if (app.libraryPaths[type] ?? []).length === 0}
           <div class="path-empty">
             No {label.toLowerCase()} directories defined. Click "Add Directory" to
             begin.

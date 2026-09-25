@@ -18,9 +18,8 @@
     else app.unlockOpen = true;
   }
 
-  async function openSettings(): Promise<void> {
+  function openSettings(): void {
     if (!app.isAdmin) return;
-    await app.loadLibraryPaths();
     app.settingsOpen = true;
   }
 </script>
