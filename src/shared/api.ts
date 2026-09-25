@@ -12,6 +12,7 @@ import type {
   DeviceRef,
   FindingKind,
   HealthReport,
+  Recalculated,
   LibraryStats,
   NowPlayingConfig,
   ScanResult,
@@ -261,6 +262,13 @@ export const api = {
    */
   purgeTracks(ids: number[]): Promise<number> {
     return invoke<number>("purge_tracks", { ids });
+  },
+  /**
+   * Apply the current automatic-analysis thresholds to material already in
+   * the library. Rejects while a scan is running.
+   */
+  recalculateAutoCue(): Promise<Recalculated> {
+    return invoke<Recalculated>("recalculate_auto_cue");
   },
   libraryHealth(): Promise<HealthReport> {
     return invoke<HealthReport>("library_health");

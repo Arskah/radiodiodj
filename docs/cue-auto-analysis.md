@@ -453,7 +453,7 @@ does not:
 
 New automatic analyses use the new settings.
 
-Recalculating existing automatic cues is a separate explicit maintenance operation.
+Recalculating existing automatic cues is a separate explicit maintenance operation — **Recalculate now**, under the two thresholds in _Settings → Advanced_. See [Re-analysis](#re-analysis).
 
 That future operation can use stored algorithm/threshold provenance to identify which automatically generated Tracks were analyzed using different settings.
 
@@ -461,9 +461,9 @@ Mass re-analysis is never an implicit side effect of editing a setting.
 
 ## Re-analysis
 
-Explicit automatic re-analysis operates only on Tracks whose automatic Cue point set is not manually owned.
+**Recalculate now** applies the current thresholds to material already in the library. It is the only thing that does: nothing else re-analyses anything, by design.
 
-Re-analysis replaces the automatically managed trio together:
+It operates only on Tracks whose automatic Cue point set is not manually owned, and replaces the automatically managed trio together:
 
 ```text
 Cue In
@@ -471,11 +471,30 @@ Cue Out
 Next Start
 ```
 
-according to the Track's current content type and current automatic-analysis settings.
+according to the Track's current content type and current automatic-analysis settings. For commercial and jingle Tracks this means Next Start becomes `NULL`.
 
-For commercial and jingle Tracks this means Next Start becomes `NULL`.
+A separate future action may deliberately discard manual ownership and regenerate a Track, but ordinary re-analysis must never do so implicitly. The button counts the manually owned Tracks it skipped, so the number is visible rather than merely absent.
 
-A separate future action may deliberately discard manual ownership and regenerate a Track, but ordinary re-analysis must never do so implicitly.
+Two paths, partitioning the non-manual Tracks by whether the row carries a [level envelope](#the-level-envelope) this build can read:
+
+| the row has         | what happens                                                     | cost                          |
+| ------------------- | ---------------------------------------------------------------- | ----------------------------- |
+| a readable envelope | the trio is re-derived from it and written with fresh provenance | a SQL read and arithmetic     |
+| no usable envelope  | the row goes back to `pending` for the analysis pass             | one decode, in the background |
+
+The second path also clears a recorded decode failure, so a Track that failed against a share that has since come back is tried again rather than staying invisible to the pass until a scan sees its file change.
+
+A missing Track is in whichever path its row puts it, exactly like a present one. The envelope is the whole input to the first path, so re-deriving a Track whose share is unmounted costs nothing and needs no file; skipping it would strand it at the old thresholds for good, because a reattached Track comes back automatic and the pass never looks at it again. A missing Track with no usable envelope is queued and waits there — the pass passes it over until the file is back, which is the only moment a decode could reach it.
+
+Which path a Track takes is settled by the decoder, not by the SQL screen. SQL rejects an absent blob, one too short to hold the header, and a layout version this build does not know; it cannot check the codes, because a readable length depends on the Track's duration. A blob that passes the screen and fails to decode is therefore queued like one that has no envelope at all, so no Track can fall between the two paths and keep stale markers with nothing coming back for it.
+
+The stored fades are not derived, but they are sorted against the trio that just moved, the same way a fresh analysis sorts them. A fade left outside the new window would be folded onto a marker by the load-time clamp, so the row — and the cue editor — would show a ramp that no longer plays.
+
+A queued Track keeps the markers it has until the fresh result lands — old positions beat none. Its new trio arrives as `cue-points-ready`, one Track at a time, exactly as a first analysis does.
+
+The operation is refused while a library scan is running, as a purge is: a scan rewrites the same rows underneath it.
+
+What the operator is told is what it did — how many were re-derived and at which levels, how many were queued, how many radio edits were left alone — not how far it got. A Track that was already waiting for the pass is not counted: it had nothing for this operation to move. Its recorded decode failure is still cleared, since that is the only thing keeping the pass away from it. The re-derived ones are done when the button returns; the queued ones are the analysis bar's business.
 
 ## Content-type changes
 

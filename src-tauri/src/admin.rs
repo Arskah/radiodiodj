@@ -22,6 +22,7 @@ pub const ADMIN_COMMANDS: &[&str] = &[
     "add_path",
     "remove_path",
     "purge_tracks",
+    "recalculate_auto_cue",
     "set_main_device",
     "set_cue_device",
     "set_now_playing_config",
