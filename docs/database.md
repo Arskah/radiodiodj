@@ -31,6 +31,12 @@ The library lives in SQLite (`radiodiodj.db`, WAL mode) and is opened by
   with the library, or reads audio files, belongs in a background pass. The
   fingerprint backfill in `library/waveform_scan.rs` is the pattern: a nullable
   column, filled after launch, with the code tolerating `NULL`.
+- **A tag-derived column added after the fact needs its generation bumped.**
+  `scanner::TAG_READ_VERSION` is stamped into `tracks.tags_read_version` by
+  every tag read. Add a tag column, bump the constant, and every row falls back
+  into the tag backfill's queue — a scan will not do it, because
+  `listing::should_rescan` never opens a file whose mtime has not changed and
+  there is no full-rescan command.
 - **A backfilled column needs its own "done" marker** when `NULL` is a valid
   result. `rg_gain IS NULL` cannot mean "not yet measured", because a silent
   file measures successfully and has no gain — so `rg_measured_at` carries that,

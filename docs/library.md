@@ -54,10 +54,17 @@ A scan:
    - A known file whose modification time and content type are unchanged is
      skipped without being opened. This is the **delta cache**, and it is what
      keeps a rescan fast.
-   - Anything else has its tags read with `lofty`: title, artist, album, genre,
-     year, BPM, duration, sample rate, bitrate, format. A file without a title
-     is named after its file name; one without an artist or album gets
-     `Unknown`.
+   - Anything else has its tags read with `lofty`: title, artist, album, album
+     artist, genre, year, BPM, track and disc number with their totals, ISRC,
+     musical key, comment, duration, sample rate, bitrate, format. A file
+     without a title is named after its file name; one without an artist or
+     album gets `Unknown`.
+   - The comment is the tag's _undescribed_ one. lofty maps every ID3v2 `COMM`
+     frame onto the same key, so the first one is often iTunes' `iTunNORM`
+     volume data rather than anything an operator wrote.
+   - Only album artist joins the search index, beside title, artist, album and
+     genre. Numbers, keys and comments would swamp a prefix search — see
+     [library-search.md](./library-search.md).
    - A new file is also fingerprinted, except on the first scan into an empty
      library.
 3. **Reconciles** everything in one database transaction: changed files are

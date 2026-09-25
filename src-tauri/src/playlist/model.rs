@@ -142,7 +142,7 @@ mod tests {
             bitrate: None,
             format: None,
             cue_points: Default::default(),
-            edited_fields: 0,
+            ..Default::default()
         }
     }
 
