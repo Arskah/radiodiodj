@@ -387,6 +387,19 @@ Analysis failure is non-fatal:
 - existing Radio edit values are not destroyed;
 - failure of one file does not stop the analysis job.
 
+### Stopping the pass
+
+The pass fans out across the cores and reads whole files, so an operator on a
+flaky share must be able to stop it — and it usually runs without a scan, on
+every launch and after any scan that finished.
+
+The progress bar therefore carries its own admin-gated _Cancel_, independent of
+the scan bar above it. Each worker stops after the file it is on.
+
+A cancel means "not right now", not "not until you restart": it is consumed by
+the pass it stopped, so the next kick — a scan, a launch, a reclassification —
+starts a fresh one. Cancelled Tracks stay queued, so no analysis is lost.
+
 ## Automatic vs manual ownership
 
 Automatic analysis must never overwrite a Radio edit that the operator has taken ownership of.

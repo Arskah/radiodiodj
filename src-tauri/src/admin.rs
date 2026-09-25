@@ -37,6 +37,7 @@ pub const ADMIN_COMMANDS: &[&str] = &[
     "health_undismiss",
     "scan_libraries",
     "cancel_scan",
+    "cancel_analysis",
     "set_cue_points",
     "now_playing_test",
     "admin_set_password",

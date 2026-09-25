@@ -476,7 +476,7 @@ fn update_track_metadata(
     // automatic analysis would infer. This kicks the pass that drains the
     // queue.
     if reclassified {
-        Arc::clone(&state.waveform).nudge(app, Arc::clone(&state.db), Arc::clone(&state.config));
+        Arc::clone(&state.waveform).start(app, Arc::clone(&state.db), Arc::clone(&state.config));
     }
     // Artist and title decide possible duplicates.
     state.health.refresh();
@@ -828,6 +828,15 @@ fn cancel_scan(state: State<'_, AppState>) {
     state.scan.cancel();
     state.waveform.cancel();
     state.tag_backfill.cancel();
+}
+
+/// Stop the analysis pass on its own, for when it is running without a scan —
+/// every launch, and after any scan that finished. Cancelled rows stay
+/// `pending`, and the cancel dies with the pass, so the next scan, launch or
+/// reclassification picks them up again.
+#[tauri::command(rename_all = "camelCase")]
+fn cancel_analysis(state: State<'_, AppState>) {
+    state.waveform.cancel();
 }
 
 /// Permanently delete the chosen missing tracks. Ids of tracks that are not
@@ -1192,6 +1201,7 @@ pub fn run() {
             remove_path,
             scan_libraries,
             cancel_scan,
+            cancel_analysis,
             get_scan_status,
             purge_tracks,
             recalculate_auto_cue,

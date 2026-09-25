@@ -49,6 +49,7 @@ const { api } = vi.hoisted(() => {
     healthUndismiss: vi.fn(),
     scanLibraries: vi.fn(),
     cancelScan: vi.fn(),
+    cancelAnalysis: vi.fn(),
     getScanStatus: vi.fn(),
     onScanProgress: vi.fn(),
     onScanStateChanged: vi.fn(),
@@ -252,6 +253,7 @@ function resetApi(): void {
   api.libraryHealth.mockResolvedValue(structuredClone(EMPTY_HEALTH));
   api.scanLibraries.mockResolvedValue({ alreadyRunning: false });
   api.cancelScan.mockResolvedValue(undefined);
+  api.cancelAnalysis.mockResolvedValue(undefined);
   api.getScanStatus.mockResolvedValue({ status: "idle", lastResult: null });
   api.getTracksByIds.mockResolvedValue([]);
   api.getWaveform.mockResolvedValue(null);
@@ -1203,6 +1205,12 @@ describe("AppState library + paths", () => {
   it("scan invokes scanLibraries fire-and-forget without blocking on result", async () => {
     await app.scan();
     expect(api.scanLibraries).toHaveBeenCalled();
+  });
+
+  it("cancelAnalysis invokes the api", async () => {
+    await app.cancelAnalysis();
+    expect(api.cancelAnalysis).toHaveBeenCalled();
+    expect(api.cancelScan).not.toHaveBeenCalled();
   });
 
   it("cancelScan invokes the api", async () => {

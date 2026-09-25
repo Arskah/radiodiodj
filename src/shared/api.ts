@@ -295,6 +295,9 @@ export const api = {
   cancelScan(): Promise<void> {
     return invoke<void>("cancel_scan");
   },
+  cancelAnalysis(): Promise<void> {
+    return invoke<void>("cancel_analysis");
+  },
   getScanStatus(): Promise<ScanStatus> {
     return invoke<ScanStatus>("get_scan_status");
   },
