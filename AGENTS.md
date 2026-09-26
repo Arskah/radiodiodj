@@ -156,9 +156,11 @@ returns: a handler declared without `async` runs on the main thread, where a
 refill's SQL freezes the window. One thread, because `remove` and `move` carry
 queue indices and applying two clicks out of order acts on positions that no
 longer exist. A command that cannot be carried out is logged in the backend,
-never returned. Nothing that reads a file or the library may stay on the main
-thread either — `get_cover_art` parses the audio file, so it is `(async)` for
-the same reason a deck never streams from a share. See
+never returned, and shutdown drains the queue because a pending transition still
+owes the airing log a play. Nothing on the path a track change takes may read a
+file or the library on the main thread either: `get_waveform`, `get_cover_art`
+and `purge_tracks` are `async fn` + `spawn_blocking`, never a blocking body in an
+`async` command, which holds an async runtime worker instead. See
 [docs/playlist.md](docs/playlist.md#commands).
 
 **Auto-playlist** — a lookahead buffer refilled inside `playlist::engine`, so a

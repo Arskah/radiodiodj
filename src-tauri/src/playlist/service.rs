@@ -59,6 +59,9 @@ pub const PLAYLIST_STATE_EVENT: &str = "program:playlist-state";
 /// rather than a tunable.
 const DEFAULT_BACKOFF_MS: u64 = 1000;
 
+/// How long [`PlaylistService::drain`] waits for the command thread at shutdown.
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Refill material drawn from the library, sized by the stored tuning. Both the
 /// cadence and the sizes are read per call, so a settings change takes effect on
 /// the next refill without a restart.
@@ -153,6 +156,16 @@ impl<T: Send + 'static> Serial<T> {
             log::error!("playlist: the command thread is gone");
         }
     }
+
+    /// Wait for the jobs posted so far to have run. Reports whether they did
+    /// within `timeout`.
+    fn drain(&self, timeout: Duration) -> bool {
+        let (tx, applied) = channel();
+        self.post(move |_| {
+            let _ = tx.send(());
+        });
+        applied.recv_timeout(timeout).is_ok()
+    }
 }
 
 pub struct PlaylistService {
@@ -207,6 +220,22 @@ impl PlaylistService {
         F: FnOnce(&Arc<Inner>) + Send + 'static,
     {
         self.commands.post(job);
+    }
+
+    /// Wait for what is already queued to have been applied.
+    ///
+    /// Called on the way out. A queued transition holds work that outlives the
+    /// process otherwise: `Effect::TrackPlayed` is what writes the airing log,
+    /// and rotation reads that log back. Quitting a beat after the last skip
+    /// would lose the play.
+    ///
+    /// Bounded, because shutdown is not the place to wait on a database lock the
+    /// analysis pass happens to hold; a queue that has not drained by then is
+    /// logged and abandoned.
+    pub fn drain(&self) {
+        if !self.commands.drain(DRAIN_TIMEOUT) {
+            log::warn!("playlist: queued commands did not finish before shutdown");
+        }
     }
 
     /// Subscribe to the main deck's lifecycle. Advancement is driven from here
@@ -294,11 +323,10 @@ impl PlaylistService {
     /// than the session file, so a restart shows what actually went out even if
     /// the session was lost.
     ///
-    /// The one transition that does **not** go through the command thread. It
-    /// runs during setup, before the window exists, and [`Self::snapshot`] is
-    /// what the renderer reads once it is listening — a queued restore could
-    /// still be resolving its rows when that call arrives and would answer it
-    /// with an empty playlist.
+    /// Applied directly rather than queued. It runs during setup, before the
+    /// window exists, and [`Self::snapshot`] is what the renderer reads once it
+    /// is listening — a queued restore could still be resolving its rows when
+    /// that call arrives and would answer it with an empty playlist.
     pub fn hydrate(&self, state: &SessionState) {
         let items = self.inner.resolve_items(state);
         let current = state
@@ -757,6 +785,35 @@ mod tests {
         release_tx.send(()).unwrap();
         done.recv().unwrap();
         assert_eq!(*log.lock(), vec![1]);
+    }
+
+    /// What shutdown relies on: everything posted before the drain has run by the
+    /// time it returns, so a transition still owing the airing log a play is not
+    /// lost with the process.
+    #[test]
+    fn draining_waits_for_what_was_posted() {
+        let log: Log = Arc::new(Mutex::new(vec![]));
+        let serial = Serial::spawn(Arc::clone(&log));
+        for i in 0..50 {
+            serial.post(move |log: &Log| log.lock().push(i));
+        }
+
+        assert!(serial.drain(Duration::from_secs(5)));
+        assert_eq!(*log.lock(), (0..50).collect::<Vec<_>>());
+    }
+
+    /// A job that never finishes must not hold the window open.
+    #[test]
+    fn draining_gives_up_on_a_wedged_job() {
+        let log: Log = Arc::new(Mutex::new(vec![]));
+        let serial = Serial::spawn(Arc::clone(&log));
+        let (release_tx, release) = channel::<()>();
+        serial.post(move |_: &Log| {
+            let _ = release.recv();
+        });
+
+        assert!(!serial.drain(Duration::from_millis(50)));
+        release_tx.send(()).unwrap();
     }
 
     /// A panicking transition must not take the transport with it.

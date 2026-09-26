@@ -420,10 +420,16 @@ fn main_deck_fade_to_next(app_state: State<'_, AppState>, ms: Option<u64>) {
 /// main and cue decks render the same per-track curve.
 ///
 /// Off the main thread: the renderer asks for this the instant a track change
-/// lands, and the library's lock is shared with the analysis pass.
-#[tauri::command(rename_all = "camelCase", async)]
-fn get_waveform(app_state: State<'_, AppState>, id: i64) -> Result<Option<Vec<u8>>, String> {
-    app_state.db.get_waveform(id).map_err(err)
+/// lands, and the library's lock is shared with the analysis pass. On
+/// `spawn_blocking`, not in the command body, so the wait for that lock is not a
+/// held async runtime worker.
+#[tauri::command(rename_all = "camelCase")]
+async fn get_waveform(app_state: State<'_, AppState>, id: i64) -> Result<Option<Vec<u8>>, String> {
+    let db = Arc::clone(&app_state.db);
+    tauri::async_runtime::spawn_blocking(move || db.get_waveform(id))
+        .await
+        .map_err(err)?
+        .map_err(err)
 }
 
 /// Decode a track into the cue editor's fine curve (see
@@ -464,10 +470,20 @@ async fn get_waveform_detail(
 /// thread the window is drawn from, a slow share would freeze the UI for as long
 /// as the mount takes to answer. The decks never read a share on their hot path
 /// for the same reason; artwork must not be the exception.
-#[tauri::command(rename_all = "camelCase", async)]
-fn get_cover_art(app_state: State<'_, AppState>, id: i64) -> Result<Option<String>, String> {
-    let media = app_state.db.get_media_track(id).map_err(err)?;
-    Ok(media.and_then(|m| library::scanner::read_cover_art(&m.path)))
+///
+/// On `spawn_blocking` rather than in the command body, because the duration is
+/// unbounded: the renderer fires one of these per track change, and a handful of
+/// skips over a wedged share would otherwise park every async runtime worker and
+/// take the rest of the async commands down with them.
+#[tauri::command(rename_all = "camelCase")]
+async fn get_cover_art(app_state: State<'_, AppState>, id: i64) -> Result<Option<String>, String> {
+    let db = Arc::clone(&app_state.db);
+    tauri::async_runtime::spawn_blocking(move || -> Result<Option<String>, String> {
+        let media = db.get_media_track(id).map_err(err)?;
+        Ok(media.and_then(|m| library::scanner::read_cover_art(&m.path)))
+    })
+    .await
+    .map_err(err)?
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -865,18 +881,28 @@ fn cancel_analysis(state: State<'_, AppState>) {
 /// Permanently delete the chosen missing tracks. Ids of tracks that are not
 /// missing are ignored. Refused mid-scan: the scan may be about to reattach
 /// some of them. Returns how many were deleted.
+///
+/// On `spawn_blocking` for the delete *and* the refresh: `Health::refresh`
+/// rebuilds the whole report and emits it inline, and the playlist listens to
+/// that event with a full transition — on the main thread that is the very stall
+/// the playlist's command thread exists to avoid.
 #[tauri::command(rename_all = "camelCase")]
-fn purge_tracks(state: State<'_, AppState>, ids: Vec<i64>) -> Result<usize, String> {
+async fn purge_tracks(state: State<'_, AppState>, ids: Vec<i64>) -> Result<usize, String> {
     if state.scan.is_running() {
         return Err("a library scan is running; purge when it finishes".into());
     }
-    let deleted = state.db.purge_tracks(&ids).map_err(err)?;
-    // No queued item may point at a row that no longer exists.
-    state
-        .playlist
-        .remove_tracks(deleted.iter().copied().collect());
-    state.health.refresh();
-    Ok(deleted.len())
+    let db = Arc::clone(&state.db);
+    let health = Arc::clone(&state.health);
+    let playlist = Arc::clone(&state.playlist);
+    tauri::async_runtime::spawn_blocking(move || {
+        let deleted = db.purge_tracks(&ids).map_err(err)?;
+        // No queued item may point at a row that no longer exists.
+        playlist.remove_tracks(deleted.iter().copied().collect());
+        health.refresh();
+        Ok(deleted.len())
+    })
+    .await
+    .map_err(err)?
 }
 
 /// Apply the current automatic-analysis thresholds to material already in the
@@ -1288,6 +1314,9 @@ pub fn run() {
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 if let Some(state) = app.try_state::<AppState>() {
+                    // Before the broadcast goes quiet: a queued transition may
+                    // still owe the airing log a play.
+                    state.playlist.drain();
                     state.broadcast.shutdown_blocking();
                 }
             }
