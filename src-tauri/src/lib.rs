@@ -247,16 +247,22 @@ fn save_session(app: State<'_, AppState>, state: SessionState) -> Result<(), Str
 }
 
 /// The playlist commands below are the renderer's only way to change what is
-/// queued or on air. Each one runs a transition in the backend and the resulting
-/// `program:playlist-state` snapshot is what the renderer draws.
+/// queued or on air. Each one queues a transition in the backend and the
+/// resulting `program:playlist-state` snapshot is what the renderer draws.
+///
+/// They return the moment the transition is queued, not when it has run: the
+/// work happens on the playlist's own thread, so a refill's SQL never lands on
+/// the thread the window is drawn from. Nothing is lost by that — the snapshot
+/// was always what the renderer read, and a command that cannot be carried out
+/// is logged in the backend.
 #[tauri::command(rename_all = "camelCase")]
 fn playlist_sync(app: State<'_, AppState>) -> Snapshot {
     app.playlist.snapshot()
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn playlist_add(app: State<'_, AppState>, id: i64) -> Result<(), String> {
-    app.playlist.add(id)
+fn playlist_add(app: State<'_, AppState>, id: i64) {
+    app.playlist.add(id);
 }
 
 /// Insert at the head as next-up — cue promotion.
@@ -265,12 +271,8 @@ fn playlist_add(app: State<'_, AppState>, id: i64) -> Result<(), String> {
 /// when what the operator auditioned differs from the track's radio edit.
 /// Absent or `null` leaves the item referencing the track.
 #[tauri::command(rename_all = "camelCase")]
-fn playlist_add_front(
-    app: State<'_, AppState>,
-    id: i64,
-    cue_points: Option<CuePoints>,
-) -> Result<(), String> {
-    app.playlist.add_front(id, cue_points)
+fn playlist_add_front(app: State<'_, AppState>, id: i64, cue_points: Option<CuePoints>) {
+    app.playlist.add_front(id, cue_points);
 }
 
 /// Set or clear a queued item's override. `null` drops the item back to the
@@ -291,11 +293,8 @@ fn playlist_add_stop_marker(app: State<'_, AppState>) {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn playlist_add_filler(
-    app: State<'_, AppState>,
-    content_type: playlist::ContentType,
-) -> Result<(), String> {
-    app.playlist.add_filler(content_type)
+fn playlist_add_filler(app: State<'_, AppState>, content_type: playlist::ContentType) {
+    app.playlist.add_filler(content_type);
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -314,13 +313,13 @@ fn playlist_clear(app: State<'_, AppState>) {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn playlist_play_index(app: State<'_, AppState>, index: usize) -> Result<(), String> {
-    app.playlist.play_index(index)
+fn playlist_play_index(app: State<'_, AppState>, index: usize) {
+    app.playlist.play_index(index);
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn playlist_play_now(app: State<'_, AppState>, id: i64) -> Result<(), String> {
-    app.playlist.play_now(id)
+fn playlist_play_now(app: State<'_, AppState>, id: i64) {
+    app.playlist.play_now(id);
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -419,7 +418,10 @@ fn main_deck_fade_to_next(app_state: State<'_, AppState>, ms: Option<u64>) {
 /// Return a track's stored amplitude-curve peaks (one byte per bucket) for the
 /// seek UI, or `None` when the track has no waveform. Deck-agnostic — both the
 /// main and cue decks render the same per-track curve.
-#[tauri::command(rename_all = "camelCase")]
+///
+/// Off the main thread: the renderer asks for this the instant a track change
+/// lands, and the library's lock is shared with the analysis pass.
+#[tauri::command(rename_all = "camelCase", async)]
 fn get_waveform(app_state: State<'_, AppState>, id: i64) -> Result<Option<Vec<u8>>, String> {
     app_state.db.get_waveform(id).map_err(err)
 }
@@ -456,7 +458,13 @@ async fn get_waveform_detail(
 /// Extract a track's embedded cover art as a base64 `data:` URL for the deck's
 /// vinyl disc, or `None` when the file has no artwork. Read on demand (like the
 /// waveform) rather than stored, so the library DB stays free of image blobs.
-#[tauri::command(rename_all = "camelCase")]
+///
+/// Off the main thread, and not optional: this opens and parses the audio file
+/// itself, which on a network share is a read of unbounded duration — on the
+/// thread the window is drawn from, a slow share would freeze the UI for as long
+/// as the mount takes to answer. The decks never read a share on their hot path
+/// for the same reason; artwork must not be the exception.
+#[tauri::command(rename_all = "camelCase", async)]
 fn get_cover_art(app_state: State<'_, AppState>, id: i64) -> Result<Option<String>, String> {
     let media = app_state.db.get_media_track(id).map_err(err)?;
     Ok(media.and_then(|m| library::scanner::read_cover_art(&m.path)))

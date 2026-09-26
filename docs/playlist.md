@@ -66,6 +66,37 @@ playlist_set_auto_advance                          playlist_set_auto_playlist
 playlist_set_item_cue_points                       playlist_sync
 ```
 
+Every one of them but `playlist_sync` **queues** its transition and returns at
+once. A Tauri command handler declared without `async` runs on the process main
+thread, which is the thread the window is drawn from, and a transition is not
+cheap: a refill under the queue's threshold is tens of milliseconds of SQL on a
+large library, and it waits on the same database lock the analysis pass holds, so
+the wait is not bounded by its own query. Skipping tracks froze the UI for as
+long as that took, while the audio — driven from the bus worker, off a file
+already resident in RAM — started on time. What the operator saw was the next
+track playing before the deck redrew.
+
+The queue is one thread, not the async runtime's pool, because the order
+commands are applied in is part of what they mean: `playlist_remove` and
+`playlist_move` carry queue indices, and a pool would let the second of two
+clicks overtake the first and act on positions that no longer exist.
+
+Nothing is lost by answering before the work is done. The snapshot was always
+what the renderer read — the commands' return values were never anything but
+errors it logged — so a command that cannot be carried out (a track purged
+between the click and the lookup, an item whose file is missing) is logged in the
+backend instead. `playlist_sync` is the exception and stays direct: it is a read,
+and the renderer calls it to find the state it missed. Session restore is direct
+for the same reason, so a `playlist_sync` arriving as the window comes up cannot
+be answered with an empty playlist that a still-queued restore is about to fill.
+
+The renderer's two per-track-change reads, `get_waveform` and `get_cover_art`,
+are off the main thread too, and for `get_cover_art` that is not optional: it
+opens and parses the audio file itself, so on a wedged share it would hold the
+main thread for as long as the mount takes to answer. The decks never read a
+share on their hot path ([audio.md](./audio.md)); artwork must not be the
+exception.
+
 ## Effects
 
 A transition returns effects rather than performing them:
@@ -169,7 +200,7 @@ radio edit.
 | file                         | holds                                                 |
 | ---------------------------- | ----------------------------------------------------- |
 | `playlist/engine.rs`         | the state machine, `Effect`, `Transition`, `Refiller` |
-| `playlist/service.rs`        | effects → deck commands, timers, snapshots            |
+| `playlist/service.rs`        | effects → deck commands, timers, snapshots, `Serial`  |
 | `playlist/generate.rs`       | selection + interleave, `Interleave` cadence          |
 | `playlist/model.rs`          | `PlaylistItem`, `Snapshot` — the wire types           |
 | `src/features/playlist/`     | the Upcoming and History tabs                         |

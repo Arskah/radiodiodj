@@ -6,8 +6,10 @@
 //! renderer's only source of playlist truth.
 
 use std::collections::{HashMap, HashSet};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -112,8 +114,51 @@ struct Inner {
     retry_generation: AtomicU64,
 }
 
+/// One unit of queued work: it is handed what the owner holds and answers
+/// nothing — a transition's answer is the snapshot it emits.
+type Job<T> = Box<dyn FnOnce(&T) + Send>;
+
+/// Jobs applied one at a time, on a thread of their own, in the order they were
+/// posted.
+struct Serial<T> {
+    jobs: Sender<Job<T>>,
+}
+
+impl<T: Send + 'static> Serial<T> {
+    /// Start the thread. It owns `context` and lives as long as the sender does.
+    ///
+    /// A panicking job is caught and logged rather than taken as the thread's
+    /// death: the alternative is a station whose transport buttons silently stop
+    /// working mid-show. The playlist's lock does not poison, so the next command
+    /// is applied to whatever the failed transition left behind.
+    fn spawn(context: T) -> Self {
+        let (jobs, rx) = channel::<Job<T>>();
+        thread::spawn(move || {
+            while let Ok(job) = rx.recv() {
+                let run = AssertUnwindSafe(|| job(&context));
+                if catch_unwind(run).is_err() {
+                    log::error!("playlist: a queued command panicked");
+                }
+            }
+        });
+        Self { jobs }
+    }
+
+    /// Post a job and return, without waiting for it to run.
+    fn post<F>(&self, job: F)
+    where
+        F: FnOnce(&T) + Send + 'static,
+    {
+        if self.jobs.send(Box::new(job)).is_err() {
+            log::error!("playlist: the command thread is gone");
+        }
+    }
+}
+
 pub struct PlaylistService {
     inner: Arc<Inner>,
+    /// Hands work to the command thread. See [`PlaylistService::queue`].
+    commands: Serial<Arc<Inner>>,
 }
 
 impl PlaylistService {
@@ -125,18 +170,43 @@ impl PlaylistService {
         cache: Arc<Cache>,
         broadcast: Arc<BroadcastService>,
     ) -> Self {
-        Self {
-            inner: Arc::new(Inner {
-                playlist: Mutex::new(Playlist::new()),
-                db,
-                config,
-                bus,
-                cache,
-                broadcast,
-                app,
-                retry_generation: AtomicU64::new(0),
-            }),
-        }
+        let inner = Arc::new(Inner {
+            playlist: Mutex::new(Playlist::new()),
+            db,
+            config,
+            bus,
+            cache,
+            broadcast,
+            app,
+            retry_generation: AtomicU64::new(0),
+        });
+        let commands = Serial::spawn(Arc::clone(&inner));
+        Self { inner, commands }
+    }
+
+    /// Run a transition on the command thread.
+    ///
+    /// A Tauri command handler without `async` runs on the process main thread,
+    /// which is the thread the window is drawn from — so a transition that
+    /// queries the library there stalls the UI for as long as the query takes.
+    /// A refill under the queue's threshold is tens of milliseconds of SQL on a
+    /// large library, and the lock the library keeps is shared with the analysis
+    /// pass, so the wait is not bounded by this query alone. Every command
+    /// therefore posts its work here and returns.
+    ///
+    /// One thread rather than the async runtime's pool, because the order
+    /// commands are applied in is part of what they mean: `remove` and `move`
+    /// carry queue indices, and a pool would let the second of two clicks
+    /// overtake the first and act on positions that no longer exist.
+    ///
+    /// Deck events and the outage retry timer keep running transitions on their
+    /// own threads; the playlist lock is what makes each one atomic, and that
+    /// has never been this thread's job.
+    fn queue<F>(&self, job: F)
+    where
+        F: FnOnce(&Arc<Inner>) + Send + 'static,
+    {
+        self.commands.post(job);
     }
 
     /// Subscribe to the main deck's lifecycle. Advancement is driven from here
@@ -223,8 +293,14 @@ impl PlaylistService {
     /// paused at its saved position. History comes from the airing log rather
     /// than the session file, so a restart shows what actually went out even if
     /// the session was lost.
+    ///
+    /// The one transition that does **not** go through the command thread. It
+    /// runs during setup, before the window exists, and [`Self::snapshot`] is
+    /// what the renderer reads once it is listening — a queued restore could
+    /// still be resolving its rows when that call arrives and would answer it
+    /// with an empty playlist.
     pub fn hydrate(&self, state: &SessionState) {
-        let items = self.resolve_items(state);
+        let items = self.inner.resolve_items(state);
         let current = state
             .current_track_id
             .and_then(|id| self.inner.lookup(id).ok().flatten());
@@ -254,129 +330,121 @@ impl PlaylistService {
         });
     }
 
-    pub fn add(&self, id: i64) -> Result<(), String> {
-        self.with_track(id, |p, _, track| p.add(track))
+    pub fn add(&self, id: i64) {
+        self.queue(move |inner| Inner::with_track(inner, id, |p, _, track| p.add(track)));
     }
 
     /// Queue a track as next-up, optionally under an override the operator
     /// auditioned on the cue deck.
-    pub fn add_front(&self, id: i64, cue_override: Option<CuePoints>) -> Result<(), String> {
-        self.with_track(id, move |p, _, track| p.add_front(track, cue_override))
+    pub fn add_front(&self, id: i64, cue_override: Option<CuePoints>) {
+        self.queue(move |inner| {
+            Inner::with_track(inner, id, move |p, _, track| {
+                p.add_front(track, cue_override)
+            })
+        });
     }
 
     /// The automatic-cue policy changed, so every copy held here is stale at
     /// once. Re-reads them from the library, which applies the policy, in one
     /// transition rather than one per track.
     pub fn reload_cue_points(&self) {
-        let ids = self.inner.playlist.lock().held_ids();
-        if ids.is_empty() {
-            return;
-        }
-        let fresh: HashMap<i64, CuePoints> = match self.inner.db.get_tracks_by_ids(&ids) {
-            Ok(tracks) => tracks.into_iter().map(|t| (t.id, t.cue_points)).collect(),
-            Err(e) => {
-                log::error!("playlist: re-reading cue points failed: {}", e);
+        self.queue(|inner| {
+            let ids = inner.playlist.lock().held_ids();
+            if ids.is_empty() {
                 return;
             }
-        };
-        Inner::apply(&self.inner, move |p, _| p.refresh_cue_points(&fresh));
+            let fresh: HashMap<i64, CuePoints> = match inner.db.get_tracks_by_ids(&ids) {
+                Ok(tracks) => tracks.into_iter().map(|t| (t.id, t.cue_points)).collect(),
+                Err(e) => {
+                    log::error!("playlist: re-reading cue points failed: {}", e);
+                    return;
+                }
+            };
+            Inner::apply(inner, move |p, _| p.refresh_cue_points(&fresh));
+        });
     }
 
     /// A radio edit was stored for `id`; refresh the queued copies of it so the
     /// operator's next snapshot shows what was just saved.
     pub fn on_cue_points_saved(&self, id: i64, points: CuePoints) {
-        Inner::adopt_cue_points(&self.inner, id, points);
+        self.queue(move |inner| Inner::adopt_cue_points(inner, id, points));
     }
 
     pub fn set_item_cue_points(&self, index: usize, cue_override: Option<CuePoints>) {
-        Inner::apply(&self.inner, move |p, _| {
-            p.set_item_cue_points(index, cue_override)
+        self.queue(move |inner| {
+            Inner::apply(inner, move |p, _| {
+                p.set_item_cue_points(index, cue_override)
+            })
         });
     }
 
     pub fn add_stop(&self) {
-        Inner::apply(&self.inner, |p, _| p.add_stop());
+        self.queue(|inner| Inner::apply(inner, |p, _| p.add_stop()));
     }
 
     /// Append one jingle or commercial picked the same way the auto-playlist
     /// would have. A no-op when the typed library is empty.
-    pub fn add_filler(&self, content_type: generate::ContentType) -> Result<(), String> {
-        let interleave = generate::Interleave::from_config(&self.inner.config.get_tuning());
-        let picked = generate::pick_filler(&self.inner.db, content_type, &interleave)
-            .map_err(|e| e.to_string())?;
-        if let Some(track) = picked {
-            Inner::apply(&self.inner, move |p, _| p.add(track));
-        }
-        Ok(())
+    pub fn add_filler(&self, content_type: generate::ContentType) {
+        self.queue(move |inner| {
+            let interleave = generate::Interleave::from_config(&inner.config.get_tuning());
+            match generate::pick_filler(&inner.db, content_type, &interleave) {
+                Ok(Some(track)) => Inner::apply(inner, move |p, _| p.add(track)),
+                Ok(None) => {}
+                Err(e) => log::error!("playlist: picking a {:?} failed: {}", content_type, e),
+            }
+        });
     }
 
     pub fn remove(&self, index: usize) {
-        Inner::apply(&self.inner, move |p, _| p.remove(index));
+        self.queue(move |inner| Inner::apply(inner, move |p, _| p.remove(index)));
     }
 
     pub fn remove_tracks(&self, ids: HashSet<i64>) {
-        Inner::apply(&self.inner, move |p, _| p.remove_tracks(&ids));
+        self.queue(move |inner| Inner::apply(inner, move |p, _| p.remove_tracks(&ids)));
     }
 
     pub fn move_item(&self, from: usize, to: usize) {
-        Inner::apply(&self.inner, move |p, _| p.move_item(from, to));
+        self.queue(move |inner| Inner::apply(inner, move |p, _| p.move_item(from, to)));
     }
 
     pub fn clear(&self) {
-        Inner::apply(&self.inner, |p, _| p.clear());
+        self.queue(|inner| Inner::apply(inner, |p, _| p.clear()));
     }
 
-    pub fn play_index(&self, index: usize) -> Result<(), String> {
-        if self.inner.playlist.lock().is_missing_at(index) {
-            return Err("this track's file is missing".into());
-        }
-        Inner::apply(&self.inner, move |p, r| p.play_index(index, r));
-        Ok(())
+    pub fn play_index(&self, index: usize) {
+        self.queue(move |inner| {
+            if inner.playlist.lock().is_missing_at(index) {
+                log::warn!("playlist: item {} cannot air — its file is missing", index);
+                return;
+            }
+            Inner::apply(inner, move |p, r| p.play_index(index, r));
+        });
     }
 
-    pub fn play_now(&self, id: i64) -> Result<(), String> {
-        self.with_track(id, |p, r, track| p.play_now(track, r))
+    pub fn play_now(&self, id: i64) {
+        self.queue(move |inner| Inner::with_track(inner, id, |p, r, track| p.play_now(track, r)));
     }
 
     pub fn next(&self) {
-        Inner::apply(&self.inner, |p, r| p.next(r));
+        self.queue(|inner| Inner::apply(inner, |p, r| p.next(r)));
     }
 
     /// Step back to the last track that aired, which the playlist reads off its
     /// own history.
     pub fn prev(&self) {
-        Inner::apply(&self.inner, |p, r| p.prev(r));
+        self.queue(|inner| Inner::apply(inner, |p, r| p.prev(r)));
     }
 
     pub fn stop(&self) {
-        Inner::apply(&self.inner, |p, _| p.stop());
+        self.queue(|inner| Inner::apply(inner, |p, _| p.stop()));
     }
 
     pub fn set_auto_advance(&self, active: bool) {
-        Inner::apply(&self.inner, move |p, _| p.set_auto_advance(active));
+        self.queue(move |inner| Inner::apply(inner, move |p, _| p.set_auto_advance(active)));
     }
 
     pub fn set_auto_playlist(&self, active: bool) {
-        Inner::apply(&self.inner, move |p, r| p.set_auto_playlist(active, r));
-    }
-
-    fn with_track<F>(&self, id: i64, f: F) -> Result<(), String>
-    where
-        F: FnOnce(&mut Playlist, &dyn Refiller, Track) -> Transition,
-    {
-        let track = self
-            .inner
-            .lookup(id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("track {} not found", id))?;
-        Inner::apply(&self.inner, move |p, r| f(p, r, track));
-        Ok(())
-    }
-
-    fn resolve_items(&self, state: &SessionState) -> Vec<PlaylistItem> {
-        PlaylistItem::from_session(&state.playlist_items, &state.playlist_ids, |id| {
-            self.inner.lookup(id).ok().flatten()
-        })
+        self.queue(move |inner| Inner::apply(inner, move |p, r| p.set_auto_playlist(active, r)));
     }
 }
 
@@ -392,6 +460,29 @@ fn backoff_ms(schedule: &[u64], attempt: usize) -> u64 {
 impl Inner {
     fn lookup(&self, id: i64) -> anyhow::Result<Option<Track>> {
         self.db.get_track(id)
+    }
+
+    /// Resolve a track and run a transition that needs its row.
+    ///
+    /// A row that cannot be read is logged rather than reported: the caller is
+    /// the command thread, which has no one left to answer. The renderer only
+    /// ever logged these too, and a track that has left the library between the
+    /// click and the lookup is not something the operator can act on.
+    fn with_track<F>(inner: &Arc<Inner>, id: i64, f: F)
+    where
+        F: FnOnce(&mut Playlist, &dyn Refiller, Track) -> Transition,
+    {
+        match inner.lookup(id) {
+            Ok(Some(track)) => Inner::apply(inner, move |p, r| f(p, r, track)),
+            Ok(None) => log::error!("playlist: track {} is not in the library", id),
+            Err(e) => log::error!("playlist: track {} lookup failed: {}", id, e),
+        }
+    }
+
+    fn resolve_items(&self, state: &SessionState) -> Vec<PlaylistItem> {
+        PlaylistItem::from_session(&state.playlist_items, &state.playlist_ids, |id| {
+            self.lookup(id).ok().flatten()
+        })
     }
 
     fn refiller(&self) -> DbRefiller<'_> {
@@ -626,6 +717,64 @@ impl Inner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Posted jobs record themselves here, so a test can read the order they ran
+    /// in. Stands in for the playlist the real jobs mutate.
+    type Log = Arc<Mutex<Vec<usize>>>;
+
+    #[test]
+    fn jobs_run_in_the_order_they_were_posted() {
+        let log: Log = Arc::new(Mutex::new(vec![]));
+        let serial = Serial::spawn(Arc::clone(&log));
+        let (done_tx, done) = channel();
+        for i in 0..200 {
+            serial.post(move |log: &Log| log.lock().push(i));
+        }
+        serial.post(move |_: &Log| done_tx.send(()).unwrap());
+
+        done.recv().unwrap();
+        assert_eq!(*log.lock(), (0..200).collect::<Vec<_>>());
+    }
+
+    /// The property the transport depends on: posting is what a Tauri command
+    /// does on the main thread, and it may not wait for the work.
+    #[test]
+    fn posting_does_not_wait_for_the_job() {
+        let log: Log = Arc::new(Mutex::new(vec![]));
+        let serial = Serial::spawn(Arc::clone(&log));
+        let (release_tx, release) = channel::<()>();
+        let (done_tx, done) = channel::<()>();
+
+        serial.post(move |log: &Log| {
+            release.recv().unwrap();
+            log.lock().push(1);
+            done_tx.send(()).unwrap();
+        });
+        // The first job is still parked on `release`, so this call proves
+        // posting returned without it having run.
+        assert!(log.lock().is_empty());
+
+        release_tx.send(()).unwrap();
+        done.recv().unwrap();
+        assert_eq!(*log.lock(), vec![1]);
+    }
+
+    /// A panicking transition must not take the transport with it.
+    #[test]
+    fn a_panicking_job_leaves_the_queue_running() {
+        let log: Log = Arc::new(Mutex::new(vec![]));
+        let serial = Serial::spawn(Arc::clone(&log));
+        let (done_tx, done) = channel();
+
+        serial.post(|_: &Log| panic!("as a queued command might"));
+        serial.post(move |log: &Log| {
+            log.lock().push(1);
+            done_tx.send(()).unwrap();
+        });
+
+        done.recv().unwrap();
+        assert_eq!(*log.lock(), vec![1]);
+    }
 
     #[test]
     fn backoff_walks_the_schedule() {
