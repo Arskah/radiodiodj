@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.24.0](https://github.com/Arskah/radiodiodj/compare/v0.23.0...v0.24.0) (2026-09-26)
+
+
+### Features
+
+* **library:** measure each track's musical key ([#489](https://github.com/Arskah/radiodiodj/issues/489)) ([45deada](https://github.com/Arskah/radiodiodj/commit/45deadaf52ac7beaa0223f58d7edf5033ee77b59))
+* **library:** measure each track's tempo ([#479](https://github.com/Arskah/radiodiodj/issues/479)) ([47d50f7](https://github.com/Arskah/radiodiodj/commit/47d50f7e047ebc6c05a029c10c911983b6500958))
+
+
+### Documentation
+
+* draw the boundary around audio measurement ([#482](https://github.com/Arskah/radiodiodj/issues/482)) ([35268e9](https://github.com/Arskah/radiodiodj/commit/35268e9aa080535ce68540b239371197f7a39721))
+
+
+### Code Refactoring
+
+* **audio_measure:** stop the level envelope naming cue points ([#486](https://github.com/Arskah/radiodiodj/issues/486)) ([814b93e](https://github.com/Arskah/radiodiodj/commit/814b93e19475a2909d791f7a955d2c167471ce66))
+* **audio:** move what a decode measures into audio_measure ([#483](https://github.com/Arskah/radiodiodj/issues/483)) ([9e17876](https://github.com/Arskah/radiodiodj/commit/9e17876f87f4596932bcc467ad351a4558bbff27))
+* **library:** move the fingerprint in with the measurements ([#484](https://github.com/Arskah/radiodiodj/issues/484)) ([d855b7e](https://github.com/Arskah/radiodiodj/commit/d855b7eb3367a382c22b85e6a52fd4ab6a1759dc))
+
+
+### Tests
+
+* **audio_measure:** make the boundary fail rather than rot ([#485](https://github.com/Arskah/radiodiodj/issues/485)) ([69b9cd8](https://github.com/Arskah/radiodiodj/commit/69b9cd8a383ac15d83d863cc169a0578a8a8bfb5))
+
 ## [0.23.0](https://github.com/Arskah/radiodiodj/compare/v0.22.0...v0.23.0) (2026-09-25)
 
 
