@@ -29,12 +29,26 @@
 
   const UNKNOWN = "Unknown";
 
+  /**
+   * Below this, the measurement is shown as one the estimator was unsure of
+   * rather than hidden: a weak reading on a spoken-word track is information,
+   * and nothing in the app acts on the number.
+   */
+  const WEAK_CONFIDENCE = 0.3;
+
   function formatRate(hz: number | null | undefined): string {
     return hz ? `${(hz / 1000).toFixed(1)} kHz` : UNKNOWN;
   }
 
   function formatBitrate(bps: number | null | undefined): string {
     return bps ? `${Math.round(bps / 1000)} kbps` : UNKNOWN;
+  }
+
+  /** The measured tempo, noted as weak when little stood behind it. */
+  function formatMeasured(t: Track): string | null {
+    if (t.detected_bpm == null) return null;
+    const bpm = t.detected_bpm.toFixed(1);
+    return (t.bpm_confidence ?? 1) < WEAK_CONFIDENCE ? `${bpm} (weak)` : bpm;
   }
 
   function strOr(v: string | null | undefined): string {
@@ -98,6 +112,7 @@
     { label: "Year", value: numOr(t.year) },
     { label: "Duration", value: formatDuration(t) },
     { label: "BPM", value: numOr(t.bpm) },
+    { label: "Measured BPM", value: formatMeasured(t) },
     { label: "Key", value: t.initial_key ?? null },
     { label: "Format", value: t.format ? t.format.toUpperCase() : UNKNOWN },
     { label: "Bitrate", value: formatBitrate(t.bitrate) },

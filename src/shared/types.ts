@@ -45,6 +45,15 @@ export interface Track {
   comment?: string | null;
 
   /**
+   * Tempo as the analysis pass measured it, beside `bpm` rather than over it.
+   * Null until the pass has read the file, and also after it has for audio that
+   * holds no tempo.
+   */
+  detected_bpm?: number | null;
+  /** How far the measurement stood out, 0..=1. Presentation only. */
+  bpm_confidence?: number | null;
+
+  /**
    * The track's radio edit. Milliseconds from the start of the file, every
    * marker nullable. Optional here only so test fixtures need not spell it
    * out — the backend sends it on every track.
