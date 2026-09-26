@@ -80,6 +80,20 @@ cue points. `bpm_measured_at` is the done marker, `bpm_version` is what requeues
 the library when the estimator improves. Confidence is reported, never gated on.
 See [docs/tempo.md](docs/tempo.md).
 
+**Measured key** — `detected_key`/`key_confidence` measured by the analysis pass
+and stored **beside** the tag-derived `initial_key`, never over it.
+`audio_measure::key::Collector` is the fifth consumer of the one decode, and the
+**only one that needs frames**: the other four reduce to sums of squares, where an
+interleaved stream is as good as a deinterleaved one, but transforming `L,R,L,R…`
+as one signal halves every frequency and folds a mirror image over it — so this
+collector downmixes to mono before it transforms. What it stores is a **note
+name** (`Am`, `Db`), because that is what a tagger writes and so what keeps the
+two rows comparable; naming the same key `8A` is a DJ convention and lives in
+`src/shared/camelot.ts`, never in `audio_measure`. `key_measured_at` is the done
+marker (a drum loop has no key and must not be re-decoded forever),
+`key_version` is what requeues the library when the estimator improves.
+Confidence is reported, never gated on. See [docs/key.md](docs/key.md).
+
 **ReplayGain** — measured by the analysis pass, never read from tags.
 `Cmd::Load` carries an already-resolved linear factor, so the worker never
 consults the library, and it is applied at the source in `append_span` (not

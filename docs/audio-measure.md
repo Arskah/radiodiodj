@@ -50,6 +50,7 @@ vetting new material. None of them should have to link a mixer to ask.
 | `audio_measure/loudness.rs`       | `Loudness`, `TARGET_LUFS`, `gain_db`, `linear_gain`               |
 | `audio_measure/level_envelope.rs` | RMS windows, and where the audio crosses a level                  |
 | `audio_measure/bpm.rs`            | the onset envelope and the tempo estimator                        |
+| `audio_measure/key.rs`            | the chroma profile and the musical-key estimator                  |
 | `audio_measure/fingerprint.rs`    | the tag-independent content hash of demuxed packets               |
 | `audio_measure/test_audio.rs`     | `write_wav`, the generated fixture its own tests measure          |
 
@@ -212,6 +213,13 @@ extraction is a directory move plus three loose ends:
 - **Fixtures.** `write_wav` is `#[cfg(test)]`, so library tests reaching for it
   across a crate boundary would need it behind a `test-fixtures` feature, or
   their own copy.
+- **The real-audio corpus.** `audio_measure/local-audio/` holds the staged audio
+  the `KEY_CORPUS` and `BPM_CORPUS` surveys read. It lives inside the module
+  rather than at the repo root precisely so extraction stays a directory move:
+  the surveys, and any later benchmark measuring this estimator against another
+  implementation, want the same files under the same relative path. `.gitignore`
+  keeps the bytes out of every commit, so what travels is the path, not gigabytes
+  of somebody's music — each machine stages its own.
 - **`anyhow` in a public signature.** Fine in a binary, rude in a library —
   `analyze` and `of_source` would want typed errors before anyone else depends
   on them.

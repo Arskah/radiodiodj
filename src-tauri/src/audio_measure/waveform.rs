@@ -21,6 +21,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 
 use super::bpm::{self, Bpm};
+use super::key::{self, Key};
 use super::level_envelope::{Collector, RmsWindows};
 use super::loudness::Loudness;
 
@@ -79,13 +80,16 @@ pub struct Analysis {
     /// `None` when the audio held no tempo to find — silence, speech, or less
     /// audio than the estimator will judge.
     pub bpm: Option<Bpm>,
+    /// `None` when the audio held no key to find — silence, percussion, or less
+    /// audio than the estimator will judge.
+    pub key: Option<Key>,
 }
 
 /// Decode an in-memory audio file once, measuring the waveform curve, the
-/// track's loudness, the automatic-cue RMS windows and the tempo from the one
-/// pass.
+/// track's loudness, the automatic-cue RMS windows, the tempo and the musical
+/// key from the one pass.
 ///
-/// The four share the decode because it dominates the cost of any of them —
+/// The five share the decode because it dominates the cost of any of them —
 /// the same reason the fingerprint pass reuses these bytes rather than reading
 /// the file again.
 ///
@@ -117,16 +121,19 @@ pub fn analyze(bytes: Bytes, silence_dbfs: f64) -> Result<Analysis> {
     };
     let mut windows = Collector::new(rate, decoder.channels());
     let mut bpm = bpm::Collector::new(rate, decoder.channels(), silence_dbfs);
+    let mut key = key::Collector::new(rate, decoder.channels());
     let curve = fill_buckets(decoder.inspect(|s| {
         meter.push(*s);
         windows.push(*s);
         bpm.push(*s);
+        key.push(*s);
     }));
     Ok(Analysis {
         curve,
         loudness: meter.finish(),
         windows: windows.finish(),
         bpm: bpm.finish(),
+        key: key.finish(),
     })
 }
 

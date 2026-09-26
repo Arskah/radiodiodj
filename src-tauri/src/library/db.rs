@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::audio::cue_points::CuePoints;
 use crate::audio_measure::bpm::{self, Bpm};
 use crate::audio_measure::fingerprint;
+use crate::audio_measure::key::{self, Key};
 use crate::audio_measure::level_envelope::{self, Envelope};
 use crate::library::auto_cue::{self, Analysed, Thresholds};
 use crate::library::scanner;
@@ -56,6 +57,14 @@ pub struct Track {
     /// How much the measurement stands out from the alternatives, 0.0..=1.0.
     /// Reported so a weak reading can be presented as one; nothing gates on it.
     pub bpm_confidence: Option<f64>,
+    /// Musical key as the analysis pass measured it, beside `initial_key` rather
+    /// than over it, and always a note name (`Am`, `Db`) where the tag may hold
+    /// anything. `None` until the pass has read the file, and also after it has,
+    /// for audio that holds no key.
+    pub detected_key: Option<String>,
+    /// How much the measured key stands out from the other twenty-three,
+    /// 0.0..=1.0. Reported, never gated on.
+    pub key_confidence: Option<f64>,
     pub comment: Option<String>,
     /// The track's radio edit. Arrives with every `SELECT *`, so nothing can
     /// reach air with stale markers.
@@ -405,6 +414,7 @@ pub struct AnalysisJob {
     /// Never measured, or measured by an estimator older than
     /// [`bpm::VERSION`].
     pub needs_bpm: bool,
+    pub needs_key: bool,
 }
 
 /// What one explicit recalculation did. `updated` were re-derived from their
@@ -1018,16 +1028,20 @@ impl Db {
             "(bpm_measured_at IS NULL OR bpm_version IS NULL OR bpm_version < {})",
             bpm::VERSION
         );
+        let stale_key = format!(
+            "(key_measured_at IS NULL OR key_version IS NULL OR key_version < {})",
+            key::VERSION
+        );
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(&format!(
             "SELECT id, path, mtime, content_type, waveform IS NULL, {stale_fingerprint}, \
                     rg_measured_at IS NULL, auto_cue_state = 'pending', \
-                    {missing_levels}, {stale_bpm} \
+                    {missing_levels}, {stale_bpm}, {stale_key} \
              FROM tracks \
              WHERE missing_since IS NULL AND analysis_failed_at IS NULL \
                AND (waveform IS NULL OR {stale_fingerprint} \
                     OR rg_measured_at IS NULL OR auto_cue_state = 'pending' \
-                    OR {missing_levels} OR {stale_bpm}) \
+                    OR {missing_levels} OR {stale_bpm} OR {stale_key}) \
              ORDER BY id"
         ))?;
         let rows = stmt.query_map([], |r| {
@@ -1042,6 +1056,7 @@ impl Db {
                 needs_auto_cue: r.get(7)?,
                 needs_auto_cue_levels: r.get(8)?,
                 needs_bpm: r.get(9)?,
+                needs_key: r.get(10)?,
             })
         })?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
@@ -1370,6 +1385,38 @@ impl Db {
                 bpm.map(|b| f64::from(b.confidence)),
                 at_ms,
                 bpm::VERSION,
+                id,
+                mtime
+            ],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Store a completed key measurement. `key` is `None` for a file that decoded
+    /// but held no key to find — percussion, speech — which still counts as
+    /// measured, so the pass does not pick the track up again; `key_version` is
+    /// what a later estimator uses to ask for it back.
+    ///
+    /// Guarded on `mtime` like [`Db::set_waveform`]. The tag-derived
+    /// `initial_key` column is deliberately not touched, exactly as
+    /// [`Db::set_bpm`] leaves `bpm` alone.
+    pub fn set_key(
+        &self,
+        id: i64,
+        measured: Option<Key>,
+        at_ms: i64,
+        mtime: Option<i64>,
+    ) -> Result<bool> {
+        let conn = self.conn.lock();
+        let changed = conn.execute(
+            "UPDATE tracks SET detected_key = ?, key_confidence = ?, \
+                    key_measured_at = ?, key_version = ? \
+             WHERE id = ? AND mtime IS ?",
+            params![
+                measured.map(|k| k.name()),
+                measured.map(|k| f64::from(k.confidence)),
+                at_ms,
+                key::VERSION,
                 id,
                 mtime
             ],
@@ -2446,7 +2493,8 @@ fn order_clause(sort_by: Option<&str>, sort_dir: Option<&str>) -> Option<String>
 /// blob along with `SELECT *`.
 const TRACK_COLUMNS: &str = "id, title, artist, album, duration, play_count, genre, year, bpm, \
      sample_rate, bitrate, format, album_artist, track_no, track_total, disc_no, disc_total, \
-     isrc, initial_key, comment, detected_bpm, bpm_confidence, cue_in_ms, fade_in_ms, \
+     isrc, initial_key, comment, detected_bpm, bpm_confidence, \
+     detected_key, key_confidence, cue_in_ms, fade_in_ms, \
      fade_out_ms, cue_out_ms, next_start_ms, auto_cue_state, edited_fields";
 
 /// The markers as they take effect. A derived trio is held back while the
@@ -2506,6 +2554,8 @@ fn row_to_track(row: &Row, policy: AutoCuePolicy) -> rusqlite::Result<Track> {
         comment: row.get("comment")?,
         detected_bpm: row.get("detected_bpm")?,
         bpm_confidence: row.get("bpm_confidence")?,
+        detected_key: row.get("detected_key")?,
+        key_confidence: row.get("key_confidence")?,
         cue_points: effective_cue_points(row, policy)?,
         edited_fields: row.get("edited_fields")?,
     })
@@ -2567,6 +2617,7 @@ const MIGRATION_STEPS: &[M] = &[
     M::up(AUTO_CUE_LEVELS),
     M::up(TRACK_METADATA),
     M::up(DETECTED_TEMPO),
+    M::up(DETECTED_KEY),
 ];
 const MIGRATIONS: Migrations = Migrations::from_slice(MIGRATION_STEPS);
 
@@ -2896,6 +2947,14 @@ const UPSERT_TRACK_SQL: &str = "INSERT INTO tracks \
                         THEN bpm_measured_at ELSE NULL END, \
         bpm_version=CASE WHEN excluded.fingerprint = fingerprint \
                     THEN bpm_version ELSE NULL END, \
+        detected_key=CASE WHEN excluded.fingerprint = fingerprint \
+                     THEN detected_key ELSE NULL END, \
+        key_confidence=CASE WHEN excluded.fingerprint = fingerprint \
+                       THEN key_confidence ELSE NULL END, \
+        key_measured_at=CASE WHEN excluded.fingerprint = fingerprint \
+                        THEN key_measured_at ELSE NULL END, \
+        key_version=CASE WHEN excluded.fingerprint = fingerprint \
+                    THEN key_version ELSE NULL END, \
         analysis_error=NULL, analysis_failed_at=NULL";
 
 /// Step 10: what the analysis pass measured of a track's tempo, beside — never
@@ -2910,9 +2969,9 @@ const UPSERT_TRACK_SQL: &str = "INSERT INTO tracks \
 /// since without it the marker that stops a re-decode also prevents one that is
 /// wanted.
 ///
-/// `detected_key` and `key_confidence` are declared now and written by nothing:
-/// key detection is a separate question, and a column costs one `ALTER` today
-/// against a second migration later.
+/// `detected_key` and `key_confidence` arrive here without the `measured_at` and
+/// `version` markers their tempo neighbours have, because nothing wrote them yet;
+/// [`DETECTED_KEY`] adds those two when key detection lands.
 const DETECTED_TEMPO: &str = r#"
 ALTER TABLE tracks ADD COLUMN detected_bpm REAL;
 ALTER TABLE tracks ADD COLUMN bpm_confidence REAL;
@@ -2920,6 +2979,20 @@ ALTER TABLE tracks ADD COLUMN bpm_measured_at INTEGER;
 ALTER TABLE tracks ADD COLUMN bpm_version INTEGER;
 ALTER TABLE tracks ADD COLUMN detected_key TEXT;
 ALTER TABLE tracks ADD COLUMN key_confidence REAL;
+"#;
+
+/// Step 11: the two markers key detection needs that [`DETECTED_TEMPO`] left out.
+///
+/// `detected_key` and `key_confidence` shipped one step early, against the day
+/// the estimator existed. They are not enough on their own: `key_measured_at` is
+/// what "already measured" means, because a drum track decodes successfully and
+/// has no key, and keying off a non-null `detected_key` would decode it again on
+/// every pass forever. `key_version` is what lets a later estimator disown an
+/// earlier one's work. The reasoning is `DETECTED_TEMPO`'s, one column pair at a
+/// time.
+const DETECTED_KEY: &str = r#"
+ALTER TABLE tracks ADD COLUMN key_measured_at INTEGER;
+ALTER TABLE tracks ADD COLUMN key_version INTEGER;
 "#;
 
 /// A database this build must not touch.
@@ -3226,6 +3299,26 @@ mod tests {
                         initial_key = '8A', comment = 'note', tags_read_version = 1, \
                         detected_bpm = 128.0, bpm_confidence = 0.8, \
                         bpm_measured_at = 9, bpm_version = 1; \
+                 INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
+                 SELECT id, 1000, artist, title, duration FROM tracks",
+            )
+            .unwrap();
+        },
+        |conn| {
+            seed_track(conn);
+            seed_dismissal(conn);
+            conn.execute_batch(
+                "UPDATE tracks SET edited_fields = 1, \
+                        analysis_error = 'bad', analysis_failed_at = 5, \
+                        rg_gain = -6.5, rg_peak = 0.98, rg_measured_at = 7, \
+                        auto_cue_state = 'manual', auto_cue_levels = x'00', \
+                        album_artist = 'Various', track_no = 3, track_total = 12, \
+                        disc_no = 1, disc_total = 2, isrc = 'FIFIN2400123', \
+                        initial_key = '8A', comment = 'note', tags_read_version = 1, \
+                        detected_bpm = 128.0, bpm_confidence = 0.8, \
+                        bpm_measured_at = 9, bpm_version = 1, \
+                        detected_key = 'Am', key_confidence = 0.7, \
+                        key_measured_at = 11, key_version = 1; \
                  INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
                  SELECT id, 1000, artist, title, duration FROM tracks",
             )
@@ -5863,7 +5956,8 @@ mod tests {
             && j.needs_fingerprint
             && j.needs_loudness
             && j.needs_auto_cue
-            && j.needs_bpm));
+            && j.needs_bpm
+            && j.needs_key));
 
         let (a, b) = (jobs[0].id, jobs[1].id);
         db.set_waveform(a, &[9], None).unwrap();
@@ -5874,6 +5968,7 @@ mod tests {
         db.set_auto_cue(b, &one_analysis(AutoCue::default(), 1), "music", None)
             .unwrap();
         db.set_bpm(b, Some(tempo(128.0)), 1, None).unwrap();
+        db.set_key(b, Some(measured_key()), 1, None).unwrap();
 
         let jobs = db.tracks_needing_analysis().unwrap();
         assert_eq!(jobs.len(), 1);
@@ -5883,6 +5978,7 @@ mod tests {
         assert!(jobs[0].needs_loudness);
         assert!(jobs[0].needs_auto_cue);
         assert!(jobs[0].needs_bpm);
+        assert!(jobs[0].needs_key);
     }
 
     /// A fingerprint from an older algorithm is worthless for matching a moved
@@ -5902,6 +5998,7 @@ mod tests {
         db.set_auto_cue(id, &one_analysis(AutoCue::default(), 1), "music", None)
             .unwrap();
         db.set_bpm(id, Some(tempo(128.0)), 1, None).unwrap();
+        db.set_key(id, Some(measured_key()), 1, None).unwrap();
 
         db.set_fingerprint(id, "v1:stale", None).unwrap();
         let jobs = db.tracks_needing_analysis().unwrap();
@@ -5917,6 +6014,14 @@ mod tests {
         Bpm {
             bpm,
             confidence: 0.9,
+        }
+    }
+
+    fn measured_key() -> Key {
+        Key {
+            pitch_class: 9,
+            mode: key::Mode::Minor,
+            confidence: 0.7,
         }
     }
 
@@ -5940,6 +6045,7 @@ mod tests {
         db.set_auto_cue(id, &one_analysis(AutoCue::default(), 42), "music", None)
             .unwrap();
         db.set_bpm(id, None, 42, None).unwrap();
+        db.set_key(id, None, 42, None).unwrap();
 
         assert!(db.tracks_needing_analysis().unwrap().is_empty());
     }
@@ -5964,6 +6070,7 @@ mod tests {
         db.set_auto_cue(id, &one_analysis(AutoCue::default(), 1), "music", None)
             .unwrap();
         db.set_bpm(id, Some(tempo(128.0)), 1, None).unwrap();
+        db.set_key(id, Some(measured_key()), 1, None).unwrap();
         assert!(db.tracks_needing_analysis().unwrap().is_empty());
 
         db.conn
@@ -5974,6 +6081,84 @@ mod tests {
         let jobs = db.tracks_needing_analysis().unwrap();
         assert_eq!(jobs.len(), 1);
         assert!(jobs[0].needs_bpm);
+    }
+
+    /// A key measured by an older estimator is worth less than what this build
+    /// would find, for the same reason a tempo is.
+    #[test]
+    fn a_key_from_an_older_estimator_is_measured_again() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&TrackInsert {
+            path: "/a.mp3".into(),
+            content_type: "music".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let id = only_id(&db);
+        db.set_waveform(id, &[9], None).unwrap();
+        db.set_fingerprint(id, &format!("{}:a", fingerprint::VERSION), None)
+            .unwrap();
+        db.set_loudness(id, Some(-6.0), Some(0.9), 1, None).unwrap();
+        db.set_auto_cue(id, &one_analysis(AutoCue::default(), 1), "music", None)
+            .unwrap();
+        db.set_bpm(id, Some(tempo(128.0)), 1, None).unwrap();
+        db.set_key(id, Some(measured_key()), 1, None).unwrap();
+        assert!(db.tracks_needing_analysis().unwrap().is_empty());
+
+        db.conn
+            .lock()
+            .execute("UPDATE tracks SET key_version = ?", [key::VERSION - 1])
+            .unwrap();
+
+        let jobs = db.tracks_needing_analysis().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert!(jobs[0].needs_key);
+    }
+
+    /// A track with no key to find still counts as measured, the same way a
+    /// silent file counts as levelled.
+    #[test]
+    fn a_track_with_no_key_is_not_queued_again() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&TrackInsert {
+            path: "/drums.mp3".into(),
+            content_type: "music".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let id = only_id(&db);
+        db.set_key(id, None, 42, None).unwrap();
+
+        let jobs = db.tracks_needing_analysis().unwrap();
+        assert_eq!(jobs.len(), 1, "the other measurements are still missing");
+        assert!(!jobs[0].needs_key, "the key was measured as absent");
+    }
+
+    /// What the library stores is a note name, so a measured key and a tagged
+    /// one are read in the same vocabulary.
+    #[test]
+    fn a_measured_key_is_stored_as_a_note_name() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&TrackInsert {
+            path: "/a.mp3".into(),
+            content_type: "music".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let id = only_id(&db);
+        db.set_key(id, Some(measured_key()), 7, None).unwrap();
+
+        let stored: (Option<String>, Option<f64>) = db
+            .conn
+            .lock()
+            .query_row(
+                "SELECT detected_key, key_confidence FROM tracks WHERE id = ?",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(stored.0.as_deref(), Some("Am"));
+        assert!((stored.1.unwrap() - 0.7).abs() < 1e-6);
     }
 
     /// The measurement is stored beside the tag rather than over it: the two are

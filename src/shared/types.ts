@@ -54,6 +54,16 @@ export interface Track {
   bpm_confidence?: number | null;
 
   /**
+   * Musical key as the analysis pass measured it, beside `initial_key` rather
+   * than over it. Always one of twenty-four note names, where the tag may hold
+   * anything. Null until the pass has read the file, and also after it has for
+   * audio that holds no key.
+   */
+  detected_key?: string | null;
+  /** How far the measured key stood out, 0..=1. Presentation only. */
+  key_confidence?: number | null;
+
+  /**
    * The track's radio edit. Milliseconds from the start of the file, every
    * marker nullable. Optional here only so test fixtures need not spell it
    * out — the backend sends it on every track.
