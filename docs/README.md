@@ -17,14 +17,14 @@ Everything here describes what is built, except where a row says otherwise.
 
 ## Audio and playback
 
-| doc                                            | answers                                                                                  |
-| ---------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| [audio.md](./audio.md)                         | How is a file read, decoded, levelled and sent to a device? What is air time?            |
-| [program-bus.md](./program-bus.md)             | How are two decks audible at once, how does handover work, what do the fade buttons do?  |
-| [cue-points.md](./cue-points.md)               | The five markers, how they are authored, and what actually airs.                         |
-| [cue-auto-analysis.md](./cue-auto-analysis.md) | How markers are derived from a decode for a library nobody has cue-prepped.              |
-| [tempo.md](./tempo.md)                         | How BPM is measured from the same decode, and why it sits beside the tag.                |
-| [audio-measure.md](./audio-measure.md)         | **Partly built.** The measurement library inside the app, and what it may not depend on. |
+| doc                                            | answers                                                                                 |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------- |
+| [audio.md](./audio.md)                         | How is a file read, decoded, levelled and sent to a device? What is air time?           |
+| [program-bus.md](./program-bus.md)             | How are two decks audible at once, how does handover work, what do the fade buttons do? |
+| [cue-points.md](./cue-points.md)               | The five markers, how they are authored, and what actually airs.                        |
+| [cue-auto-analysis.md](./cue-auto-analysis.md) | How markers are derived from a decode for a library nobody has cue-prepped.             |
+| [tempo.md](./tempo.md)                         | How BPM is measured from the same decode, and why it sits beside the tag.               |
+| [audio-measure.md](./audio-measure.md)         | The measurement library inside the app, and what it may not depend on.                  |
 
 ## Library
 
