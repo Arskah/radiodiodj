@@ -302,10 +302,21 @@ fn parse_track(
         t.get_string(ItemKey::Year)
             .and_then(|s| s.parse::<i64>().ok())
     });
-    let bpm = primary.and_then(|t| {
-        t.get_string(ItemKey::Bpm)
-            .and_then(|s| s.parse::<f64>().ok())
-    });
+    // Two keys, because lofty splits them by precision and a format carries one
+    // or the other: `Bpm` is the decimal field (Vorbis `BPM`, MP4 iTunes), while
+    // ID3v2's `TBPM` is integer-only and therefore `IntegerBpm`. Reading only the
+    // first meant an MP3's tempo tag was never read at all.
+    //
+    // A tagger that writes `0` means "no tempo here", and 46 of 47 tagged files in
+    // one sampled library said exactly that. Kept out of the row, or the library
+    // reports a tempo of zero as though somebody had measured it.
+    let bpm = primary
+        .and_then(|t| {
+            t.get_string(ItemKey::Bpm)
+                .or_else(|| t.get_string(ItemKey::IntegerBpm))
+        })
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .filter(|v| v.is_finite() && *v > 0.0);
     let album_artist = primary.and_then(|t| t.get_string(ItemKey::AlbumArtist).map(str::to_string));
     let isrc = primary.and_then(|t| t.get_string(ItemKey::Isrc).map(str::to_string));
     let initial_key = primary.and_then(|t| t.get_string(ItemKey::InitialKey).map(str::to_string));
@@ -403,7 +414,7 @@ mod tests {
     use crate::audio::bpm::Bpm;
     use crate::audio::cue_points::CuePoints;
     use crate::library::db::TrackMetadataUpdate;
-    use crate::library::test_audio::{retag_externally, write_wav};
+    use crate::library::test_audio::{retag_externally, write_tag, write_wav};
     use tempfile::TempDir;
 
     fn music(dir: &Path) -> ScanRoot {
@@ -993,6 +1004,32 @@ mod tests {
         assert_eq!(tracks[0].cue_points.cue_in_ms, None);
         assert!(missing_since(&db, id).is_some());
         assert_fully_prepared(&db, id);
+    }
+
+    /// A `BPM=0` tag is a tagger declining to answer, not a track standing still,
+    /// and it is what most tagged files in a real library turn out to carry.
+    ///
+    /// Written as `IntegerBpm`, which is the only BPM field ID3v2 has. Reading
+    /// just `Bpm` — the decimal one — is why an MP3's tempo tag went unread.
+    #[test]
+    fn a_zero_bpm_tag_is_not_a_tempo() {
+        let (dir, db) = library();
+        let file = dir.path().join("a.wav");
+        write_wav(&file, 1, 1);
+        write_tag(&file, ItemKey::IntegerBpm, "0", "Zero");
+
+        let other = dir.path().join("b.wav");
+        write_wav(&other, 2, 1);
+        write_tag(&other, ItemKey::IntegerBpm, "128", "Real");
+
+        scan(&db, &[music(dir.path())]);
+
+        assert_eq!(
+            db.get_track(id_of(&db, "Real")).unwrap().unwrap().bpm,
+            Some(128.0),
+            "a real tag is read, so the zero below is a decision and not a miss"
+        );
+        assert_eq!(db.get_track(id_of(&db, "Zero")).unwrap().unwrap().bpm, None);
     }
 
     /// An external tagger rewrites the file whole, which moves its
