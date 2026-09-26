@@ -210,8 +210,15 @@ Three ignored tests do this, none of which can ship a fixture:
   octave error look identical in the aggregate.
 
 Staging the audio locally first is worth it: copying a sample out of a network
-share once turns every later run into a local read. `local-audio/` is excluded in
-`.git/info/exclude`, which every worktree of this repo shares and nothing commits.
+share once turns every later run into a local read.
+`src-tauri/src/audio_measure/local-audio/` is where it goes — with the module
+whose tests read it, so it travels if `audio_measure` ever becomes a crate — and
+`.gitignore` keeps it out of every commit and every clone.
+
+A relative `BPM_CORPUS` is read from the **package root**, `src-tauri/`, because
+that is the working directory cargo gives a test binary — not the repo root the
+command is typed from. So the staged corpus is
+`BPM_CORPUS=src/audio_measure/local-audio/sample`, not the path as written above.
 
 ## Why the envelope is not stored
 
@@ -251,7 +258,8 @@ Tuning `COMB_WEIGHTS`, `OCTAVE_MARGIN` or `LOCAL_MEAN_FRAMES` against real music
 is a loop of dozens of iterations, and `survey_a_library` re-decodes every file on
 every run — which is why it defaults to `BPM_SAMPLE=300` rather than a whole
 library, and why [Checking it yourself](#checking-it-yourself) recommends staging
-audio into `local-audio/`. The fix for that belongs in the corpus harness: cache
+audio into `audio_measure/local-audio/`. The fix for that belongs in the corpus
+harness: cache
 each file's envelope on disk, keyed by path and mtime, and a later run is seconds
 over the _entire_ library instead of minutes over a sample. No migration, no
 format-version invariant, no `f32`-to-`u8` question, and nothing added to an

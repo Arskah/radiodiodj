@@ -560,8 +560,12 @@ mod tests {
 /// write `TKEY` disagree about notation before they disagree about the key — so
 /// what is useful is the list, read by someone who knows the songs.
 ///
+/// `KEY_CORPUS` is read relative to the package root, since that is the working
+/// directory cargo gives a test binary — not the repo root the command is typed
+/// from.
+///
 /// ```text
-/// KEY_CORPUS=local-audio/known cargo test --release \
+/// KEY_CORPUS=src/audio_measure/local-audio/known cargo test --release \
 ///   --manifest-path src-tauri/Cargo.toml \
 ///   -- --ignored --nocapture survey_a_library
 /// ```

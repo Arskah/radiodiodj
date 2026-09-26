@@ -8,6 +8,11 @@ e2e-results/
 # main checkout's install) must be ignored too, or it lands in a commit and CI
 # checks out a dangling link that pnpm install then trips over.
 node_modules
+# Audio staged for the measurement corpus tests (KEY_CORPUS / BPM_CORPUS). Sits
+# with the module whose tests read it, and never enters a commit: it is gigabytes
+# of someone's music library. Committed here rather than left in
+# .git/info/exclude so a fresh clone is protected too. No trailing slash, as above.
+src-tauri/src/audio_measure/local-audio
 src-tauri/target/
 src-tauri/gen/
 *.db

@@ -1,0 +1,11 @@
+{
+  "rust-analyzer.files.excludeDirs": [
+    "src-tauri/src/audio_measure/local-audio"
+  ],
+  "files.watcherExclude": {
+    "**/src-tauri/src/audio_measure/local-audio/**": true
+  },
+  "search.exclude": {
+    "**/src-tauri/src/audio_measure/local-audio": true
+  }
+}

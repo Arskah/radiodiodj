@@ -132,8 +132,9 @@ confidence, or with no key at all, and either way the row says so.
 
 ### What it measures on real music
 
-Run against the fourteen well-known tracks staged in `local-audio/known`
-(`survey_a_library`, below), against the keys those songs are commonly published
+Run against the fourteen well-known tracks staged in
+`src-tauri/src/audio_measure/local-audio/known` (`survey_a_library`, in the
+[code map](#code-map) below), against the keys those songs are commonly published
 in:
 
 | reading                                     | count |
