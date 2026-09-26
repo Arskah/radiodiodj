@@ -9,7 +9,7 @@ use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
 use super::db::IndexRow;
-use crate::audio::formats;
+use crate::audio_measure::formats;
 use crate::persist::config::Config;
 
 /// A configured library path and the content type it feeds.

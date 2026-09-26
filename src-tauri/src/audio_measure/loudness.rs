@@ -4,14 +4,16 @@
 //! ([`super::waveform::analyze`]); this module owns only the numbers derived
 //! from it, so the arithmetic is testable without decoding anything.
 //!
+//! Whether the operator wants levelling at all is a setting, so the switch over
+//! it lives with the decks in [`crate::audio::levelling`]; what gain a
+//! measurement earns is arithmetic and lives here.
+//!
 //! Loudness is measured rather than read from `replaygain_track_gain` tags.
 //! Most station libraries are largely untagged, and normalising only the
 //! tagged half would pull those tracks down toward reference while the rest
 //! stayed at full scale — a level split where there was none. Tags are also
 //! not comparable with each other: ReplayGain 1.0 (89 dB reference) and 2.0
 //! (-18 LUFS, EBU R128) write the same tag name from different targets.
-
-use crate::persist::config::ReplayGainMode;
 
 /// Reference level every track is normalised to, in LUFS, per ReplayGain 2.0.
 pub const TARGET_LUFS: f64 = -18.0;
@@ -51,41 +53,9 @@ pub fn linear_gain(gain_db: f64, peak: Option<f64>) -> f32 {
     limited as f32
 }
 
-/// The factor to load a track at: its stored measurement under `mode`.
-///
-/// Unity whenever levelling is off, or the track has no measurement yet — a
-/// file the analysis pass has not reached, or one it measured as silent. Both
-/// call sites that build a `Load` go through here so the program decks and the
-/// cue deck cannot drift apart on what a track's level should be.
-pub fn factor(mode: ReplayGainMode, gain_db: Option<f64>, peak: Option<f64>) -> f32 {
-    match (mode, gain_db) {
-        (ReplayGainMode::Off, _) | (_, None) => 1.0,
-        (ReplayGainMode::Track, Some(g)) => linear_gain(g, peak),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn levelling_off_leaves_every_track_as_mastered() {
-        assert_eq!(factor(ReplayGainMode::Off, Some(-10.0), Some(1.0)), 1.0);
-    }
-
-    #[test]
-    fn an_unmeasured_track_plays_at_unity() {
-        assert_eq!(factor(ReplayGainMode::Track, None, None), 1.0);
-        assert_eq!(factor(ReplayGainMode::Track, None, Some(0.9)), 1.0);
-    }
-
-    #[test]
-    fn a_measured_track_is_levelled() {
-        assert_eq!(
-            factor(ReplayGainMode::Track, Some(-10.0), Some(1.0)),
-            linear_gain(-10.0, Some(1.0))
-        );
-    }
 
     #[test]
     fn a_track_at_reference_earns_no_gain() {

@@ -8,7 +8,7 @@ The intended operating assumption is that **almost all library tracks will never
 
 No source audio file is modified.
 
-The detector (landed 2026-09-19, [#372](https://github.com/Arskah/radiodiodj/issues/372)) is `src-tauri/src/audio/auto_cue.rs`, fed by the RMS windows `audio/waveform.rs` collects during the existing waveform decode and committed by `library/waveform_scan.rs`. Ownership and provenance live on the track row as `auto_cue_state` (`pending` / `auto` / `manual`), `auto_cue_version`, `auto_cue_silence_db`, `auto_cue_segue_db` and `auto_cue_at`. The switches and the thresholds are `tuning.autoCue` in `config.json`, under _Settings → Advanced_.
+The detector (landed 2026-09-19, [#372](https://github.com/Arskah/radiodiodj/issues/372)) is `src-tauri/src/audio_measure/auto_cue.rs`, fed by the RMS windows `audio_measure/waveform.rs` collects during the existing waveform decode and committed by `library/waveform_scan.rs`. Ownership and provenance live on the track row as `auto_cue_state` (`pending` / `auto` / `manual`), `auto_cue_version`, `auto_cue_silence_db`, `auto_cue_segue_db` and `auto_cue_at`. The switches and the thresholds are `tuning.autoCue` in `config.json`, under _Settings → Advanced_.
 
 ## The switches
 

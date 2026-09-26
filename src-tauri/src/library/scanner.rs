@@ -411,8 +411,8 @@ pub fn read_cover_art(path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::bpm::Bpm;
     use crate::audio::cue_points::CuePoints;
+    use crate::audio_measure::bpm::Bpm;
     use crate::library::db::TrackMetadataUpdate;
     use crate::library::test_audio::{retag_externally, write_tag, write_wav};
     use tempfile::TempDir;

@@ -21,7 +21,7 @@ use super::model::{PlaylistItem, Snapshot};
 use crate::audio::bus::{ProgramBus, FADED_OUT_EVENT, HANDOVER_EVENT};
 use crate::audio::cache::Cache;
 use crate::audio::cue_points::CuePoints;
-use crate::audio::loudness;
+use crate::audio::levelling;
 use crate::audio::player::Cmd;
 use crate::broadcast::BroadcastService;
 use crate::library::db::{Db, Track, TrackLoadInfo};
@@ -561,7 +561,7 @@ impl Inner {
 
     /// What levelling this track loads at, under the current setting.
     fn replay_gain(&self, info: &TrackLoadInfo) -> f32 {
-        loudness::factor(
+        levelling::factor(
             self.config.get_tuning().player.replay_gain,
             info.loudness.gain_db,
             info.loudness.peak,

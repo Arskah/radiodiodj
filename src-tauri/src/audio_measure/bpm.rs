@@ -521,7 +521,7 @@ mod tests {
 #[cfg(test)]
 mod corpus {
     use super::*;
-    use crate::audio::waveform;
+    use crate::audio_measure::waveform;
     use lofty::file::TaggedFileExt;
     use lofty::prelude::*;
     use lofty::probe::Probe;
