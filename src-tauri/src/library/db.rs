@@ -402,7 +402,7 @@ pub struct AnalysisJob {
     /// `docs/cue-auto-analysis.md` rules out.
     pub needs_auto_cue_levels: bool,
     /// Never measured, or measured by an estimator older than
-    /// [`bpm::VERSION`](crate::audio::bpm::VERSION).
+    /// [`bpm::VERSION`].
     pub needs_bpm: bool,
 }
 
