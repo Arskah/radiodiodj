@@ -101,7 +101,7 @@ that path as a new track.
 
 ## Fingerprint
 
-`library/fingerprint.rs` computes `v2:` + SHA-256 over:
+`audio_measure/fingerprint.rs` computes `v2:` + SHA-256 over:
 
 - the codec, sample rate and channel count
 - the first **1 MiB** of demuxed packet payload for the default track

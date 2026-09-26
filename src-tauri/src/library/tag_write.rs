@@ -29,8 +29,8 @@ use std::sync::{mpsc, Arc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::db::{Db, EditedFields, TagValues};
-use super::fingerprint;
 use super::scanner;
+use crate::audio_measure::fingerprint;
 use crate::persist::config::Config;
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -375,10 +375,10 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio_measure::test_audio::write_wav;
     use crate::library::db::{EditedFields, Track, TrackMetadataUpdate};
     use crate::library::listing::{should_rescan, ScanRoot};
     use crate::library::scanner::{read_file_tags, scan_all};
-    use crate::library::test_audio::write_wav;
     use std::time::Instant;
     use tempfile::TempDir;
 

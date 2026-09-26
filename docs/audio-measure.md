@@ -5,9 +5,8 @@ integrated loudness, the level envelope behind the automatic cue points, the
 tempo, and the content fingerprint. One module, one decode, no knowledge of
 where the answers go.
 
-**Partly built.** The module exists and holds the measurement of audio;
-`fingerprint.rs`, the `write_wav` fixture and the guard test are
-[increments](#increments) 2 and 3.
+**Partly built.** Everything below is in place except the guard test and the
+CONTEXT.md entry, which are [increment](#increments) 3.
 
 It is a library that happens to live in this repository. Nothing in it opens a
 device, touches the database, reads a setting, emits a Tauri event or holds a

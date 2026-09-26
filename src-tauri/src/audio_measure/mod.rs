@@ -15,6 +15,9 @@
 
 pub mod auto_cue;
 pub mod bpm;
+pub mod fingerprint;
 pub mod formats;
 pub mod loudness;
+#[cfg(test)]
+pub(crate) mod test_audio;
 pub mod waveform;

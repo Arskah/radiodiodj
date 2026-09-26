@@ -377,7 +377,7 @@ pre-1.0 resets are in [database.md](./database.md).
 | ---------------------------------- | -------------------------------------------------------------- |
 | listing and the changed/gone rules | `src-tauri/src/library/listing.rs`                             |
 | scan and reconcile                 | `library/scanner.rs`, `library/scan_state.rs`, `Db::reconcile` |
-| fingerprint                        | `library/fingerprint.rs`                                       |
+| fingerprint                        | `audio_measure/fingerprint.rs`                                 |
 | waveforms and fingerprints         | `library/waveform_scan.rs`                                     |
 | tag backfill                       | `library/tag_backfill.rs`                                      |
 | health report                      | `library/health.rs`                                            |
