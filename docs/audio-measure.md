@@ -5,9 +5,6 @@ integrated loudness, the level envelope behind the automatic cue points, the
 tempo, and the content fingerprint. One module, one decode, no knowledge of
 where the answers go.
 
-**Partly built.** Everything below is in place except the guard test and the
-CONTEXT.md entry, which are [increment](#increments) 3.
-
 It is a library that happens to live in this repository. Nothing in it opens a
 device, touches the database, reads a setting, emits a Tauri event or holds a
 `Sink`. A caller hands it bytes and a threshold and receives numbers. That is
@@ -108,8 +105,11 @@ Inside `audio_measure`, none of the following may appear:
 `rodio::Decoder`, `symphonia`, `ebur128`, `anyhow` and `serde` are the
 dependencies it is allowed, and `std::fs` only in `fingerprint::of_file`.
 
-A `mod.rs` test walks the module's own `.rs` files and fails on any of the
-banned strings. This is the same shape as the schema snapshot test and the
+`nothing_here_depends_on_the_app` in `mod.rs` walks the module's own `.rs` files
+and fails on any of the banned strings, naming the file, the line and the reason.
+The two concurrency bans are checked only above a file's `#[cfg(test)]`, because
+a corpus test that fans out over a library of files is measuring, not deciding —
+`bpm.rs`'s survey does exactly that, and the guard caught it on its first run. This is the same shape as the schema snapshot test and the
 theming token-contract guard: the invariant is stated once, in code, where a
 reviewer cannot miss it and a later commit cannot quietly cross it. A comment
 would only be read by someone already looking.

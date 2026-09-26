@@ -102,6 +102,10 @@ _Avoid_: Ignore, mute, snooze
 The background decode that follows a **Scan**, producing a Track's waveform, loudness, **Level envelope** and **Automatic cue points**. Stoppable on its own; the queue is row state, so the next pass resumes where it stopped.
 _Avoid_: Waveform scan, indexing, processing
 
+**Measurement**:
+What one decode of a Track's audio yields — its waveform curve, loudness, **Level envelope**, tempo and fingerprint. Produced by `audio_measure`, which knows nothing of rows or queues; requested and stored by the **Analysis pass**.
+_Avoid_: Analysis (that is the pass), stats, metrics, features
+
 **Tag backfill**:
 The background pass that re-reads **Tag metadata** for rows written before a field existed. Reads headers only, never audio, and is separate from the **Analysis pass** so a file whose audio will not decode still gets its tags.
 _Avoid_: Migration, repair, re-scan
@@ -305,6 +309,7 @@ _Avoid_: Persist, sync
 - **Air time** derives from the **Cue points** that apply to an airing, not from the **Track**'s file duration
 - A **Library check** predicts what the next **Scan** would do; only the **Scan** applies it, and only **Purge** deletes
 - A **Scan** reads **Tag metadata**; **Tag backfill** reads it for rows a new field predates, and the **Analysis pass** reads audio for everything else
+- The **Analysis pass** decides which rows are measured and when; a **Measurement** is what the decode of one of them says
 - An **Edited field** survives a **Scan**; with **Tag write-back** on, the **Metadata edit** also reaches the file
 - The **Analysis pass** produces the **Level envelope**, and the **Automatic cue points** are derived from it; **Recalculate** re-derives them without a second decode
 - **Cue point ownership** decides what may be re-derived: an `auto` **Track** yes, a `manual` one never
@@ -373,6 +378,7 @@ _Avoid_: Persist, sync
 - Bare "edit" means **metadata/tag editing** and nothing else. The playback markers are **Cue points**; the stored set of them is a **Radio edit**. Tag-editing code says `metadata` explicitly for this reason.
 - "Segue" and "crossfade" are not domain terms → use **Handover**, which is triggered by a Cue point rather than a configured duration.
 - "Check" vs "Scan" vs "Analysis pass" → a **Library check** only reads the disk and reports; a **Scan** changes the library; the **Analysis pass** is the decode that follows a **Scan**. Never call a check a "quick scan", and never call the analysis pass a scan.
+- "Analysis pass" vs **Measurement** → the pass is the background walk over rows that need decoding; a Measurement is what one decode yields. The module that produces them is `audio_measure`, never "analysis", which is why no directory is called that.
 - "Rotation" is a **Rotation rule** and nothing else — a constraint on what the **Auto-playlist** may select. It is not **Interleave**, which is the jingle/commercial cadence, and it is not a programming clock or a playlist category. The word was retired from the glossary before the rules existed; it is a domain term now.
 - "Play count" is not the **Airing log**. The count is a number on the **Track**; the log is the record of each **Airing**, with its own snapshot of the metadata.
 - "Ignore" is not a domain term → a **Dismissal** silences a finding, and there is no ignored-track state. An unwanted **Duplicate** is removed by deleting its file.
