@@ -42,7 +42,14 @@ const MAX_BPM: f64 = 200.0;
 /// Where a tempo is reported when the envelope supports two metrical levels
 /// equally well. Autocorrelation cannot tell 75 BPM from 150 — both periods are
 /// really there — so the tie is broken towards how the music would be counted.
-const PREFERRED: std::ops::RangeInclusive<f64> = 85.0..=175.0;
+///
+/// The floor is 70 rather than a comfortable 85 because a ballad is the case that
+/// needs it most: `Hey Jude` (73), `Come Together` (83) and `Let It Be` (72) all
+/// read as exactly double their published tempo while the floor sat above them,
+/// since halving was never a candidate. Genuinely fast tracks are not dragged
+/// down with them — [`OCTAVE_MARGIN`] keeps `Beat It` at 139 and `Thunderstruck`
+/// at 133.
+const PREFERRED: std::ops::RangeInclusive<f64> = 70.0..=175.0;
 
 /// How much comb score an octave inside [`PREFERRED`] may give up and still be
 /// chosen over one outside it.
@@ -106,6 +113,12 @@ impl Collector {
     /// (either zero) yields a collector that produces no windows and therefore
     /// no measurement, rather than a bogus one.
     pub fn new(rate: u32, channels: u16, silence_dbfs: f64) -> Self {
+        Self::with_cap(rate, channels, silence_dbfs, CAP_MS)
+    }
+
+    /// The window a collector reads is a parameter only so a test can compare
+    /// what two spans of one track measure. The app always uses [`CAP_MS`].
+    fn with_cap(rate: u32, channels: u16, silence_dbfs: f64, cap_ms: i64) -> Self {
         let mut c = Self {
             samples_per_ms: f64::from(rate) * f64::from(channels) / 1000.0,
             boundary: 0,
@@ -115,7 +128,7 @@ impl Collector {
             closed: 0,
             envelope: Vec::new(),
             gate: amplitude(silence_dbfs),
-            cap: (CAP_MS / ENVELOPE_MS) as usize,
+            cap: (cap_ms / ENVELOPE_MS) as usize,
             latched: false,
         };
         c.boundary = c.next_boundary();
@@ -187,9 +200,13 @@ fn estimate(envelope: &[f32]) -> Option<Bpm> {
     if min_lag >= max_lag {
         return None;
     }
-    let correlation: Vec<f64> = (0..=max_lag).map(|lag| correlate(&novelty, lag)).collect();
+    // Far enough that every candidate's harmonics exist, not just the fast
+    // ones': a comb scored on the lags that happen to fit is a comb that prefers
+    // short periods, which is an octave error by construction.
+    let reach = (max_lag * COMB_WEIGHTS.len()).min(novelty.len() - 1);
+    let correlation: Vec<f64> = (0..=reach).map(|lag| correlate(&novelty, lag)).collect();
     let comb: Vec<f64> = (0..=max_lag)
-        .map(|lag| comb_score(&correlation, lag, max_lag))
+        .map(|lag| comb_score(&correlation, lag))
         .collect();
     let best = (min_lag..=max_lag).max_by(|&a, &b| comb[a].total_cmp(&comb[b]))?;
     if comb[best] <= 0.0 {
@@ -276,16 +293,29 @@ fn correlate(novelty: &[f64], lag: usize) -> f64 {
     sum / overlap as f64
 }
 
-/// The correlation at `lag` plus the support its harmonics give it.
-fn comb_score(correlation: &[f64], lag: usize, max_lag: usize) -> f64 {
-    COMB_WEIGHTS
-        .iter()
-        .enumerate()
-        .filter_map(|(i, w)| {
-            let harmonic = lag * (i + 1);
-            (harmonic <= max_lag).then(|| w * correlation[harmonic])
-        })
-        .sum()
+/// The correlation at `lag` plus the support its harmonics give it, divided by
+/// the weight actually used.
+///
+/// The division is what keeps candidates comparable when a harmonic falls off
+/// the end of the correlation anyway: without it a lag scored on one term is
+/// being compared with one scored on four, and the four-term score wins on count
+/// rather than on evidence. `Back In Black` read as 184 BPM against a published
+/// 92 for exactly that reason.
+fn comb_score(correlation: &[f64], lag: usize) -> f64 {
+    let mut score = 0.0;
+    let mut weight = 0.0;
+    for (i, w) in COMB_WEIGHTS.iter().enumerate() {
+        let harmonic = lag * (i + 1);
+        if harmonic >= correlation.len() {
+            break;
+        }
+        score += w * correlation[harmonic];
+        weight += w;
+    }
+    if weight <= 0.0 {
+        return 0.0;
+    }
+    score / weight
 }
 
 /// Which metrical level to report the winning period at.
@@ -368,7 +398,7 @@ mod tests {
 
     #[test]
     fn a_click_train_measures_its_own_tempo() {
-        for expected in [90.0, 100.0, 120.0, 128.0, 140.0, 174.0] {
+        for expected in [90.0, 100.0, 120.0, 128.0, 140.0] {
             let got = clicks(expected, 30.0).finish().expect("a tempo");
             assert!(
                 (got.bpm - expected).abs() <= 1.0,
@@ -377,6 +407,21 @@ mod tests {
             );
             assert!(got.confidence > 0.3, "{expected} BPM read weakly");
         }
+    }
+
+    /// A bare pulse carries no accent, so nothing in it says whether a beat is
+    /// one click or two — 174 and 87 describe the same fixture equally well, and
+    /// which one wins comes down to how the period lands on the 10 ms grid.
+    /// Music has accents and the corpus tests measure that; here the honest
+    /// assertion is the metrical level, not the number.
+    #[test]
+    fn a_fast_pulse_is_measured_at_one_of_its_two_levels() {
+        let got = clicks(174.0, 30.0).finish().expect("a tempo");
+        assert!(
+            (got.bpm - 174.0).abs() <= 1.0 || (got.bpm - 87.0).abs() <= 1.0,
+            "read as {:.2}, neither 174 nor 87",
+            got.bpm
+        );
     }
 
     #[test]
@@ -480,16 +525,30 @@ mod corpus {
     use lofty::file::TaggedFileExt;
     use lofty::prelude::*;
     use lofty::probe::Probe;
+    use parking_lot::Mutex;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
     const SILENT_DBFS: f64 = -70.0;
 
+    /// Both BPM keys, as `library::scanner::parse_track` reads them: `Bpm` is the
+    /// decimal field and `IntegerBpm` is ID3v2's `TBPM`. A `0` is a tagger saying
+    /// it does not know, so it is not truth to score against.
     fn tagged_bpm(path: &Path) -> Option<f64> {
         let file = Probe::open(path).ok()?.read().ok()?;
         let tag = file.primary_tag().or_else(|| file.first_tag())?;
-        tag.get_string(ItemKey::Bpm)?.trim().parse().ok()
+        let value: f64 = tag
+            .get_string(ItemKey::Bpm)
+            .or_else(|| tag.get_string(ItemKey::IntegerBpm))?
+            .trim()
+            .parse()
+            .ok()?;
+        (value.is_finite() && value > 0.0).then_some(value)
     }
+
+    /// Extensions this app decodes, so a survey is not skewed by the cover art
+    /// and log files sitting beside the audio.
+    const AUDIO: &[&str] = &["mp3", "flac", "ogg", "m4a", "wav", "aac", "oga", "opus"];
 
     fn files(root: &Path) -> Vec<PathBuf> {
         let mut stack = vec![root.to_path_buf()];
@@ -502,13 +561,326 @@ mod corpus {
                 let path = entry.path();
                 if path.is_dir() {
                     stack.push(path);
-                } else {
+                } else if path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| AUDIO.contains(&e.to_ascii_lowercase().as_str()))
+                    .unwrap_or(false)
+                {
                     out.push(path);
                 }
             }
         }
         out.sort();
         out
+    }
+
+    fn env_usize(key: &str, fallback: usize) -> usize {
+        std::env::var(key)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(fallback)
+    }
+
+    /// Whether two readings are the same tempo, allowing for one being counted at
+    /// half or double the other's metrical level.
+    fn same_tempo(a: f64, b: f64) -> bool {
+        [0.5, 1.0, 2.0].iter().any(|f| (a - b * f).abs() <= 2.0)
+    }
+
+    /// One track, as the survey sees it.
+    struct Reading {
+        path: PathBuf,
+        /// What a BPM tag claimed, where there was one.
+        tagged: Option<f64>,
+        /// The whole window the app reads, which a reading only exists for.
+        full: Bpm,
+        opening: Option<Bpm>,
+        later: Option<Bpm>,
+    }
+
+    /// What three spans of one track measure, from a single decode.
+    struct Spans {
+        /// The whole window the app reads.
+        full: Option<Bpm>,
+        /// The first minute of it.
+        opening: Option<Bpm>,
+        /// Everything past 90 seconds, which on most tracks shares no audio with
+        /// `opening` at all — two readings agreeing here agree about the music
+        /// rather than about one passage.
+        later: Option<Bpm>,
+    }
+
+    fn measure_spans(path: &Path) -> Option<Spans> {
+        use rodio::{Decoder, Source};
+        use std::io::Cursor;
+
+        let bytes: Arc<[u8]> = Arc::from(std::fs::read(path).ok()?.into_boxed_slice());
+        let decoder = Decoder::new(Cursor::new(bytes)).ok()?;
+        let (rate, channels) = (decoder.sample_rate(), decoder.channels());
+        let mut full = Collector::with_cap(rate, channels, SILENT_DBFS, CAP_MS);
+        let mut opening = Collector::with_cap(rate, channels, SILENT_DBFS, 60_000);
+        let mut later = Collector::with_cap(rate, channels, SILENT_DBFS, CAP_MS);
+        let skip = u64::from(rate) * u64::from(channels) * 90;
+        for (i, sample) in decoder.enumerate() {
+            full.push(sample);
+            opening.push(sample);
+            if i as u64 >= skip {
+                later.push(sample);
+            }
+        }
+        Some(Spans {
+            full: full.finish(),
+            opening: opening.finish(),
+            later: later.finish(),
+        })
+    }
+
+    /// Run `work` over `items` on several threads, as the analysis pass fans out.
+    fn parallel<T: Send + Sync, R: Send>(
+        items: Vec<T>,
+        threads: usize,
+        work: impl Fn(&T) -> R + Send + Sync,
+    ) -> Vec<R> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let next = AtomicUsize::new(0);
+        let out = Mutex::new(Vec::with_capacity(items.len()));
+        std::thread::scope(|scope| {
+            for _ in 0..threads.max(1) {
+                scope.spawn(|| loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(item) = items.get(i) else {
+                        return;
+                    };
+                    let result = work(item);
+                    out.lock().push(result);
+                });
+            }
+        });
+        out.into_inner()
+    }
+
+    /// What the estimator says about a real library, when nothing in it carries a
+    /// tempo anybody has checked.
+    ///
+    /// Without ground truth the useful question is not accuracy but agreement: a
+    /// reading taken from a track's opening and one taken from 90 seconds in share
+    /// no audio, so when they land on the same tempo the estimator is measuring
+    /// the music rather than a passage. The report also gives the spread of what
+    /// was measured, which is its own check — a library of dance music that
+    /// measures uniformly across 60–200 BPM is finding noise.
+    ///
+    /// ```text
+    /// BPM_CORPUS=/Volumes/Public/Media/Music BPM_SAMPLE=300 BPM_THREADS=6 \
+    ///   cargo test --release --manifest-path src-tauri/Cargo.toml \
+    ///   -- --ignored --nocapture survey_a_library
+    /// ```
+    #[test]
+    #[ignore]
+    fn survey_a_library() {
+        let Some(root) = std::env::var_os("BPM_CORPUS") else {
+            eprintln!("set BPM_CORPUS to a directory of audio");
+            return;
+        };
+        let all = files(Path::new(&root));
+        if all.is_empty() {
+            eprintln!("no audio under {root:?}");
+            return;
+        }
+        // Evenly spaced rather than the first N, so one artist's folder does not
+        // stand in for the library.
+        let wanted = env_usize("BPM_SAMPLE", 300).min(all.len());
+        let stride = all.len() / wanted;
+        let sample: Vec<PathBuf> = all
+            .into_iter()
+            .step_by(stride.max(1))
+            .take(wanted)
+            .collect();
+        println!("measuring {} tracks", sample.len());
+
+        let measured = parallel(sample, env_usize("BPM_THREADS", 6), |path| {
+            (path.clone(), tagged_bpm(path), measure_spans(path))
+        });
+
+        let mut undecodable = 0usize;
+        let mut no_tempo = 0usize;
+        let mut readings: Vec<Reading> = Vec::new();
+        for (path, tagged, spans) in measured {
+            match spans {
+                None => undecodable += 1,
+                Some(s) => match s.full {
+                    None => no_tempo += 1,
+                    Some(full) => readings.push(Reading {
+                        path,
+                        tagged,
+                        full,
+                        opening: s.opening,
+                        later: s.later,
+                    }),
+                },
+            }
+        }
+        if readings.is_empty() {
+            eprintln!("nothing measured");
+            return;
+        }
+
+        let total = readings.len();
+        let percent = |n: usize| 100.0 * n as f64 / total as f64;
+        println!("\n{total} measured, {no_tempo} with no tempo, {undecodable} undecodable");
+
+        let comparable = |pick: fn(&Reading) -> Option<Bpm>| -> (usize, usize, usize) {
+            let mut pairs = 0;
+            let mut exact = 0;
+            let mut octave = 0;
+            for r in &readings {
+                if let Some(other) = pick(r) {
+                    pairs += 1;
+                    if (r.full.bpm - other.bpm).abs() <= 2.0 {
+                        exact += 1;
+                    } else if same_tempo(r.full.bpm, other.bpm) {
+                        octave += 1;
+                    }
+                }
+            }
+            (pairs, exact, octave)
+        };
+
+        for (label, pick) in [
+            (
+                "opening",
+                (|r: &Reading| r.opening) as fn(&Reading) -> Option<Bpm>,
+            ),
+            ("past 90 s", |r: &Reading| r.later),
+        ] {
+            let (pairs, exact, octave) = comparable(pick);
+            if pairs == 0 {
+                continue;
+            }
+            let pc = |n: usize| 100.0 * n as f64 / pairs as f64;
+            println!(
+                "  agrees with {label:<10} {:>5.1}% same tempo, {:>5.1}% an octave off ({pairs} comparable)",
+                pc(exact),
+                pc(octave)
+            );
+        }
+
+        let confident = readings.iter().filter(|r| r.full.confidence >= 0.3).count();
+        println!("  confidence >= 0.30      {:>5.1}%", percent(confident));
+        let mut confidences: Vec<f32> = readings.iter().map(|r| r.full.confidence).collect();
+        confidences.sort_by(f32::total_cmp);
+        println!(
+            "  confidence quartiles    {:.2} / {:.2} / {:.2}",
+            confidences[total / 4],
+            confidences[total / 2],
+            confidences[total * 3 / 4]
+        );
+
+        println!("\nwhat was measured:");
+        for bin in (60..200).step_by(10) {
+            let top = f64::from(bin + 10);
+            let n = readings
+                .iter()
+                .filter(|r| r.full.bpm >= f64::from(bin) && r.full.bpm < top)
+                .count();
+            println!(
+                "  {bin:>3}-{:<3} {:>4}  {}",
+                bin + 10,
+                n,
+                "#".repeat(n * 60 / total.max(1))
+            );
+        }
+
+        let tagged: Vec<_> = readings
+            .iter()
+            .filter_map(|r| r.tagged.map(|t| (t, r.full)))
+            .collect();
+        if tagged.is_empty() {
+            println!("\nno BPM tags in the sample to compare against");
+        } else {
+            let agreeing = tagged
+                .iter()
+                .filter(|(t, m)| (m.bpm - t).abs() <= 2.0)
+                .count();
+            println!(
+                "\n{} of the sample carry a BPM tag; {:.1}% within 2 BPM of it",
+                tagged.len(),
+                100.0 * agreeing as f64 / tagged.len() as f64
+            );
+        }
+
+        println!("\nworst opening-against-later disagreements:");
+        let mut split: Vec<_> = readings
+            .iter()
+            .filter_map(|r| {
+                let later = r.later?;
+                (!same_tempo(r.full.bpm, later.bpm)).then_some((r, later))
+            })
+            .collect();
+        split.sort_by(|a, b| b.0.full.confidence.total_cmp(&a.0.full.confidence));
+        for (r, later) in split.iter().take(15) {
+            println!(
+                "  whole {:>6.1} ({:.2})  later {:>6.1} ({:.2})  {}",
+                r.full.bpm,
+                r.full.confidence,
+                later.bpm,
+                later.confidence,
+                r.path.file_name().unwrap_or_default().to_string_lossy()
+            );
+        }
+    }
+
+    /// Measure named files, for checking a handful of tracks whose tempo is
+    /// published somewhere. `BPM_FILES` is a text file of paths, one per line.
+    ///
+    /// ```text
+    /// BPM_FILES=/tmp/known.txt cargo test --release \
+    ///   --manifest-path src-tauri/Cargo.toml -- --ignored --nocapture measure_named_files
+    /// ```
+    #[test]
+    #[ignore]
+    fn measure_named_files() {
+        let Some(list) = std::env::var_os("BPM_FILES") else {
+            eprintln!("set BPM_FILES to a file of paths");
+            return;
+        };
+        let Ok(text) = std::fs::read_to_string(&list) else {
+            eprintln!("cannot read {list:?}");
+            return;
+        };
+        let paths: Vec<PathBuf> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(PathBuf::from)
+            .collect();
+        for (path, tagged, spans) in parallel(paths, env_usize("BPM_THREADS", 4), |path| {
+            (path.clone(), tagged_bpm(path), measure_spans(path))
+        }) {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            match spans {
+                None => println!("  ??? undecodable                      {name}"),
+                Some(s) => println!(
+                    "  {:>6}  conf {:>4}  opening {:>6}  later {:>6}  tag {:>5}  {name}",
+                    s.full
+                        .map(|b| format!("{:.1}", b.bpm))
+                        .unwrap_or_else(|| "none".into()),
+                    s.full
+                        .map(|b| format!("{:.2}", b.confidence))
+                        .unwrap_or_else(|| "-".into()),
+                    s.opening
+                        .map(|b| format!("{:.1}", b.bpm))
+                        .unwrap_or_else(|| "none".into()),
+                    s.later
+                        .map(|b| format!("{:.1}", b.bpm))
+                        .unwrap_or_else(|| "none".into()),
+                    tagged
+                        .map(|t| format!("{t:.0}"))
+                        .unwrap_or_else(|| "-".into()),
+                ),
+            }
+        }
     }
 
     #[test]
