@@ -14,10 +14,10 @@
 //! dominates the cost of any one of them. See `docs/audio-measure.md` for the
 //! boundary and what may not cross it.
 
-pub mod auto_cue;
 pub mod bpm;
 pub mod fingerprint;
 pub mod formats;
+pub mod level_envelope;
 pub mod loudness;
 #[cfg(test)]
 pub(crate) mod test_audio;

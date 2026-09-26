@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::audio::cue_points::CuePoints;
-use crate::audio_measure::auto_cue::{self, Analysed, Envelope, Thresholds};
 use crate::audio_measure::bpm::{self, Bpm};
 use crate::audio_measure::fingerprint;
+use crate::audio_measure::level_envelope::{self, Envelope};
+use crate::library::auto_cue::{self, Analysed, Thresholds};
 use crate::library::scanner;
 
 /// `Default` exists for test fixtures, which would otherwise have to name every
@@ -1068,7 +1069,7 @@ impl Db {
     ///   until the file returns, and nothing else would ever reach it, since a
     ///   reattached row stays `auto`.
     ///
-    /// [`auto_cue::Envelope::decode`] is the authority on which set a row is
+    /// [`level_envelope::Envelope::decode`] is the authority on which set a row is
     /// in, not [`Db::unreadable_levels`]. SQL screens what it can and the
     /// decoder settles the rest, so a row whose blob passes the one and fails
     /// the other is queued rather than dropped by both.
@@ -1142,7 +1143,7 @@ impl Db {
                     continue;
                 };
                 let music = content_type == "music";
-                let cue = levels.detect(music, thresholds);
+                let cue = auto_cue::detect(&levels, music, thresholds);
                 // `clamp` with no duration applies the ordering rules alone,
                 // which is exactly the sorting the fades need against the trio
                 // that just moved under them.
@@ -1820,7 +1821,7 @@ impl Db {
     /// tell: absent, too short to hold the header, or a layout version it does
     /// not know.
     ///
-    /// Deliberately not the whole of [`auto_cue::Envelope::decode`] — the codes
+    /// Deliberately not the whole of [`level_envelope::Envelope::decode`] — the codes
     /// cannot be screened in SQL, because a readable length depends on the
     /// track's duration. Every caller therefore treats this as a pre-filter and
     /// lets `decode` decide, so a row can never fall between the two.
@@ -1829,8 +1830,8 @@ impl Db {
             "(auto_cue_levels IS NULL \
               OR length(auto_cue_levels) < {header} \
               OR substr(auto_cue_levels, 1, 1) <> x'{version:02x}')",
-            header = auto_cue::LEVELS_HEADER_LEN,
-            version = auto_cue::LEVELS_FORMAT_VERSION,
+            header = level_envelope::LEVELS_HEADER_LEN,
+            version = level_envelope::LEVELS_FORMAT_VERSION,
         )
     }
 
@@ -2732,7 +2733,7 @@ UPDATE tracks SET auto_cue_state = 'manual'
 
 /// The decode reduced to the level of each window, so a later threshold change
 /// can re-derive a track's markers without reading the file again. See
-/// `audio_measure::auto_cue::Envelope`.
+/// `audio_measure::level_envelope::Envelope`.
 ///
 /// Existing rows get it by backfill through the ordinary analysis pass, not by
 /// a synchronous migration: it is a full decode per track. Until a row has one,
@@ -3029,7 +3030,8 @@ fn backup(conn: &Connection, path: &Path, version: usize) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio_measure::auto_cue::{self, AutoCue};
+    use crate::audio_measure::level_envelope;
+    use crate::library::auto_cue::AutoCue;
 
     const THRESHOLDS: Thresholds = Thresholds {
         silence_dbfs: -70.0,
@@ -3817,8 +3819,8 @@ mod tests {
 
     /// A level envelope to commit alongside [`AUTO`]. Its contents do not matter
     /// here — only that a commit carries one and a read gets it back.
-    fn levels() -> auto_cue::Envelope {
-        auto_cue::RmsWindows {
+    fn levels() -> level_envelope::Envelope {
+        level_envelope::RmsWindows {
             rms: vec![0.0, 0.5, 0.5, 0.0],
             duration_ms: 200,
         }
@@ -3868,7 +3870,7 @@ mod tests {
             .expect("committed");
         clear_levels(&db, id);
 
-        let other = auto_cue::RmsWindows {
+        let other = level_envelope::RmsWindows {
             rms: vec![0.9; 8],
             duration_ms: 400,
         }
@@ -3951,12 +3953,12 @@ mod tests {
         let id = another_music_track(db, path);
         let mut rms = vec![0.5f32; 40];
         rms.extend(std::iter::repeat_n(amplitude_at(-55.0), 20));
-        let levels = auto_cue::RmsWindows {
+        let levels = level_envelope::RmsWindows {
             rms,
             duration_ms: 3_000,
         }
         .envelope();
-        let cue = levels.detect(true, THRESHOLDS);
+        let cue = auto_cue::detect(&levels, true, THRESHOLDS);
         db.set_auto_cue(
             id,
             &Analysed {
@@ -4341,10 +4343,10 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let (id, _) = tailed_track(&db, "/a.mp3");
         let mut corrupt = levels().encode();
-        *corrupt.last_mut().unwrap() = auto_cue::LEVELS as u8 + 1;
+        *corrupt.last_mut().unwrap() = level_envelope::LEVELS as u8 + 1;
         put_levels(&db, id, &corrupt);
         assert!(
-            auto_cue::Envelope::decode(&corrupt).is_none(),
+            level_envelope::Envelope::decode(&corrupt).is_none(),
             "the decoder rejects it"
         );
 
@@ -4384,7 +4386,7 @@ mod tests {
         };
 
         let mut future = levels().encode();
-        future[0] = auto_cue::LEVELS_FORMAT_VERSION.wrapping_add(1);
+        future[0] = level_envelope::LEVELS_FORMAT_VERSION.wrapping_add(1);
         put_levels(&db, id, &future);
         assert!(queued(&db), "a layout this build does not know");
 

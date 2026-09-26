@@ -195,7 +195,7 @@ Per-Track state saying who placed the trio: `pending` (not analysed yet), `auto`
 _Avoid_: Source, origin, locked
 
 **Level envelope**:
-The **Analysis pass** decode reduced to one byte per RMS window — the levels that window is above. Stored with the trio so a later threshold change re-derives markers without reading the file again, which is why thresholds round to whole decibels.
+The **Analysis pass** decode reduced to one byte per RMS window — the levels that window is above. Stored with the trio so a later threshold change re-derives markers without reading the file again, which is why thresholds round to whole decibels. It is a **Measurement** and answers only where audio crosses a level; naming a crossing Cue In or Next start is the rule reading it, not the envelope.
 _Avoid_: Waveform, RMS data, peaks
 
 **Recalculate**:

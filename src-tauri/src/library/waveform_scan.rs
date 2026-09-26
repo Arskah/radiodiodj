@@ -7,7 +7,7 @@
 //! backfills [fingerprints](crate::audio_measure::fingerprint): from the bytes
 //! already read when a waveform is due, from the head of the file otherwise.
 //! The same decode also yields the
-//! [automatic cue points](crate::audio_measure::auto_cue), so an unprepped track
+//! [automatic cue points](crate::library::auto_cue), so an unprepped track
 //! airs trimmed without a second pass over the file. Waveforms land in the DB
 //! one at a time and a `waveform-ready` event is emitted per track so the
 //! renderer can refresh a curve for the deck that is currently showing it.
@@ -42,7 +42,8 @@ use super::db::{AnalysisJob, Db};
 use super::scanner::now_ms;
 use crate::audio::cue_points::CuePoints;
 use crate::audio_measure::fingerprint;
-use crate::audio_measure::{auto_cue, loudness, waveform};
+use crate::audio_measure::{level_envelope, loudness, waveform};
+use crate::library::auto_cue;
 use crate::persist::config::Config;
 
 type Bytes = Arc<[u8]>;
@@ -440,7 +441,7 @@ fn store_auto_cue(
     db: &Db,
     app: &AppHandle,
     config: &Config,
-    levels: &auto_cue::Envelope,
+    levels: &level_envelope::Envelope,
     retry: &mut bool,
 ) {
     // Read per track rather than once per run: a threshold changed mid-backfill
@@ -448,7 +449,7 @@ fn store_auto_cue(
     let thresholds = config.get_tuning().auto_cue.thresholds();
     let music = job.content_type == "music";
     let analysed = auto_cue::Analysed {
-        cue: levels.detect(music, thresholds),
+        cue: auto_cue::detect(levels, music, thresholds),
         levels: levels.clone(),
         thresholds,
         at_ms: now_ms(),
@@ -482,7 +483,7 @@ fn store_auto_cue(
 fn store_auto_cue_levels(
     job: &AnalysisJob,
     db: &Db,
-    levels: &auto_cue::Envelope,
+    levels: &level_envelope::Envelope,
     retry: &mut bool,
 ) {
     match db.set_auto_cue_levels(job.id, levels, &job.content_type, job.mtime) {

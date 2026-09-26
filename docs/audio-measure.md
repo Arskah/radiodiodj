@@ -8,9 +8,12 @@ where the answers go.
 It is a library that happens to live in this repository. Nothing in it opens a
 device, touches the database, reads a setting, emits a Tauri event or holds a
 `Sink`. A caller hands it bytes and a threshold and receives numbers. That is
-already how the code behaved before the move — `waveform.rs`, `auto_cue.rs`,
+already how most of the code behaved before the move — `waveform.rs`,
 `loudness.rs` and `bpm.rs` were pure — but nothing said so, and nothing stopped
 the next commit from reaching for `AppHandle` because the file next door had one.
+Purity was never the whole test, either: `auto_cue.rs` was pure and still did not
+belong, which [the level envelope](#the-level-envelope-and-the-rules-that-read-it)
+is about.
 
 ## Why it is separate
 
@@ -39,16 +42,16 @@ vetting new material. None of them should have to link a mixer to ask.
 
 ## What it holds
 
-| file                           | holds                                                             |
-| ------------------------------ | ----------------------------------------------------------------- |
-| `audio_measure/mod.rs`         | the boundary, stated, and the guard test that keeps it            |
-| `audio_measure/formats.rs`     | the supported-extension table — what this can be asked to read    |
-| `audio_measure/waveform.rs`    | `analyze` — the one decode — plus `compute_detail` for the editor |
-| `audio_measure/loudness.rs`    | `Loudness`, `TARGET_LUFS`, `gain_db`, `linear_gain`               |
-| `audio_measure/auto_cue.rs`    | RMS windows, the level envelope, and the markers derived from it  |
-| `audio_measure/bpm.rs`         | the onset envelope and the tempo estimator                        |
-| `audio_measure/fingerprint.rs` | the tag-independent content hash of demuxed packets               |
-| `audio_measure/test_audio.rs`  | `write_wav`, the generated fixture its own tests measure          |
+| file                              | holds                                                             |
+| --------------------------------- | ----------------------------------------------------------------- |
+| `audio_measure/mod.rs`            | the boundary, stated, and the guard test that keeps it            |
+| `audio_measure/formats.rs`        | the supported-extension table — what this can be asked to read    |
+| `audio_measure/waveform.rs`       | `analyze` — the one decode — plus `compute_detail` for the editor |
+| `audio_measure/loudness.rs`       | `Loudness`, `TARGET_LUFS`, `gain_db`, `linear_gain`               |
+| `audio_measure/level_envelope.rs` | RMS windows, and where the audio crosses a level                  |
+| `audio_measure/bpm.rs`            | the onset envelope and the tempo estimator                        |
+| `audio_measure/fingerprint.rs`    | the tag-independent content hash of demuxed packets               |
+| `audio_measure/test_audio.rs`     | `write_wav`, the generated fixture its own tests measure          |
 
 Its outward surface is four entry points — `analyze`, `compute_detail`,
 `fingerprint::of_source` / `of_file` — plus the types they return and the
@@ -58,10 +61,10 @@ derivations over those types (`RmsWindows::envelope`, `Envelope::detect`,
 ## What stayed behind, and why
 
 **`audio/cue_points.rs`** — the five markers. They are a _domain model_ shared by
-the database, the playlist, the session and the decks, not a measurement.
-`auto_cue` deliberately emits its own `AutoCue` type and never mentions
-`CuePoints`, so the module has no need of it, and pulling it in would drag the
-whole cue vocabulary across a boundary drawn to keep vocabulary out.
+the database, the playlist, the session and the decks, not a measurement. The
+automatic-cue rule emits its own `AutoCue` type and never mentions `CuePoints`,
+so nothing here needs it, and pulling it in would drag the whole cue vocabulary
+across a boundary drawn to keep vocabulary out.
 
 **`ReplayGainMode` and `loudness::factor`** — `factor(mode, gain_db, peak)` is
 the one place the old `loudness.rs` reached into `persist::config`. What gain a
@@ -88,6 +91,55 @@ them would couple a pure function to a retry policy.
 **`write_tag` and `retag_externally`** — the other half of the old
 `library/test_audio.rs`. They write lofty tags, which is metadata, not audio.
 The library's tag tests keep them; only `write_wav` moves.
+
+## The level envelope and the rules that read it
+
+`auto_cue.rs` moved in with the first cut and then straight back out, because
+"pure" turned out to be the wrong test. It was pure — no device, no file, no
+database — and it was still an application, not a measurement. Two things gave it
+away:
+
+- `detect(music: bool, …)` took a **content type**. A measurement does not know
+  that a station has jingles.
+- The edge-of-file rule reasoned about storage: "a marker at the very edge of the
+  file is stored as `NULL` … an explicit 0 would read as an operator decision to
+  everything downstream." That is a database semantic, in a module that is not
+  allowed to know a database exists.
+
+So the file split along what it actually knew.
+
+**`audio_measure/level_envelope.rs`** measures. One byte per 50 ms window — the
+number of whole-dBFS levels that window is above — and one question asked of it,
+at a level:
+
+| asks                   | answers                                                        |
+| ---------------------- | -------------------------------------------------------------- |
+| `span_above(dbfs)`     | first and last crossing, plus whether either is at a file edge |
+| `last_end_above(dbfs)` | where the audio last reached a level and did not return        |
+| `duration_ms()`        | the decoded length the positions are clamped to                |
+
+`Span`'s two flags are facts about the file — the audio was already running when
+it opened — not instructions about what to store. What a caller records for a
+span that starts at window zero is its own rule.
+
+**`library/auto_cue.rs`** decides. `AutoCue`, `Thresholds`, `ALGORITHM_VERSION`,
+the three policy constants (`COLD_END_LEAD_MS`, `MAX_SEGUE_LEAD_MS`,
+`MIN_AFTER_CUE_IN_MS`), `detect` and `Analysed`. It lives in `library/` rather
+than `audio/` because the decks never derive a marker: the only callers are
+`db.rs` and `waveform_scan.rs`, and the switches that decide what the library
+_reports_ already gate in `effective_cue_points`.
+
+One coupling survives the split and has to be written down rather than inferred
+from adjacency: [`LEVELS_FORMAT_VERSION`] must be bumped when a rule changes
+**what it asks of the windows**, not only when the bytes change. A rule wanting a
+crossing sustained for some duration cannot be answered from a v1 blob at all, and
+its own version constant would requeue nothing, because nothing screens on it.
+Both sides now say so.
+
+The same test applied elsewhere and found nothing: `bpm.rs`'s preferred metrical
+range is a judgement about _measuring_ tempo, and `WAVEFORM_BUCKETS` is the
+stored resolution of a curve. Only the cue rules were an application wearing a
+measurement's clothes.
 
 ## The rules
 
@@ -119,12 +171,12 @@ would only be read by someone already looking.
 `analyze` decodes a track once and runs four consumers off the single
 `inspect()` walk over its samples:
 
-| consumer               | keeps                                      | width                       |
-| ---------------------- | ------------------------------------------ | --------------------------- |
-| waveform mip buffer    | summed squares per cell → 400 `u8` buckets | bounded, merges on overflow |
-| `EbuR128` meter + peak | integrated loudness, highest sample        | 8192-sample chunks          |
-| `auto_cue::Collector`  | RMS per window → the level envelope        | 50 ms                       |
-| `bpm::Collector`       | RMS per frame → the onset envelope         | 10 ms, capped at 5 min      |
+| consumer                    | keeps                                      | width                       |
+| --------------------------- | ------------------------------------------ | --------------------------- |
+| waveform mip buffer         | summed squares per cell → 400 `u8` buckets | bounded, merges on overflow |
+| `EbuR128` meter + peak      | integrated loudness, highest sample        | 8192-sample chunks          |
+| `level_envelope::Collector` | RMS per window → the level envelope        | 50 ms                       |
+| `bpm::Collector`            | RMS per frame → the onset envelope         | 10 ms, capped at 5 min      |
 
 The decode dominates the cost of any one of them, which is why they share it,
 and it is the reason the fingerprint pass reuses the same bytes rather than
@@ -188,6 +240,11 @@ Each lands on its own, and none changes behaviour.
    `docs/track-identity.md`.
 3. **The boundary gets teeth.** The guard test in `mod.rs` and the CONTEXT.md
    **Measurement** entry.
+4. **The level envelope stops naming cue points.** Split `auto_cue.rs` into the
+   measurement and the rule, per
+   [the section above](#the-level-envelope-and-the-rules-that-read-it). The first
+   cut was too generous; a guard cannot catch this one, because the dependency it
+   removes was never a dependency — only a vocabulary.
 
 Ordered so the guard lands over a module that is already complete — a guard
 written first would only have to be edited twice.

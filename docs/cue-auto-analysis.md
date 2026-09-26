@@ -8,7 +8,7 @@ The intended operating assumption is that **almost all library tracks will never
 
 No source audio file is modified.
 
-The detector (landed 2026-09-19, [#372](https://github.com/Arskah/radiodiodj/issues/372)) is `src-tauri/src/audio_measure/auto_cue.rs`, fed by the RMS windows `audio_measure/waveform.rs` collects during the existing waveform decode and committed by `library/waveform_scan.rs`. Ownership and provenance live on the track row as `auto_cue_state` (`pending` / `auto` / `manual`), `auto_cue_version`, `auto_cue_silence_db`, `auto_cue_segue_db` and `auto_cue_at`. The switches and the thresholds are `tuning.autoCue` in `config.json`, under _Settings → Advanced_.
+The detector (landed 2026-09-19, [#372](https://github.com/Arskah/radiodiodj/issues/372)) is two halves. The **measurement** is `src-tauri/src/audio_measure/level_envelope.rs`, fed by the RMS windows `audio_measure/waveform.rs` collects during the existing waveform decode; it answers only where the audio crosses a level. The **rules** on this page — what silence is worth trimming, the cold-ending lead, that a jingle gets no Next Start, that an edge-of-file marker is `NULL` — are `src-tauri/src/library/auto_cue.rs`, and `library/waveform_scan.rs` commits what they derive. The split is [audio-measure.md](./audio-measure.md). Ownership and provenance live on the track row as `auto_cue_state` (`pending` / `auto` / `manual`), `auto_cue_version`, `auto_cue_silence_db`, `auto_cue_segue_db` and `auto_cue_at`. The switches and the thresholds are `tuning.autoCue` in `config.json`, under _Settings → Advanced_.
 
 ## The switches
 

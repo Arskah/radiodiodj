@@ -3,7 +3,8 @@
 //! The estimator never sees PCM. It works from an onset envelope — one RMS
 //! value per [`ENVELOPE_MS`] of audio — collected while the waveform pass walks
 //! the decoded samples ([`super::waveform::analyze`]), the same way
-//! [`super::auto_cue::Collector`] collects its 50 ms windows from that one pass.
+//! [`super::level_envelope::Collector`] collects its 50 ms windows from that
+//! one pass.
 //!
 //! An envelope is four orders of magnitude smaller than the audio it describes:
 //! 100 values per second, so a six-minute track is ~36,000 floats. That is what
@@ -11,7 +12,7 @@
 //! is enough for periodicity — a beat is an energy event, and the frequency
 //! content under it carries no tempo.
 
-use super::auto_cue::amplitude;
+use super::level_envelope::amplitude;
 
 /// Width of one envelope value. 10 ms puts 50 frames in a beat period at
 /// 120 BPM, which resolves adjacent tempi that a 50 ms grid folds together, and

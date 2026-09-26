@@ -18,7 +18,7 @@ own.
 | decode, devices, levels           | `audio/`                                             | `features/deck/`                      | [audio.md](./audio.md)                                 |
 | what a decode measures            | `audio_measure/`                                     | —                                     | [audio-measure.md](./audio-measure.md)                 |
 | on-air mixing, handover, fades    | `audio/bus.rs`, `audio/deck.rs`                      | `features/deck/NowPlaying.svelte`     | [program-bus.md](./program-bus.md)                     |
-| cue points and their editor       | `audio/cue_points.rs`, `audio_measure/auto_cue.rs`   | `features/track/Cue*.svelte`          | [cue-points.md](./cue-points.md)                       |
+| cue points and their editor       | `audio/cue_points.rs`, `library/auto_cue.rs`         | `features/track/Cue*.svelte`          | [cue-points.md](./cue-points.md)                       |
 | the library and scanning          | `library/`                                           | `features/library/`, `features/scan/` | [library.md](./library.md)                             |
 | track identity across moves       | `audio_measure/fingerprint.rs`, `library/listing.rs` | —                                     | [track-identity.md](./track-identity.md)               |
 | library health                    | `library/health.rs`, `check.rs`                      | `features/health/`                    | [library-health.md](./library-health.md)               |
@@ -43,9 +43,10 @@ Grouped by domain.
   bus, the cue deck, cue points, the fade envelope and the ReplayGain setting.
   Its own code map is in [audio.md](./audio.md#code-map).
 - **`audio_measure/`** — what a decode says about a track: the waveform curve,
-  the loudness numbers, the level envelope behind the automatic cue points, the
-  tempo, and `fingerprint.rs`'s tag-independent content hash of the first MiB of
-  demuxed packets. A library, not a feature — it opens no device, reads no
+  the loudness numbers, the level envelope (where the audio crosses a level — the
+  rules that name a crossing are `library/auto_cue.rs`), the tempo, and
+  `fingerprint.rs`'s tag-independent content hash of the first MiB of demuxed
+  packets. A library, not a feature — it opens no device, reads no
   setting and touches no database, and `library/waveform_scan.rs` is the pass
   that calls it. See [audio-measure.md](./audio-measure.md).
 - **`library/`** — `db.rs` (rusqlite + FTS5, WAL, `parking_lot::Mutex<Connection>`,
@@ -55,7 +56,8 @@ Grouped by domain.
   one reconcile transaction per scan, a background worker emitting
   `scan-progress` / `scan-state-changed` with a cancel token), `listing.rs`
   (root listing plus the changed/gone rules, shared by scan and check),
-  `waveform_scan.rs` (the background analysis pass filling waveforms,
+  `auto_cue.rs` (Cue In, Cue Out and Next Start derived from a measured level
+  envelope), `waveform_scan.rs` (the background analysis pass filling waveforms,
   fingerprints, loudness and automatic cue points), `tag_backfill.rs` (the
   background pass filling tag columns a row predates), `health.rs`, `check.rs`
   (timed, listing-and-stat only, never writes) and `tag_write.rs` (opt-in

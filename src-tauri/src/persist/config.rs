@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::audio_measure::auto_cue::Thresholds;
+use crate::library::auto_cue::Thresholds;
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -729,7 +729,7 @@ fn normalize_tuning(mut t: TuningConfig) -> TuningConfig {
 ///
 /// Whole decibels are what the analyser resolves: a decode is reduced to the
 /// level of each window, at whole levels in
-/// `auto_cue::LEVEL_MIN_DBFS..=LEVEL_MAX_DBFS`, so a later threshold change can
+/// `level_envelope::LEVEL_MIN_DBFS..=LEVEL_MAX_DBFS`, so a later threshold change
 /// re-derive a track's markers without reading the file again. A fractional
 /// threshold would fall between two levels and the stored envelope would stop
 /// answering it exactly. The number inputs have always offered whole steps, so
