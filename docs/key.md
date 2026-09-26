@@ -130,6 +130,41 @@ them is not one any track contains.
 Percussion, speech and noise have no key. They measure successfully with a low
 confidence, or with no key at all, and either way the row says so.
 
+### What it measures on real music
+
+Run against the fourteen well-known tracks staged in `local-audio/known`
+(`survey_a_library`, below), against the keys those songs are commonly published
+in:
+
+| reading                                     | count |
+| ------------------------------------------- | ----- |
+| exact                                       | 6     |
+| the published key's relative major or minor | 2     |
+| right tonic, wrong mode                     | 2     |
+| wrong                                       | 4     |
+
+Two things are worth reading off that.
+
+The **near misses are near in a way that matters**. A relative major and minor
+share seven notes and sit on the _same Camelot number_, so a track read as `D`
+where a DJ would call it `F#m` still lands in the same harmonic neighbourhood.
+Mode confusion on the AC/DC riffs is the same story from the other side: those
+songs are pentatonic and genuinely modally ambiguous, and their tonic is right.
+
+The remaining errors share a **bias toward major** — eight major readings over a
+set that is mostly minor — and the cause is known rather than mysterious. Folding
+every bin onto its nearest semitone counts each note's **own harmonic series**,
+and a note's fifth partial is a major third two octaves up. Every root therefore
+votes a little for its own major third, whichever mode the music is in. The
+standard corrections are spectral whitening, or weighting a pitch class by the
+harmonics that should accompany it (a harmonic product spectrum) rather than by
+raw magnitude. Neither is a tuning tweak; both change what the profile is, so
+both mean a `VERSION` bump. See [Not built](#not-built).
+
+This is why `key_confidence` is reported and nothing gates on it: the number is
+for an operator deciding how much to trust a row, not for the app deciding
+anything.
+
 ## Camelot is presentation
 
 The measurement reports a note name and stops. Naming that key `8A` is a DJ's
@@ -160,10 +195,16 @@ shown unadorned rather than converted.
 - **Harmonic rotation rules.** `SelectionFilter` in `library/db.rs` has no key
   predicate, so "follow this track with one that mixes" means new fields there
   and a new rung in the `LADDER` — see [rotation.md](./rotation.md).
-- **A corpus survey.** `bpm.rs` carries an `#[ignore]`d `survey_a_library`
-  measuring agreement across a real library. Key has no equivalent yet, and tags
-  are poor ground truth here: most libraries are untagged, and the taggers that
-  do write `TKEY` disagree about notation before they disagree about the key.
+- **Correcting the major bias.** Spectral whitening or harmonic-product
+  weighting, per [What it measures on real music](#what-it-measures-on-real-music).
+  Either is worth doing against a corpus larger than fourteen tracks, so the
+  change is measured rather than fitted, and either means bumping
+  `key::VERSION` to requeue the library.
+- **Ground truth to measure against.** `survey_a_library` reports; it cannot
+  score, because a tag is poor truth here — most libraries carry no `TKEY`, and
+  the taggers that do disagree about notation before they disagree about the key.
+  Scoring wants a checked list of keys for a corpus, which is a thing to build
+  before the correction above, not after.
 
 ## Code map
 

@@ -552,3 +552,107 @@ mod tests {
         assert_eq!(bins[bin], Some(9), "A4 is pitch class 9");
     }
 }
+
+/// What the estimator says about real music, run against a directory of audio.
+///
+/// Reports rather than asserts, like [`super::bpm`]'s survey: a tag is poor
+/// ground truth for a key — most libraries carry none, and the taggers that do
+/// write `TKEY` disagree about notation before they disagree about the key — so
+/// what is useful is the list, read by someone who knows the songs.
+///
+/// ```text
+/// KEY_CORPUS=local-audio/known cargo test --release \
+///   --manifest-path src-tauri/Cargo.toml \
+///   -- --ignored --nocapture survey_a_library
+/// ```
+#[cfg(test)]
+mod corpus {
+    use super::*;
+    use lofty::file::TaggedFileExt;
+    use lofty::prelude::*;
+    use lofty::probe::Probe;
+    use std::path::{Path, PathBuf};
+
+    /// Extensions this app decodes, so a survey is not skewed by the cover art
+    /// sitting beside the audio.
+    const AUDIO: &[&str] = &["mp3", "flac", "ogg", "m4a", "wav", "aac", "oga", "opus"];
+
+    fn files(root: &Path) -> Vec<PathBuf> {
+        let mut stack = vec![root.to_path_buf()];
+        let mut out = Vec::new();
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| AUDIO.contains(&e.to_ascii_lowercase().as_str()))
+                    .unwrap_or(false)
+                {
+                    out.push(path);
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// What a tagger claimed, in whatever notation it chose.
+    fn tagged_key(path: &Path) -> Option<String> {
+        let file = Probe::open(path).ok()?.read().ok()?;
+        let tag = file.primary_tag().or_else(|| file.first_tag())?;
+        let value = tag.get_string(ItemKey::InitialKey)?.trim().to_string();
+        (!value.is_empty()).then_some(value)
+    }
+
+    fn measure(path: &Path) -> Option<Key> {
+        use rodio::{Decoder, Source};
+        use std::io::Cursor;
+        use std::sync::Arc;
+
+        let bytes: Arc<[u8]> = Arc::from(std::fs::read(path).ok()?.into_boxed_slice());
+        let decoder = Decoder::new(Cursor::new(bytes)).ok()?;
+        let mut collector = Collector::new(decoder.sample_rate(), decoder.channels());
+        for sample in decoder {
+            collector.push(sample);
+        }
+        collector.finish()
+    }
+
+    #[test]
+    #[ignore]
+    fn survey_a_library() {
+        let Some(root) = std::env::var_os("KEY_CORPUS") else {
+            eprintln!("set KEY_CORPUS to a directory of audio");
+            return;
+        };
+        let all = files(Path::new(&root));
+        if all.is_empty() {
+            eprintln!("no audio under {root:?}");
+            return;
+        }
+        let mut measured = 0;
+        for path in &all {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            match measure(path) {
+                Some(key) => {
+                    measured += 1;
+                    eprintln!(
+                        "{:<44} {:<4} conf {:.2}  tag {:?}",
+                        name,
+                        key.name(),
+                        key.confidence,
+                        tagged_key(path).unwrap_or_else(|| "-".into()),
+                    );
+                }
+                None => eprintln!("{name:<44} no key"),
+            }
+        }
+        eprintln!("\n{measured} of {} measured", all.len());
+    }
+}
