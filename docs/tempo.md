@@ -84,6 +84,22 @@ The cap exists because tempo is a property of a passage, not of a file. Reading
 further buys nothing on a track and costs real time on a two-hour recording,
 where the autocorrelation runs over the whole envelope.
 
+**Changing the threshold does not requeue a tempo, and should not.** The queue
+screens `bpm_measured_at` and `bpm_version` and nothing else, so a library
+re-tuned from -70 to -60 dBFS keeps every tempo it had. That is correct rather
+than an omission: the gate moves the latch by a few tens of milliseconds on a
+real track, which is the same passage, the same onsets and the same
+autocorrelation peak. A track's tempo is a property of its audio, and no setting
+in this app changes it. Re-measuring because a threshold moved would spend a full
+library decode to arrive back at the same numbers.
+
+The gate does do one piece of structural work beyond agreeing with the cue
+points. A silent head sits at the log of nothing — `novelty` differences the dB
+curve, so a silence-to-audio edge would be a single enormous false onset dwarfing
+the few-dB rises that are real beats. The latch excludes it by construction: the
+first collected window is the first audible one, so nothing is ever differenced
+across that edge.
+
 ## The estimator
 
 `audio_measure/bpm.rs`, three stages, no FFT and no dependency:
@@ -197,11 +213,62 @@ Staging the audio locally first is worth it: copying a sample out of a network
 share once turns every later run into a local read. `local-audio/` is excluded in
 `.git/info/exclude`, which every worktree of this repo shares and nothing commits.
 
+## Why the envelope is not stored
+
+The automatic cue points keep their level envelope on the row
+(`auto_cue_levels`), so a threshold change re-derives markers in seconds instead
+of re-decoding the library. Doing the same for the onset envelope was considered
+and **rejected**.
+
+The cue table pays off because an _operator_ turns a threshold and wants an
+answer now. Nothing about a tempo works that way. The only thing that can change
+a measured BPM is this module changing — a `bpm_version` bump, shipped in a
+release — because, per
+[the silence gate](#the-silence-gate-is-the-operators-threshold), no setting
+alters what the audio is. So the whole benefit is one avoided background pass per
+estimator improvement, and that pass is not the multi-hour job the cue backfill
+was: roughly tens of minutes of unattended work for a library of a few thousand
+tracks, the same pass the app already runs on first launch.
+
+Against that, the storage is far worse than the cue table's. `ENVELOPE_MS` is
+10 ms against the level envelope's 50, so there are five times as many values, and
+they cannot be squeezed the way the cue codes are. A cue code captures its
+question _exactly_ because the only question is `rms > amplitude(whole dB)`, a
+comparison a whole-dB code answers without loss. The estimator instead does
+arithmetic on the values — `20·log10`, a first difference, a rectification, a
+moving mean — so whole-dB rounding would inject about a decibel of noise into a
+flux signal whose real onsets are a few decibels. Half-decibel codes are the
+floor, and whether a tempo survives that quantisation is an experiment nobody has
+run. For a library of ~4300 tracks averaging four minutes that is ~100 MB of
+database as `u8`, ~400 MB as `f32`, against ~20 MB for the whole cue table.
+
+Storing the envelope **ungated from window 0**, so the gate became re-derivable,
+sounds like the general version and is not: the only thing those leading windows
+could contribute is the false onset the latch exists to keep out.
+
+Where re-measurement genuinely does happen more than once is **development**.
+Tuning `COMB_WEIGHTS`, `OCTAVE_MARGIN` or `LOCAL_MEAN_FRAMES` against real music
+is a loop of dozens of iterations, and `survey_a_library` re-decodes every file on
+every run — which is why it defaults to `BPM_SAMPLE=300` rather than a whole
+library, and why [Checking it yourself](#checking-it-yourself) recommends staging
+audio into `local-audio/`. The fix for that belongs in the corpus harness: cache
+each file's envelope on disk, keyed by path and mtime, and a later run is seconds
+over the _entire_ library instead of minutes over a sample. No migration, no
+format-version invariant, no `f32`-to-`u8` question, and nothing added to an
+operator's database for a developer's convenience.
+
+Revisit this only when a second consumer wants the same curve — a beat grid,
+downbeat or first-beat position for a beatmatched segue is written against an
+onset envelope and against nothing else on disk. That is the same standard
+[audio-measure.md](./audio-measure.md#becoming-a-crate) sets for extracting the
+module into a crate.
+
 ## Not built
 
-- **A stored envelope.** Re-judging the library currently means a decode, gated by
-  `bpm_version`. Storing the envelope as a blob, like `auto_cue_levels`, would
-  make it a no-decode pass.
+- **An envelope cache for the corpus tests.** Per the section above: a dev-side
+  cache keyed by path and mtime, inside `#[cfg(test)] mod corpus`, so estimator
+  tuning stops paying a decode per iteration. Worth doing the next time the
+  estimator is touched, not before.
 - **Tempo in rotation.** `SelectionFilter` in `library/db.rs` has no numeric
   predicates, so a tempo-aware rule (a daypart's range, or a smoother segue) means
   new fields there and a new rung in the `LADDER` — see
