@@ -1,4 +1,5 @@
 pub mod auto_cue;
+pub mod bpm;
 pub mod bus;
 pub mod cache;
 pub mod cue;

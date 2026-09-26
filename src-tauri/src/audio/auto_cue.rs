@@ -388,7 +388,7 @@ fn code_of(dbfs: f64) -> u8 {
 }
 
 /// dBFS to the linear RMS amplitude the windows are measured in.
-fn amplitude(dbfs: f64) -> f64 {
+pub(super) fn amplitude(dbfs: f64) -> f64 {
     10f64.powf(dbfs / 20.0)
 }
 

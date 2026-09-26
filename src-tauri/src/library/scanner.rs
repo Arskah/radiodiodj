@@ -400,6 +400,7 @@ pub fn read_cover_art(path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::bpm::Bpm;
     use crate::audio::cue_points::CuePoints;
     use crate::library::db::TrackMetadataUpdate;
     use crate::library::test_audio::{retag_externally, write_wav};
@@ -1009,6 +1010,16 @@ mod tests {
         db.set_waveform(id, &[1, 2, 3], row_mtime(&db, id)).unwrap();
         db.set_loudness(id, Some(-7.5), Some(0.9), 1234, row_mtime(&db, id))
             .unwrap();
+        db.set_bpm(
+            id,
+            Some(Bpm {
+                bpm: 128.0,
+                confidence: 0.9,
+            }),
+            1234,
+            row_mtime(&db, id),
+        )
+        .unwrap();
         prepare(&db, id);
 
         retag_externally(&file, "Retagged", "Tagger");

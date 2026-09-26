@@ -55,6 +55,16 @@ silence on `main` emits `program:faded-out`, which the service maps to the same
 `stop()` the Stop button runs. Durations are read per press from
 `tuning.player`. See [docs/program-bus.md](docs/program-bus.md#live-fades).
 
+**Measured tempo** — `detected_bpm`/`bpm_confidence` are measured by the
+analysis pass and stored **beside** the tag-derived `bpm`, never over it.
+`audio::bpm::Collector` is a fourth consumer of the one decode, and it collects a
+10 ms **onset envelope**, not PCM — 144 KB for a six-minute track against ~64 MB
+of samples, with up to eight workers running. Its silence gate is
+`tuning.autoCue.silenceDbfs`, so "audible" means what it means to the automatic
+cue points. `bpm_measured_at` is the done marker, `bpm_version` is what requeues
+the library when the estimator improves. Confidence is reported, never gated on.
+See [docs/tempo.md](docs/tempo.md).
+
 **ReplayGain** — measured by the analysis pass, never read from tags.
 `Cmd::Load` carries an already-resolved linear factor, so the worker never
 consults the library, and it is applied at the source in `append_span` (not

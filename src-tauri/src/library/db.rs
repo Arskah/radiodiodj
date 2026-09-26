@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::audio::auto_cue::{self, Analysed, Envelope, Thresholds};
+use crate::audio::bpm::{self, Bpm};
 use crate::audio::cue_points::CuePoints;
 use crate::library::fingerprint;
 use crate::library::scanner;
@@ -47,6 +48,13 @@ pub struct Track {
     /// Musical key, as the tagger wrote it. Not normalised — `TKEY` holds
     /// `Am` by the spec but Camelot (`8A`) in practice.
     pub initial_key: Option<String>,
+    /// Tempo as the analysis pass measured it, beside `bpm` rather than over it.
+    /// `None` until the pass has read the file, and also after it has, for audio
+    /// that holds no tempo.
+    pub detected_bpm: Option<f64>,
+    /// How much the measurement stands out from the alternatives, 0.0..=1.0.
+    /// Reported so a weak reading can be presented as one; nothing gates on it.
+    pub bpm_confidence: Option<f64>,
     pub comment: Option<String>,
     /// The track's radio edit. Arrives with every `SELECT *`, so nothing can
     /// reach air with stale markers.
@@ -393,6 +401,9 @@ pub struct AnalysisJob {
     /// under yesterday's, which is the implicit mass re-analysis
     /// `docs/cue-auto-analysis.md` rules out.
     pub needs_auto_cue_levels: bool,
+    /// Never measured, or measured by an estimator older than
+    /// [`bpm::VERSION`](crate::audio::bpm::VERSION).
+    pub needs_bpm: bool,
 }
 
 /// What one explicit recalculation did. `updated` were re-derived from their
@@ -975,9 +986,10 @@ impl Db {
             .optional()?)
     }
 
-    /// Every present track still missing a waveform, a loudness measurement or
-    /// an automatic cue, or whose fingerprint is missing or was computed by an
-    /// older [`fingerprint::VERSION`], ordered by id. Drives the background
+    /// Every present track still missing a waveform, a loudness measurement, an
+    /// automatic cue or a tempo measurement, or whose fingerprint or tempo was
+    /// computed by an older [`fingerprint::VERSION`] / [`bpm::VERSION`], ordered
+    /// by id. Drives the background
     /// analysis worker (backfill included). A track whose analysis failed is
     /// left out until its file changes.
     ///
@@ -1001,16 +1013,20 @@ impl Db {
             "(auto_cue_state <> 'manual' AND {})",
             Self::unreadable_levels()
         );
+        let stale_bpm = format!(
+            "(bpm_measured_at IS NULL OR bpm_version IS NULL OR bpm_version < {})",
+            bpm::VERSION
+        );
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(&format!(
             "SELECT id, path, mtime, content_type, waveform IS NULL, {stale_fingerprint}, \
                     rg_measured_at IS NULL, auto_cue_state = 'pending', \
-                    {missing_levels} \
+                    {missing_levels}, {stale_bpm} \
              FROM tracks \
              WHERE missing_since IS NULL AND analysis_failed_at IS NULL \
                AND (waveform IS NULL OR {stale_fingerprint} \
                     OR rg_measured_at IS NULL OR auto_cue_state = 'pending' \
-                    OR {missing_levels}) \
+                    OR {missing_levels} OR {stale_bpm}) \
              ORDER BY id"
         ))?;
         let rows = stmt.query_map([], |r| {
@@ -1024,6 +1040,7 @@ impl Db {
                 needs_loudness: r.get(6)?,
                 needs_auto_cue: r.get(7)?,
                 needs_auto_cue_levels: r.get(8)?,
+                needs_bpm: r.get(9)?,
             })
         })?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
@@ -1323,6 +1340,38 @@ impl Db {
             "UPDATE tracks SET rg_gain = ?, rg_peak = ?, rg_measured_at = ? \
              WHERE id = ? AND mtime IS ?",
             params![gain, peak, at_ms, id, mtime],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Store a completed tempo measurement. `bpm` is `None` for a file that
+    /// decoded but held no tempo to find, which still counts as measured, so the
+    /// pass does not pick the track up again — `bpm_version` is what a later
+    /// estimator uses to ask for it back.
+    ///
+    /// Guarded on `mtime` like [`Db::set_waveform`]. The tag-derived `bpm`
+    /// column is deliberately not touched: the two are separate readings of the
+    /// same track, and only one of them is the operator's.
+    pub fn set_bpm(
+        &self,
+        id: i64,
+        bpm: Option<Bpm>,
+        at_ms: i64,
+        mtime: Option<i64>,
+    ) -> Result<bool> {
+        let conn = self.conn.lock();
+        let changed = conn.execute(
+            "UPDATE tracks SET detected_bpm = ?, bpm_confidence = ?, \
+                    bpm_measured_at = ?, bpm_version = ? \
+             WHERE id = ? AND mtime IS ?",
+            params![
+                bpm.map(|b| b.bpm),
+                bpm.map(|b| f64::from(b.confidence)),
+                at_ms,
+                bpm::VERSION,
+                id,
+                mtime
+            ],
         )?;
         Ok(changed > 0)
     }
@@ -2396,8 +2445,8 @@ fn order_clause(sort_by: Option<&str>, sort_dir: Option<&str>) -> Option<String>
 /// blob along with `SELECT *`.
 const TRACK_COLUMNS: &str = "id, title, artist, album, duration, play_count, genre, year, bpm, \
      sample_rate, bitrate, format, album_artist, track_no, track_total, disc_no, disc_total, \
-     isrc, initial_key, comment, cue_in_ms, fade_in_ms, fade_out_ms, cue_out_ms, next_start_ms, \
-     auto_cue_state, edited_fields";
+     isrc, initial_key, comment, detected_bpm, bpm_confidence, cue_in_ms, fade_in_ms, \
+     fade_out_ms, cue_out_ms, next_start_ms, auto_cue_state, edited_fields";
 
 /// The markers as they take effect. A derived trio is held back while the
 /// feature is switched off — the row keeps its result, and nothing downstream
@@ -2454,6 +2503,8 @@ fn row_to_track(row: &Row, policy: AutoCuePolicy) -> rusqlite::Result<Track> {
         isrc: row.get("isrc")?,
         initial_key: row.get("initial_key")?,
         comment: row.get("comment")?,
+        detected_bpm: row.get("detected_bpm")?,
+        bpm_confidence: row.get("bpm_confidence")?,
         cue_points: effective_cue_points(row, policy)?,
         edited_fields: row.get("edited_fields")?,
     })
@@ -2514,6 +2565,7 @@ const MIGRATION_STEPS: &[M] = &[
     M::up(AUTO_CUE),
     M::up(AUTO_CUE_LEVELS),
     M::up(TRACK_METADATA),
+    M::up(DETECTED_TEMPO),
 ];
 const MIGRATIONS: Migrations = Migrations::from_slice(MIGRATION_STEPS);
 
@@ -2835,7 +2887,39 @@ const UPSERT_TRACK_SQL: &str = "INSERT INTO tracks \
                        ELSE auto_cue_state END, \
         auto_cue_levels=CASE WHEN excluded.fingerprint = fingerprint \
                         THEN auto_cue_levels ELSE NULL END, \
+        detected_bpm=CASE WHEN excluded.fingerprint = fingerprint \
+                     THEN detected_bpm ELSE NULL END, \
+        bpm_confidence=CASE WHEN excluded.fingerprint = fingerprint \
+                       THEN bpm_confidence ELSE NULL END, \
+        bpm_measured_at=CASE WHEN excluded.fingerprint = fingerprint \
+                        THEN bpm_measured_at ELSE NULL END, \
+        bpm_version=CASE WHEN excluded.fingerprint = fingerprint \
+                    THEN bpm_version ELSE NULL END, \
         analysis_error=NULL, analysis_failed_at=NULL";
+
+/// Step 10: what the analysis pass measured of a track's tempo, beside — never
+/// over — the `bpm` a tagger wrote. The two disagree often enough to be worth
+/// seeing, and the operator's file is not this pass's to correct.
+///
+/// `bpm_measured_at` (unix ms) is what "already measured" means, not a non-null
+/// `detected_bpm`: a spoken-word recording measures successfully and has no
+/// tempo, and keying off the value alone would decode it again on every pass
+/// forever. `bpm_version` is what lets a later, better estimator disown an
+/// earlier one's work — the mechanism `library::fingerprint::VERSION` uses,
+/// since without it the marker that stops a re-decode also prevents one that is
+/// wanted.
+///
+/// `detected_key` and `key_confidence` are declared now and written by nothing:
+/// key detection is a separate question, and a column costs one `ALTER` today
+/// against a second migration later.
+const DETECTED_TEMPO: &str = r#"
+ALTER TABLE tracks ADD COLUMN detected_bpm REAL;
+ALTER TABLE tracks ADD COLUMN bpm_confidence REAL;
+ALTER TABLE tracks ADD COLUMN bpm_measured_at INTEGER;
+ALTER TABLE tracks ADD COLUMN bpm_version INTEGER;
+ALTER TABLE tracks ADD COLUMN detected_key TEXT;
+ALTER TABLE tracks ADD COLUMN key_confidence REAL;
+"#;
 
 /// A database this build must not touch.
 #[derive(Debug, PartialEq)]
@@ -3122,6 +3206,24 @@ mod tests {
                         album_artist = 'Various', track_no = 3, track_total = 12, \
                         disc_no = 1, disc_total = 2, isrc = 'FIFIN2400123', \
                         initial_key = '8A', comment = 'note', tags_read_version = 1; \
+                 INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
+                 SELECT id, 1000, artist, title, duration FROM tracks",
+            )
+            .unwrap();
+        },
+        |conn| {
+            seed_track(conn);
+            seed_dismissal(conn);
+            conn.execute_batch(
+                "UPDATE tracks SET edited_fields = 1, \
+                        analysis_error = 'bad', analysis_failed_at = 5, \
+                        rg_gain = -6.5, rg_peak = 0.98, rg_measured_at = 7, \
+                        auto_cue_state = 'manual', auto_cue_levels = x'00', \
+                        album_artist = 'Various', track_no = 3, track_total = 12, \
+                        disc_no = 1, disc_total = 2, isrc = 'FIFIN2400123', \
+                        initial_key = '8A', comment = 'note', tags_read_version = 1, \
+                        detected_bpm = 128.0, bpm_confidence = 0.8, \
+                        bpm_measured_at = 9, bpm_version = 1; \
                  INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
                  SELECT id, 1000, artist, title, duration FROM tracks",
             )
@@ -5758,7 +5860,8 @@ mod tests {
         assert!(jobs.iter().all(|j| j.needs_waveform
             && j.needs_fingerprint
             && j.needs_loudness
-            && j.needs_auto_cue));
+            && j.needs_auto_cue
+            && j.needs_bpm));
 
         let (a, b) = (jobs[0].id, jobs[1].id);
         db.set_waveform(a, &[9], None).unwrap();
@@ -5768,6 +5871,7 @@ mod tests {
         db.set_loudness(b, Some(-6.0), Some(0.9), 1, None).unwrap();
         db.set_auto_cue(b, &one_analysis(AutoCue::default(), 1), "music", None)
             .unwrap();
+        db.set_bpm(b, Some(tempo(128.0)), 1, None).unwrap();
 
         let jobs = db.tracks_needing_analysis().unwrap();
         assert_eq!(jobs.len(), 1);
@@ -5776,6 +5880,7 @@ mod tests {
         assert!(jobs[0].needs_fingerprint);
         assert!(jobs[0].needs_loudness);
         assert!(jobs[0].needs_auto_cue);
+        assert!(jobs[0].needs_bpm);
     }
 
     /// A fingerprint from an older algorithm is worthless for matching a moved
@@ -5794,6 +5899,7 @@ mod tests {
         db.set_loudness(id, Some(-6.0), Some(0.9), 1, None).unwrap();
         db.set_auto_cue(id, &one_analysis(AutoCue::default(), 1), "music", None)
             .unwrap();
+        db.set_bpm(id, Some(tempo(128.0)), 1, None).unwrap();
 
         db.set_fingerprint(id, "v1:stale", None).unwrap();
         let jobs = db.tracks_needing_analysis().unwrap();
@@ -5803,6 +5909,13 @@ mod tests {
         db.set_fingerprint(id, &format!("{}:fresh", fingerprint::VERSION), None)
             .unwrap();
         assert!(db.tracks_needing_analysis().unwrap().is_empty());
+    }
+
+    fn tempo(bpm: f64) -> Bpm {
+        Bpm {
+            bpm,
+            confidence: 0.9,
+        }
     }
 
     /// A silent or very short file measures successfully with no gain to
@@ -5824,8 +5937,86 @@ mod tests {
         db.set_loudness(id, None, None, 42, None).unwrap();
         db.set_auto_cue(id, &one_analysis(AutoCue::default(), 42), "music", None)
             .unwrap();
+        db.set_bpm(id, None, 42, None).unwrap();
 
         assert!(db.tracks_needing_analysis().unwrap().is_empty());
+    }
+
+    /// A tempo measured by an older estimator is worth less than what this build
+    /// would find, so the pass reads the track again — the marker that stops an
+    /// endless re-decode must not also stop a wanted one.
+    #[test]
+    fn a_tempo_from_an_older_estimator_is_measured_again() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&TrackInsert {
+            path: "/a.mp3".into(),
+            content_type: "music".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let id = only_id(&db);
+        db.set_waveform(id, &[9], None).unwrap();
+        db.set_fingerprint(id, &format!("{}:a", fingerprint::VERSION), None)
+            .unwrap();
+        db.set_loudness(id, Some(-6.0), Some(0.9), 1, None).unwrap();
+        db.set_auto_cue(id, &one_analysis(AutoCue::default(), 1), "music", None)
+            .unwrap();
+        db.set_bpm(id, Some(tempo(128.0)), 1, None).unwrap();
+        assert!(db.tracks_needing_analysis().unwrap().is_empty());
+
+        db.conn
+            .lock()
+            .execute("UPDATE tracks SET bpm_version = ?", [bpm::VERSION - 1])
+            .unwrap();
+
+        let jobs = db.tracks_needing_analysis().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert!(jobs[0].needs_bpm);
+    }
+
+    /// The measurement is stored beside the tag rather than over it: the two are
+    /// separate readings, and only one of them is the operator's.
+    #[test]
+    fn a_measured_tempo_leaves_the_tagged_one_alone() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&TrackInsert {
+            path: "/a.mp3".into(),
+            content_type: "music".into(),
+            bpm: Some(126.0),
+            ..Default::default()
+        })
+        .unwrap();
+        let id = only_id(&db);
+        assert!(db.set_bpm(id, Some(tempo(128.5)), 7, None).unwrap());
+
+        assert_eq!(db.get_track(id).unwrap().unwrap().bpm, Some(126.0));
+        let conn = db.conn.lock();
+        let (detected, confidence): (f64, f64) = conn
+            .query_row(
+                "SELECT detected_bpm, bpm_confidence FROM tracks WHERE id = ?",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(detected, 128.5);
+        assert!((confidence - 0.9).abs() < 1e-6);
+    }
+
+    /// A result decoded from audio that has since been replaced is refused, like
+    /// every other measurement the pass stores.
+    #[test]
+    fn a_tempo_for_a_file_that_moved_on_is_refused() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&TrackInsert {
+            path: "/a.mp3".into(),
+            content_type: "music".into(),
+            mtime: Some(100),
+            ..Default::default()
+        })
+        .unwrap();
+        let id = only_id(&db);
+        assert!(!db.set_bpm(id, Some(tempo(128.0)), 1, Some(99)).unwrap());
+        assert!(db.set_bpm(id, Some(tempo(128.0)), 1, Some(100)).unwrap());
     }
 
     #[test]

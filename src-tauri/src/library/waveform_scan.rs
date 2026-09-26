@@ -316,6 +316,7 @@ fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle, config: &Config) -> Outc
         || job.needs_loudness
         || job.needs_auto_cue
         || job.needs_auto_cue_levels
+        || job.needs_bpm
     {
         let start = Instant::now();
         let bytes: Bytes = match std::fs::read(path) {
@@ -325,7 +326,10 @@ fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle, config: &Config) -> Outc
                 return Outcome::Retry;
             }
         };
-        match waveform::analyze(Arc::clone(&bytes)) {
+        // Read per track for the same reason `store_auto_cue` does: a threshold
+        // changed mid-backfill applies from the next file on.
+        let silence_dbfs = config.get_tuning().auto_cue.silence_dbfs;
+        match waveform::analyze(Arc::clone(&bytes), silence_dbfs) {
             Ok(analysis) => {
                 let decode_ms = start.elapsed().as_millis();
                 let store_start = Instant::now();
@@ -363,6 +367,16 @@ fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle, config: &Config) -> Outc
                             m.map(|l| l.lufs),
                             gain
                         ),
+                    }
+                }
+                if job.needs_bpm {
+                    match db.set_bpm(job.id, analysis.bpm, now_ms(), job.mtime) {
+                        Err(e) => {
+                            log::error!("bpm: store {} failed: {}", job.id, e);
+                            retry = true;
+                        }
+                        Ok(false) => log::debug!("bpm: {} moved on", job.path),
+                        Ok(true) => log::debug!("bpm: {} {:?}", job.path, analysis.bpm),
                     }
                 }
                 let levels = (job.needs_auto_cue || job.needs_auto_cue_levels)

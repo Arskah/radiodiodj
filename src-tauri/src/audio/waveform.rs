@@ -21,6 +21,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 
 use super::auto_cue::{Collector, RmsWindows};
+use super::bpm::{self, Bpm};
 use super::loudness::Loudness;
 
 /// Number of buckets a track is reduced to. 400 gives enough horizontal
@@ -75,6 +76,9 @@ pub struct Analysis {
     pub loudness: Option<Loudness>,
     /// Fixed-width RMS windows, for [`RmsWindows::envelope`].
     pub windows: RmsWindows,
+    /// `None` when the audio held no tempo to find — silence, speech, or less
+    /// audio than the estimator will judge.
+    pub bpm: Option<Bpm>,
 }
 
 /// Decode an in-memory audio file once, measuring the waveform curve, the
@@ -95,7 +99,7 @@ pub struct Analysis {
 /// files are rare, and the alternative is resetting the meter's integration
 /// state partway through, which would bias the result far more than the span
 /// change itself does.
-pub fn analyze(bytes: Bytes) -> Result<Analysis> {
+pub fn analyze(bytes: Bytes, silence_dbfs: f64) -> Result<Analysis> {
     let decoder = new_decoder(bytes)?;
     let channels = u32::from(decoder.channels());
     let rate = decoder.sample_rate();
@@ -111,14 +115,17 @@ pub fn analyze(bytes: Bytes) -> Result<Analysis> {
         peak: 0.0,
     };
     let mut windows = Collector::new(rate, decoder.channels());
+    let mut bpm = bpm::Collector::new(rate, decoder.channels(), silence_dbfs);
     let curve = fill_buckets(decoder.inspect(|s| {
         meter.push(*s);
         windows.push(*s);
+        bpm.push(*s);
     }));
     Ok(Analysis {
         curve,
         loudness: meter.finish(),
         windows: windows.finish(),
+        bpm: bpm.finish(),
     })
 }
 
@@ -303,6 +310,10 @@ fn new_decoder(bytes: Bytes) -> Result<Decoder<Cursor<Bytes>>> {
 mod tests {
     use super::*;
 
+    /// The shipped silence threshold, so the tempo collector's latch behaves as
+    /// it does in the app while these tests exercise the rest of the pass.
+    const SILENT_DBFS: f64 = -70.0;
+
     /// Minimal 16-bit mono PCM WAV whose per-sample value is supplied by `f`,
     /// so a test can shape the amplitude envelope without an on-disk fixture.
     fn synth_wav_with(sample_rate: u32, samples: u32, f: impl Fn(u32) -> i16) -> Vec<u8> {
@@ -350,14 +361,14 @@ mod tests {
     #[test]
     fn returns_fixed_bucket_count() {
         let wav = bytes_of(synth_wav(8000, 8000));
-        let peaks = analyze(wav).expect("compute").curve;
+        let peaks = analyze(wav, SILENT_DBFS).expect("compute").curve;
         assert_eq!(peaks.len(), WAVEFORM_BUCKETS);
     }
 
     #[test]
     fn silent_half_is_quieter_than_loud_half() {
         let wav = bytes_of(synth_wav(8000, 8000));
-        let peaks = analyze(wav).expect("compute").curve;
+        let peaks = analyze(wav, SILENT_DBFS).expect("compute").curve;
         let first = &peaks[..WAVEFORM_BUCKETS / 2];
         let second = &peaks[WAVEFORM_BUCKETS / 2..];
         let max_first = *first.iter().max().unwrap();
@@ -371,7 +382,7 @@ mod tests {
     #[test]
     fn loud_half_reaches_full_scale() {
         let wav = bytes_of(synth_wav(8000, 8000));
-        let peaks = analyze(wav).expect("compute").curve;
+        let peaks = analyze(wav, SILENT_DBFS).expect("compute").curve;
         // The loudest bucket normalises to 255.
         assert_eq!(*peaks.iter().max().unwrap(), 255, "loudest bucket → 255");
     }
@@ -382,7 +393,7 @@ mod tests {
         // final window. The old integer-division bucketing left the last
         // buckets starved (blank outro); the float ratio must fill bucket 399.
         let wav = bytes_of(synth_wav(8000, 8001));
-        let peaks = analyze(wav).expect("compute").curve;
+        let peaks = analyze(wav, SILENT_DBFS).expect("compute").curve;
         assert!(
             peaks[WAVEFORM_BUCKETS - 1] > 0,
             "last bucket must not be starved"
@@ -394,14 +405,14 @@ mod tests {
         // Constant full-scale track: every bucket has the same RMS, so after
         // normalisation the whole curve is flat at the top.
         let wav = bytes_of(synth_wav_with(8000, 8000, |_| i16::MAX));
-        let peaks = analyze(wav).expect("compute").curve;
+        let peaks = analyze(wav, SILENT_DBFS).expect("compute").curve;
         assert!(peaks.iter().all(|&p| p == 255), "uniform → all 255");
     }
 
     #[test]
     fn garbage_bytes_error() {
         let bad = bytes_of(vec![0u8, 1, 2, 3, 4, 5]);
-        assert!(analyze(bad).is_err());
+        assert!(analyze(bad, SILENT_DBFS).is_err());
     }
 
     #[test]
@@ -455,7 +466,7 @@ mod tests {
 
     #[test]
     fn measures_loudness_and_peak_in_the_waveform_pass() {
-        let a = analyze(synth_tone(1.0)).expect("analyze");
+        let a = analyze(synth_tone(1.0), SILENT_DBFS).expect("analyze");
         assert_eq!(a.curve.len(), WAVEFORM_BUCKETS);
         let l = a.loudness.expect("a full-scale tone is measurable");
         // A full-scale sine sits near -3 LUFS; the K-weighting filter shifts it
@@ -466,8 +477,14 @@ mod tests {
 
     #[test]
     fn a_quieter_track_measures_quieter_by_the_amplitude_ratio() {
-        let loud = analyze(synth_tone(1.0)).expect("analyze").loudness.unwrap();
-        let quiet = analyze(synth_tone(0.1)).expect("analyze").loudness.unwrap();
+        let loud = analyze(synth_tone(1.0), SILENT_DBFS)
+            .expect("analyze")
+            .loudness
+            .unwrap();
+        let quiet = analyze(synth_tone(0.1), SILENT_DBFS)
+            .expect("analyze")
+            .loudness
+            .unwrap();
         // A tenth of the amplitude is 20 dB down, and loudness is a dB scale.
         assert!(
             (loud.lufs - quiet.lufs - 20.0).abs() < 0.5,
@@ -483,7 +500,7 @@ mod tests {
         use crate::audio::auto_cue::{Thresholds, WINDOW_MS};
 
         // 1 s at 8 kHz: silent first half, full-scale second.
-        let a = analyze(bytes_of(synth_wav(8_000, 8_000))).expect("analyze");
+        let a = analyze(bytes_of(synth_wav(8_000, 8_000)), SILENT_DBFS).expect("analyze");
         assert_eq!(a.windows.duration_ms, 1_000);
         assert_eq!(a.windows.rms.len(), 1_000 / WINDOW_MS as usize);
 
@@ -498,9 +515,38 @@ mod tests {
         assert_eq!(cue.cue_out_ms, None, "audio runs to EOF");
     }
 
+    /// The tempo comes off the same decode as everything else, through a real
+    /// container rather than a hand-fed collector.
+    #[test]
+    fn the_same_decode_yields_the_tempo() {
+        let rate = 8_000u32;
+        let period = rate / 2; // 120 BPM
+        let wav = synth_wav_with(
+            rate,
+            rate * 30,
+            |i| {
+                if i % period < 40 {
+                    i16::MAX
+                } else {
+                    32
+                }
+            },
+        );
+        let measured = analyze(bytes_of(wav), SILENT_DBFS)
+            .expect("analyze")
+            .bpm
+            .expect("a tempo");
+        assert!(
+            (measured.bpm - 120.0).abs() <= 1.0,
+            "read as {:.2}",
+            measured.bpm
+        );
+    }
+
     #[test]
     fn silence_is_not_measurable() {
-        let a = analyze(bytes_of(synth_wav_with(44_100, 44_100, |_| 0))).expect("analyze");
+        let a =
+            analyze(bytes_of(synth_wav_with(44_100, 44_100, |_| 0)), SILENT_DBFS).expect("analyze");
         assert_eq!(a.curve, vec![0u8; WAVEFORM_BUCKETS]);
         assert!(a.loudness.is_none());
     }
@@ -508,13 +554,16 @@ mod tests {
     #[test]
     fn a_track_too_short_to_integrate_is_not_measurable() {
         // 100 ms, well under the 400 ms block.
-        let a = analyze(bytes_of(synth_wav_with(44_100, 4_410, |i| {
-            if i % 2 == 0 {
-                i16::MAX
-            } else {
-                i16::MIN
-            }
-        })))
+        let a = analyze(
+            bytes_of(synth_wav_with(44_100, 4_410, |i| {
+                if i % 2 == 0 {
+                    i16::MAX
+                } else {
+                    i16::MIN
+                }
+            })),
+            SILENT_DBFS,
+        )
         .expect("analyze");
         assert!(a.loudness.is_none());
     }
