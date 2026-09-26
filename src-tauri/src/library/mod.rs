@@ -1,3 +1,4 @@
+pub mod auto_cue;
 pub mod check;
 pub mod db;
 pub mod health;

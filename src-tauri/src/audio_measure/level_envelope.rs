@@ -1,52 +1,27 @@
-//! Automatic derivation of Cue In, Cue Out and Next Start from decoded audio.
+//! The level envelope: what a decode says about how loud a track is, window by
+//! window.
 //!
-//! Pure: no device, no file, no decoder. The analysis pass feeds it the RMS
-//! windows collected during the waveform decode ([`super::waveform::analyze`]),
-//! so an automatic cue never costs a second pass over the file.
+//! Pure: no device, no file, no decoder. The analysis pass feeds the RMS windows
+//! collected during the waveform decode ([`super::waveform::analyze`]), so this
+//! never costs a second pass over the file.
 //!
-//! The algorithm is deliberately small — level thresholds over fixed 50 ms
-//! windows, and nothing else. It does not detect beats, phrases, vocals or
-//! hidden tracks; manual radio edits are the escape hatch for material it gets
-//! wrong. See `docs/cue-auto-analysis.md`.
+//! What it answers is one question, asked at a level: *where is the audio above
+//! `dbfs`* ([`Envelope::span_above`], [`Envelope::last_end_above`]). It does not
+//! know what a caller does with the answer. The rules that turn crossings into a
+//! station's Cue In, Cue Out and Next Start are
+//! [`crate::library::auto_cue`] — where "music", "segue" and what a `NULL`
+//! column means belong. See `docs/cue-auto-analysis.md` for those rules and
+//! `docs/audio-measure.md` for the split.
+//!
+//! The measurement is deliberately small — RMS over fixed
+//! [`WINDOW_MS`] windows, quantised to whole decibels, and nothing else. It
+//! detects no beats, phrases, vocals or hidden tracks.
 
 /// Width of one RMS window. Fixed in v1: short enough to place a marker without
 /// visible coarseness, long enough that a single transient cannot move one.
+/// Changing it moves every position a stored envelope reports — see
+/// [`LEVELS_FORMAT_VERSION`].
 pub const WINDOW_MS: i64 = 50;
-
-/// Identifies the rules below. Stored per track so a future explicit
-/// re-analysis can tell which tracks were produced by an older detector. Bump
-/// it whenever a change here would move a marker.
-pub const ALGORITHM_VERSION: i64 = 1;
-
-/// How far before Cue Out a cold-ending music track hands over. The next item
-/// beginning under the final fraction of a second is an accepted radio default.
-const COLD_END_LEAD_MS: i64 = 500;
-
-/// Cap on how early an automatic Next Start may be, so an unusually long quiet
-/// fade cannot launch the next item far too soon.
-const MAX_SEGUE_LEAD_MS: i64 = 6_000;
-
-/// Floor on the distance from Cue In, so very short material is not segued over
-/// before it has been heard.
-const MIN_AFTER_CUE_IN_MS: i64 = 500;
-
-/// The two operator-configurable levels, in dBFS.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Thresholds {
-    /// Below this there is no programme audio at all. Bounds Cue In / Cue Out.
-    pub silence_dbfs: f64,
-    /// Below this a music track has become quiet enough to hand over.
-    pub segue_dbfs: f64,
-}
-
-/// The trio automatic analysis owns. `None` carries the same meaning it does on
-/// the track row: file start, file end, and "wait until Cue Out".
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct AutoCue {
-    pub cue_in_ms: Option<i64>,
-    pub cue_out_ms: Option<i64>,
-    pub next_start_ms: Option<i64>,
-}
 
 /// RMS amplitude per [`WINDOW_MS`] of audio, collected while the waveform pass
 /// walks the decoded samples.
@@ -136,9 +111,10 @@ impl Collector {
     }
 }
 
-/// Lowest and highest whole-dBFS level an [`Envelope`] resolves. Both operator
-/// thresholds are rounded and held to exactly this range by `persist::config`,
-/// so every threshold the detector can be asked about has a code of its own.
+/// Lowest and highest whole-dBFS level an [`Envelope`] resolves. A caller asks
+/// about whole levels inside this range — the app rounds and clamps its
+/// thresholds to it before asking — so every level that can be asked about has a
+/// code of its own.
 pub const LEVEL_MIN_DBFS: i64 = -100;
 pub const LEVEL_MAX_DBFS: i64 = -3;
 
@@ -147,26 +123,25 @@ pub const LEVELS: usize = (LEVEL_MAX_DBFS - LEVEL_MIN_DBFS + 1) as usize;
 
 /// One decode, reduced to the level of each window.
 ///
-/// The detector only ever asks the windows where the audio crosses a level, and
-/// both thresholds are whole dBFS inside the resolved range. Keeping one byte
-/// per window — the highest level that window exceeds — therefore captures the
-/// decode exactly rather than approximately, and lets a later threshold change
-/// re-derive the trio without reading the file again.
+/// Callers only ever ask the windows where the audio crosses a level, and every
+/// level they can ask about is a whole dBFS inside the resolved range. Keeping
+/// one byte per window — the highest level that window exceeds — therefore
+/// captures the decode exactly rather than approximately, and lets a later
+/// threshold change re-derive an answer without reading the file again.
 ///
-/// Everything after those crossings — the two candidates, the bounds, the
-/// clamp, the edge-of-file `NULL` rules — is arithmetic on them plus the window
-/// count and the decoded duration, both of which are kept here too.
+/// Everything after those crossings is arithmetic on them plus the window count
+/// and the decoded duration, both of which are kept here too — which is why the
+/// rules that read an envelope are not in this module.
 ///
-/// Unlike a table of answers to the questions [`Envelope::detect`] asks today,
-/// this keeps the measurement itself: a later rule that wants a sustained
-/// crossing, a level after a given position, or the loudest passage can be
-/// written against a stored envelope, where it would need a fresh decode of the
-/// whole library against a table of crossings.
+/// Unlike a table of answers to the questions asked today, this keeps the
+/// measurement itself: a later rule that wants a sustained crossing, a level
+/// after a given position, or the loudest passage can be written against a
+/// stored envelope, where it would need a fresh decode of the whole library
+/// against a table of crossings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Envelope {
     /// One code per window, in order: the number of resolved levels that window
-    /// is strictly above, as [`code_of`] assigns them. A window's code is all
-    /// the detector needs of it.
+    /// is strictly above, as [`code_of`] assigns them.
     codes: Vec<u8>,
     /// Decoded length of the file, as [`RmsWindows::duration_ms`].
     duration_ms: i64,
@@ -195,18 +170,6 @@ impl RmsWindows {
     }
 }
 
-/// One completed automatic analysis: the trio it derived, the envelope it
-/// derived them from, the levels it worked to, and when it finished. These
-/// belong to each other — the provenance is only meaningful against the markers
-/// it produced — so they are committed as one thing.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Analysed {
-    pub cue: AutoCue,
-    pub levels: Envelope,
-    pub thresholds: Thresholds,
-    pub at_ms: i64,
-}
-
 /// Layout version of a stored envelope. A blob written by any other version
 /// decodes to `None`, which sends the track back through the decode path rather
 /// than deriving markers from bytes this build cannot read.
@@ -222,11 +185,13 @@ pub struct Analysed {
 /// - [`LEVEL_MIN_DBFS`] and [`LEVEL_MAX_DBFS`], which decide what a code counts.
 ///   Widening the range shifts the meaning of every code by the change in the
 ///   floor;
-/// - what [`Envelope::detect`] asks of the windows. The envelope answers where
-///   the audio crosses a level; a rule needing something else — a crossing held
-///   for some duration, say — is not answerable from a v1 blob at all, and
-///   `ALGORITHM_VERSION` alone would not requeue anything, since nothing
-///   screens on it.
+/// - what a rule asks of the windows, which is the one item on this list that
+///   lives outside this module ([`crate::library::auto_cue`] today). The
+///   envelope answers where the audio crosses a level; a rule needing something
+///   else — a crossing held for some duration, say — is not answerable from a v1
+///   blob at all, and that rule's own version constant would not requeue
+///   anything, since nothing screens on it. A rule that changes what it asks
+///   has to come back here and bump this.
 ///
 /// Bumping is cheap: every row fails the screen and rides the ordinary backfill
 /// through one decode. Not bumping is silent and wrong.
@@ -238,6 +203,24 @@ pub const LEVELS_FORMAT_VERSION: u8 = 1;
 /// blob in SQL only as far as SQL can go and lets [`Envelope::decode`] be the
 /// authority. See `Db::recalculate_auto_cue`.
 pub const LEVELS_HEADER_LEN: usize = 1 + 8;
+
+/// Where audio sits above a level, in window-aligned positions.
+///
+/// The two flags are facts about the file rather than about how anything stores
+/// them: a span starting at the first window means the audio was already running
+/// when the file opened. What that should be recorded as is the caller's rule,
+/// not this module's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Span {
+    /// Start of the first window above the level.
+    pub from_ms: i64,
+    /// End of the last window above the level, clamped to the decoded duration.
+    pub to_ms: i64,
+    /// The file's first window is above the level.
+    pub starts_at_file_start: bool,
+    /// The file's last window is above the level.
+    pub ends_at_file_end: bool,
+}
 
 impl Envelope {
     /// The envelope as it is stored on the track row.
@@ -273,68 +256,43 @@ impl Envelope {
         })
     }
 
-    /// Derive the automatic trio at a pair of thresholds.
+    /// Where the audio sits above `dbfs`, or `None` if it never does.
     ///
-    /// `music` decides whether a Next Start is produced at all: commercials and
-    /// jingles get trimmed ends and nothing else, because a station segues out
-    /// of music, not out of an ad break.
-    pub fn detect(&self, music: bool, thresholds: Thresholds) -> AutoCue {
-        let silence = code_of(thresholds.silence_dbfs);
-        let Some(first) = self.codes.iter().position(|&c| c >= silence) else {
-            return AutoCue::default();
-        };
+    /// One comparison serves every caller, including one whose rule reads "at or
+    /// above" where another reads "strictly above". The two cannot differ: a
+    /// window would have to sit exactly on a level, and none of the resolved
+    /// levels is `f32`-representable — see `no_resolved_level_can_be_hit_exactly`.
+    pub fn span_above(&self, dbfs: f64) -> Option<Span> {
+        let level = code_of(dbfs);
+        let first = self.codes.iter().position(|&c| c >= level)?;
         let last = self
             .codes
             .iter()
-            .rposition(|&c| c >= silence)
+            .rposition(|&c| c >= level)
             .unwrap_or(first);
-
-        // A marker at the very edge of the file is stored as NULL: the fallback
-        // already means exactly that, and an explicit 0 would read as an
-        // operator decision to everything downstream.
-        let cue_in_ms = (first > 0).then(|| self.window_start(first));
-        let cue_out_ms = (last + 1 < self.codes.len()).then(|| self.window_end(last));
-
-        AutoCue {
-            cue_in_ms,
-            cue_out_ms,
-            next_start_ms: music
-                .then(|| self.next_start(cue_in_ms, cue_out_ms, thresholds))
-                .flatten(),
-        }
+        Some(Span {
+            from_ms: self.window_start(first),
+            to_ms: self.window_end(last),
+            starts_at_file_start: first == 0,
+            ends_at_file_end: last + 1 == self.codes.len(),
+        })
     }
 
-    /// The level-based candidate, the cold-ending candidate, and the bounds that
-    /// keep either sane. See `docs/cue-auto-analysis.md#music-next-start`.
+    /// Where the audio was last above `dbfs`, as the end of that window.
     ///
-    /// The spec states this crossing as "at or above" where the silence bounds
-    /// are "strictly above". The two cannot differ: a window would have to sit
-    /// exactly on a threshold, and none of the resolved levels is
-    /// `f32`-representable — see `no_resolved_level_can_be_hit_exactly`. One
-    /// comparison therefore serves both.
-    fn next_start(
-        &self,
-        cue_in_ms: Option<i64>,
-        cue_out_ms: Option<i64>,
-        thresholds: Thresholds,
-    ) -> Option<i64> {
-        let cue_in = cue_in_ms.unwrap_or(0);
-        let cue_out = cue_out_ms.unwrap_or(self.duration_ms);
-        if cue_out - cue_in <= MIN_AFTER_CUE_IN_MS {
-            return None;
-        }
-
-        let segue = code_of(thresholds.segue_dbfs);
-        let level = self
-            .codes
+    /// Asked at a level well above silence this is the tail question — not where
+    /// the audio stops, but where it last reached a level and never returned.
+    pub fn last_end_above(&self, dbfs: f64) -> Option<i64> {
+        let level = code_of(dbfs);
+        self.codes
             .iter()
-            .rposition(|&c| c >= segue)
-            .map(|i| self.window_end(i));
-        let cold = cue_out - COLD_END_LEAD_MS;
-        let raw = level.map_or(cold, |l| l.min(cold));
+            .rposition(|&c| c >= level)
+            .map(|i| self.window_end(i))
+    }
 
-        let lower = (cue_in + MIN_AFTER_CUE_IN_MS).max(cue_out - MAX_SEGUE_LEAD_MS);
-        Some(raw.clamp(lower, cue_out))
+    /// Decoded length of the file this envelope was measured from.
+    pub fn duration_ms(&self) -> i64 {
+        self.duration_ms
     }
 
     /// How many windows the decode produced. `detect` reads `codes` directly;
@@ -363,7 +321,6 @@ impl Envelope {
         ((index as i64 + 1) * WINDOW_MS).min(self.duration_ms)
     }
 }
-
 /// The amplitude of each resolved level, ascending.
 ///
 /// Rebuilt per decode rather than cached: 98 `powf` calls against a decode that
@@ -388,84 +345,37 @@ fn code_of(dbfs: f64) -> u8 {
 }
 
 /// dBFS to the linear RMS amplitude the windows are measured in.
-pub(super) fn amplitude(dbfs: f64) -> f64 {
+pub fn amplitude(dbfs: f64) -> f64 {
     10f64.powf(dbfs / 20.0)
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod fixtures {
     use super::*;
-
-    const DEFAULTS: Thresholds = Thresholds {
-        silence_dbfs: -70.0,
-        segue_dbfs: -20.0,
-    };
 
     /// Linear RMS for a dBFS level, so a test can state its windows in the
     /// units the spec is written in.
-    fn at(dbfs: f64) -> f32 {
+    pub(crate) fn at(dbfs: f64) -> f32 {
         amplitude(dbfs) as f32
     }
 
     /// Windows whose duration follows their count, as a whole-window file has.
-    fn windows(rms: Vec<f32>) -> RmsWindows {
+    pub(crate) fn windows(rms: Vec<f32>) -> RmsWindows {
         let duration_ms = rms.len() as i64 * WINDOW_MS;
         RmsWindows { rms, duration_ms }
     }
 
     /// `count` windows at `level`, for building a file section by section.
-    fn run(level: f64, count: usize) -> Vec<f32> {
+    pub(crate) fn run(level: f64, count: usize) -> Vec<f32> {
         vec![at(level); count]
-    }
-
-    /// The detector as it was written before the envelope: three scans over the
-    /// windows. Kept as the oracle the envelope is measured against — if the two
-    /// ever disagree, the envelope is wrong, because this is the behaviour
-    /// `docs/cue-auto-analysis.md` describes.
-    fn detect_scanning(windows: &RmsWindows, music: bool, thresholds: Thresholds) -> AutoCue {
-        let silence = amplitude(thresholds.silence_dbfs);
-        let rms = &windows.rms;
-        let Some(first) = rms.iter().position(|&r| f64::from(r) > silence) else {
-            return AutoCue::default();
-        };
-        let last = rms
-            .iter()
-            .rposition(|&r| f64::from(r) > silence)
-            .unwrap_or(first);
-
-        let start = |i: usize| (i as i64 * WINDOW_MS).min(windows.duration_ms);
-        let end = |i: usize| ((i as i64 + 1) * WINDOW_MS).min(windows.duration_ms);
-
-        let cue_in_ms = (first > 0).then(|| start(first));
-        let cue_out_ms = (last + 1 < rms.len()).then(|| end(last));
-
-        let next_start_ms = music.then(|| {
-            let cue_in = cue_in_ms.unwrap_or(0);
-            let cue_out = cue_out_ms.unwrap_or(windows.duration_ms);
-            if cue_out - cue_in <= MIN_AFTER_CUE_IN_MS {
-                return None;
-            }
-            let segue = amplitude(thresholds.segue_dbfs);
-            let level = rms.iter().rposition(|&r| f64::from(r) >= segue).map(end);
-            let cold = cue_out - COLD_END_LEAD_MS;
-            let raw = level.map_or(cold, |l| l.min(cold));
-            let lower = (cue_in + MIN_AFTER_CUE_IN_MS).max(cue_out - MAX_SEGUE_LEAD_MS);
-            Some(raw.clamp(lower, cue_out))
-        });
-
-        AutoCue {
-            cue_in_ms,
-            cue_out_ms,
-            next_start_ms: next_start_ms.flatten(),
-        }
     }
 
     /// xorshift64. A fixed seed keeps the property test reproducible; a failure
     /// that only some runs saw would be worth less than no test at all.
-    struct Rng(u64);
+    pub(crate) struct Rng(pub(crate) u64);
 
     impl Rng {
-        fn next(&mut self) -> u64 {
+        pub(crate) fn next(&mut self) -> u64 {
             let mut x = self.0;
             x ^= x << 13;
             x ^= x >> 7;
@@ -474,7 +384,7 @@ mod tests {
             x
         }
 
-        fn below(&mut self, n: u64) -> u64 {
+        pub(crate) fn below(&mut self, n: u64) -> u64 {
             self.next() % n
         }
     }
@@ -482,7 +392,7 @@ mod tests {
     /// A file of arbitrary shape: digital silence, levels under the tabulated
     /// floor, levels over its ceiling, and a last window that sometimes covers
     /// less than its nominal width.
-    fn random_windows(rng: &mut Rng) -> RmsWindows {
+    pub(crate) fn random_windows(rng: &mut Rng) -> RmsWindows {
         let count = 1 + rng.below(80) as usize;
         let rms = (0..count)
             .map(|_| match rng.below(8) {
@@ -502,6 +412,12 @@ mod tests {
             },
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixtures::*;
+    use super::*;
 
     /// Every code, against the comparison it stands in for.
     ///
@@ -622,187 +538,15 @@ mod tests {
         );
     }
 
-    /// The whole safety argument for the envelope: it must answer exactly what
-    /// a fresh scan would, for every threshold pair an operator can reach.
-    #[test]
-    fn the_envelope_agrees_with_a_scan_at_every_threshold() {
-        let mut rng = Rng(0x5EED_1E55);
-        for case in 0..24 {
-            let w = random_windows(&mut rng);
-            let envelope = w.envelope();
-            for silence in LEVEL_MIN_DBFS..=LEVEL_MAX_DBFS {
-                for segue in (silence + 1)..=LEVEL_MAX_DBFS {
-                    let thresholds = Thresholds {
-                        silence_dbfs: silence as f64,
-                        segue_dbfs: segue as f64,
-                    };
-                    for music in [false, true] {
-                        assert_eq!(
-                            envelope.detect(music, thresholds),
-                            detect_scanning(&w, music, thresholds),
-                            "case {case}, silence {silence} dBFS, segue {segue} dBFS, music {music}"
-                        );
-                    }
-                }
-            }
-        }
-    }
-
     /// A threshold outside the resolved range still has to answer. Both ends
-    /// fold to the nearest level, which is what the clamp in `persist::config`
-    /// would have produced anyway.
+    /// fold to the nearest level, which is what the caller's own clamp would
+    /// have produced anyway.
     #[test]
     fn a_threshold_past_the_resolved_range_folds_to_the_nearest_level() {
         assert_eq!(code_of(-400.0), 1);
         assert_eq!(code_of(12.0), LEVELS as u8);
         assert_eq!(code_of(f64::NAN), 1, "a non-number trims nothing");
         assert_eq!(code_of(-70.4), code_of(-70.0));
-    }
-
-    #[test]
-    fn silence_at_both_ends_is_trimmed() {
-        // 10 silent windows, 20 loud, 10 silent: 500 ms in, 1500 ms out.
-        let mut w = run(-120.0, 10);
-        w.extend(run(-6.0, 20));
-        w.extend(run(-120.0, 10));
-        let cue = windows(w).envelope().detect(false, DEFAULTS);
-        assert_eq!(cue.cue_in_ms, Some(500));
-        assert_eq!(cue.cue_out_ms, Some(1500));
-    }
-
-    #[test]
-    fn audio_at_the_file_edges_stores_null() {
-        let cue = windows(run(-6.0, 40)).envelope().detect(false, DEFAULTS);
-        assert_eq!(cue.cue_in_ms, None, "no leading silence to trim");
-        assert_eq!(cue.cue_out_ms, None, "audio runs to EOF");
-    }
-
-    #[test]
-    fn a_silent_file_yields_nothing() {
-        let cue = windows(run(-120.0, 40)).envelope().detect(true, DEFAULTS);
-        assert_eq!(cue, AutoCue::default());
-    }
-
-    #[test]
-    fn an_empty_decode_yields_nothing() {
-        let cue = RmsWindows::default().envelope().detect(true, DEFAULTS);
-        assert_eq!(cue, AutoCue::default());
-    }
-
-    #[test]
-    fn a_cold_ending_hands_over_500_ms_before_cue_out() {
-        // Loud to the last window before a short silent tail: no level-based
-        // candidate exists below the segue threshold, so the 500 ms rule wins.
-        let mut w = run(-6.0, 40); // 2000 ms
-        w.extend(run(-120.0, 4)); // → cue out 2000 ms
-        let cue = windows(w).envelope().detect(true, DEFAULTS);
-        assert_eq!(cue.cue_out_ms, Some(2000));
-        assert_eq!(cue.next_start_ms, Some(1500));
-    }
-
-    #[test]
-    fn a_normal_fade_hands_over_where_the_level_drops() {
-        // 2000 ms loud, then 1000 ms between the two thresholds, then silence.
-        let mut w = run(-6.0, 40);
-        w.extend(run(-40.0, 20));
-        w.extend(run(-120.0, 4));
-        let cue = windows(w).envelope().detect(true, DEFAULTS);
-        assert_eq!(cue.cue_out_ms, Some(3000));
-        assert_eq!(cue.next_start_ms, Some(2000), "last window above -20 dBFS");
-    }
-
-    #[test]
-    fn a_very_long_fade_is_held_to_the_six_second_lead() {
-        // Above the segue threshold for 1 s, then 10 s of quiet fade.
-        let mut w = run(-6.0, 20);
-        w.extend(run(-40.0, 200));
-        w.extend(run(-120.0, 4));
-        let cue = windows(w).envelope().detect(true, DEFAULTS);
-        assert_eq!(cue.cue_out_ms, Some(11_000));
-        assert_eq!(cue.next_start_ms, Some(5_000), "cue out − 6 s");
-    }
-
-    #[test]
-    fn next_start_never_precedes_cue_in_on_short_material() {
-        // 1 s of leading silence, then 700 ms of audio: the 6 s lead would put
-        // the segue before the track starts, so the Cue In floor wins.
-        let mut w = run(-120.0, 20);
-        w.extend(run(-6.0, 14));
-        w.extend(run(-120.0, 2));
-        let cue = windows(w).envelope().detect(true, DEFAULTS);
-        assert_eq!(cue.cue_in_ms, Some(1000));
-        assert_eq!(cue.cue_out_ms, Some(1700));
-        assert_eq!(cue.next_start_ms, Some(1500));
-    }
-
-    #[test]
-    fn material_shorter_than_the_minimum_gets_no_next_start() {
-        // 500 ms of playable audio: exactly the lower bound, so there is no
-        // room for a segue.
-        let mut w = run(-6.0, 10);
-        w.extend(run(-120.0, 2));
-        let cue = windows(w).envelope().detect(true, DEFAULTS);
-        assert_eq!(cue.cue_out_ms, Some(500));
-        assert_eq!(cue.next_start_ms, None);
-    }
-
-    #[test]
-    fn a_commercial_gets_no_next_start() {
-        let mut w = run(-6.0, 40);
-        w.extend(run(-40.0, 20));
-        w.extend(run(-120.0, 4));
-        let cue = windows(w).envelope().detect(false, DEFAULTS);
-        assert_eq!(cue.cue_out_ms, Some(3000));
-        assert_eq!(cue.next_start_ms, None);
-    }
-
-    #[test]
-    fn a_jingle_that_runs_to_eof_is_all_null() {
-        // Same rule as a commercial; nothing to trim, nothing to segue.
-        let cue = windows(run(-6.0, 20)).envelope().detect(false, DEFAULTS);
-        assert_eq!(cue, AutoCue::default());
-    }
-
-    #[test]
-    fn next_start_stays_inside_cue_in_and_cue_out() {
-        let mut w = run(-120.0, 4);
-        w.extend(run(-6.0, 100));
-        w.extend(run(-120.0, 4));
-        let cue = windows(w).envelope().detect(true, DEFAULTS);
-        let start = cue.next_start_ms.expect("music segues");
-        assert!(start >= cue.cue_in_ms.unwrap());
-        assert!(start <= cue.cue_out_ms.unwrap());
-    }
-
-    #[test]
-    fn a_raised_silence_threshold_trims_more() {
-        let mut w = run(-50.0, 10);
-        w.extend(run(-6.0, 20));
-        w.extend(run(-50.0, 10));
-        let quiet = windows(w.clone()).envelope().detect(false, DEFAULTS);
-        assert_eq!(quiet.cue_in_ms, None, "-50 dBFS is above -70 dBFS");
-        let loud = windows(w).envelope().detect(
-            false,
-            Thresholds {
-                silence_dbfs: -40.0,
-                ..DEFAULTS
-            },
-        );
-        assert_eq!(loud.cue_in_ms, Some(500));
-        assert_eq!(loud.cue_out_ms, Some(1500));
-    }
-
-    #[test]
-    fn a_partial_last_window_does_not_overrun_the_file() {
-        // The final window covers only 30 ms, so the file ends before the
-        // window nominally would.
-        let w = RmsWindows {
-            rms: run(-6.0, 60),
-            duration_ms: 2_980,
-        };
-        let cue = w.envelope().detect(true, DEFAULTS);
-        assert_eq!(cue.cue_out_ms, None);
-        assert_eq!(cue.next_start_ms, Some(2_480), "file end − 500 ms");
     }
 
     #[test]
@@ -832,9 +576,9 @@ mod tests {
 
     /// 22.05 kHz mono puts 1102.5 interleaved samples in a 50 ms window. A
     /// window of whole samples has to round that, and the grid then slides
-    /// against the clock — after two minutes by a whole window, so a marker is
-    /// reported later than the audio it was found in and trims the head off
-    /// the track.
+    /// against the clock — after two minutes by a whole window, so a crossing is
+    /// reported later than the audio it was found in, and whatever the caller
+    /// places there lands past the start of the track.
     #[test]
     fn an_odd_sample_rate_does_not_drift_the_window_grid() {
         let mut c = Collector::new(22_050, 1);
@@ -844,11 +588,11 @@ mod tests {
         }
         let w = c.finish();
 
-        let cue_in = w.envelope().detect(false, DEFAULTS).cue_in_ms.unwrap();
-        assert_eq!(cue_in, 110_200);
+        let from_ms = w.envelope().span_above(-70.0).expect("audio above").from_ms;
+        assert_eq!(from_ms, 110_200);
         assert!(
-            f64::from(cue_in as i32) <= f64::from(onset) / 22.05,
-            "a marker may never be reported past the audio it was found in"
+            f64::from(from_ms as i32) <= f64::from(onset) / 22.05,
+            "a crossing may never be reported past the audio it was found in"
         );
     }
 
@@ -861,5 +605,64 @@ mod tests {
         let w = c.finish();
         assert!(w.rms.is_empty());
         assert_eq!(w.duration_ms, 0);
+    }
+
+    #[test]
+    fn a_span_reports_the_windows_the_audio_is_above_a_level() {
+        // 10 silent windows, 20 loud, 10 silent.
+        let mut w = run(-120.0, 10);
+        w.extend(run(-6.0, 20));
+        w.extend(run(-120.0, 10));
+        let span = windows(w)
+            .envelope()
+            .span_above(-70.0)
+            .expect("audio above");
+        assert_eq!(span.from_ms, 500);
+        assert_eq!(span.to_ms, 1500);
+        assert!(!span.starts_at_file_start);
+        assert!(!span.ends_at_file_end);
+    }
+
+    #[test]
+    fn a_span_flags_audio_that_runs_to_both_file_edges() {
+        let span = windows(run(-6.0, 40))
+            .envelope()
+            .span_above(-70.0)
+            .expect("audio above");
+        assert_eq!(span.from_ms, 0);
+        assert_eq!(span.to_ms, 2000);
+        assert!(span.starts_at_file_start);
+        assert!(span.ends_at_file_end);
+    }
+
+    #[test]
+    fn nothing_above_the_level_is_no_span() {
+        assert!(windows(run(-120.0, 40))
+            .envelope()
+            .span_above(-70.0)
+            .is_none());
+        assert!(RmsWindows::default().envelope().span_above(-70.0).is_none());
+    }
+
+    #[test]
+    fn a_span_never_runs_past_the_decoded_duration() {
+        // The final window covers only 30 ms of the file.
+        let w = RmsWindows {
+            rms: run(-6.0, 60),
+            duration_ms: 2_980,
+        };
+        let span = w.envelope().span_above(-70.0).expect("audio above");
+        assert_eq!(span.to_ms, 2_980);
+        assert_eq!(w.envelope().last_end_above(-70.0), Some(2_980));
+    }
+
+    #[test]
+    fn the_tail_question_is_asked_above_silence() {
+        // Loud, then quiet but not silent: the two levels answer differently.
+        let mut w = run(-6.0, 20);
+        w.extend(run(-40.0, 20));
+        let envelope = windows(w).envelope();
+        assert_eq!(envelope.last_end_above(-20.0), Some(1000), "loud part only");
+        assert_eq!(envelope.last_end_above(-70.0), Some(2000), "all of it");
     }
 }

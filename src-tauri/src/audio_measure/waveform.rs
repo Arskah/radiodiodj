@@ -20,8 +20,8 @@ use rodio::{Decoder, Source};
 use std::io::Cursor;
 use std::sync::Arc;
 
-use super::auto_cue::{Collector, RmsWindows};
 use super::bpm::{self, Bpm};
+use super::level_envelope::{Collector, RmsWindows};
 use super::loudness::Loudness;
 
 /// Number of buckets a track is reduced to. 400 gives enough horizontal
@@ -494,26 +494,25 @@ mod tests {
         assert!((quiet.peak - 0.1).abs() < 0.01, "{}", quiet.peak);
     }
 
-    /// The automatic cue points ride on the waveform decode, so the windows
-    /// must come back from the same `analyze` call the curve does.
+    /// The level envelope rides on the waveform decode, so the windows must come
+    /// back from the same `analyze` call the curve does — and be measured
+    /// against the real container, not a hand-fed collector.
     #[test]
-    fn the_same_decode_yields_the_automatic_cue_windows() {
-        use crate::audio_measure::auto_cue::{Thresholds, WINDOW_MS};
+    fn the_same_decode_yields_the_level_windows() {
+        use crate::audio_measure::level_envelope::WINDOW_MS;
 
         // 1 s at 8 kHz: silent first half, full-scale second.
         let a = analyze(bytes_of(synth_wav(8_000, 8_000)), SILENT_DBFS).expect("analyze");
         assert_eq!(a.windows.duration_ms, 1_000);
         assert_eq!(a.windows.rms.len(), 1_000 / WINDOW_MS as usize);
 
-        let cue = a.windows.envelope().detect(
-            true,
-            Thresholds {
-                silence_dbfs: -70.0,
-                segue_dbfs: -20.0,
-            },
-        );
-        assert_eq!(cue.cue_in_ms, Some(500), "the silent half is trimmed");
-        assert_eq!(cue.cue_out_ms, None, "audio runs to EOF");
+        let span = a
+            .windows
+            .envelope()
+            .span_above(-70.0)
+            .expect("audio above silence");
+        assert_eq!(span.from_ms, 500, "the silent half is below it");
+        assert!(span.ends_at_file_end, "audio runs to EOF");
     }
 
     /// The tempo comes off the same decode as everything else, through a real

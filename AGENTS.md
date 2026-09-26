@@ -42,9 +42,13 @@ about a track (the waveform curve, the loudness numbers, the level envelope, the
 tempo) and depends on nothing in the app: no `tauri`, no `Db`, no `Config`, no
 device, no `Sink`, no threads of its own. A setting arrives as an argument or not
 at all, which is why the switch over `ReplayGainMode` is `audio/levelling.rs` and
-not `loudness.rs`. `library/waveform_scan.rs` is the **Analysis pass** that calls
-it — the pass decides when and for which rows, the module answers what the audio
-is. Adding a measurement means another consumer of the one `inspect()` walk in
+not `loudness.rs`. **Purity is not the test — vocabulary is.**
+`level_envelope.rs` answers where audio crosses a level and nothing else; naming a
+crossing Cue In, knowing that a jingle gets no Next Start, and deciding that an
+edge-of-file marker is `NULL` are `library/auto_cue.rs`, because a content type
+and a nullable column are not things a measurement may know.
+`library/waveform_scan.rs` is the **Analysis pass** that calls it — the pass
+decides when and for which rows, the module answers what the audio is. Adding a measurement means another consumer of the one `inspect()` walk in
 `waveform::analyze`, never a second decode. See
 [docs/audio-measure.md](docs/audio-measure.md).
 
