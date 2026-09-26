@@ -37,7 +37,7 @@ value alone would decode it again on every pass forever — the same reasoning a
 
 `bpm_version` is what lets a later estimator disown an earlier one's work. The
 marker that stops an endless re-decode would otherwise also prevent a wanted one,
-so the queue screens `bpm_version < audio::bpm::VERSION` exactly as it screens
+so the queue screens `bpm_version < audio_measure::bpm::VERSION` exactly as it screens
 `fingerprint::VERSION`. Bumping that constant puts the library back in the queue.
 
 `detected_key` and `key_confidence` are declared and written by nothing. Key
@@ -46,8 +46,8 @@ detection is a separate question — see [Not built](#not-built).
 ## No second decode, and no PCM
 
 The measurement rides the decode the analysis pass already performs.
-`audio/waveform.rs::analyze` reads a file once and walks its samples through one
-`.inspect()` closure; `audio::bpm::Collector` is the fourth consumer on that
+`audio_measure/waveform.rs::analyze` reads a file once and walks its samples through one
+`.inspect()` closure; `audio_measure::bpm::Collector` is the fourth consumer on that
 walk, beside the loudness meter, the automatic-cue windows and the waveform
 buckets.
 
@@ -86,7 +86,7 @@ where the autocorrelation runs over the whole envelope.
 
 ## The estimator
 
-`audio/bpm.rs`, three stages, no FFT and no dependency:
+`audio_measure/bpm.rs`, three stages, no FFT and no dependency:
 
 1. **Novelty.** The envelope in decibels, first-order difference, rectified: only
    rises count, because a decay is the previous beat ending. Measuring the rise in

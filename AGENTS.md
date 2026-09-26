@@ -18,8 +18,8 @@ pnpm format:check                                 # prettier --check .
 ## Architecture
 
 Tauri 2 app. Two process boundaries: a Rust backend (`src-tauri/src/`, grouped
-by domain — `audio/`, `library/`, `playlist/`, `broadcast/`, `appearance/`,
-`persist/`, `admin.rs`) and a Svelte 5 / Vite renderer (`src/`, one folder per
+by domain — `audio/`, `audio_measure/`, `library/`, `playlist/`, `broadcast/`,
+`appearance/`, `persist/`, `admin.rs`) and a Svelte 5 / Vite renderer (`src/`, one folder per
 UI feature under `features/` plus `shared/`), talking over Tauri `invoke` +
 `emit`/`listen`.
 
@@ -36,6 +36,17 @@ Each entry is the invariant to preserve; the linked doc carries the reasoning.
 no transcoder. A deck reads the **whole file into RAM** (retry + 10 s watchdog)
 and never streams from the filesystem, which is what survives a wedged network
 share. See [docs/audio.md](docs/audio.md).
+
+**Measurement is a library** — `audio_measure/` holds everything a decode says
+about a track (the waveform curve, the loudness numbers, the level envelope, the
+tempo) and depends on nothing in the app: no `tauri`, no `Db`, no `Config`, no
+device, no `Sink`, no threads of its own. A setting arrives as an argument or not
+at all, which is why the switch over `ReplayGainMode` is `audio/levelling.rs` and
+not `loudness.rs`. `library/waveform_scan.rs` is the **Analysis pass** that calls
+it — the pass decides when and for which rows, the module answers what the audio
+is. Adding a measurement means another consumer of the one `inspect()` walk in
+`waveform::analyze`, never a second decode. See
+[docs/audio-measure.md](docs/audio-measure.md).
 
 **Program bus** — every on-air deck is a `Sink` on one shared `OutputStream`,
 driven by one worker. Deck events are **role-mapped**: `main-deck:*`,
@@ -57,7 +68,7 @@ silence on `main` emits `program:faded-out`, which the service maps to the same
 
 **Measured tempo** — `detected_bpm`/`bpm_confidence` are measured by the
 analysis pass and stored **beside** the tag-derived `bpm`, never over it.
-`audio::bpm::Collector` is a fourth consumer of the one decode, and it collects a
+`audio_measure::bpm::Collector` is a fourth consumer of the one decode, and it collects a
 10 ms **onset envelope**, not PCM — 144 KB for a six-minute track against ~64 MB
 of samples, with up to eight workers running. Its silence gate is
 `tuning.autoCue.silenceDbfs`, so "audible" means what it means to the automatic

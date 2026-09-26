@@ -82,9 +82,10 @@ pub struct Analysis {
 }
 
 /// Decode an in-memory audio file once, measuring the waveform curve, the
-/// track's loudness and the automatic-cue RMS windows from the one pass.
+/// track's loudness, the automatic-cue RMS windows and the tempo from the one
+/// pass.
 ///
-/// The three share the decode because it dominates the cost of any of them —
+/// The four share the decode because it dominates the cost of any of them —
 /// the same reason the fingerprint pass reuses these bytes rather than reading
 /// the file again.
 ///
@@ -497,7 +498,7 @@ mod tests {
     /// must come back from the same `analyze` call the curve does.
     #[test]
     fn the_same_decode_yields_the_automatic_cue_windows() {
-        use crate::audio::auto_cue::{Thresholds, WINDOW_MS};
+        use crate::audio_measure::auto_cue::{Thresholds, WINDOW_MS};
 
         // 1 s at 8 kHz: silent first half, full-scale second.
         let a = analyze(bytes_of(synth_wav(8_000, 8_000)), SILENT_DBFS).expect("analyze");

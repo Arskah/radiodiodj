@@ -25,7 +25,7 @@ transcoder and no external binary to bundle or sign — the Chromium audio
 pipeline was replaced wholesale in the Tauri port (#76), and the earlier plan to
 shell out to mpv was dropped with it.
 
-Supported extensions are the table in `audio/formats.rs`:
+Supported extensions are the table in `audio_measure/formats.rs`:
 
 ```
 mp3  flac  wav  ogg  oga  aac  m4a  opus  webm  aiff  aif  mka  mp2
@@ -149,8 +149,9 @@ Every track is levelled to one reference so a sparse 1970s master and a modern
 loudness-war master do not step on each other on air.
 
 `rg_gain`, `rg_peak` and `rg_measured_at` live on `tracks`, **measured by the
-analysis pass** (`audio/waveform.rs::analyze`, one decode that also yields the
-RMS curve and the automatic-cue windows) rather than read from
+analysis pass** (`audio_measure/waveform.rs::analyze`, one decode that also
+yields the RMS curve, the automatic-cue windows and the tempo) rather than read
+from
 `replaygain_track_gain` tags. Two reasons:
 
 - Most station libraries are largely untagged. Normalising only the tagged half
@@ -164,7 +165,7 @@ RMS curve and the automatic-cue windows) rather than read from
 legitimately has no gain: a `NULL` gain with a timestamp is a measurement, a
 `NULL` gain without one is work not done yet.
 
-`audio/loudness.rs` owns the arithmetic — `TARGET_LUFS = -18.0`, the gain that
+`audio_measure/loudness.rs` owns the arithmetic — `TARGET_LUFS = -18.0`, the gain that
 brings a measurement to it, and the linear factor that gain earns once clamped
 so the loudest sample lands no higher than full scale. A track already peaking
 near 1.0 cannot be turned up; that is ordinary ReplayGain behaviour.
@@ -181,7 +182,9 @@ Two invariants:
 The same function serves the cue deck, whose headphone output never passes the
 station's processing chain.
 
-The setting is `player.replayGain` (`off` / `track`). There is deliberately no
+The setting is `player.replayGain` (`off` / `track`), and
+`audio/levelling.rs::factor` is the one place it meets a measurement — the split
+that keeps `audio_measure/` free of settings. There is deliberately no
 album mode: a radio playlist is a sequence of singles, and album gain would
 reintroduce exactly the between-track level differences track gain exists to
 remove. See #80.
@@ -268,9 +271,12 @@ see [program-bus.md](./program-bus.md#events-and-commands).
 
 ## Code map
 
+Playback. What a decode _measures_ — the waveform curve, the loudness numbers,
+the level envelope, the tempo and the extension table — is `audio_measure/`; see
+[audio-measure.md](./audio-measure.md).
+
 | file                  | holds                                                       |
 | --------------------- | ----------------------------------------------------------- |
-| `audio/formats.rs`    | the supported-extension table                               |
 | `audio/player.rs`     | `Cmd`, `Topics`, whole-file read + retry + watchdog, decode |
 | `audio/cache.rs`      | the prefetch window and its fetch worker                    |
 | `audio/output.rs`     | one `OutputStream` per device, self-healing open            |
@@ -279,7 +285,5 @@ see [program-bus.md](./program-bus.md#events-and-commands).
 | `audio/bus.rs`        | the program bus                                             |
 | `audio/cue.rs`        | the cue deck                                                |
 | `audio/cue_points.rs` | the five markers, resolved against a decoded duration       |
-| `audio/auto_cue.rs`   | deriving markers from RMS windows                           |
 | `audio/envelope.rs`   | `Enveloped<I>`, `gain_at`                                   |
-| `audio/loudness.rs`   | `TARGET_LUFS`, `gain_db`, `factor`                          |
-| `audio/waveform.rs`   | `analyze` — one decode, three outputs                       |
+| `audio/levelling.rs`  | `factor` — the ReplayGain setting over a measurement        |

@@ -16,6 +16,7 @@ use tauri::{AppHandle, Manager, State};
 mod admin;
 mod appearance;
 mod audio;
+mod audio_measure;
 mod broadcast;
 mod library;
 mod persist;
@@ -424,9 +425,9 @@ fn get_waveform(app_state: State<'_, AppState>, id: i64) -> Result<Option<Vec<u8
 }
 
 /// Decode a track into the cue editor's fine curve (see
-/// [`audio::waveform::compute_detail`]) and return it as raw bytes. The file is
-/// taken from the prefetch cache when resident, so a networked share is not
-/// read a second time for a track already queued.
+/// [`audio_measure::waveform::compute_detail`]) and return it as raw bytes. The
+/// file is taken from the prefetch cache when resident, so a networked share is
+/// not read a second time for a track already queued.
 #[tauri::command(rename_all = "camelCase")]
 async fn get_waveform_detail(
     state: State<'_, AppState>,
@@ -444,7 +445,7 @@ async fn get_waveform_detail(
                 Arc::from(std::fs::read(&media.path)?.into_boxed_slice())
             }
         };
-        audio::waveform::compute_detail(bytes)
+        audio_measure::waveform::compute_detail(bytes)
     })
     .await
     .map_err(err)?
@@ -606,7 +607,7 @@ fn cue_load(
         .get_media_track(id)
         .map_err(err)?
         .ok_or_else(|| "track not found".to_string())?;
-    let gain = audio::loudness::factor(
+    let gain = audio::levelling::factor(
         state.config.get_tuning().player.replay_gain,
         track.loudness.gain_db,
         track.loudness.peak,

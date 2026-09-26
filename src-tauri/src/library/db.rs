@@ -7,9 +7,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::audio::auto_cue::{self, Analysed, Envelope, Thresholds};
-use crate::audio::bpm::{self, Bpm};
 use crate::audio::cue_points::CuePoints;
+use crate::audio_measure::auto_cue::{self, Analysed, Envelope, Thresholds};
+use crate::audio_measure::bpm::{self, Bpm};
 use crate::library::fingerprint;
 use crate::library::scanner;
 
@@ -2732,7 +2732,7 @@ UPDATE tracks SET auto_cue_state = 'manual'
 
 /// The decode reduced to the level of each window, so a later threshold change
 /// can re-derive a track's markers without reading the file again. See
-/// `audio::auto_cue::Envelope`.
+/// `audio_measure::auto_cue::Envelope`.
 ///
 /// Existing rows get it by backfill through the ordinary analysis pass, not by
 /// a synchronous migration: it is a full decode per track. Until a row has one,
@@ -3029,7 +3029,7 @@ fn backup(conn: &Connection, path: &Path, version: usize) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::auto_cue::{self, AutoCue};
+    use crate::audio_measure::auto_cue::{self, AutoCue};
 
     const THRESHOLDS: Thresholds = Thresholds {
         silence_dbfs: -70.0,

@@ -13,20 +13,21 @@ own.
 
 ## Where a feature lives
 
-| feature                           | backend                                 | renderer                              | doc                                                    |
-| --------------------------------- | --------------------------------------- | ------------------------------------- | ------------------------------------------------------ |
-| decode, devices, levels           | `audio/`                                | `features/deck/`                      | [audio.md](./audio.md)                                 |
-| on-air mixing, handover, fades    | `audio/bus.rs`, `audio/deck.rs`         | `features/deck/NowPlaying.svelte`     | [program-bus.md](./program-bus.md)                     |
-| cue points and their editor       | `audio/cue_points.rs`, `auto_cue.rs`    | `features/track/Cue*.svelte`          | [cue-points.md](./cue-points.md)                       |
-| the library and scanning          | `library/`                              | `features/library/`, `features/scan/` | [library.md](./library.md)                             |
-| track identity across moves       | `library/fingerprint.rs`, `listing.rs`  | —                                     | [track-identity.md](./track-identity.md)               |
-| library health                    | `library/health.rs`, `check.rs`         | `features/health/`                    | [library-health.md](./library-health.md)               |
-| the playlist and advancement      | `playlist/`                             | `features/playlist/`                  | [playlist.md](./playlist.md)                           |
-| rotation rules and the airing log | `library/db.rs`, `playlist/generate.rs` | —                                     | [rotation.md](./rotation.md)                           |
-| now-playing output                | `broadcast/`                            | `features/settings/`                  | [now-playing-broadcast.md](./now-playing-broadcast.md) |
-| themes and station identity       | `appearance/`                           | `shared/appearance.ts`                | [theming.md](./theming.md)                             |
-| admin mode                        | `admin.rs`                              | `features/admin/`                     | [admin-mode.md](./admin-mode.md)                       |
-| schema and migrations             | `library/db.rs`                         | —                                     | [database.md](./database.md)                           |
+| feature                           | backend                                            | renderer                              | doc                                                    |
+| --------------------------------- | -------------------------------------------------- | ------------------------------------- | ------------------------------------------------------ |
+| decode, devices, levels           | `audio/`                                           | `features/deck/`                      | [audio.md](./audio.md)                                 |
+| what a decode measures            | `audio_measure/`                                   | —                                     | [audio-measure.md](./audio-measure.md)                 |
+| on-air mixing, handover, fades    | `audio/bus.rs`, `audio/deck.rs`                    | `features/deck/NowPlaying.svelte`     | [program-bus.md](./program-bus.md)                     |
+| cue points and their editor       | `audio/cue_points.rs`, `audio_measure/auto_cue.rs` | `features/track/Cue*.svelte`          | [cue-points.md](./cue-points.md)                       |
+| the library and scanning          | `library/`                                         | `features/library/`, `features/scan/` | [library.md](./library.md)                             |
+| track identity across moves       | `library/fingerprint.rs`, `listing.rs`             | —                                     | [track-identity.md](./track-identity.md)               |
+| library health                    | `library/health.rs`, `check.rs`                    | `features/health/`                    | [library-health.md](./library-health.md)               |
+| the playlist and advancement      | `playlist/`                                        | `features/playlist/`                  | [playlist.md](./playlist.md)                           |
+| rotation rules and the airing log | `library/db.rs`, `playlist/generate.rs`            | —                                     | [rotation.md](./rotation.md)                           |
+| now-playing output                | `broadcast/`                                       | `features/settings/`                  | [now-playing-broadcast.md](./now-playing-broadcast.md) |
+| themes and station identity       | `appearance/`                                      | `shared/appearance.ts`                | [theming.md](./theming.md)                             |
+| admin mode                        | `admin.rs`                                         | `features/admin/`                     | [admin-mode.md](./admin-mode.md)                       |
+| schema and migrations             | `library/db.rs`                                    | —                                     | [database.md](./database.md)                           |
 
 ## Rust backend (`src-tauri/src/`)
 
@@ -38,9 +39,14 @@ Grouped by domain.
 - **`main.rs`** — a thin `pub fn main() { radiodiodj_lib::run() }` binary entry.
 - **`admin.rs`** — admin mode: the `AdminLock` (unlocked flag, Argon2 password
   check), the `ADMIN_COMMANDS` list, and the gate the invoke handler applies.
-- **`audio/`** — the decode path, output devices, decks, the program bus, the
-  cue deck, cue points, the fade envelope, ReplayGain and waveform analysis. Its
-  own code map is in [audio.md](./audio.md#code-map).
+- **`audio/`** — playback: the decode path, output devices, decks, the program
+  bus, the cue deck, cue points, the fade envelope and the ReplayGain setting.
+  Its own code map is in [audio.md](./audio.md#code-map).
+- **`audio_measure/`** — what a decode says about a track: the waveform curve,
+  the loudness numbers, the level envelope behind the automatic cue points and
+  the tempo. A library, not a feature — it opens no device, reads no setting and
+  touches no database, and `library/waveform_scan.rs` is the pass that calls it.
+  See [audio-measure.md](./audio-measure.md).
 - **`library/`** — `db.rs` (rusqlite + FTS5, WAL, `parking_lot::Mutex<Connection>`,
   append-only `rusqlite_migration` steps against a `schema.sql` snapshot,
   pre-migration backup, newer-DB refusal), `scanner.rs` + `scan_state.rs`

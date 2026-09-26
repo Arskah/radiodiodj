@@ -5,9 +5,9 @@ integrated loudness, the level envelope behind the automatic cue points, the
 tempo, and the content fingerprint. One module, one decode, no knowledge of
 where the answers go.
 
-**Planned.** This describes the module as it will stand; today the files are
-still spread across `audio/` and `library/`. The move is the
-[increments](#increments) at the end, none of which changes behaviour.
+**Partly built.** The module exists and holds the measurement of audio;
+`fingerprint.rs`, the `write_wav` fixture and the guard test are
+[increments](#increments) 2 and 3.
 
 It is a library that happens to live in this repository. Nothing in it opens a
 device, touches the database, reads a setting, emits a Tauri event or holds a
@@ -70,9 +70,11 @@ whole cue vocabulary across a boundary drawn to keep vocabulary out.
 **`ReplayGainMode` and `loudness::factor`** — `factor(mode, gain_db, peak)` is
 the one place the old `loudness.rs` reached into `persist::config`. What gain a
 track _earns_ is arithmetic and stays; whether the operator wants levelling at
-all is a setting, and a measurement library should not carry one. `factor` moves
-to the app side beside its two callers (`lib.rs`, `playlist/service.rs`), which
-is also where the answer to "no album mode" belongs.
+all is a setting, and a measurement library should not carry one. `factor` lives
+in `audio/levelling.rs` instead — one home rather than two, because both call
+sites that build a `Cmd::Load` must agree on a track's level or the program decks
+and the cue deck drift apart. That is also where the answer to "no album mode"
+belongs.
 
 **`library/waveform_scan.rs`** — the **Analysis pass**. It owns the `Db`, the
 `AppHandle`, the queue, the progress events and the cancel token. The pass
