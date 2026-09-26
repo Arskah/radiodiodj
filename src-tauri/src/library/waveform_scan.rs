@@ -4,13 +4,13 @@
 //! The metadata scan (tag reads) is fast and finishes quickly. Computing a
 //! track's amplitude curve requires a full audio decode, which is far heavier —
 //! so it runs here, on its own worker thread, after the scan. The same pass
-//! backfills [fingerprints](super::fingerprint): from the bytes already read
-//! when a waveform is due, from the head of the file otherwise. The same decode
-//! also yields the [automatic cue points](crate::audio_measure::auto_cue), so
-//! an unprepped track airs trimmed without a second pass over the file.
-//! Waveforms land in the DB one at a time and a `waveform-ready` event is
-//! emitted per track so the renderer can refresh a curve for the deck that is
-//! currently showing it.
+//! backfills [fingerprints](crate::audio_measure::fingerprint): from the bytes
+//! already read when a waveform is due, from the head of the file otherwise.
+//! The same decode also yields the
+//! [automatic cue points](crate::audio_measure::auto_cue), so an unprepped track
+//! airs trimmed without a second pass over the file. Waveforms land in the DB
+//! one at a time and a `waveform-ready` event is emitted per track so the
+//! renderer can refresh a curve for the deck that is currently showing it.
 //!
 //! Progress is surfaced separately from the metadata scan via
 //! `waveform-progress` / `waveform-state-changed` so the UI can show a second
@@ -39,9 +39,9 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 use super::db::{AnalysisJob, Db};
-use super::fingerprint;
 use super::scanner::now_ms;
 use crate::audio::cue_points::CuePoints;
+use crate::audio_measure::fingerprint;
 use crate::audio_measure::{auto_cue, loudness, waveform};
 use crate::persist::config::Config;
 

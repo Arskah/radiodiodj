@@ -1,6 +1,5 @@
 pub mod check;
 pub mod db;
-pub mod fingerprint;
 pub mod health;
 pub mod listing;
 pub mod scan_state;

@@ -11,11 +11,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::UNIX_EPOCH;
 
 use super::db::{Db, IndexRow, Reconcile, TrackInsert};
-use super::fingerprint;
 pub use super::listing::ScanRoot;
 use super::listing::{self, Found};
 #[cfg(test)]
 use super::listing::{find_audio_files, should_rescan};
+use crate::audio_measure::fingerprint;
 
 /// Upper bound on parallel tag-read workers. A scan is dominated by per-file
 /// I/O (stat + header read), which on a networked share is latency-bound —
@@ -413,8 +413,9 @@ mod tests {
     use super::*;
     use crate::audio::cue_points::CuePoints;
     use crate::audio_measure::bpm::Bpm;
+    use crate::audio_measure::test_audio::write_wav;
     use crate::library::db::TrackMetadataUpdate;
-    use crate::library::test_audio::{retag_externally, write_tag, write_wav};
+    use crate::library::test_audio::{retag_externally, write_tag};
     use tempfile::TempDir;
 
     fn music(dir: &Path) -> ScanRoot {

@@ -264,9 +264,9 @@ impl LibraryCheck {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio_measure::test_audio::write_wav;
     use crate::library::db::Reconcile;
     use crate::library::scanner::scan_all;
-    use crate::library::test_audio::write_wav;
     use std::fs;
     use tempfile::TempDir;
 

@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::audio::cue_points::CuePoints;
 use crate::audio_measure::auto_cue::{self, Analysed, Envelope, Thresholds};
 use crate::audio_measure::bpm::{self, Bpm};
-use crate::library::fingerprint;
+use crate::audio_measure::fingerprint;
 use crate::library::scanner;
 
 /// `Default` exists for test fixtures, which would otherwise have to name every

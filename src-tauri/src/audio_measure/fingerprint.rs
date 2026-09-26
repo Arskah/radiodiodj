@@ -118,7 +118,7 @@ pub fn of_source(source: Box<dyn MediaSource>, extension: Option<&str>) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::library::test_audio::write_wav;
+    use crate::audio_measure::test_audio::write_wav;
     use lofty::config::WriteOptions;
     use lofty::file::TaggedFileExt;
     use lofty::prelude::*;
