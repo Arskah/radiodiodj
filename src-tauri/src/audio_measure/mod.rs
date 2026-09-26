@@ -1,6 +1,6 @@
 //! What a decode says about a track: the waveform curve, the integrated
-//! loudness, the level envelope behind the automatic cue points, the tempo and
-//! the content fingerprint.
+//! loudness, the level envelope behind the automatic cue points, the tempo,
+//! the musical key and the content fingerprint.
 //!
 //! A library that happens to live in this binary. Nothing here opens a device,
 //! reads a setting, touches the database or emits an event — a caller hands in
@@ -17,6 +17,7 @@
 pub mod bpm;
 pub mod fingerprint;
 pub mod formats;
+pub mod key;
 pub mod level_envelope;
 pub mod loudness;
 #[cfg(test)]

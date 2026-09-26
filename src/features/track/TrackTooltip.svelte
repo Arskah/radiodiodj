@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app, formatTime } from "../../shared/state.svelte";
   import { airDuration, isTrimmed } from "../../shared/cuePoints";
+  import { formatKey } from "../../shared/camelot";
   import type { Track } from "../../shared/types";
 
   const TOOLTIP_WIDTH = 280;
@@ -49,6 +50,17 @@
     if (t.detected_bpm == null) return null;
     const bpm = t.detected_bpm.toFixed(1);
     return (t.bpm_confidence ?? 1) < WEAK_CONFIDENCE ? `${bpm} (weak)` : bpm;
+  }
+
+  /**
+   * The measured key with its Camelot code, noted as weak on the same terms the
+   * tempo is. The tag's own key keeps its row above: the two disagree often
+   * enough to be worth seeing, and a tagger's value is not this app's to correct.
+   */
+  function formatMeasuredKey(t: Track): string | null {
+    const key = formatKey(t.detected_key);
+    if (!key) return null;
+    return (t.key_confidence ?? 1) < WEAK_CONFIDENCE ? `${key} (weak)` : key;
   }
 
   function strOr(v: string | null | undefined): string {
@@ -114,6 +126,7 @@
     { label: "BPM", value: numOr(t.bpm) },
     { label: "Measured BPM", value: formatMeasured(t) },
     { label: "Key", value: t.initial_key ?? null },
+    { label: "Measured key", value: formatMeasuredKey(t) },
     { label: "Format", value: t.format ? t.format.toUpperCase() : UNKNOWN },
     { label: "Bitrate", value: formatBitrate(t.bitrate) },
     { label: "Sample rate", value: formatRate(t.sample_rate) },

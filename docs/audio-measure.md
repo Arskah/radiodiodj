@@ -50,6 +50,7 @@ vetting new material. None of them should have to link a mixer to ask.
 | `audio_measure/loudness.rs`       | `Loudness`, `TARGET_LUFS`, `gain_db`, `linear_gain`               |
 | `audio_measure/level_envelope.rs` | RMS windows, and where the audio crosses a level                  |
 | `audio_measure/bpm.rs`            | the onset envelope and the tempo estimator                        |
+| `audio_measure/key.rs`            | the chroma profile and the musical-key estimator                  |
 | `audio_measure/fingerprint.rs`    | the tag-independent content hash of demuxed packets               |
 | `audio_measure/test_audio.rs`     | `write_wav`, the generated fixture its own tests measure          |
 

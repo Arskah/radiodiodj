@@ -103,7 +103,7 @@ The background decode that follows a **Scan**, producing a Track's waveform, lou
 _Avoid_: Waveform scan, indexing, processing
 
 **Measurement**:
-What one decode of a Track's audio yields — its waveform curve, loudness, **Level envelope**, tempo and fingerprint. Produced by `audio_measure`, which knows nothing of rows or queues; requested and stored by the **Analysis pass**.
+What one decode of a Track's audio yields — its waveform curve, loudness, **Level envelope**, tempo, musical key and fingerprint. Produced by `audio_measure`, which knows nothing of rows or queues; requested and stored by the **Analysis pass**.
 _Avoid_: Analysis (that is the pass), stats, metrics, features
 
 **Tag backfill**:

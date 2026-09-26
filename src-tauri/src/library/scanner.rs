@@ -413,6 +413,7 @@ mod tests {
     use super::*;
     use crate::audio::cue_points::CuePoints;
     use crate::audio_measure::bpm::Bpm;
+    use crate::audio_measure::key::{self, Key};
     use crate::audio_measure::test_audio::write_wav;
     use crate::library::db::TrackMetadataUpdate;
     use crate::library::test_audio::{retag_externally, write_tag};
@@ -1053,6 +1054,17 @@ mod tests {
             Some(Bpm {
                 bpm: 128.0,
                 confidence: 0.9,
+            }),
+            1234,
+            row_mtime(&db, id),
+        )
+        .unwrap();
+        db.set_key(
+            id,
+            Some(Key {
+                pitch_class: 9,
+                mode: key::Mode::Minor,
+                confidence: 0.7,
             }),
             1234,
             row_mtime(&db, id),

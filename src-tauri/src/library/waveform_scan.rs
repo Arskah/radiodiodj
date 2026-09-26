@@ -318,6 +318,7 @@ fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle, config: &Config) -> Outc
         || job.needs_auto_cue
         || job.needs_auto_cue_levels
         || job.needs_bpm
+        || job.needs_key
     {
         let start = Instant::now();
         let bytes: Bytes = match std::fs::read(path) {
@@ -378,6 +379,18 @@ fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle, config: &Config) -> Outc
                         }
                         Ok(false) => log::debug!("bpm: {} moved on", job.path),
                         Ok(true) => log::debug!("bpm: {} {:?}", job.path, analysis.bpm),
+                    }
+                }
+                if job.needs_key {
+                    match db.set_key(job.id, analysis.key, now_ms(), job.mtime) {
+                        Err(e) => {
+                            log::error!("key: store {} failed: {}", job.id, e);
+                            retry = true;
+                        }
+                        Ok(false) => log::debug!("key: {} moved on", job.path),
+                        Ok(true) => {
+                            log::debug!("key: {} {:?}", job.path, analysis.key.map(|k| k.name()))
+                        }
                     }
                 }
                 let levels = (job.needs_auto_cue || job.needs_auto_cue_levels)

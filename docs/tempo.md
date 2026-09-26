@@ -40,8 +40,8 @@ marker that stops an endless re-decode would otherwise also prevent a wanted one
 so the queue screens `bpm_version < audio_measure::bpm::VERSION` exactly as it screens
 `fingerprint::VERSION`. Bumping that constant puts the library back in the queue.
 
-`detected_key` and `key_confidence` are declared and written by nothing. Key
-detection is a separate question — see [Not built](#not-built).
+`detected_key` and `key_confidence` are the same arrangement for the musical key,
+measured from the same decode — see [key.md](./key.md).
 
 ## No second decode, and no PCM
 
@@ -199,9 +199,6 @@ share once turns every later run into a local read. `local-audio/` is excluded i
 
 ## Not built
 
-- **Key detection.** The columns exist; nothing writes them. Chroma extraction
-  needs an FFT, which tempo did not, so it is its own increment with its own
-  dependency question.
 - **A stored envelope.** Re-judging the library currently means a decode, gated by
   `bpm_version`. Storing the envelope as a blob, like `auto_cue_levels`, would
   make it a no-decode pass.
