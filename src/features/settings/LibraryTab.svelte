@@ -2,6 +2,7 @@
   import { app } from "../../shared/state.svelte";
   import LibraryHealth from "../health/LibraryHealth.svelte";
   import type { ContentType, TuningConfig } from "../../shared/types";
+  import { numInput, rememberField } from "./numericInput";
 
   interface Props {
     /**
@@ -33,7 +34,10 @@
   }
 </script>
 
-<div class="settings-section">
+<div
+  class="settings-section settings-section--tuning"
+  onfocusin={rememberField}
+>
   <h4>Library</h4>
   <p class="settings-section-desc">
     Where your media lives, and what needs attention in it: tracks whose files
@@ -119,6 +123,22 @@
       path is unreachable or a scan has been cancelled.
     </p>
   </div>
+  <div class="device-row">
+    <label for="tune-check-interval">Library check interval (minutes)</label>
+    <input
+      id="tune-check-interval"
+      type="number"
+      min="0"
+      value={tuning.library.checkIntervalMin}
+      oninput={(e) => numInput(e, (v) => (tuning.library.checkIntervalMin = v))}
+      onchange={saveTuning}
+    />
+    <div class="hint">
+      How often to look for files added, changed or removed since the last scan.
+      Reads no audio, and never changes the library by itself unless the setting
+      above is on. 0 turns it off.
+    </div>
+  </div>
   <div class="np-group" class:disabled={!tuning.library.writeTags}>
     <div class="np-group-header">
       <span class="material-symbols-outlined" aria-hidden="true"
@@ -141,6 +161,23 @@
       on your library paths, network shares included. Failed writes are listed
       under Library health.
     </p>
+  </div>
+  <div class="device-row">
+    <label for="tune-tag-write-timeout">Tag write timeout (seconds)</label>
+    <input
+      id="tune-tag-write-timeout"
+      type="number"
+      min="5"
+      max="300"
+      value={tuning.library.tagWriteTimeoutSec}
+      oninput={(e) =>
+        numInput(e, (v) => (tuning.library.tagWriteTimeoutSec = v))}
+      onchange={saveTuning}
+    />
+    <div class="hint">
+      How long writing an edit into a file may take before it is reported as
+      failed.
+    </div>
   </div>
   <LibraryHealth />
 </div>

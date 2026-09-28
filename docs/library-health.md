@@ -27,14 +27,19 @@ Three rules hold throughout:
 
 ## Where it lives
 
-Library health sits in _Settings → Library_, under the library paths and _Scan
-Library Now_. The paths, the scan, and what the scan left behind are in one
-place.
+Library health sits in _Settings → Library_, under the library paths, _Scan
+Library Now_ and the settings that govern them — the check interval, whether a
+check may scan, and tag writing. The paths, the scan, what the scan is allowed to
+do and what it left behind are in one place, rather than split across _Advanced_.
 
 ```text
 ┌ Library ─────────────────────────────────────────────────────┐
 │ Music / Commercials / Jingles paths                          │
 │                                           [Scan Library Now] │
+│ Scan when files change                                  (•)  │
+│ Library check interval (minutes)                      [ 15 ] │
+│ Write edits to file tags                                ( )  │
+│ Tag write timeout (seconds)                           [ 30 ] │
 │ Disk changes                                      [Dismiss]  │
 │   ⚠ /Volumes/radio/music is unreachable. Its tracks are      │
 │     kept as they are.                                        │
@@ -122,7 +127,7 @@ Each count expands into its paths. The first 200 of each are drawn.
 - **At launch,** five seconds in, unless a scan is already running (as after a
   [pre-1.0 reset](./database.md#pre-10-resets)). That scan answers the same
   question.
-- **On a timer:** _Settings → Advanced → Library check interval (minutes)_,
+- **On a timer:** _Settings → Library → Library check interval (minutes)_,
   stored as `tuning.library.checkIntervalMin`. The default is 15, and `0` turns
   the timer off. A changed interval takes effect within a minute.
 - **On demand,** from _Check now_.
