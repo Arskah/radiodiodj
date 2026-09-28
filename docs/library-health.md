@@ -27,17 +27,18 @@ Three rules hold throughout:
 
 ## Where it lives
 
-Library health sits in _Settings → Library_, under the library paths, _Scan
-Library Now_ and the settings that govern them — the check interval, whether a
-check may scan, and tag writing. The paths, the scan, what the scan is allowed to
-do and what it left behind are in one place, rather than split across _Advanced_.
+Library health sits in _Settings → Library_, under the library paths, the
+settings that govern a scan — whether a check may start one, how often it looks,
+and tag writing — and _Scan Library Now_ itself. The paths, the scan, what the
+scan is allowed to do and what it left behind are in one place, rather than split
+across _Advanced_.
 
 ```text
 ┌ Library ─────────────────────────────────────────────────────┐
 │ Music / Commercials / Jingles paths                          │
-│                                           [Scan Library Now] │
 │ Scan when files change                                  (•)  │
 │ Library check interval (minutes)                      [ 15 ] │
+│                                           [Scan Library Now] │
 │ Write edits to file tags                                ( )  │
 │ Tag write timeout (seconds)                           [ 30 ] │
 │ Disk changes                                      [Dismiss]  │

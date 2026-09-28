@@ -86,17 +86,6 @@
       </div>
     {/each}
   </div>
-  <div class="settings-row">
-    <button
-      id="btn-scan-now"
-      class="btn-scan-now"
-      title="Scan all configured paths"
-      onclick={onScan}
-    >
-      <span class="material-symbols-outlined">sync</span>
-      Scan Library Now
-    </button>
-  </div>
   <div class="np-group" class:disabled={!tuning.library.scanOnChanges}>
     <div class="np-group-header">
       <span class="material-symbols-outlined" aria-hidden="true">autorenew</span
@@ -138,6 +127,17 @@
       Reads no audio, and never changes the library by itself unless the setting
       above is on. 0 turns it off.
     </div>
+  </div>
+  <div class="settings-row">
+    <button
+      id="btn-scan-now"
+      class="btn-scan-now"
+      title="Scan all configured paths"
+      onclick={onScan}
+    >
+      <span class="material-symbols-outlined">sync</span>
+      Scan Library Now
+    </button>
   </div>
   <div class="np-group" class:disabled={!tuning.library.writeTags}>
     <div class="np-group-header">
