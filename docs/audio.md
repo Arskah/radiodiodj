@@ -61,6 +61,12 @@ A read that fails or times out emits `{role}:load-failed`, which the playlist
 engine turns into skip-to-cached and a retry timer — see
 [playlist.md](./playlist.md#outages).
 
+What a deck reads on a miss is **offered to the cache** when it lands, so bytes
+the share has already sent are not asked for a second time. The offer is refused
+for a track outside the window — that is what keeps residency a playlist window
+rather than an LRU — and nothing is lost by refusing, because the deck holds its
+own copy for the life of the load.
+
 ### The prefetch cache
 
 `audio/cache.rs` keeps whole track files resident in RAM, keyed by track id, so
@@ -73,6 +79,20 @@ So the whole playlist is attempted and the nearest tracks win.
 One background worker fetches missing entries sequentially, never in parallel —
 hammering a network share with concurrent reads is how a share that was merely
 slow becomes a share that is down.
+
+**The rule belongs to the share, not to that worker.** The cache therefore holds
+an **in-flight set**: every reader of a library file claims an id before it
+reads, so one file never crosses the share twice at once. A deck that misses an
+id someone else is already reading waits for that read rather than starting its
+own — never slower than a read that begins later, and bounded by the deck's
+watchdog exactly as a read of its own would be. The analysis pass keeps the same
+rule from the other side by reading on a single thread
+([library.md](./library.md#the-analysis-pass)).
+
+A claim is released when the read ends, including on a panic. A read _wedged_ on
+a dead mount holds its claim until the OS finally errors it, and prefetch keeps
+skipping that id meanwhile — a file the share is refusing to send is the last one
+to ask for twice.
 
 ## Output devices
 
@@ -278,7 +298,7 @@ the level envelope, the tempo and the extension table — is `audio_measure/`; s
 | file                  | holds                                                       |
 | --------------------- | ----------------------------------------------------------- |
 | `audio/player.rs`     | `Cmd`, `Topics`, whole-file read + retry + watchdog, decode |
-| `audio/cache.rs`      | the prefetch window and its fetch worker                    |
+| `audio/cache.rs`      | the prefetch window, its fetch worker, the in-flight set    |
 | `audio/output.rs`     | one `OutputStream` per device, self-healing open            |
 | `audio/devices.rs`    | cpal enumeration, `DeviceRef` resolution                    |
 | `audio/deck.rs`       | one `Sink` per deck plus the worker loop over a deck set    |

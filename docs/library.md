@@ -96,9 +96,16 @@ is gone is retired by the operator's scan, never by an automatic one. See
 
 Every launch and every completed scan starts the **analysis pass**
 (`library/waveform_scan.rs`). It works through present tracks missing any of the
-things below, decoding on several threads (the core count less two, kept between
-2 and 8) so playback and the UI stay responsive. A second bar under the scan bar
-shows its progress.
+things below. A second bar under the scan bar shows its progress.
+
+**One thread reads and several decode.** The pass pulls one file off the library
+at a time — the same rule the prefetch cache follows, and for the same reason
+([audio.md](./audio.md#the-prefetch-cache)) — and hands each to a pool of decode
+workers (the core count less two, kept between 2 and 6) over a one-slot channel,
+so the CPU fan-out costs the share nothing and playback and the UI stay
+responsive. Every read the pass makes is the reader's, including the head read
+behind a fingerprint-only job. What bounds it is whole files rather than cores:
+one per decoder, one queued, one in the reader's hand, and a track can be 100 MB.
 
 One decode yields all of them. `waveform::analyze` walks the samples once and
 measures the curve, the loudness and the automatic-cue levels together, so a
@@ -127,10 +134,13 @@ track missing only one of them costs no more than a track missing all four.
 A file that fails to decode is recorded on its track and skipped until a scan
 sees the file change; it is listed under [Unreadable
 tracks](./library-health.md#unreadable-tracks). A file that could not be read is
-skipped for the rest of the run only. Cancelling a scan cancels the pass too,
-and the pass can be stopped on its own from the status bar without stopping the
-scan that started it. Either way the queue is row state, so the next pass picks
-up where the last one stopped.
+skipped for the rest of the run only — by the reader, so it never reaches a
+decoder at all. Cancelling a scan cancels the pass too, and the pass can be
+stopped on its own from the status bar without stopping the scan that started
+it. A cancel stops the reader after the file it is on and each decoder after the
+file it holds; anything already read but not yet started is dropped undecoded.
+Either way the queue is row state, so the next pass picks up where the last one
+stopped.
 
 ### Tag backfill
 
