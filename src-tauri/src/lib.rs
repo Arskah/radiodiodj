@@ -712,24 +712,34 @@ where
 /// `autoplay` travels with the load rather than arriving as a later `Play`,
 /// because the load completes on a background thread and parks the sink when
 /// it lands — a `Play` sent in between would be undone by it.
+///
+/// The only `cue_*` command that is not a bare channel send: it resolves the
+/// track first, which is a read of the one `Mutex<Connection>` the analysis
+/// pass also writes through. Inline, that put the window's thread behind a
+/// database lock every time the operator auditioned a track.
 #[tauri::command(rename_all = "camelCase")]
-fn cue_load(
+async fn cue_load(
     state: State<'_, AppState>,
     id: i64,
     cue_points: Option<CuePoints>,
     autoplay: Option<bool>,
     start_at: Option<f64>,
 ) -> Result<(), String> {
-    let track = state
-        .db
-        .get_media_track(id)
-        .map_err(err)?
-        .ok_or_else(|| "track not found".to_string())?;
-    let gain = audio::levelling::factor(
-        state.config.get_tuning().player.replay_gain,
-        track.loudness.gain_db,
-        track.loudness.peak,
-    );
+    let db = Arc::clone(&state.db);
+    let config = Arc::clone(&state.config);
+    let (track, gain) = blocking(move || {
+        let track = db
+            .get_media_track(id)
+            .map_err(err)?
+            .ok_or_else(|| "track not found".to_string())?;
+        let gain = audio::levelling::factor(
+            config.get_tuning().player.replay_gain,
+            track.loudness.gain_db,
+            track.loudness.peak,
+        );
+        Ok((track, gain))
+    })
+    .await?;
     with_cue(&state, |h| {
         h.send(Cmd::Load {
             id,

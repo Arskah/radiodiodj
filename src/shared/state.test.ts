@@ -1155,6 +1155,36 @@ describe("AppState library + paths", () => {
     expect(app.tracks.map((row) => row.id)).toEqual([3]);
   });
 
+  it("a metadata save lands on its own row after a search reordered the list", async () => {
+    // The save goes through Health::refresh and is the slower of the two, so a
+    // search can replace `tracks` while it is in flight. A position captured
+    // before the call would put the edited track over an unrelated row.
+    await app.search();
+    expect(app.tracks.map((row) => row.id)).toEqual([1, 2]);
+
+    let release: (row: Track) => void = () => {};
+    api.updateTrackMetadata.mockImplementationOnce(
+      () =>
+        new Promise<Track>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const saving = app.updateTrackMetadata(2, { title: "Edited" });
+
+    // The edited track moves off the position it was saved from.
+    api.search.mockResolvedValueOnce([t(2), t(9), t(1)]);
+    await app.search();
+
+    release(t(2, { title: "Edited" }));
+    await saving;
+    expect(app.tracks.map((row) => row.id)).toEqual([2, 9, 1]);
+    expect(app.tracks.map((row) => row.title)).toEqual([
+      "Edited",
+      t(9).title,
+      t(1).title,
+    ]);
+  });
+
   it("setTab updates activeTab and triggers a search for it", () => {
     app.setTab("jingle");
     expect(app.activeTab).toBe("jingle");

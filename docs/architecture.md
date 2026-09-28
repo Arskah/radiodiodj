@@ -148,7 +148,9 @@ pool exists for exactly this.
 
 What stays synchronous is what cannot wait: a read of in-memory state
 (`get_scan_status`, `playlist_sync`), or a send down a channel (`main_deck_*`,
-`cue_*`, and the `playlist_*` family, which queue on their own thread).
+the rest of `cue_*`, and the `playlist_*` family, which queue on their own
+thread). `cue_load` is the exception among those — it resolves the track before
+it sends, and a database read is I/O like any other.
 
 One consequence reaches the renderer. Commands answered on the main thread came
 back in the order they were asked; commands answered on the blocking pool do
@@ -156,6 +158,11 @@ not. A renderer that fires the same query repeatedly therefore guards its result
 by request number and drops a stale answer — `AppState.search` does, because a
 slow query landing after a faster later one would otherwise put stale rows on
 screen and leave them there.
+
+The same applies to writing a result back. `adoptTrack` locates the row it
+replaces by id at the moment the answer lands, because `tracks` is replaced
+wholesale by every search and a metadata write — which goes through
+`Health::refresh` — is the slower of the two.
 
 ## Conventions
 

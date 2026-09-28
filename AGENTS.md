@@ -167,9 +167,12 @@ network is an `async fn` whose body is one `blocking(…)` call, cloning the
 an `async` command** — that holds one of the async runtime's worker threads, of
 which there is one per core, and a few slow commands would take every other
 async command down with them. What stays sync is what cannot wait: a read of
-in-memory state, or a send down a channel. Answering off the main thread also
-means answers can arrive out of order, so a renderer that fires the same query
-repeatedly guards its results by request — `AppState.search`. See
+in-memory state, or a send down a channel — a command that looks something up
+before it sends is I/O, not a send. Answering off the main thread also means
+answers can arrive out of order, so a renderer that fires the same query
+repeatedly guards its results by request (`AppState.search`), and one that
+mutates a row locates it by id when the answer lands, never by a position
+captured before the call (`adoptTrack`). See
 [docs/architecture.md](docs/architecture.md#commands).
 
 **Auto-playlist** — a lookahead buffer refilled inside `playlist::engine`, so a
