@@ -85,7 +85,12 @@ next complete scan.
 
 Scans are started by the operator. Between scans, the **library check** notices
 new, changed and gone files without changing anything; see
-[library-health.md](./library-health.md#disk-changes).
+[library-health.md](./library-health.md#disk-changes). With _Scan when files
+change_ on, that check starts a scan itself once the disk has settled — which is
+how music copied onto a share from another computer reaches the library without
+anyone at the studio machine. That scan only adds and updates: a track whose file
+is gone is retired by the operator's scan, never by an automatic one. See
+[Scanning by itself](./library-health.md#scanning-by-itself).
 
 ### The analysis pass
 

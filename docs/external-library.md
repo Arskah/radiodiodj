@@ -1,8 +1,11 @@
 # External library and scanning from another computer
 
-**Planned.** Nothing on this page is built. It answers whether the library can
-live somewhere other than the studio machine, and whether a scan can be started —
-or run — from another computer. Tracked as
+**Partly built.** Option A1 below ships as _Scan when files change_, described
+for the operator in
+[library-health.md](./library-health.md#scanning-by-itself); everything else here
+is a design, not a description. The page answers whether the library can live
+somewhere other than the studio machine, and whether a scan can be started — or
+run — from another computer. Tracked as
 [#495](https://github.com/Arskah/radiodiodj/issues/495). The library as it exists
 today is [library.md](./library.md); its schema is [database.md](./database.md).
 
@@ -86,11 +89,14 @@ and works out exactly which files are new, changed or gone, and then does nothin
 with the answer until an operator presses a button. Two variants follow from
 that, and the first one needs no trigger, no protocol and no rendezvous.
 
-### A1 — scan when the check finds changes
+### A1 — scan when the check finds changes (built)
 
-A new `library.scanOnChanges` in `tuning`, **off by default**. With it on, a
-check whose report `has_changes()` starts a scan through the same
-`ScanState::start` path the `scan_libraries` command uses.
+`library.scanOnChanges` in `tuning`, **off by default**, shown as _Settings →
+Library → Scan when files change_. With it on, a check whose report has changes
+starts a scan through the same `ScanState::start` path the `scan_libraries`
+command uses. The rules below are `LibraryCheck::may_scan` and
+`settled_with_changes` in `src-tauri/src/library/check.rs`; what an operator sees
+is [library-health.md](./library-health.md#scanning-by-itself).
 
 Then "triggering a scan from another computer" is: copy music onto the share from
 wherever you are. Within an interval the studio machine notices and brings itself
@@ -100,27 +106,35 @@ control directory, no port.
 The design is mostly guards, because a scan is the thing that writes to the
 library.
 
-- **This reverses a documented decision.** _"The check never starts a scan. Scan
-  Library Now, just above, is the operator's button"_
-  ([library-health.md](./library-health.md#when-it-runs)), under the rule that
-  nothing in library health changes the library by itself. The setting is the
-  operator's opt-out of that rule, which is why it is off by default and why both
-  pages must say so.
-- **Wait for the disk to settle.** A large copy in progress shows a different
-  report each time it is looked at, and scanning mid-copy tags a half-written
-  file and records an analysis failure against it. `CheckReport::signature()`
-  already identifies _what_ was found rather than when — it is what the health
-  view's dismissals key on (`src-tauri/src/library/health.rs`). Require the same
-  signature from two consecutive checks before starting. Cost: one extra interval
-  of latency, so roughly half an hour on the default fifteen.
-- **Never on a bad listing.** If any root is `unreachable`, or any listing came
-  back `partial`, report as today and start nothing. A flapping share must not
+- **It reverses a documented decision.** _"The check never starts a scan"_, under
+  the rule that nothing in library health changes the library by itself. The
+  setting is the operator's opt-out of that rule, which is why it is off by
+  default and why both pages say so.
+- **It adds and updates; it does not retire.** Marking tracks missing on the
+  strength of a listing nobody watched is the one thing here that could empty a
+  library — a stale mount that came back as an empty directory lists perfectly
+  happily. A gone row is retired only when the same audio arrives elsewhere in
+  the same scan, which is a move, and which has to be retired in the same
+  transaction or the scan mints a duplicate. Everything else waits for the
+  operator's button.
+- **Wait for the disk to settle.** A copy in progress reports the same _paths_
+  every time it is looked at, so a path list cannot tell a finished file from a
+  growing one — and an in-place overwrite would read identically for the whole
+  write. The settle key hashes each new or changed file's path, mtime and size,
+  and two consecutive checks must agree on it. Cost: one extra interval of
+  latency, so roughly half an hour on the default fifteen.
+- **Never on a bad listing.** Any root `unreachable`, or any listing `partial`,
+  and the check reports as before and starts nothing. A flapping share must not
   drive a scan loop.
-- **Never mid-show, unless the operator says so.** With an explicit trigger
-  someone chose the moment; here nobody did. The scan and analysis concurrency
-  caps are sized to run under playback, so this is a preference rather than a
-  safety rule — but the default should be to hold a scan while a deck is on air
-  and run it when the deck goes quiet.
+- **Never twice on the same evidence.** A file no tag reader can parse writes no
+  row, so it is reported as new forever; without this the share would be
+  rescanned every two intervals for good.
+- **Never over the operator.** A dismissed report and a cancelled scan both hold
+  an automatic scan back.
+- **The analysis pass, not the tag backfill.** An automatic scan owes the library
+  the same waveforms and cue points the button does, but a cancelled backfill was
+  cancelled on purpose and nothing the operator stopped should restart because a
+  file appeared.
 
 What A1 cannot do is force a scan on demand — it reacts to the disk, and reacts
 one interval late. For that, A2.
@@ -262,15 +276,15 @@ because increment 3 landing does not mean the feature works.
 
 ## Verdict
 
-**A1 now. A2 if waiting an interval turns out to be the complaint. Option B
+**A1 is built. A2 if waiting an interval turns out to be the complaint. Option B
 held.**
 
-A1 is one setting and a pair of guards on a timer that already ticks and already
-knows the answer. No schema change, no dependency, no second process, and nothing
-to install on the other computer — the operator copies music onto the share, and
-the studio machine catches up by itself. Its price is the reversal it makes
-explicit: library health stops being a thing that only reports. Its limit is
-latency, two intervals in the worst case.
+A1 was one setting and a handful of guards on a timer that already ticked and
+already knew the answer. No schema change, no dependency, no second process, and
+nothing to install on the other computer — the operator copies music onto the
+share, and the studio machine catches up by itself. Its price is the reversal it
+makes explicit: library health stops being a thing that only reports. Its limit
+is latency, two intervals in the worst case.
 
 A2 buys immediacy for a control directory, a status file, an mtime remembered in
 `config.json` and a plain statement that the admin lock does not cover it. That

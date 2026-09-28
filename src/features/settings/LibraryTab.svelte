@@ -2,6 +2,7 @@
   import { app } from "../../shared/state.svelte";
   import LibraryHealth from "../health/LibraryHealth.svelte";
   import type { ContentType, TuningConfig } from "../../shared/types";
+  import { numInput, rememberField } from "./numericInput";
 
   interface Props {
     /**
@@ -33,7 +34,10 @@
   }
 </script>
 
-<div class="settings-section">
+<div
+  class="settings-section settings-section--tuning"
+  onfocusin={rememberField}
+>
   <h4>Library</h4>
   <p class="settings-section-desc">
     Where your media lives, and what needs attention in it: tracks whose files
@@ -82,6 +86,51 @@
       </div>
     {/each}
   </div>
+  <div class="np-group" class:disabled={!tuning.library.scanOnChanges}>
+    <div class="np-group-header">
+      <span class="material-symbols-outlined" aria-hidden="true">autorenew</span
+      >
+      <span class="np-group-title">Scan when files change</span>
+      <label
+        class="np-toggle"
+        title="Scan after the library check finds changes"
+      >
+        <input
+          id="setting-scan-on-changes"
+          type="checkbox"
+          bind:checked={tuning.library.scanOnChanges}
+          onchange={saveTuning}
+        />
+        <span class="np-toggle-track"></span>
+      </label>
+    </div>
+    <p class="settings-section-desc">
+      With this on, the library check starts a scan itself once the same files
+      have been seen twice running, so music copied onto your library paths from
+      another computer is picked up without anyone pressing <em
+        >Scan Library Now</em
+      >. It only ever adds and updates: tracks whose file is gone stay listed
+      under Library health until you scan yourself. It stays out of the way
+      while a library path is unreachable, while a report is dismissed, and
+      after a cancelled scan. Needs a check interval above 0.
+    </p>
+  </div>
+  <div class="device-row">
+    <label for="tune-check-interval">Library check interval (minutes)</label>
+    <input
+      id="tune-check-interval"
+      type="number"
+      min="0"
+      value={tuning.library.checkIntervalMin}
+      oninput={(e) => numInput(e, (v) => (tuning.library.checkIntervalMin = v))}
+      onchange={saveTuning}
+    />
+    <div class="hint">
+      How often to look for files added, changed or removed since the last scan.
+      Reads no audio, and never changes the library by itself unless the setting
+      above is on. 0 turns the check off, and with it any automatic scan.
+    </div>
+  </div>
   <div class="settings-row">
     <button
       id="btn-scan-now"
@@ -115,6 +164,23 @@
       on your library paths, network shares included. Failed writes are listed
       under Library health.
     </p>
+  </div>
+  <div class="device-row">
+    <label for="tune-tag-write-timeout">Tag write timeout (seconds)</label>
+    <input
+      id="tune-tag-write-timeout"
+      type="number"
+      min="5"
+      max="300"
+      value={tuning.library.tagWriteTimeoutSec}
+      oninput={(e) =>
+        numInput(e, (v) => (tuning.library.tagWriteTimeoutSec = v))}
+      onchange={saveTuning}
+    />
+    <div class="hint">
+      How long writing an edit into a file may take before it is reported as
+      failed.
+    </div>
   </div>
   <LibraryHealth />
 </div>

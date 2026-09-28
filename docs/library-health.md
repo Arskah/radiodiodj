@@ -18,21 +18,29 @@ Three rules hold throughout:
 
 - **The app never touches audio files.** It does not delete, move or rename
   them. Every fix to the disk is made by the operator, in the file manager.
-- **Nothing here changes the library by itself.** A check reports, a scan
-  applies, and only the operator's _Purge_ deletes rows.
+- **Nothing here changes the library by itself,** unless the operator asks it
+  to. A check reports, a scan applies, and only the operator's _Purge_ deletes
+  rows. _Scan when files change_ is the one opt-out, and it starts a scan —
+  never a delete. See [Scanning by itself](#scanning-by-itself).
 - **An unreachable library path is reported as unreachable,** never as a folder
   full of gone files.
 
 ## Where it lives
 
-Library health sits in _Settings → Library_, under the library paths and _Scan
-Library Now_. The paths, the scan, and what the scan left behind are in one
-place.
+Library health sits in _Settings → Library_, under the library paths, the
+settings that govern a scan — whether a check may start one, how often it looks,
+and tag writing — and _Scan Library Now_ itself. The paths, the scan, what the
+scan is allowed to do and what it left behind are in one place, rather than split
+across _Advanced_.
 
 ```text
 ┌ Library ─────────────────────────────────────────────────────┐
 │ Music / Commercials / Jingles paths                          │
+│ Scan when files change                                  (•)  │
+│ Library check interval (minutes)                      [ 15 ] │
 │                                           [Scan Library Now] │
+│ Write edits to file tags                                ( )  │
+│ Tag write timeout (seconds)                           [ 30 ] │
 │ Disk changes                                      [Dismiss]  │
 │   ⚠ /Volumes/radio/music is unreachable. Its tracks are      │
 │     kept as they are.                                        │
@@ -120,7 +128,7 @@ Each count expands into its paths. The first 200 of each are drawn.
 - **At launch,** five seconds in, unless a scan is already running (as after a
   [pre-1.0 reset](./database.md#pre-10-resets)). That scan answers the same
   question.
-- **On a timer:** _Settings → Advanced → Library check interval (minutes)_,
+- **On a timer:** _Settings → Library → Library check interval (minutes)_,
   stored as `tuning.library.checkIntervalMin`. The default is 15, and `0` turns
   the timer off. A changed interval takes effect within a minute.
 - **On demand,** from _Check now_.
@@ -140,8 +148,51 @@ as before, and hovering it shows the exact time of the check.
 
 The report is held in memory only. The next launch checks again.
 
-The check never starts a scan. _Scan Library Now_, just above, is the operator's
-button.
+### Scanning by itself
+
+By default the check never starts a scan: _Scan Library Now_, below the
+settings, is the operator's button. _Settings → Library → **Scan when files
+change**_ (`tuning.library.scanOnChanges`) hands it that button, so music copied
+onto a library path from another computer is picked up without anyone walking to
+the studio machine. This is the whole of the app's answer to scanning from
+elsewhere; see [external-library.md](./external-library.md).
+
+**An automatic scan only ever adds and updates.** It never marks a track missing
+on the strength of a listing nobody watched — a share that came back as an empty
+directory, or a root the operator emptied, would otherwise retire a whole library
+unattended. The one exception is a file that **moved**: a gone row whose
+fingerprint matches audio arriving elsewhere in the same scan is retired with it,
+because committing the new file without retiring the old one mints a duplicate of
+a file that merely moved. Everything else stays listed under _Disk changes_ until
+the operator scans. In the code this is `Missing::OnlyMoved` (`library/scanner.rs`).
+
+Five things have to line up before a check starts a scan, and each is a way it
+stays out of the operator's way:
+
+- **There is something to read.** New or changed files. Gone and unrooted rows
+  are reported as always, but they never start a scan by themselves.
+- **The disk has settled.** Two consecutive checks must agree on the **settle
+  key** (`Checked::settle`), which hashes every new and changed file's path,
+  modification time and size. Comparing paths alone would read the same all the
+  way through a long copy — the key changes while the bytes are still moving, so
+  a half-written file is never scanned. The cost is one extra interval: half an
+  hour on the default fifteen.
+- **Every library path was readable.** Anything `unreachable` or `partial` and
+  the check reports as usual and starts nothing — a share going up and down must
+  not drive a scan loop.
+- **The evidence is new.** A scan that leaves the disk reading exactly as it did
+  is not repeated on the same settle key. Without this, one file no tag reader
+  can parse — reported as new forever, since a failed parse writes no row — would
+  rescan the share every two intervals for good.
+- **The operator has not said otherwise.** A dismissed _Disk changes_ report is
+  them saying _not these_, and a cancelled scan stands until they scan again.
+  Neither is overruled. (Both live in memory, so a relaunch forgets them.)
+
+Every scan transition clears the remembered settle key, so the two checks that
+agree are always two checks since the last scan. An automatic scan runs the
+analysis pass exactly as the button does, but leaves the tag backfill alone: a
+cancelled backfill was cancelled deliberately. With the check interval at `0`
+there is no timer, and so no automatic scan either.
 
 ## Missing tracks
 

@@ -211,6 +211,13 @@ impl Health {
         }
     }
 
+    /// The signature of the check report the operator dismissed, if any. An
+    /// automatic scan asks before acting: a dismissed report is them saying not
+    /// these changes, and automation does not overrule that.
+    pub fn check_dismissed(&self) -> Option<u64> {
+        *self.check_dismissed.lock()
+    }
+
     pub fn dismiss(&self, kind: FindingKind, key: &str) -> Result<()> {
         if kind == FindingKind::Check {
             let signature = match self.check.lock().as_ref() {

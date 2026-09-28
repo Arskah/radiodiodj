@@ -119,7 +119,12 @@ function defaultTuning() {
       fadeToNextMs: 2500,
       replayGain: "track" as const,
     },
-    library: { checkIntervalMin: 15, writeTags: false, tagWriteTimeoutSec: 30 },
+    library: {
+      checkIntervalMin: 15,
+      scanOnChanges: false,
+      writeTags: false,
+      tagWriteTimeoutSec: 30,
+    },
     autoCue: {
       apply: true,
       applyNextStart: true,

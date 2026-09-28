@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter};
 
 use super::db::Db;
 use super::listing;
-use super::scanner;
+use super::scanner::{self, Missing};
 use super::waveform_scan::WaveformJob;
 use crate::persist::config::Config;
 
@@ -99,12 +99,38 @@ impl ScanState {
         let _ = app.emit("scan-state-changed", &next);
     }
 
+    /// Start the scan the operator asked for: it applies everything, missing
+    /// files included.
     pub fn start(
         self: Arc<Self>,
         app: AppHandle,
         db: Arc<Db>,
         config: Arc<Config>,
         waveform: Arc<WaveformJob>,
+    ) -> StartResult {
+        self.start_with(app, db, config, waveform, Missing::Mark)
+    }
+
+    /// Start a scan that adds and updates but retires nothing it merely failed
+    /// to find, for the library check to run unattended. See
+    /// [`Missing::OnlyMoved`].
+    pub fn start_additive(
+        self: Arc<Self>,
+        app: AppHandle,
+        db: Arc<Db>,
+        config: Arc<Config>,
+        waveform: Arc<WaveformJob>,
+    ) -> StartResult {
+        self.start_with(app, db, config, waveform, Missing::OnlyMoved)
+    }
+
+    fn start_with(
+        self: Arc<Self>,
+        app: AppHandle,
+        db: Arc<Db>,
+        config: Arc<Config>,
+        waveform: Arc<WaveformJob>,
+        missing: Missing,
     ) -> StartResult {
         if self.is_running() {
             return StartResult {
@@ -130,7 +156,7 @@ impl ScanState {
 
         let s = Arc::clone(&self);
         std::thread::spawn(move || {
-            run(s, app, db, config, waveform, cancel);
+            run(s, app, db, config, waveform, missing, cancel);
         });
         StartResult {
             already_running: false,
@@ -144,6 +170,7 @@ fn run(
     db: Arc<Db>,
     config: Arc<Config>,
     waveform: Arc<WaveformJob>,
+    missing: Missing,
     cancel: Arc<AtomicBool>,
 ) {
     const PROGRESS_THROTTLE: Duration = Duration::from_millis(200);
@@ -153,6 +180,7 @@ fn run(
     let outcome = scanner::scan_all(
         &db,
         &roots,
+        missing,
         &|| cancel.load(Ordering::SeqCst),
         |processed, total| {
             state.inner.lock().status = ScanStatus::Running { processed, total };

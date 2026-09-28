@@ -2340,10 +2340,14 @@ body {
     color-mix(in srgb, var(--shadow-color) 50%, transparent);
 }
 
+/* Scan Library Now, between the paths above and the setting cards below. The
+   bottom margin is what keeps it off the first card: `.np-group` carries its
+   spacing below itself, not above. */
 .settings-row {
   display: flex;
   justify-content: flex-end;
   margin-top: var(--sp-md);
+  margin-bottom: var(--sp-lg);
 }
 
 .btn-scan-now {

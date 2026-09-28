@@ -1189,6 +1189,7 @@ pub fn run() {
                 Arc::clone(&config),
                 Arc::clone(&scan),
                 Arc::clone(&health),
+                Arc::clone(&waveform),
             );
             check.start(app.handle());
             if library_reset {
