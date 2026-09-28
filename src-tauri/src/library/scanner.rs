@@ -917,7 +917,10 @@ mod tests {
 
         assert_eq!(outcome.missing, 0, "absence alone retires nothing");
         assert_eq!(missing_since(&db, id), None, "the gone track is untouched");
-        assert!(titles(&db).contains(&"b".to_string()), "the new file landed");
+        assert!(
+            titles(&db).contains(&"b".to_string()),
+            "the new file landed"
+        );
 
         // The operator's own scan still applies it.
         let outcome = scan(&db, &[music(dir.path())]);
@@ -1188,7 +1191,14 @@ mod tests {
         scan(&db, &[music(dir.path())]);
         std::fs::remove_file(dir.path().join("a.wav")).unwrap();
 
-        let outcome = scan_all(&db, &[music(dir.path())], Missing::Mark, &|| true, |_, _| {}).unwrap();
+        let outcome = scan_all(
+            &db,
+            &[music(dir.path())],
+            Missing::Mark,
+            &|| true,
+            |_, _| {},
+        )
+        .unwrap();
 
         assert!(outcome.canceled);
         assert_eq!(titles(&db), ["a"]);

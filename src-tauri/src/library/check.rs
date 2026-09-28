@@ -515,7 +515,8 @@ mod tests {
         fs::remove_file(dir.path().join("a.wav")).unwrap();
         write_wav(&dir.path().join("c.wav"), 7, 1);
         let report = run(&db, &root(dir.path()));
-        let outcome = scan_all(&db, &root(dir.path()), Missing::Mark, &|| false, |_, _| {}).unwrap();
+        let outcome =
+            scan_all(&db, &root(dir.path()), Missing::Mark, &|| false, |_, _| {}).unwrap();
         assert_eq!(outcome.missing, report.gone.len());
         assert!(!run(&db, &root(dir.path())).has_changes());
     }
