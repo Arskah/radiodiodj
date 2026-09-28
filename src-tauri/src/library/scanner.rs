@@ -5,7 +5,7 @@ use lofty::prelude::*;
 use lofty::probe::Probe;
 use lofty::tag::ItemKey;
 use parking_lot::Mutex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::UNIX_EPOCH;
@@ -45,16 +45,36 @@ pub struct ScanOutcome {
     pub replaced: usize,
 }
 
+/// Whether a scan may retire rows whose file it did not find.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Missing {
+    /// Mark them missing, as the operator's _Scan Library Now_ does.
+    Mark,
+    /// Retire a row only where this scan can see the same audio arriving
+    /// somewhere else — a moved file, matched by fingerprint. Absence alone
+    /// retires nothing.
+    ///
+    /// What an **automatic** scan does. Adding and updating on the strength of
+    /// a listing nobody watched is recoverable, but retiring a library because
+    /// a share came back as an empty directory is the kind of thing that
+    /// should need a person. A move still has to be retired in the same
+    /// transaction as the file taking its place, or the scan mints a duplicate
+    /// of a file that merely moved. The check still reports whatever is left,
+    /// and the operator's button still applies it.
+    OnlyMoved,
+}
+
 /// Scan every root and bring the library in line with what is on disk.
 /// `on_progress` receives `(processed, total)` counted across all roots.
 ///
 /// A row whose file is gone is marked missing, never deleted — and only when a
 /// root that contains it was listed completely, or when no configured root
-/// contains it at all. Roots are matched by path
-/// component, so `/Music` does not contain `/Music2`.
+/// contains it at all, and only under [`Missing::Mark`]. Roots are matched by
+/// path component, so `/Music` does not contain `/Music2`.
 pub fn scan_all(
     db: &Db,
     roots: &[ScanRoot],
+    missing: Missing,
     cancel: &(impl Fn() -> bool + Sync),
     on_progress: impl Fn(usize, usize) + Sync,
 ) -> Result<ScanOutcome> {
@@ -113,7 +133,29 @@ pub fn scan_all(
         }
     }
     if !canceled {
-        change.gone = listing.gone(&index, roots).map(|row| row.id).collect();
+        change.gone = match missing {
+            Missing::Mark => listing.gone(&index, roots).map(|row| row.id).collect(),
+            // The fingerprints this scan is about to commit. A gone row whose
+            // audio is among them moved, and reconcile reattaches it once the
+            // new file lands; anything else is merely absent, and absence is
+            // not evidence enough to retire a track unattended.
+            Missing::OnlyMoved => {
+                let arriving: HashSet<&str> = change
+                    .new_files
+                    .iter()
+                    .filter_map(|t| t.fingerprint.as_deref())
+                    .collect();
+                listing
+                    .gone(&index, roots)
+                    .filter(|row| {
+                        row.fingerprint
+                            .as_deref()
+                            .is_some_and(|f| arriving.contains(f))
+                    })
+                    .map(|row| row.id)
+                    .collect()
+            }
+        };
     }
 
     let updated = change.upserts.len();
@@ -427,7 +469,12 @@ mod tests {
     }
 
     fn scan(db: &Db, roots: &[ScanRoot]) -> ScanOutcome {
-        scan_all(db, roots, &|| false, |_, _| {}).unwrap()
+        scan_all(db, roots, Missing::Mark, &|| false, |_, _| {}).unwrap()
+    }
+
+    /// A scan as the library check starts one, unattended.
+    fn scan_additively(db: &Db, roots: &[ScanRoot]) -> ScanOutcome {
+        scan_all(db, roots, Missing::OnlyMoved, &|| false, |_, _| {}).unwrap()
     }
 
     /// Titles of the tracks the library shows, sorted. Untagged files take
@@ -857,6 +904,52 @@ mod tests {
     }
 
     #[test]
+    fn an_automatic_scan_adds_without_retiring_what_it_cannot_find() {
+        let (dir, db) = library();
+        write_wav(&dir.path().join("a.wav"), 1, 1);
+        scan(&db, &[music(dir.path())]);
+        backfill(&db);
+        let id = id_of(&db, "a");
+
+        std::fs::remove_file(dir.path().join("a.wav")).unwrap();
+        write_wav(&dir.path().join("b.wav"), 2, 1);
+        let outcome = scan_additively(&db, &[music(dir.path())]);
+
+        assert_eq!(outcome.missing, 0, "absence alone retires nothing");
+        assert_eq!(missing_since(&db, id), None, "the gone track is untouched");
+        assert!(titles(&db).contains(&"b".to_string()), "the new file landed");
+
+        // The operator's own scan still applies it.
+        let outcome = scan(&db, &[music(dir.path())]);
+        assert_eq!(outcome.missing, 1);
+        assert!(missing_since(&db, id).is_some());
+    }
+
+    #[test]
+    fn an_automatic_scan_follows_a_file_that_moved() {
+        let (dir, db) = library();
+        write_wav(&dir.path().join("a.wav"), 1, 1);
+        scan(&db, &[music(dir.path())]);
+        backfill(&db);
+        let id = id_of(&db, "a");
+
+        std::fs::rename(dir.path().join("a.wav"), dir.path().join("sub/a.wav")).unwrap_or_else(
+            |_| {
+                std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+                std::fs::rename(dir.path().join("a.wav"), dir.path().join("sub/a.wav")).unwrap();
+            },
+        );
+        let outcome = scan_additively(&db, &[music(dir.path())]);
+
+        assert_eq!(
+            outcome.reattached, 1,
+            "the audio arriving elsewhere is evidence enough to retire the old path"
+        );
+        assert_eq!(id_of(&db, "a"), id, "and no duplicate row is minted");
+        assert_eq!(missing_since(&db, id), None);
+    }
+
+    #[test]
     fn a_renamed_file_keeps_its_track() {
         let (dir, db) = library();
         write_wav(&dir.path().join("a.wav"), 1, 1);
@@ -1095,7 +1188,7 @@ mod tests {
         scan(&db, &[music(dir.path())]);
         std::fs::remove_file(dir.path().join("a.wav")).unwrap();
 
-        let outcome = scan_all(&db, &[music(dir.path())], &|| true, |_, _| {}).unwrap();
+        let outcome = scan_all(&db, &[music(dir.path())], Missing::Mark, &|| true, |_, _| {}).unwrap();
 
         assert!(outcome.canceled);
         assert_eq!(titles(&db), ["a"]);

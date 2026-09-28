@@ -1184,17 +1184,12 @@ pub fn run() {
             );
             health.attach_to_app(app.handle());
             let scan = Arc::new(ScanState::default());
-            // The check takes what is on air as a question to ask, not a bus to
-            // hold: library health has no business knowing about decks, and an
-            // automatic scan only needs to know whether the station is quiet.
-            let on_air_bus = Arc::clone(&bus);
             let check = LibraryCheck::new(
                 Arc::clone(&db),
                 Arc::clone(&config),
                 Arc::clone(&scan),
                 Arc::clone(&health),
                 Arc::clone(&waveform),
-                Box::new(move || on_air_bus.main_is_playing()),
             );
             check.start(app.handle());
             if library_reset {

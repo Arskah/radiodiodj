@@ -150,35 +150,49 @@ The report is held in memory only. The next launch checks again.
 
 ### Scanning by itself
 
-By default the check never starts a scan: _Scan Library Now_, just above, is the
-operator's button. _Settings → Library → **Scan when files change**_
-(`tuning.library.scanOnChanges`) hands it that button, so music copied onto a
-library path from another computer is picked up without anyone walking to the
-studio machine. This is the whole of the app's answer to scanning from
+By default the check never starts a scan: _Scan Library Now_, below the
+settings, is the operator's button. _Settings → Library → **Scan when files
+change**_ (`tuning.library.scanOnChanges`) hands it that button, so music copied
+onto a library path from another computer is picked up without anyone walking to
+the studio machine. This is the whole of the app's answer to scanning from
 elsewhere; see [external-library.md](./external-library.md).
 
-Four things have to line up before a check starts a scan, and each is a way it
+**An automatic scan only ever adds and updates.** It never marks a track missing
+on the strength of a listing nobody watched — a share that came back as an empty
+directory, or a root the operator emptied, would otherwise retire a whole library
+unattended. The one exception is a file that **moved**: a gone row whose
+fingerprint matches audio arriving elsewhere in the same scan is retired with it,
+because committing the new file without retiring the old one mints a duplicate of
+a file that merely moved. Everything else stays listed under _Disk changes_ until
+the operator scans. In the code this is `Missing::OnlyMoved` (`library/scanner.rs`).
+
+Five things have to line up before a check starts a scan, and each is a way it
 stays out of the operator's way:
 
-- **The report has changes.** New, changed, gone or unrooted — the same test the
-  attention count uses.
-- **The disk has settled.** Two consecutive checks must report the _same_
-  changes, compared by `CheckReport::signature()`. A copy in progress reports
-  something different every time it is listed, and scanning it half-written
-  would tag a truncated file and record an analysis failure against it. The cost
-  is one extra interval: half an hour on the default fifteen.
+- **There is something to read.** New or changed files. Gone and unrooted rows
+  are reported as always, but they never start a scan by themselves.
+- **The disk has settled.** Two consecutive checks must agree on the **settle
+  key** (`Checked::settle`), which hashes every new and changed file's path,
+  modification time and size. Comparing paths alone would read the same all the
+  way through a long copy — the key changes while the bytes are still moving, so
+  a half-written file is never scanned. The cost is one extra interval: half an
+  hour on the default fifteen.
 - **Every library path was readable.** Anything `unreachable` or `partial` and
   the check reports as usual and starts nothing — a share going up and down must
   not drive a scan loop.
-- **Nothing is on air, and nothing was cancelled.** An automatic scan waits for
-  the main deck to fall silent, because nobody chose its moment. A scan the
-  operator cancelled stands until they scan again, so this can never overrule a
-  _Cancel_.
+- **The evidence is new.** A scan that leaves the disk reading exactly as it did
+  is not repeated on the same settle key. Without this, one file no tag reader
+  can parse — reported as new forever, since a failed parse writes no row — would
+  rescan the share every two intervals for good.
+- **The operator has not said otherwise.** A dismissed _Disk changes_ report is
+  them saying _not these_, and a cancelled scan stands until they scan again.
+  Neither is overruled. (Both live in memory, so a relaunch forgets them.)
 
-Every scan transition clears the remembered signature, so the two checks that
+Every scan transition clears the remembered settle key, so the two checks that
 agree are always two checks since the last scan. An automatic scan runs the
 analysis pass exactly as the button does, but leaves the tag backfill alone: a
-cancelled backfill was cancelled deliberately.
+cancelled backfill was cancelled deliberately. With the check interval at `0`
+there is no timer, and so no automatic scan either.
 
 ## Missing tracks
 

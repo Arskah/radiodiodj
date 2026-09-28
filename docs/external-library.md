@@ -106,24 +106,31 @@ control directory, no port.
 The design is mostly guards, because a scan is the thing that writes to the
 library.
 
-- **It reverses a documented decision.** _"The check never starts a scan. Scan
-  Library Now, just above, is the operator's button"_, under the rule that
-  nothing in library health changes the library by itself. The setting is the
-  operator's opt-out of that rule, which is why it is off by default and why both
-  pages say so.
-- **Wait for the disk to settle.** A large copy in progress shows a different
-  report each time it is looked at, and scanning mid-copy tags a half-written
-  file and records an analysis failure against it. `CheckReport::signature()`
-  already identifies _what_ was found rather than when — it is what the health
-  view's dismissals key on (`src-tauri/src/library/health.rs`). Two consecutive
-  checks must report the same signature. Cost: one extra interval of latency, so
-  roughly half an hour on the default fifteen.
+- **It reverses a documented decision.** _"The check never starts a scan"_, under
+  the rule that nothing in library health changes the library by itself. The
+  setting is the operator's opt-out of that rule, which is why it is off by
+  default and why both pages say so.
+- **It adds and updates; it does not retire.** Marking tracks missing on the
+  strength of a listing nobody watched is the one thing here that could empty a
+  library — a stale mount that came back as an empty directory lists perfectly
+  happily. A gone row is retired only when the same audio arrives elsewhere in
+  the same scan, which is a move, and which has to be retired in the same
+  transaction or the scan mints a duplicate. Everything else waits for the
+  operator's button.
+- **Wait for the disk to settle.** A copy in progress reports the same _paths_
+  every time it is looked at, so a path list cannot tell a finished file from a
+  growing one — and an in-place overwrite would read identically for the whole
+  write. The settle key hashes each new or changed file's path, mtime and size,
+  and two consecutive checks must agree on it. Cost: one extra interval of
+  latency, so roughly half an hour on the default fifteen.
 - **Never on a bad listing.** Any root `unreachable`, or any listing `partial`,
   and the check reports as before and starts nothing. A flapping share must not
   drive a scan loop.
-- **Never mid-show, and never over a _Cancel_.** With an explicit trigger someone
-  chose the moment; here nobody did, so the scan waits for the main deck to fall
-  silent. A scan the operator cancelled stands until they scan again.
+- **Never twice on the same evidence.** A file no tag reader can parse writes no
+  row, so it is reported as new forever; without this the share would be
+  rescanned every two intervals for good.
+- **Never over the operator.** A dismissed report and a cancelled scan both hold
+  an automatic scan back.
 - **The analysis pass, not the tag backfill.** An automatic scan owes the library
   the same waveforms and cue points the button does, but a cancelled backfill was
   cancelled on purpose and nothing the operator stopped should restart because a

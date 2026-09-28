@@ -43,12 +43,29 @@ pub struct CheckReport {
     pub partial: Vec<String>,
 }
 
+/// A finished check: what it found, and what the files it found looked like.
+pub struct Checked {
+    pub report: CheckReport,
+    /// Identifies the **bytes** behind the new and changed files, not just
+    /// their paths: every listed file's modification time and size go into it.
+    /// Two checks that agree on this are two checks of a disk that has stopped
+    /// moving, which is what an automatic scan waits for. A path list alone
+    /// would read the same all the way through a long copy.
+    pub settle: u64,
+}
+
 impl CheckReport {
     pub fn has_changes(&self) -> bool {
         !(self.new.is_empty()
             && self.changed.is_empty()
             && self.gone.is_empty()
             && self.unrooted.is_empty())
+    }
+
+    /// Whether anything here is a file to read. An automatic scan runs on these
+    /// alone: it adds and updates, and never retires a track.
+    pub fn has_additions(&self) -> bool {
+        !(self.new.is_empty() && self.changed.is_empty())
     }
 
     /// Identifies what was found, not when.
@@ -62,11 +79,7 @@ impl CheckReport {
 }
 
 /// Compare the disk with the library. `cancel` is polled between files.
-pub fn check(
-    db: &Db,
-    roots: &[ScanRoot],
-    cancel: &dyn Fn() -> bool,
-) -> Result<Option<CheckReport>> {
+pub fn check(db: &Db, roots: &[ScanRoot], cancel: &dyn Fn() -> bool) -> Result<Option<Checked>> {
     let listing = listing::list_roots(roots);
     let index = db.track_index()?;
     let present: HashMap<&str, &IndexRow> = index
@@ -81,14 +94,22 @@ pub fn check(
         partial: listing.partial.clone(),
         ..Default::default()
     };
+    // Sorted before hashing, since the settle key has to identify the disk
+    // rather than the order the roots happened to list it in.
+    let mut stamps: Vec<(&str, listing::Stamp)> = Vec::new();
     for file in &listing.found {
         if cancel() {
             return Ok(None);
         }
+        let stamp = file.stamp();
         match present.get(file.path.as_str()) {
-            None => report.new.push(file.path.clone()),
-            Some(row) if file.changed(row, file.mtime_ms()) => {
-                report.changed.push(file.path.clone())
+            None => {
+                report.new.push(file.path.clone());
+                stamps.push((&file.path, stamp));
+            }
+            Some(row) if file.changed(row, stamp.mtime_ms) => {
+                report.changed.push(file.path.clone());
+                stamps.push((&file.path, stamp));
             }
             Some(_) => {}
         }
@@ -109,7 +130,13 @@ pub fn check(
     ] {
         list.sort();
     }
-    Ok(Some(report))
+    stamps.sort_by_key(|(path, _)| *path);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    stamps.hash(&mut hasher);
+    Ok(Some(Checked {
+        report,
+        settle: hasher.finish(),
+    }))
 }
 
 fn now_ms() -> i64 {
@@ -124,18 +151,23 @@ struct ScanStatusTag {
     status: String,
 }
 
-/// Whether a report is one an automatic scan may act on, decided apart from the
+/// Whether a check is one an automatic scan may act on, decided apart from the
 /// worker so the rules can be tested without a timer or a window.
 ///
-/// `previous` is the signature of the report before this one. Requiring the two
-/// to match is what keeps a copy in progress from being scanned half-written: a
-/// growing folder reports something different every time it is listed, and only
-/// a disk that has stopped moving reads the same twice.
-fn settled_with_changes(report: &CheckReport, previous: Option<u64>) -> bool {
-    report.has_changes()
-        && report.unreachable.is_empty()
-        && report.partial.is_empty()
-        && previous == Some(report.signature())
+/// `previous` is the [`Checked::settle`] key of the check before this one.
+/// Requiring the two to match is what keeps a file still being written from
+/// being scanned half-finished: the key carries every listed file's size and
+/// modification time, so it only reads the same twice once the bytes have
+/// stopped moving.
+///
+/// Files that are gone are deliberately not enough. An automatic scan adds and
+/// updates; retiring a track stays the operator's, so a share that has come back
+/// as an empty directory cannot quietly mark a library missing.
+fn settled_with_additions(checked: &Checked, previous: Option<u64>) -> bool {
+    checked.report.has_additions()
+        && checked.report.unreachable.is_empty()
+        && checked.report.partial.is_empty()
+        && previous == Some(checked.settle)
 }
 
 /// Runs checks at launch, on the configured timer and on demand, never
@@ -148,18 +180,20 @@ pub struct LibraryCheck {
     /// Handed to an automatic scan, which owes the library the analysis pass
     /// the same way the operator's button does.
     waveform: Arc<WaveformJob>,
-    /// Whether a deck is on air. An automatic scan waits for silence: nobody
-    /// chose its moment, so it may not be the one thing running during a set.
-    on_air: Box<dyn Fn() -> bool + Send + Sync>,
     /// Bumped by every scan transition, so a check that overlapped one is
     /// discarded rather than reporting a disk the scan has since applied.
     generation: AtomicU64,
     cancel: AtomicBool,
     schedule: Mutex<Schedule>,
-    /// The previous report's [`CheckReport::signature`], for the settling rule
-    /// in [`settled_with_changes`]. Cleared by every scan transition, so an
+    /// The previous check's [`Checked::settle`] key, for the settling rule in
+    /// [`settled_with_additions`]. Cleared by every scan transition, so an
     /// automatic scan is always preceded by two checks that agree.
     settling: Mutex<Option<u64>>,
+    /// The settle key an automatic scan last ran on. A scan that leaves the
+    /// disk reading exactly as it did — a file no tag reader can parse is
+    /// reported as new forever — must not be started again on the same
+    /// evidence, or the share is rescanned every two intervals for good.
+    attempted: Mutex<Option<u64>>,
     wake: Condvar,
 }
 
@@ -176,7 +210,6 @@ impl LibraryCheck {
         scan: Arc<ScanState>,
         health: Arc<Health>,
         waveform: Arc<WaveformJob>,
-        on_air: Box<dyn Fn() -> bool + Send + Sync>,
     ) -> Arc<Self> {
         Arc::new(Self {
             db,
@@ -184,7 +217,6 @@ impl LibraryCheck {
             scan,
             health,
             waveform,
-            on_air,
             generation: AtomicU64::new(0),
             cancel: AtomicBool::new(false),
             schedule: Mutex::new(Schedule {
@@ -192,6 +224,7 @@ impl LibraryCheck {
                 now_requested: false,
             }),
             settling: Mutex::new(None),
+            attempted: Mutex::new(None),
             wake: Condvar::new(),
         })
     }
@@ -272,7 +305,8 @@ impl LibraryCheck {
         let outcome = check(&self.db, &roots, &|| self.cancel.load(Ordering::SeqCst));
         let mut result = None;
         match outcome {
-            Ok(Some(report)) if self.generation.load(Ordering::SeqCst) == generation => {
+            Ok(Some(checked)) if self.generation.load(Ordering::SeqCst) == generation => {
+                let report = &checked.report;
                 let level = if report.has_changes() || !report.unreachable.is_empty() {
                     log::Level::Info
                 } else {
@@ -287,19 +321,19 @@ impl LibraryCheck {
                     report.unrooted.len(),
                     report.unreachable.len()
                 );
-                result = Some(report);
+                result = Some(checked);
             }
             Ok(_) => log::debug!("library check: superseded by a scan"),
             Err(e) => log::error!("library check failed: {e:#}"),
         }
-        let scan_now = result.as_ref().is_some_and(|r| self.may_scan(r));
-        self.health.finish_check(result);
+        let scan_now = result.as_ref().is_some_and(|c| self.may_scan(c));
+        self.health.finish_check(result.map(|c| c.report));
         if scan_now {
-            log::info!("library check: the disk has settled with changes, scanning");
+            log::info!("library check: the disk has settled with new work, scanning");
             // Without the tag backfill the operator's button also starts: a
             // cancelled backfill was cancelled on purpose, and nothing the
             // operator stopped should restart because a file appeared.
-            Arc::clone(&self.scan).start(
+            Arc::clone(&self.scan).start_additive(
                 app.clone(),
                 Arc::clone(&self.db),
                 Arc::clone(&self.config),
@@ -308,29 +342,35 @@ impl LibraryCheck {
         }
     }
 
-    /// Whether this report should start a scan by itself, and remember it for
-    /// the next check either way.
+    /// Whether this check should start a scan by itself, and remember it for the
+    /// next check either way.
     ///
-    /// The setting is off by default, and three things hold a scan back even
-    /// when it is on: a disk still moving (see [`settled_with_changes`]), a
-    /// deck on air, and a scan the operator cancelled — which stands until they
-    /// scan again, so an automatic scan never overrules a _Cancel_.
-    fn may_scan(&self, report: &CheckReport) -> bool {
-        let previous = self.settling.lock().replace(report.signature());
+    /// The setting is off by default, and four things hold a scan back even when
+    /// it is on: a disk still moving or with nothing to add (see
+    /// [`settled_with_additions`]), evidence a previous automatic scan already
+    /// acted on and could not clear, a report the operator dismissed, and a scan
+    /// they cancelled.
+    fn may_scan(&self, checked: &Checked) -> bool {
+        let previous = self.settling.lock().replace(checked.settle);
         if !self.config.get_tuning().library.scan_on_changes {
             return false;
         }
-        if !settled_with_changes(report, previous) {
+        if !settled_with_additions(checked, previous) {
+            return false;
+        }
+        if *self.attempted.lock() == Some(checked.settle) {
+            log::debug!("library check: this is the disk the last automatic scan already read");
+            return false;
+        }
+        if self.health.check_dismissed() == Some(checked.report.signature()) {
+            log::debug!("library check: the disk changes are settled, but dismissed");
             return false;
         }
         if matches!(self.scan.status(), ScanStatus::Canceled { .. }) {
-            log::debug!("library check: changes are settled, but the last scan was canceled");
+            log::debug!("library check: the disk changes are settled, but a scan was canceled");
             return false;
         }
-        if (self.on_air)() {
-            log::debug!("library check: changes are settled, but a deck is on air");
-            return false;
-        }
+        *self.attempted.lock() = Some(checked.settle);
         true
     }
 }
@@ -340,7 +380,7 @@ mod tests {
     use super::*;
     use crate::audio_measure::test_audio::write_wav;
     use crate::library::db::Reconcile;
-    use crate::library::scanner::scan_all;
+    use crate::library::scanner::{scan_all, Missing};
     use std::fs;
     use tempfile::TempDir;
 
@@ -357,11 +397,15 @@ mod tests {
             write_wav(&dir.path().join(name), i as u32 + 1, 1);
         }
         let db = Db::open_in_memory().unwrap();
-        scan_all(&db, &root(dir.path()), &|| false, |_, _| {}).unwrap();
+        scan_all(&db, &root(dir.path()), Missing::Mark, &|| false, |_, _| {}).unwrap();
         (dir, db)
     }
 
     fn run(db: &Db, roots: &[ScanRoot]) -> CheckReport {
+        checked(db, roots).report
+    }
+
+    fn checked(db: &Db, roots: &[ScanRoot]) -> Checked {
         check(db, roots, &|| false).unwrap().unwrap()
     }
 
@@ -471,7 +515,7 @@ mod tests {
         fs::remove_file(dir.path().join("a.wav")).unwrap();
         write_wav(&dir.path().join("c.wav"), 7, 1);
         let report = run(&db, &root(dir.path()));
-        let outcome = scan_all(&db, &root(dir.path()), &|| false, |_, _| {}).unwrap();
+        let outcome = scan_all(&db, &root(dir.path()), Missing::Mark, &|| false, |_, _| {}).unwrap();
         assert_eq!(outcome.missing, report.gone.len());
         assert!(!run(&db, &root(dir.path())).has_changes());
     }
@@ -482,60 +526,116 @@ mod tests {
         assert!(check(&db, &root(dir.path()), &|| true).unwrap().is_none());
     }
 
-    /// A report with one new file, as two consecutive checks of a settled disk
-    /// would produce it.
-    fn settled() -> CheckReport {
-        CheckReport {
-            checked_at: 1,
-            new: vec!["a.wav".into()],
-            ..Default::default()
+    /// A check of a settled disk holding one new file, with an arbitrary settle
+    /// key standing in for its stamps.
+    fn settled() -> Checked {
+        Checked {
+            report: CheckReport {
+                checked_at: 1,
+                new: vec!["a.wav".into()],
+                ..Default::default()
+            },
+            settle: 7,
         }
     }
 
     #[test]
     fn an_automatic_scan_waits_for_two_checks_that_agree() {
-        let report = settled();
+        let checked = settled();
         assert!(
-            !settled_with_changes(&report, None),
+            !settled_with_additions(&checked, None),
             "the first check of a change has nothing to agree with"
         );
-        assert!(settled_with_changes(&report, Some(report.signature())));
+        assert!(settled_with_additions(&checked, Some(checked.settle)));
     }
 
     #[test]
     fn a_disk_still_moving_does_not_start_a_scan() {
-        let first = settled();
-        let mut second = first.clone();
-        second.new.push("b.wav".into());
-        assert!(!settled_with_changes(&second, Some(first.signature())));
+        let second = settled();
+        assert!(
+            !settled_with_additions(&second, Some(second.settle ^ 1)),
+            "the same paths with different bytes behind them are not settled"
+        );
     }
 
     #[test]
     fn nothing_to_apply_starts_no_scan() {
-        let quiet = CheckReport {
-            checked_at: 1,
-            ..Default::default()
+        let quiet = Checked {
+            report: CheckReport {
+                checked_at: 1,
+                ..Default::default()
+            },
+            settle: 7,
         };
-        assert!(!settled_with_changes(&quiet, Some(quiet.signature())));
+        assert!(!settled_with_additions(&quiet, Some(quiet.settle)));
+    }
+
+    #[test]
+    fn files_that_are_only_gone_start_no_scan() {
+        let retirements = Checked {
+            report: CheckReport {
+                checked_at: 1,
+                gone: vec!["a.wav".into()],
+                unrooted: vec!["b.wav".into()],
+                ..Default::default()
+            },
+            settle: 7,
+        };
+        assert!(
+            retirements.report.has_changes(),
+            "the operator is still told about them"
+        );
+        assert!(
+            !settled_with_additions(&retirements, Some(retirements.settle)),
+            "an empty share must not retire a library with nobody watching"
+        );
     }
 
     #[test]
     fn an_unreadable_library_path_holds_an_automatic_scan_back() {
-        for report in [
-            CheckReport {
-                unreachable: vec!["/mnt/radio".into()],
-                ..settled()
+        for checked in [
+            Checked {
+                report: CheckReport {
+                    unreachable: vec!["/mnt/radio".into()],
+                    ..settled().report
+                },
+                settle: 7,
             },
-            CheckReport {
-                partial: vec!["/mnt/radio".into()],
-                ..settled()
+            Checked {
+                report: CheckReport {
+                    partial: vec!["/mnt/radio".into()],
+                    ..settled().report
+                },
+                settle: 7,
             },
         ] {
             assert!(
-                !settled_with_changes(&report, Some(report.signature())),
-                "a listing that cannot prove what is there must not drive a scan: {report:?}"
+                !settled_with_additions(&checked, Some(checked.settle)),
+                "a listing that cannot prove what is there must not drive a scan"
             );
         }
+    }
+
+    #[test]
+    fn the_settle_key_follows_the_bytes_not_the_paths() {
+        let (dir, db) = scanned(&["a.wav"]);
+        write_wav(&dir.path().join("b.wav"), 3, 1);
+        let first = checked(&db, &root(dir.path()));
+        assert_eq!(names(&first.report.new), vec!["b.wav"]);
+        assert_eq!(
+            first.settle,
+            checked(&db, &root(dir.path())).settle,
+            "a disk nobody touched reads the same twice"
+        );
+
+        // The same path, more bytes behind it: a copy still in progress.
+        write_wav(&dir.path().join("b.wav"), 3, 4);
+        let grown = checked(&db, &root(dir.path()));
+        assert_eq!(names(&grown.report.new), vec!["b.wav"], "same path");
+        assert_ne!(
+            first.settle, grown.settle,
+            "a file that is still growing is not settled"
+        );
     }
 
     #[test]

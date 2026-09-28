@@ -107,6 +107,17 @@ pub struct Found {
     pub content_type: &'static str,
 }
 
+/// What one `stat` says about a listed file. Both halves come from the same
+/// call because a check pays a stat per file on a share, and asking twice would
+/// double that for nothing.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Default)]
+pub struct Stamp {
+    /// Modification time in unix ms, or 0 when it cannot be read.
+    pub mtime_ms: i64,
+    /// Size in bytes, or 0 when it cannot be read.
+    pub size: u64,
+}
+
 impl Found {
     /// Modification time in unix ms, or 0 when it cannot be read.
     pub fn mtime_ms(&self) -> i64 {
@@ -116,6 +127,27 @@ impl Found {
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0)
+    }
+
+    /// The modification time and size together, from one `stat`.
+    ///
+    /// A file still being copied keeps the same path from one listing to the
+    /// next, so a check that compares paths alone cannot tell a finished file
+    /// from a growing one. This is what tells them apart.
+    pub fn stamp(&self) -> Stamp {
+        let Ok(meta) = std::fs::metadata(&self.path) else {
+            return Stamp::default();
+        };
+        let mtime_ms = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        Stamp {
+            mtime_ms,
+            size: meta.len(),
+        }
     }
 
     /// Whether `row`, the library's record of this path, is out of date.

@@ -105,11 +105,14 @@
       </label>
     </div>
     <p class="settings-section-desc">
-      With this on, the library check starts a scan itself once the same changes
-      have been seen twice in a row, so music copied onto your library paths
-      from another computer is picked up without anyone pressing this button. It
-      waits until nothing is on air, and stays out of the way while a library
-      path is unreachable or a scan has been cancelled.
+      With this on, the library check starts a scan itself once the same files
+      have been seen twice running, so music copied onto your library paths from
+      another computer is picked up without anyone pressing <em
+        >Scan Library Now</em
+      >. It only ever adds and updates: tracks whose file is gone stay listed
+      under Library health until you scan yourself. It stays out of the way
+      while a library path is unreachable, while a report is dismissed, and
+      after a cancelled scan. Needs a check interval above 0.
     </p>
   </div>
   <div class="device-row">
@@ -125,7 +128,7 @@
     <div class="hint">
       How often to look for files added, changed or removed since the last scan.
       Reads no audio, and never changes the library by itself unless the setting
-      above is on. 0 turns it off.
+      above is on. 0 turns the check off, and with it any automatic scan.
     </div>
   </div>
   <div class="settings-row">
