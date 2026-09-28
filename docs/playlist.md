@@ -111,16 +111,12 @@ are off the main thread too, and for `get_cover_art` that is not optional: it
 opens and parses the audio file itself, so on a wedged share it would hold the
 main thread for as long as the mount takes to answer. The decks never read a
 share on their hot path ([audio.md](./audio.md)); artwork must not be the
-exception. Both go on `spawn_blocking`, never in an `async` command body — a
-blocking call there holds an async runtime worker, and the renderer fires one
-cover-art read per track change, so a handful of skips over a dead share would
-park every worker the runtime has. `purge_tracks` is there for the same reason:
-`Health::refresh` emits its report inline, and the playlist answers that event
-with a full transition.
+exception. `purge_tracks` is there for the same reason: `Health::refresh` emits
+its report inline, and the playlist answers that event with a full transition.
 
-What is left on the main thread is every other command that reads the library —
-`search` above all, once per keystroke. Each is its own fix; none of them is on
-the path a track change takes.
+That is now the rule for every command that does I/O rather than a property of
+these three — see [architecture.md](./architecture.md#commands) for where the
+line falls and why a blocking body in an `async` command is not the same thing.
 
 ## Effects
 

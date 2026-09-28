@@ -157,11 +157,23 @@ refill's SQL freezes the window. One thread, because `remove` and `move` carry
 queue indices and applying two clicks out of order acts on positions that no
 longer exist. A command that cannot be carried out is logged in the backend,
 never returned, and shutdown drains the queue because a pending transition still
-owes the airing log a play. Nothing on the path a track change takes may read a
-file or the library on the main thread either: `get_waveform`, `get_cover_art`
-and `purge_tracks` are `async fn` + `spawn_blocking`, never a blocking body in an
-`async` command, which holds an async runtime worker instead. See
-[docs/playlist.md](docs/playlist.md#commands).
+owes the airing log a play. See [docs/playlist.md](docs/playlist.md#commands).
+
+**A command that does I/O is `async`** — a handler declared without `async` is
+the blocking kind, run inline on the IPC thread, which is the thread the window
+is drawn from. So anything that waits on the database, the filesystem or the
+network is an `async fn` whose body is one `blocking(…)` call, cloning the
+`Arc`s it needs out of `AppState` before the await. **Never a blocking body in
+an `async` command** — that holds one of the async runtime's worker threads, of
+which there is one per core, and a few slow commands would take every other
+async command down with them. What stays sync is what cannot wait: a read of
+in-memory state, or a send down a channel — a command that looks something up
+before it sends is I/O, not a send. Answering off the main thread also means
+answers can arrive out of order, so a renderer that fires the same query
+repeatedly guards its results by request (`AppState.search`), and one that
+mutates a row locates it by id when the answer lands, never by a position
+captured before the call (`adoptTrack`). See
+[docs/architecture.md](docs/architecture.md#commands).
 
 **Auto-playlist** — a lookahead buffer refilled inside `playlist::engine`, so a
 refill and the track change that triggered it are one transition. Interleave

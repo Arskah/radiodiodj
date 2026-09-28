@@ -42,7 +42,7 @@ use library::scan_state::{ScanState, ScanStatus, StartResult};
 use library::tag_backfill::TagBackfillJob;
 use library::tag_write::TagWriter;
 use library::waveform_scan::{WaveformJob, WaveformStatus};
-use persist::config::{Config, DeviceRef, NowPlayingConfig, TuningConfig};
+use persist::config::{AppearanceConfig, Config, DeviceRef, NowPlayingConfig, TuningConfig};
 use persist::session::{Session, SessionPlaylistItem, SessionState};
 use playlist::{PlaylistService, Snapshot};
 use std::time::Duration;
@@ -130,60 +130,98 @@ fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
+/// Run `f` somewhere other than the thread the window is drawn from.
+///
+/// A command handler declared without `async` is the blocking kind: the macro
+/// runs it inline on the IPC thread, which is the main thread. So a command
+/// that waits on the database, the filesystem or the network freezes the window
+/// for as long as it waits — and the library is usually a network share, where
+/// "as long as it waits" has no useful bound.
+///
+/// On `spawn_blocking` rather than in an `async` command's body: a blocking
+/// body holds one of the async runtime's worker threads, of which there is one
+/// per core, so a handful of slow commands would take every other async command
+/// down with them. The blocking pool exists for exactly this.
+///
+/// Callers clone the `Arc`s they need out of `AppState` before awaiting rather
+/// than holding `State<'_, AppState>` across the await.
+async fn blocking<T, F>(f: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(f).await.map_err(err)?
+}
+
 #[tauri::command(rename_all = "camelCase")]
-fn search(
+async fn search(
     state: State<'_, AppState>,
     query: String,
     content_type: Option<String>,
     sort_by: Option<String>,
     sort_dir: Option<String>,
 ) -> Result<Vec<Track>, String> {
-    state
-        .db
-        .search(
+    let db = Arc::clone(&state.db);
+    blocking(move || {
+        db.search(
             &query,
             content_type.as_deref(),
             sort_by.as_deref(),
             sort_dir.as_deref(),
         )
         .map_err(err)
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn get_track(state: State<'_, AppState>, id: i64) -> Result<Option<Track>, String> {
-    state.db.get_track(id).map_err(err)
+async fn get_track(state: State<'_, AppState>, id: i64) -> Result<Option<Track>, String> {
+    let db = Arc::clone(&state.db);
+    blocking(move || db.get_track(id).map_err(err)).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn get_tracks_by_ids(state: State<'_, AppState>, ids: Vec<i64>) -> Result<Vec<Track>, String> {
-    state.db.get_tracks_by_ids(&ids).map_err(err)
+async fn get_tracks_by_ids(
+    state: State<'_, AppState>,
+    ids: Vec<i64>,
+) -> Result<Vec<Track>, String> {
+    let db = Arc::clone(&state.db);
+    blocking(move || db.get_tracks_by_ids(&ids).map_err(err)).await
 }
 
 /// Show a track's file in the platform file manager (Finder, Explorer, or
 /// whatever answers `org.freedesktop.FileManager1`). Takes an id, not a path,
 /// so the renderer can only reveal files the library already knows.
+///
+/// Off the main thread for the `exists` check as much as the lookup: that is a
+/// `stat` of the share, which a dead mount answers at its own pace.
 #[tauri::command(rename_all = "camelCase")]
-fn reveal_track(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    let info = state
-        .db
-        .get_track_load_info(id)
-        .map_err(err)?
-        .ok_or_else(|| format!("track {id} not found"))?;
-    let path = std::path::Path::new(&info.path);
-    if !path.exists() {
-        return Err(format!("file not found: {}", info.path));
-    }
-    tauri_plugin_opener::reveal_item_in_dir(path).map_err(err)
+async fn reveal_track(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    let db = Arc::clone(&state.db);
+    blocking(move || {
+        let info = db
+            .get_track_load_info(id)
+            .map_err(err)?
+            .ok_or_else(|| format!("track {id} not found"))?;
+        let path = std::path::Path::new(&info.path);
+        if !path.exists() {
+            return Err(format!("file not found: {}", info.path));
+        }
+        tauri_plugin_opener::reveal_item_in_dir(path).map_err(err)
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn get_stats(state: State<'_, AppState>) -> Result<LibraryStats, String> {
-    state.db.get_stats().map_err(err)
+async fn get_stats(state: State<'_, AppState>) -> Result<LibraryStats, String> {
+    let db = Arc::clone(&state.db);
+    blocking(move || db.get_stats().map_err(err)).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn track_played(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    state.db.increment_play_count(id).map_err(err)
+async fn track_played(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    let db = Arc::clone(&state.db);
+    blocking(move || db.increment_play_count(id).map_err(err)).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -196,54 +234,78 @@ fn get_all_paths(state: State<'_, AppState>) -> serde_json::Value {
     state.config.get_all_paths()
 }
 
+/// Adding a library path rebuilds the health report, which is a pass over the
+/// whole library — hence off the main thread, like every other `Health::refresh`
+/// caller.
 #[tauri::command(rename_all = "camelCase")]
-fn add_path(state: State<'_, AppState>, r#type: String, dir_path: String) -> Result<bool, String> {
-    let added = state.config.add_path(&r#type, &dir_path).map_err(err)?;
-    state.health.refresh();
-    Ok(added)
-}
-
-#[tauri::command(rename_all = "camelCase")]
-fn remove_path(
+async fn add_path(
     state: State<'_, AppState>,
     r#type: String,
     dir_path: String,
 ) -> Result<bool, String> {
-    let removed = state.config.remove_path(&r#type, &dir_path).map_err(err)?;
-    state.health.refresh();
-    Ok(removed)
-}
-
-#[tauri::command(rename_all = "camelCase")]
-fn load_session(app: State<'_, AppState>) -> Result<SessionLoadResult, String> {
-    let s = app.session.load();
-    let mut ids: Vec<i64> = Vec::new();
-    let mut seen: HashSet<i64> = HashSet::new();
-    let item_ids = s.playlist_items.iter().filter_map(|item| match item {
-        SessionPlaylistItem::Track { id, .. } => Some(id),
-        SessionPlaylistItem::Stop => None,
-    });
-    for id in s
-        .playlist_ids
-        .iter()
-        .chain(item_ids)
-        .chain(s.current_track_id.iter())
-    {
-        if seen.insert(*id) {
-            ids.push(*id);
-        }
-    }
-    let tracks = app.db.get_tracks_by_ids(&ids).map_err(err)?;
-    Ok(SessionLoadResult {
-        state: s,
-        tracks,
-        library_reset: app.library_reset,
+    let config = Arc::clone(&state.config);
+    let health = Arc::clone(&state.health);
+    blocking(move || {
+        let added = config.add_path(&r#type, &dir_path).map_err(err)?;
+        health.refresh();
+        Ok(added)
     })
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn save_session(app: State<'_, AppState>, state: SessionState) -> Result<(), String> {
-    app.session.save(state).map_err(err)
+async fn remove_path(
+    state: State<'_, AppState>,
+    r#type: String,
+    dir_path: String,
+) -> Result<bool, String> {
+    let config = Arc::clone(&state.config);
+    let health = Arc::clone(&state.health);
+    blocking(move || {
+        let removed = config.remove_path(&r#type, &dir_path).map_err(err)?;
+        health.refresh();
+        Ok(removed)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn load_session(app: State<'_, AppState>) -> Result<SessionLoadResult, String> {
+    let session = Arc::clone(&app.session);
+    let db = Arc::clone(&app.db);
+    let library_reset = app.library_reset;
+    blocking(move || {
+        let s = session.load();
+        let mut ids: Vec<i64> = Vec::new();
+        let mut seen: HashSet<i64> = HashSet::new();
+        let item_ids = s.playlist_items.iter().filter_map(|item| match item {
+            SessionPlaylistItem::Track { id, .. } => Some(id),
+            SessionPlaylistItem::Stop => None,
+        });
+        for id in s
+            .playlist_ids
+            .iter()
+            .chain(item_ids)
+            .chain(s.current_track_id.iter())
+        {
+            if seen.insert(*id) {
+                ids.push(*id);
+            }
+        }
+        let tracks = db.get_tracks_by_ids(&ids).map_err(err)?;
+        Ok(SessionLoadResult {
+            state: s,
+            tracks,
+            library_reset,
+        })
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn save_session(app: State<'_, AppState>, state: SessionState) -> Result<(), String> {
+    let session = Arc::clone(&app.session);
+    blocking(move || session.save(state).map_err(err)).await
 }
 
 /// The playlist commands below are the renderer's only way to change what is
@@ -486,40 +548,49 @@ async fn get_cover_art(app_state: State<'_, AppState>, id: i64) -> Result<Option
     .map_err(err)?
 }
 
+/// Enumerating outputs goes out to the host audio API, which a wedged device can
+/// take its time answering.
 #[tauri::command(rename_all = "camelCase")]
-fn audio_list_devices() -> Vec<DeviceInfo> {
-    list_output_devices()
+async fn audio_list_devices() -> Result<Vec<DeviceInfo>, String> {
+    blocking(move || Ok(list_output_devices())).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn update_track_metadata(
+async fn update_track_metadata(
     app: AppHandle,
     state: State<'_, AppState>,
     updates: TrackMetadataUpdate,
 ) -> Result<Track, String> {
-    // Read before the write, so the kick below fires on a class that actually
-    // moved rather than on every save that carries the field.
-    let reclassified = match &updates.content_type {
-        Some(next) => state
-            .db
-            .track_content_type(updates.id)
-            .map_err(err)?
-            .is_some_and(|was| was != *next),
-        None => false,
-    };
-    let track = state.db.update_track_metadata(&updates).map_err(err)?;
-    if track.edited_fields != 0 {
-        state.tag_writer.request(track.id);
-    }
-    // The update itself requeued the track: a reclassification changes what
-    // automatic analysis would infer. This kicks the pass that drains the
-    // queue.
-    if reclassified {
-        Arc::clone(&state.waveform).start(app, Arc::clone(&state.db), Arc::clone(&state.config));
-    }
-    // Artist and title decide possible duplicates.
-    state.health.refresh();
-    Ok(track)
+    let db = Arc::clone(&state.db);
+    let config = Arc::clone(&state.config);
+    let health = Arc::clone(&state.health);
+    let tag_writer = Arc::clone(&state.tag_writer);
+    let waveform = Arc::clone(&state.waveform);
+    blocking(move || {
+        // Read before the write, so the kick below fires on a class that
+        // actually moved rather than on every save that carries the field.
+        let reclassified = match &updates.content_type {
+            Some(next) => db
+                .track_content_type(updates.id)
+                .map_err(err)?
+                .is_some_and(|was| was != *next),
+            None => false,
+        };
+        let track = db.update_track_metadata(&updates).map_err(err)?;
+        if track.edited_fields != 0 {
+            tag_writer.request(track.id);
+        }
+        // The update itself requeued the track: a reclassification changes what
+        // automatic analysis would infer. This kicks the pass that drains the
+        // queue.
+        if reclassified {
+            waveform.start(app, Arc::clone(&db), config);
+        }
+        // Artist and title decide possible duplicates.
+        health.refresh();
+        Ok(track)
+    })
+    .await
 }
 
 /// Drop a track's metadata edits and take its tags from the file again. The
@@ -549,9 +620,17 @@ fn retry_tag_write(state: State<'_, AppState>, id: i64) {
 }
 
 /// Stop listing a failed tag write. The edit stays in the library.
+///
+/// Off the main thread because dropping a failure notifies the health listener,
+/// and that rebuilds the whole report.
 #[tauri::command(rename_all = "camelCase")]
-fn dismiss_tag_write(state: State<'_, AppState>, id: i64) {
-    state.tag_writer.dismiss(id);
+async fn dismiss_tag_write(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    let tag_writer = Arc::clone(&state.tag_writer);
+    blocking(move || {
+        tag_writer.dismiss(id);
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -560,10 +639,17 @@ fn get_main_device(state: State<'_, AppState>) -> Option<DeviceRef> {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn set_main_device(state: State<'_, AppState>, device: Option<DeviceRef>) -> Result<(), String> {
-    state.config.set_main_device(device).map_err(err)?;
-    log::info!("main device updated; restart required to apply");
-    Ok(())
+async fn set_main_device(
+    state: State<'_, AppState>,
+    device: Option<DeviceRef>,
+) -> Result<(), String> {
+    let config = Arc::clone(&state.config);
+    blocking(move || {
+        config.set_main_device(device).map_err(err)?;
+        log::info!("main device updated; restart required to apply");
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -572,12 +658,20 @@ fn get_cue_device(state: State<'_, AppState>) -> Option<DeviceRef> {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn set_cue_device(state: State<'_, AppState>, device: Option<DeviceRef>) -> Result<(), String> {
-    state.config.set_cue_device(device).map_err(err)?;
-    // Invalidate cached cue handle so the next cue_* command spawns
-    // against the new device. Dropping the Sender stops the worker thread.
-    *state.cue.lock() = None;
-    Ok(())
+async fn set_cue_device(
+    state: State<'_, AppState>,
+    device: Option<DeviceRef>,
+) -> Result<(), String> {
+    let config = Arc::clone(&state.config);
+    let cue = Arc::clone(&state.cue);
+    blocking(move || {
+        config.set_cue_device(device).map_err(err)?;
+        // Invalidate cached cue handle so the next cue_* command spawns
+        // against the new device. Dropping the Sender stops the worker thread.
+        *cue.lock() = None;
+        Ok(())
+    })
+    .await
 }
 
 /// Ensure a `CueDeck` exists for the configured cue device.
@@ -618,24 +712,34 @@ where
 /// `autoplay` travels with the load rather than arriving as a later `Play`,
 /// because the load completes on a background thread and parks the sink when
 /// it lands — a `Play` sent in between would be undone by it.
+///
+/// The only `cue_*` command that is not a bare channel send: it resolves the
+/// track first, which is a read of the one `Mutex<Connection>` the analysis
+/// pass also writes through. Inline, that put the window's thread behind a
+/// database lock every time the operator auditioned a track.
 #[tauri::command(rename_all = "camelCase")]
-fn cue_load(
+async fn cue_load(
     state: State<'_, AppState>,
     id: i64,
     cue_points: Option<CuePoints>,
     autoplay: Option<bool>,
     start_at: Option<f64>,
 ) -> Result<(), String> {
-    let track = state
-        .db
-        .get_media_track(id)
-        .map_err(err)?
-        .ok_or_else(|| "track not found".to_string())?;
-    let gain = audio::levelling::factor(
-        state.config.get_tuning().player.replay_gain,
-        track.loudness.gain_db,
-        track.loudness.peak,
-    );
+    let db = Arc::clone(&state.db);
+    let config = Arc::clone(&state.config);
+    let (track, gain) = blocking(move || {
+        let track = db
+            .get_media_track(id)
+            .map_err(err)?
+            .ok_or_else(|| "track not found".to_string())?;
+        let gain = audio::levelling::factor(
+            config.get_tuning().player.replay_gain,
+            track.loudness.gain_db,
+            track.loudness.peak,
+        );
+        Ok((track, gain))
+    })
+    .await?;
     with_cue(&state, |h| {
         h.send(Cmd::Load {
             id,
@@ -691,11 +795,12 @@ fn get_now_playing_config(state: State<'_, AppState>) -> NowPlayingConfig {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn set_now_playing_config(
+async fn set_now_playing_config(
     state: State<'_, AppState>,
     config: NowPlayingConfig,
 ) -> Result<(), String> {
-    state.config.set_now_playing(config).map_err(err)
+    let store = Arc::clone(&state.config);
+    blocking(move || store.set_now_playing(config).map_err(err)).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -710,142 +815,197 @@ fn get_tuning_config(state: State<'_, AppState>) -> TuningConfig {
 /// Store a track's cue points. Returns the clamped value the backend actually
 /// persisted, so the UI adopts the one rule rather than reimplementing it.
 #[tauri::command(rename_all = "camelCase")]
-fn set_cue_points(
+async fn set_cue_points(
     state: State<'_, AppState>,
     id: i64,
     points: CuePoints,
 ) -> Result<CuePoints, String> {
-    let stored = state.db.set_cue_points(id, points).map_err(err)?;
-    // Queued items hold a copy of the track for display. Refresh it, or the
-    // next snapshot would undo the renderer's optimistic patch and put the
-    // pre-edit duration back on the row.
-    state.playlist.on_cue_points_saved(id, stored);
-    Ok(stored)
+    let db = Arc::clone(&state.db);
+    let playlist = Arc::clone(&state.playlist);
+    blocking(move || {
+        let stored = db.set_cue_points(id, points).map_err(err)?;
+        // Queued items hold a copy of the track for display. Refresh it, or the
+        // next snapshot would undo the renderer's optimistic patch and put the
+        // pre-edit duration back on the row.
+        playlist.on_cue_points_saved(id, stored);
+        Ok(stored)
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn set_tuning_config(
+async fn set_tuning_config(
     state: State<'_, AppState>,
     config: TuningConfig,
 ) -> Result<TuningConfig, String> {
-    let was = state.config.get_tuning().auto_cue;
-    let stored = state.config.set_tuning(config).map_err(err)?;
-    // Switching the automatic cue points on or off — either the whole trio or
-    // the Next Start alone — changes what every derived set means, so the
-    // library's answer changes and the copies the playlist holds have to be
-    // re-read. Analysis is untouched: it runs and stores its results either
-    // way, which is what makes both switches instant both ways.
-    let now = stored.auto_cue;
-    if (now.apply, now.apply_next_start) != (was.apply, was.apply_next_start) {
-        state
-            .db
-            .set_auto_cue_policy(now.apply, now.apply_next_start);
-        state.playlist.reload_cue_points();
-    }
-    Ok(stored)
+    let store = Arc::clone(&state.config);
+    let db = Arc::clone(&state.db);
+    let playlist = Arc::clone(&state.playlist);
+    blocking(move || {
+        let was = store.get_tuning().auto_cue;
+        let stored = store.set_tuning(config).map_err(err)?;
+        // Switching the automatic cue points on or off — either the whole trio
+        // or the Next Start alone — changes what every derived set means, so
+        // the library's answer changes and the copies the playlist holds have
+        // to be re-read. Analysis is untouched: it runs and stores its results
+        // either way, which is what makes both switches instant both ways.
+        let now = stored.auto_cue;
+        if (now.apply, now.apply_next_start) != (was.apply, was.apply_next_start) {
+            db.set_auto_cue_policy(now.apply, now.apply_next_start);
+            playlist.reload_cue_points();
+        }
+        Ok(stored)
+    })
+    .await
 }
 
 /// The resolved appearance the renderer paints. Ungated by necessity: the
 /// renderer asks for this before it mounts, on a launch that starts locked.
 #[tauri::command(rename_all = "camelCase")]
-fn get_appearance(state: State<'_, AppState>) -> Appearance {
-    resolved_appearance(&state)
+async fn get_appearance(state: State<'_, AppState>) -> Result<Appearance, String> {
+    let theme = Theme::of(&state);
+    blocking(move || Ok(theme.resolve())).await
 }
 
 /// Every theme the operator can pick, plus the ones that failed to load and
 /// why. Ungated for the same reason as `get_appearance`.
 #[tauri::command(rename_all = "camelCase")]
-fn list_themes(state: State<'_, AppState>) -> Vec<ThemeListing> {
-    appearance::store::list(&state.data_dir)
+async fn list_themes(state: State<'_, AppState>) -> Result<Vec<ThemeListing>, String> {
+    let data_dir = state.data_dir.clone();
+    blocking(move || Ok(appearance::store::list(&data_dir))).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn set_theme(state: State<'_, AppState>, theme_id: String) -> Result<Appearance, String> {
-    let mut appearance = state.config.get_appearance();
-    appearance.theme_id = theme_id;
-    state.config.set_appearance(appearance).map_err(err)?;
-    Ok(resolved_appearance(&state))
+async fn set_theme(state: State<'_, AppState>, theme_id: String) -> Result<Appearance, String> {
+    let theme = Theme::of(&state);
+    blocking(move || {
+        theme.update(|appearance| appearance.theme_id = theme_id)?;
+        Ok(theme.resolve())
+    })
+    .await
 }
 
 /// Name the station. Trimmed and capped by the config layer, which returns what
 /// it stored; a blank name means the product name is used.
 #[tauri::command(rename_all = "camelCase")]
-fn set_station_name(
+async fn set_station_name(
     state: State<'_, AppState>,
     name: Option<String>,
 ) -> Result<Appearance, String> {
-    let mut config = state.config.get_appearance();
-    config.station_name = name;
-    state.config.set_appearance(config).map_err(err)?;
-    Ok(resolved_appearance(&state))
+    let theme = Theme::of(&state);
+    blocking(move || {
+        theme.update(|appearance| appearance.station_name = name)?;
+        Ok(theme.resolve())
+    })
+    .await
 }
 
 /// Adopt an operator-chosen image into `{app_data_dir}/branding` and point the
 /// slot at it. Only the file name is stored, never the path it came from.
 #[tauri::command(rename_all = "camelCase")]
-fn set_station_image(
+async fn set_station_image(
     state: State<'_, AppState>,
     slot: appearance::ImageSlot,
     path: String,
 ) -> Result<Appearance, String> {
-    let name = appearance::adopt_image(&state.data_dir, slot, std::path::Path::new(&path))?;
-    let mut config = state.config.get_appearance();
-    match slot {
-        appearance::ImageSlot::Logo => config.logo = Some(name),
-        appearance::ImageSlot::Label => config.label = Some(name),
-    }
-    state.config.set_appearance(config).map_err(err)?;
-    Ok(resolved_appearance(&state))
+    let theme = Theme::of(&state);
+    blocking(move || {
+        let name = appearance::adopt_image(&theme.data_dir, slot, std::path::Path::new(&path))?;
+        theme.update(|appearance| match slot {
+            appearance::ImageSlot::Logo => appearance.logo = Some(name),
+            appearance::ImageSlot::Label => appearance.label = Some(name),
+        })?;
+        Ok(theme.resolve())
+    })
+    .await
 }
 
 /// Clear a slot, so the theme's image (or the bundled default) shows again. The
 /// file is left in `branding/` — deleting it buys nothing and loses an undo.
 #[tauri::command(rename_all = "camelCase")]
-fn clear_station_image(
+async fn clear_station_image(
     state: State<'_, AppState>,
     slot: appearance::ImageSlot,
 ) -> Result<Appearance, String> {
-    let mut config = state.config.get_appearance();
-    match slot {
-        appearance::ImageSlot::Logo => config.logo = None,
-        appearance::ImageSlot::Label => config.label = None,
-    }
-    state.config.set_appearance(config).map_err(err)?;
-    Ok(resolved_appearance(&state))
+    let theme = Theme::of(&state);
+    blocking(move || {
+        theme.update(|appearance| match slot {
+            appearance::ImageSlot::Logo => appearance.logo = None,
+            appearance::ImageSlot::Label => appearance.label = None,
+        })?;
+        Ok(theme.resolve())
+    })
+    .await
 }
 
 /// Re-read the themes directory and re-resolve the active theme, so an edit to
 /// the theme on screen takes effect. A repaint is always an explicit ask —
 /// there is no filesystem watcher.
 #[tauri::command(rename_all = "camelCase")]
-fn reload_themes(state: State<'_, AppState>) -> Appearance {
-    resolved_appearance(&state)
+async fn reload_themes(state: State<'_, AppState>) -> Result<Appearance, String> {
+    let theme = Theme::of(&state);
+    blocking(move || Ok(theme.resolve())).await
 }
 
 /// Open the themes directory in the operator's file manager. Takes no argument
 /// and opens a directory the app owns, so it is narrower than `reveal_track`.
 #[tauri::command(rename_all = "camelCase")]
-fn reveal_themes_dir(state: State<'_, AppState>) -> Result<(), String> {
-    let dir = appearance::store::themes_dir(&state.data_dir);
-    appearance::store::seed_if_absent(&state.data_dir).map_err(err)?;
-    tauri_plugin_opener::reveal_item_in_dir(&dir).map_err(err)
+async fn reveal_themes_dir(state: State<'_, AppState>) -> Result<(), String> {
+    let data_dir = state.data_dir.clone();
+    blocking(move || {
+        let dir = appearance::store::themes_dir(&data_dir);
+        appearance::store::seed_if_absent(&data_dir).map_err(err)?;
+        tauri_plugin_opener::reveal_item_in_dir(&dir).map_err(err)
+    })
+    .await
 }
 
-/// Resolve the configured theme into what the renderer paints. Never fails: a
-/// theme that cannot be loaded falls back to Midnight and says so.
-fn resolved_appearance(state: &AppState) -> Appearance {
-    let config = state.config.get_appearance();
-    appearance::resolve(&state.data_dir, &config)
+/// What the appearance commands need once they are off the main thread: the
+/// stored configuration and the directory the themes and branding images live
+/// in. Cloned out of [`AppState`] before the await, since the state guard
+/// cannot cross one.
+struct Theme {
+    config: Arc<Config>,
+    data_dir: std::path::PathBuf,
+}
+
+impl Theme {
+    fn of(state: &State<'_, AppState>) -> Self {
+        Self {
+            config: Arc::clone(&state.config),
+            data_dir: state.data_dir.clone(),
+        }
+    }
+
+    /// Resolve the configured theme into what the renderer paints. Never fails:
+    /// a theme that cannot be loaded falls back to Midnight and says so.
+    fn resolve(&self) -> Appearance {
+        appearance::resolve(&self.data_dir, &self.config.get_appearance())
+    }
+
+    /// Read, change and store the appearance configuration.
+    fn update(&self, change: impl FnOnce(&mut AppearanceConfig)) -> Result<(), String> {
+        let mut config = self.config.get_appearance();
+        change(&mut config);
+        self.config.set_appearance(config).map_err(err)?;
+        Ok(())
+    }
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn now_playing_test(state: State<'_, AppState>) -> Result<u16, String> {
-    state.broadcast.test_webhook_blocking()
+async fn now_playing_test(state: State<'_, AppState>) -> Result<u16, String> {
+    let broadcast = Arc::clone(&state.broadcast);
+    blocking(move || broadcast.test_webhook_blocking()).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn broadcast_shutdown(state: State<'_, AppState>) {
-    state.broadcast.shutdown_blocking();
+async fn broadcast_shutdown(state: State<'_, AppState>) -> Result<(), String> {
+    let broadcast = Arc::clone(&state.broadcast);
+    blocking(move || {
+        broadcast.shutdown_blocking();
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -968,21 +1128,23 @@ fn library_check_now(state: State<'_, AppState>) {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn health_dismiss(
+async fn health_dismiss(
     state: State<'_, AppState>,
     kind: FindingKind,
     key: String,
 ) -> Result<(), String> {
-    state.health.dismiss(kind, &key).map_err(err)
+    let health = Arc::clone(&state.health);
+    blocking(move || health.dismiss(kind, &key).map_err(err)).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn health_undismiss(
+async fn health_undismiss(
     state: State<'_, AppState>,
     kind: FindingKind,
     key: String,
 ) -> Result<(), String> {
-    state.health.undismiss(kind, &key).map_err(err)
+    let health = Arc::clone(&state.health);
+    blocking(move || health.undismiss(kind, &key).map_err(err)).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -1044,13 +1206,15 @@ async fn admin_set_password(state: State<'_, AppState>, password: String) -> Res
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn admin_clear_password(state: State<'_, AppState>) -> Result<(), String> {
-    state.admin.clear_password().map_err(err)
+async fn admin_clear_password(state: State<'_, AppState>) -> Result<(), String> {
+    let admin = Arc::clone(&state.admin);
+    blocking(move || admin.clear_password().map_err(err)).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn admin_set_idle_lock_min(state: State<'_, AppState>, minutes: u64) -> Result<(), String> {
-    state.admin.set_idle_lock_min(minutes).map_err(err)
+async fn admin_set_idle_lock_min(state: State<'_, AppState>, minutes: u64) -> Result<(), String> {
+    let admin = Arc::clone(&state.admin);
+    blocking(move || admin.set_idle_lock_min(minutes).map_err(err)).await
 }
 
 /// Build the Tauri app and run it: plugins, then the data directory and the

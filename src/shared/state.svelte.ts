@@ -125,6 +125,14 @@ export class AppState {
   sortBy = $state<SortColumn | null>(null);
   sortDir = $state<SortDir>("asc");
   tracks = $state<Track[]>([]);
+
+  /**
+   * Bumped per {@link AppState.search} call, so a result that is no longer the
+   * newest one asked for is dropped rather than drawn. Deliberately not
+   * `$state`: nothing renders it, and a reactive write per keystroke would only
+   * invalidate what reads it.
+   */
+  private searchRequest = 0;
   stats = $state<LibraryStats | null>(null);
   libraryPaths = $state<Record<ContentType, string[]>>({
     music: [],
@@ -539,15 +547,23 @@ export class AppState {
    * Re-query the library. Keeps the current rows on error rather than
    * rejecting into a void call, so a query the backend refuses leaves the
    * listing usable instead of silently frozen.
+   *
+   * Two queries can be in flight at once — the backend answers them on its
+   * blocking pool, not in the order they were asked — so a result is adopted
+   * only while it is still the newest one asked for. Without that, a slow query
+   * landing after a faster later one would put stale rows on screen and leave
+   * them there.
    */
   async search(): Promise<void> {
+    const request = ++this.searchRequest;
     try {
-      this.tracks = await api.search(
+      const tracks = await api.search(
         this.searchQuery,
         this.activeTab,
         this.sortBy ?? undefined,
         this.sortDir,
       );
+      if (request === this.searchRequest) this.tracks = tracks;
     } catch (err) {
       logger.error("Search failed:", err);
     }
@@ -1138,14 +1154,18 @@ export class AppState {
   // ----- Audio device config -----
 
   async loadAudioConfig(): Promise<void> {
-    const [devices, main, cue] = await Promise.all([
-      api.listAudioDevices(),
-      api.getMainDevice(),
-      api.getCueDevice(),
-    ]);
-    this.audioDevices = devices;
-    this.mainDevice = main;
-    this.cueDevice = cue;
+    try {
+      const [devices, main, cue] = await Promise.all([
+        api.listAudioDevices(),
+        api.getMainDevice(),
+        api.getCueDevice(),
+      ]);
+      this.audioDevices = devices;
+      this.mainDevice = main;
+      this.cueDevice = cue;
+    } catch (err) {
+      logger.error("Audio device lookup failed:", err);
+    }
   }
 
   /**
@@ -1482,12 +1502,7 @@ export class AppState {
     id: number,
     input: Omit<TrackMetadataInput, "id">,
   ): Promise<Track | null> {
-    const byIndex = new Map(this.tracks.map((t, i) => [t.id, i]));
-    const index = byIndex.get(id);
-    let oldTitle = "";
-    if (index != null) {
-      oldTitle = this.tracks[index].title;
-    }
+    const oldTitle = this.tracks.find((t) => t.id === id)?.title ?? "";
     // Forward only the fields the caller actually set (partial patch); an
     // absent key leaves that column unchanged on the backend.
     const payload: TrackMetadataInput = { id };
@@ -1503,7 +1518,7 @@ export class AppState {
       logger.error("updateTrackMetadata failed:", err);
       return null;
     }
-    this.adoptTrack(updatedTrack, index, oldTitle);
+    this.adoptTrack(updatedTrack, oldTitle);
     return updatedTrack;
   }
 
@@ -1512,10 +1527,9 @@ export class AppState {
    * Rejects when the file cannot be read; the edits are then kept.
    */
   async revertTrackTags(id: number): Promise<Track> {
-    const index = this.tracks.findIndex((t) => t.id === id);
-    const oldTitle = index >= 0 ? this.tracks[index].title : "";
+    const oldTitle = this.tracks.find((t) => t.id === id)?.title ?? "";
     const updated = await api.revertTrackTags(id);
-    this.adoptTrack(updated, index >= 0 ? index : undefined, oldTitle);
+    this.adoptTrack(updated, oldTitle);
     if (this.editingMetadata?.id === id) this.editingMetadata = updated;
     return updated;
   }
@@ -1532,13 +1546,18 @@ export class AppState {
     });
   }
 
-  /** Put a track the backend changed in place of the local copies. */
-  private adoptTrack(
-    updated: Track,
-    index: number | undefined,
-    oldTitle: string,
-  ): void {
-    if (index != null) {
+  /**
+   * Put a track the backend changed in place of the local copies.
+   *
+   * The row is located by id here rather than by a position captured before
+   * the call: `tracks` is replaced wholesale by every {@link AppState.search},
+   * and one can resolve while a metadata write is in flight — the write goes
+   * through `Health::refresh`, so it is the slower of the two. A remembered
+   * index would then overwrite an unrelated row.
+   */
+  private adoptTrack(updated: Track, oldTitle: string): void {
+    const index = this.tracks.findIndex((t) => t.id === updated.id);
+    if (index >= 0) {
       this.tracks[index] = updated;
     }
     if (this.currentTrack?.id === updated.id) {

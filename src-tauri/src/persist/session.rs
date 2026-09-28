@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use super::atomic_write;
 use crate::audio::cue_points::CuePoints;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -92,10 +93,23 @@ impl Session {
         self.last.lock().clone()
     }
 
+    /// Write the session to disk and stage it as the last known state.
+    ///
+    /// The `last` lock is held across the write, which is what serialises two
+    /// saves. `save_session` runs on the blocking pool, so the renderer's
+    /// throttled save and the `flushSave` on close can be in flight together —
+    /// `flushSave` cancels the timer, not a call already made. Two unsynchronised
+    /// writes would interleave, and the one that finished last would decide the
+    /// file whether or not it was the newer state. Under the lock, `last` always
+    /// names what is on disk.
+    ///
+    /// The write itself is tmp+rename, so a reader never sees a half-written
+    /// file and a crash mid-save leaves the previous session intact.
     pub fn save(&self, state: SessionState) -> Result<()> {
         let json = serde_json::to_string_pretty(&state)?;
-        fs::write(&self.path, json).context("write session.json")?;
-        *self.last.lock() = state;
+        let mut last = self.last.lock();
+        atomic_write(&self.path, json.as_bytes()).context("write session.json")?;
+        *last = state;
         Ok(())
     }
 
@@ -152,6 +166,43 @@ mod tests {
         assert_eq!(loaded.current_track_id, Some(2));
         assert_eq!(loaded.current_time, 12.5);
         assert_eq!(loaded.volume, 0.5);
+    }
+
+    /// The renderer's throttled save and the `flushSave` on close can be in
+    /// flight together now that `save_session` answers on the blocking pool.
+    #[test]
+    fn concurrent_saves_leave_a_whole_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path();
+        let session = Session::open(path);
+        std::thread::scope(|scope| {
+            for n in 0..8 {
+                let session = &session;
+                scope.spawn(move || {
+                    for _ in 0..25 {
+                        session
+                            .save(SessionState {
+                                playlist_ids: vec![n; 64],
+                                ..Default::default()
+                            })
+                            .unwrap();
+                        // Every read must see a complete file, never a write
+                        // half-way through.
+                        let reloaded = Session::open(path).load();
+                        assert_eq!(reloaded.playlist_ids.len(), 64);
+                        assert!(reloaded
+                            .playlist_ids
+                            .iter()
+                            .all(|&id| id == reloaded.playlist_ids[0]));
+                    }
+                });
+            }
+        });
+        // What `load` answers is what a restart would read back.
+        assert_eq!(
+            session.load().playlist_ids,
+            Session::open(dir.path()).load().playlist_ids
+        );
     }
 
     #[test]
