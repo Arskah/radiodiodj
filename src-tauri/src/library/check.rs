@@ -15,7 +15,8 @@ use tauri::{AppHandle, Listener};
 use super::db::{Db, IndexRow};
 use super::health::Health;
 use super::listing::{self, ScanRoot};
-use super::scan_state::ScanState;
+use super::scan_state::{ScanState, ScanStatus};
+use super::waveform_scan::WaveformJob;
 use crate::persist::config::Config;
 
 /// Give the window time to come up before the launch check reads the disk.
@@ -123,6 +124,20 @@ struct ScanStatusTag {
     status: String,
 }
 
+/// Whether a report is one an automatic scan may act on, decided apart from the
+/// worker so the rules can be tested without a timer or a window.
+///
+/// `previous` is the signature of the report before this one. Requiring the two
+/// to match is what keeps a copy in progress from being scanned half-written: a
+/// growing folder reports something different every time it is listed, and only
+/// a disk that has stopped moving reads the same twice.
+fn settled_with_changes(report: &CheckReport, previous: Option<u64>) -> bool {
+    report.has_changes()
+        && report.unreachable.is_empty()
+        && report.partial.is_empty()
+        && previous == Some(report.signature())
+}
+
 /// Runs checks at launch, on the configured timer and on demand, never
 /// alongside a scan.
 pub struct LibraryCheck {
@@ -130,11 +145,21 @@ pub struct LibraryCheck {
     config: Arc<Config>,
     scan: Arc<ScanState>,
     health: Arc<Health>,
+    /// Handed to an automatic scan, which owes the library the analysis pass
+    /// the same way the operator's button does.
+    waveform: Arc<WaveformJob>,
+    /// Whether a deck is on air. An automatic scan waits for silence: nobody
+    /// chose its moment, so it may not be the one thing running during a set.
+    on_air: Box<dyn Fn() -> bool + Send + Sync>,
     /// Bumped by every scan transition, so a check that overlapped one is
     /// discarded rather than reporting a disk the scan has since applied.
     generation: AtomicU64,
     cancel: AtomicBool,
     schedule: Mutex<Schedule>,
+    /// The previous report's [`CheckReport::signature`], for the settling rule
+    /// in [`settled_with_changes`]. Cleared by every scan transition, so an
+    /// automatic scan is always preceded by two checks that agree.
+    settling: Mutex<Option<u64>>,
     wake: Condvar,
 }
 
@@ -150,18 +175,23 @@ impl LibraryCheck {
         config: Arc<Config>,
         scan: Arc<ScanState>,
         health: Arc<Health>,
+        waveform: Arc<WaveformJob>,
+        on_air: Box<dyn Fn() -> bool + Send + Sync>,
     ) -> Arc<Self> {
         Arc::new(Self {
             db,
             config,
             scan,
             health,
+            waveform,
+            on_air,
             generation: AtomicU64::new(0),
             cancel: AtomicBool::new(false),
             schedule: Mutex::new(Schedule {
                 last: None,
                 now_requested: false,
             }),
+            settling: Mutex::new(None),
             wake: Condvar::new(),
         })
     }
@@ -176,6 +206,10 @@ impl LibraryCheck {
                 return;
             };
             this.generation.fetch_add(1, Ordering::SeqCst);
+            // Whatever the scan did, the disk it listed is no longer the one
+            // the settling rule agreed on. Two fresh checks have to agree
+            // before another automatic scan.
+            *this.settling.lock() = None;
             match tag.status.as_str() {
                 "running" => this.cancel.store(true, Ordering::SeqCst),
                 "idle" => {
@@ -188,10 +222,11 @@ impl LibraryCheck {
         });
 
         let this = Arc::clone(self);
+        let app = app.clone();
         std::thread::spawn(move || {
             std::thread::sleep(LAUNCH_DELAY);
             loop {
-                this.run_once();
+                this.run_once(&app);
                 this.wait_until_due();
             }
         });
@@ -225,7 +260,7 @@ impl LibraryCheck {
         }
     }
 
-    fn run_once(&self) {
+    fn run_once(&self, app: &AppHandle) {
         self.schedule.lock().last = Some(Instant::now());
         if self.scan.is_running() {
             return;
@@ -257,7 +292,46 @@ impl LibraryCheck {
             Ok(_) => log::debug!("library check: superseded by a scan"),
             Err(e) => log::error!("library check failed: {e:#}"),
         }
+        let scan_now = result.as_ref().is_some_and(|r| self.may_scan(r));
         self.health.finish_check(result);
+        if scan_now {
+            log::info!("library check: the disk has settled with changes, scanning");
+            // Without the tag backfill the operator's button also starts: a
+            // cancelled backfill was cancelled on purpose, and nothing the
+            // operator stopped should restart because a file appeared.
+            Arc::clone(&self.scan).start(
+                app.clone(),
+                Arc::clone(&self.db),
+                Arc::clone(&self.config),
+                Arc::clone(&self.waveform),
+            );
+        }
+    }
+
+    /// Whether this report should start a scan by itself, and remember it for
+    /// the next check either way.
+    ///
+    /// The setting is off by default, and three things hold a scan back even
+    /// when it is on: a disk still moving (see [`settled_with_changes`]), a
+    /// deck on air, and a scan the operator cancelled — which stands until they
+    /// scan again, so an automatic scan never overrules a _Cancel_.
+    fn may_scan(&self, report: &CheckReport) -> bool {
+        let previous = self.settling.lock().replace(report.signature());
+        if !self.config.get_tuning().library.scan_on_changes {
+            return false;
+        }
+        if !settled_with_changes(report, previous) {
+            return false;
+        }
+        if matches!(self.scan.status(), ScanStatus::Canceled { .. }) {
+            log::debug!("library check: changes are settled, but the last scan was canceled");
+            return false;
+        }
+        if (self.on_air)() {
+            log::debug!("library check: changes are settled, but a deck is on air");
+            return false;
+        }
+        true
     }
 }
 
@@ -406,6 +480,62 @@ mod tests {
     fn a_canceled_check_reports_nothing() {
         let (dir, db) = scanned(&["a.wav"]);
         assert!(check(&db, &root(dir.path()), &|| true).unwrap().is_none());
+    }
+
+    /// A report with one new file, as two consecutive checks of a settled disk
+    /// would produce it.
+    fn settled() -> CheckReport {
+        CheckReport {
+            checked_at: 1,
+            new: vec!["a.wav".into()],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn an_automatic_scan_waits_for_two_checks_that_agree() {
+        let report = settled();
+        assert!(
+            !settled_with_changes(&report, None),
+            "the first check of a change has nothing to agree with"
+        );
+        assert!(settled_with_changes(&report, Some(report.signature())));
+    }
+
+    #[test]
+    fn a_disk_still_moving_does_not_start_a_scan() {
+        let first = settled();
+        let mut second = first.clone();
+        second.new.push("b.wav".into());
+        assert!(!settled_with_changes(&second, Some(first.signature())));
+    }
+
+    #[test]
+    fn nothing_to_apply_starts_no_scan() {
+        let quiet = CheckReport {
+            checked_at: 1,
+            ..Default::default()
+        };
+        assert!(!settled_with_changes(&quiet, Some(quiet.signature())));
+    }
+
+    #[test]
+    fn an_unreadable_library_path_holds_an_automatic_scan_back() {
+        for report in [
+            CheckReport {
+                unreachable: vec!["/mnt/radio".into()],
+                ..settled()
+            },
+            CheckReport {
+                partial: vec!["/mnt/radio".into()],
+                ..settled()
+            },
+        ] {
+            assert!(
+                !settled_with_changes(&report, Some(report.signature())),
+                "a listing that cannot prove what is there must not drive a scan: {report:?}"
+            );
+        }
     }
 
     #[test]

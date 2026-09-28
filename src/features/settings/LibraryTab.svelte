@@ -93,6 +93,32 @@
       Scan Library Now
     </button>
   </div>
+  <div class="np-group" class:disabled={!tuning.library.scanOnChanges}>
+    <div class="np-group-header">
+      <span class="material-symbols-outlined" aria-hidden="true">autorenew</span
+      >
+      <span class="np-group-title">Scan when files change</span>
+      <label
+        class="np-toggle"
+        title="Scan after the library check finds changes"
+      >
+        <input
+          id="setting-scan-on-changes"
+          type="checkbox"
+          bind:checked={tuning.library.scanOnChanges}
+          onchange={saveTuning}
+        />
+        <span class="np-toggle-track"></span>
+      </label>
+    </div>
+    <p class="settings-section-desc">
+      With this on, the library check starts a scan itself once the same changes
+      have been seen twice in a row, so music copied onto your library paths
+      from another computer is picked up without anyone pressing this button. It
+      waits until nothing is on air, and stays out of the way while a library
+      path is unreachable or a scan has been cancelled.
+    </p>
+  </div>
   <div class="np-group" class:disabled={!tuning.library.writeTags}>
     <div class="np-group-header">
       <span class="material-symbols-outlined" aria-hidden="true"

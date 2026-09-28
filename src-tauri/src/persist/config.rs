@@ -353,6 +353,10 @@ pub struct LibraryConfig {
     /// Minutes between library checks; 0 turns the timer off.
     #[serde(default = "default_check_interval_min")]
     pub check_interval_min: u64,
+    /// Whether a check that finds the disk changed may start a scan itself.
+    /// Off by default: a check otherwise only ever reports.
+    #[serde(default)]
+    pub scan_on_changes: bool,
     /// Write metadata edits into the file's tags as well as the library.
     #[serde(default)]
     pub write_tags: bool,
@@ -372,6 +376,7 @@ impl Default for LibraryConfig {
     fn default() -> Self {
         Self {
             check_interval_min: default_check_interval_min(),
+            scan_on_changes: false,
             write_tags: false,
             tag_write_timeout_sec: default_tag_write_timeout_sec(),
         }

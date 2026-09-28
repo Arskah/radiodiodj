@@ -18,8 +18,10 @@ Three rules hold throughout:
 
 - **The app never touches audio files.** It does not delete, move or rename
   them. Every fix to the disk is made by the operator, in the file manager.
-- **Nothing here changes the library by itself.** A check reports, a scan
-  applies, and only the operator's _Purge_ deletes rows.
+- **Nothing here changes the library by itself,** unless the operator asks it
+  to. A check reports, a scan applies, and only the operator's _Purge_ deletes
+  rows. _Scan when files change_ is the one opt-out, and it starts a scan —
+  never a delete. See [Scanning by itself](#scanning-by-itself).
 - **An unreachable library path is reported as unreachable,** never as a folder
   full of gone files.
 
@@ -140,8 +142,37 @@ as before, and hovering it shows the exact time of the check.
 
 The report is held in memory only. The next launch checks again.
 
-The check never starts a scan. _Scan Library Now_, just above, is the operator's
-button.
+### Scanning by itself
+
+By default the check never starts a scan: _Scan Library Now_, just above, is the
+operator's button. _Settings → Library → **Scan when files change**_
+(`tuning.library.scanOnChanges`) hands it that button, so music copied onto a
+library path from another computer is picked up without anyone walking to the
+studio machine. This is the whole of the app's answer to scanning from
+elsewhere; see [external-library.md](./external-library.md).
+
+Four things have to line up before a check starts a scan, and each is a way it
+stays out of the operator's way:
+
+- **The report has changes.** New, changed, gone or unrooted — the same test the
+  attention count uses.
+- **The disk has settled.** Two consecutive checks must report the _same_
+  changes, compared by `CheckReport::signature()`. A copy in progress reports
+  something different every time it is listed, and scanning it half-written
+  would tag a truncated file and record an analysis failure against it. The cost
+  is one extra interval: half an hour on the default fifteen.
+- **Every library path was readable.** Anything `unreachable` or `partial` and
+  the check reports as usual and starts nothing — a share going up and down must
+  not drive a scan loop.
+- **Nothing is on air, and nothing was cancelled.** An automatic scan waits for
+  the main deck to fall silent, because nobody chose its moment. A scan the
+  operator cancelled stands until they scan again, so this can never overrule a
+  _Cancel_.
+
+Every scan transition clears the remembered signature, so the two checks that
+agree are always two checks since the last scan. An automatic scan runs the
+analysis pass exactly as the button does, but leaves the tag backfill alone: a
+cancelled backfill was cancelled deliberately.
 
 ## Missing tracks
 

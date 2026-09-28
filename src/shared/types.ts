@@ -369,6 +369,8 @@ export type ReplayGainMode = "off" | "track";
 export interface LibraryConfig {
   /** Minutes between library checks; 0 turns the timer off. */
   checkIntervalMin: number;
+  /** Whether a check that finds the disk changed may start a scan itself. */
+  scanOnChanges: boolean;
   /** Write metadata edits into the file's tags as well. */
   writeTags: boolean;
   /** Seconds a tag write may take before it is reported as failed. */

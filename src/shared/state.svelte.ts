@@ -77,7 +77,12 @@ const DEFAULT_TUNING: TuningConfig = {
     fadeToNextMs: 2500,
     replayGain: "track",
   },
-  library: { checkIntervalMin: 15, writeTags: false, tagWriteTimeoutSec: 30 },
+  library: {
+    checkIntervalMin: 15,
+    scanOnChanges: false,
+    writeTags: false,
+    tagWriteTimeoutSec: 30,
+  },
   autoCue: {
     apply: true,
     applyNextStart: true,
