@@ -83,16 +83,30 @@ slow becomes a share that is down.
 **The rule belongs to the share, not to that worker.** The cache therefore holds
 an **in-flight set**: every reader of a library file claims an id before it
 reads, so one file never crosses the share twice at once. A deck that misses an
-id someone else is already reading waits for that read rather than starting its
-own — never slower than a read that begins later, and bounded by the deck's
-watchdog exactly as a read of its own would be. The analysis pass keeps the same
-rule from the other side by reading on a single thread
+id someone else is already reading into the window waits for that read rather
+than starting its own — never slower than a read that begins later, and bounded
+by the deck's watchdog exactly as a read of its own would be. The analysis pass
+keeps the same rule from the other side by reading on a single thread
 ([library.md](./library.md#the-analysis-pass)).
 
+**Only for an id in the window.** Bytes for anything else are refused, so there
+would be nothing to wait for: the waiter would read the file itself anyway, after
+the other reader instead of alongside them. A cue audition of an unqueued track
+is exactly that, and the editor reloads it on every edit — two reloads over a
+slow share would otherwise take two read times end to end and trip the watchdog
+on a share that is merely slow. Such a read takes no claim at all.
+
 A claim is released when the read ends, including on a panic. A read _wedged_ on
-a dead mount holds its claim until the OS finally errors it, and prefetch keeps
-skipping that id meanwhile — a file the share is refusing to send is the last one
-to ask for twice.
+a dead mount holds its claim until the OS finally errors it. The prefetch worker
+waits on that entry rather than walking past it — nothing but a window push wakes
+the worker, so an entry skipped once is not fetched at all if the reader holding
+it then fails, and its bytes would go uncounted against the cap while in flight,
+which would have the run read later entries that land only to be evicted. A new
+window aborts the wait.
+
+This is a per-file rule, not a global permit. The analysis reader, the prefetch
+worker and a deck that missed can be pulling three _different_ files at once;
+what cannot happen is the same file twice.
 
 ## Output devices
 

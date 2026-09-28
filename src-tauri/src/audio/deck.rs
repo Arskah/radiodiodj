@@ -449,7 +449,7 @@ fn start_load(
     events: &DeckEvents,
     load_tx: &Sender<LoadMsg>,
     cache: &Arc<Cache>,
-    read_retry_backoffs: &[Duration],
+    tuning: &PlayerTuning,
     deck_index: usize,
     id: i64,
     path: PathBuf,
@@ -526,12 +526,15 @@ fn start_load(
         // `apply_load` is deliberate: that runs on the worker thread, which
         // has no business taking a cache lock, and it discards a superseded
         // result — whose bytes are still the right bytes for this track.
-        let backoffs = read_retry_backoffs.to_vec();
+        let backoffs = tuning.read_retry_backoffs.clone();
+        let wait_budget = tuning.read_watchdog_timeout;
         let cache = Arc::clone(cache);
         thread::spawn(move || {
             // Retry transient failures with backoff; hangs are the
-            // watchdog's job (handled in the worker loop, not here).
-            let bytes = cache.read_for_deck(id, &path, &backoffs);
+            // watchdog's job (handled in the worker loop, not here). The
+            // budget bounds only the wait for another reader's copy, which
+            // the watchdog cannot see.
+            let bytes = cache.read_for_deck(id, &path, &backoffs, wait_budget);
             let _ = tx.send(LoadMsg {
                 deck: deck_index,
                 generation,
@@ -555,7 +558,7 @@ fn apply(
     events: &DeckEvents,
     load_tx: &Sender<LoadMsg>,
     cache: &Arc<Cache>,
-    read_retry_backoffs: &[Duration],
+    tuning: &PlayerTuning,
     deck_index: usize,
     cmd: Cmd,
 ) {
@@ -573,21 +576,8 @@ fn apply(
             gain,
         } => {
             start_load(
-                app,
-                output,
-                deck,
-                events,
-                load_tx,
-                cache,
-                read_retry_backoffs,
-                deck_index,
-                id,
-                path,
-                duration,
-                cue_points,
-                start_at,
-                autoplay,
-                gain,
+                app, output, deck, events, load_tx, cache, tuning, deck_index, id, path, duration,
+                cue_points, start_at, autoplay, gain,
             );
         }
         Cmd::Play => {
@@ -1046,7 +1036,7 @@ pub(super) fn run(
                         &events[role_index],
                         &load_tx,
                         &cache,
-                        &tuning.read_retry_backoffs,
+                        &tuning,
                         i,
                         cmd,
                     );
@@ -1142,7 +1132,7 @@ pub(super) fn run(
                         &events[role_index],
                         &load_tx,
                         &cache,
-                        &tuning.read_retry_backoffs,
+                        &tuning,
                         i,
                         p.id,
                         p.path,
