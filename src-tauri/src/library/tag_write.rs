@@ -378,7 +378,7 @@ mod tests {
     use crate::audio_measure::test_audio::write_wav;
     use crate::library::db::{EditedFields, Track, TrackMetadataUpdate};
     use crate::library::listing::{should_rescan, ScanRoot};
-    use crate::library::scanner::{read_file_tags, scan_all};
+    use crate::library::scanner::{read_file_tags, scan_all, Missing};
     use std::time::Instant;
     use tempfile::TempDir;
 
@@ -399,7 +399,7 @@ mod tests {
             content_type: "music",
             path: dir.path().join("music").to_string_lossy().into_owned(),
         };
-        scan_all(&db, &[root], &|| false, |_, _| {}).unwrap();
+        scan_all(&db, &[root], Missing::Mark, &|| false, |_, _| {}).unwrap();
         let id = db.search("", None, None, None).unwrap()[0].id;
         let scanned_mtime = db.track_index().unwrap()[0].mtime;
         db.set_fingerprint(id, &fingerprint::of_file(&path).unwrap(), scanned_mtime)
