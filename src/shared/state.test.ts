@@ -1134,6 +1134,27 @@ describe("AppState library + paths", () => {
     expect(app.tracks.length).toBe(2);
   });
 
+  it("an overtaken search does not overwrite the newer one", async () => {
+    // The backend answers on its blocking pool, so two queries in flight can
+    // come back in either order. The first one here is the slow one.
+    let releaseStale: (rows: Track[]) => void = () => {};
+    api.search.mockImplementationOnce(
+      () =>
+        new Promise<Track[]>((resolve) => {
+          releaseStale = resolve;
+        }),
+    );
+    const stale = app.search();
+
+    api.search.mockResolvedValueOnce([t(3)]);
+    await app.search();
+    expect(app.tracks.map((row) => row.id)).toEqual([3]);
+
+    releaseStale([t(1), t(2)]);
+    await stale;
+    expect(app.tracks.map((row) => row.id)).toEqual([3]);
+  });
+
   it("setTab updates activeTab and triggers a search for it", () => {
     app.setTab("jingle");
     expect(app.activeTab).toBe("jingle");

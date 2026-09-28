@@ -128,6 +128,35 @@ physical deck is on air. The cue deck, being off the bus, emits `cue:*`.
 | `scan-progress`, `scan-state-changed`                                                                                                  | the scan worker      | counts, current file, run state             |
 | `cache-state`                                                                                                                          | the prefetch cache   | which track ids are resident in RAM         |
 
+## Commands
+
+A `#[tauri::command]` handler declared **without** `async` is the blocking kind:
+the macro runs it inline on the IPC thread, and that thread is the one the window
+is drawn from. So a command that waits — on the database, on the filesystem, on
+the network — freezes the window for as long as it waits, and the library is
+usually a network share, where "as long as it waits" has no useful bound.
+
+The rule is therefore: **a command that does I/O is an `async fn` whose body is
+one `blocking(…)` call.** `blocking` is the helper in `lib.rs`; it hands the
+closure to `spawn_blocking`, and the command clones the `Arc`s it needs out of
+`AppState` before awaiting, because the state guard cannot cross an await.
+
+Never put a blocking call in an `async` command's body directly. That holds one
+of the async runtime's worker threads — there is one per core — so a handful of
+slow commands would take every other async command down with them. The blocking
+pool exists for exactly this.
+
+What stays synchronous is what cannot wait: a read of in-memory state
+(`get_scan_status`, `playlist_sync`), or a send down a channel (`main_deck_*`,
+`cue_*`, and the `playlist_*` family, which queue on their own thread).
+
+One consequence reaches the renderer. Commands answered on the main thread came
+back in the order they were asked; commands answered on the blocking pool do
+not. A renderer that fires the same query repeatedly therefore guards its results
+by request number and drops a stale answer — `AppState.search` does, because a
+slow query landing after a faster later one would otherwise put stale rows on
+screen and leave them there.
+
 ## Conventions
 
 - **Commands are flat and `snake_case`** (`playlist_add`, `cue_load`,

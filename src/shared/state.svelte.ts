@@ -125,6 +125,14 @@ export class AppState {
   sortBy = $state<SortColumn | null>(null);
   sortDir = $state<SortDir>("asc");
   tracks = $state<Track[]>([]);
+
+  /**
+   * Bumped per {@link AppState.search} call, so a result that is no longer the
+   * newest one asked for is dropped rather than drawn. Deliberately not
+   * `$state`: nothing renders it, and a reactive write per keystroke would only
+   * invalidate what reads it.
+   */
+  private searchRequest = 0;
   stats = $state<LibraryStats | null>(null);
   libraryPaths = $state<Record<ContentType, string[]>>({
     music: [],
@@ -539,15 +547,23 @@ export class AppState {
    * Re-query the library. Keeps the current rows on error rather than
    * rejecting into a void call, so a query the backend refuses leaves the
    * listing usable instead of silently frozen.
+   *
+   * Two queries can be in flight at once — the backend answers them on its
+   * blocking pool, not in the order they were asked — so a result is adopted
+   * only while it is still the newest one asked for. Without that, a slow query
+   * landing after a faster later one would put stale rows on screen and leave
+   * them there.
    */
   async search(): Promise<void> {
+    const request = ++this.searchRequest;
     try {
-      this.tracks = await api.search(
+      const tracks = await api.search(
         this.searchQuery,
         this.activeTab,
         this.sortBy ?? undefined,
         this.sortDir,
       );
+      if (request === this.searchRequest) this.tracks = tracks;
     } catch (err) {
       logger.error("Search failed:", err);
     }
