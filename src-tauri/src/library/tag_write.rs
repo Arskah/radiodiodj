@@ -27,6 +27,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::FormatOptions;
+use symphonia::core::io::MediaSourceStream;
+use symphonia::core::meta::MetadataOptions;
 
 use super::db::{Db, EditedFields, TagValues};
 use super::scanner;
@@ -201,7 +205,7 @@ fn write_with_timeout(values: TagValues, timeout: Duration) -> Result<i64> {
 fn write_tags(values: &TagValues, abandoned: &AtomicBool) -> Result<i64> {
     let path = Path::new(&values.path);
     let bytes = std::fs::read(path).context("read")?;
-    let tagged = retag(bytes, values, path)?;
+    let tagged = retag(bytes, values)?;
 
     if let Some(stored) = &values.fingerprint {
         let extension = path.extension().and_then(|e| e.to_str());
@@ -221,12 +225,14 @@ fn write_tags(values: &TagValues, abandoned: &AtomicBool) -> Result<i64> {
     mtime_ms(path)
 }
 
-/// `bytes` with `values` in its primary tag.
-fn retag(bytes: Vec<u8>, values: &TagValues, path: &Path) -> Result<Vec<u8>> {
-    let mut probe = Probe::new(Cursor::new(&bytes[..])).guess_file_type()?;
-    if probe.file_type().is_none() {
-        probe = probe.set_file_type(FileType::from_path(path).context("unknown file type")?);
-    }
+/// `bytes` with `values` in its primary tag, or an error if the file is not one
+/// [`check_container`] will let be written.
+fn retag(bytes: Vec<u8>, values: &TagValues) -> Result<Vec<u8>> {
+    let probe = Probe::new(Cursor::new(&bytes[..])).guess_file_type()?;
+    let guessed = probe
+        .file_type()
+        .context("this file's container could not be identified")?;
+    check_container(&bytes, guessed)?;
     let mut file = probe.read().context("read tags")?;
     if file.primary_tag().is_none() {
         let tag_type = file.primary_tag_type();
@@ -291,6 +297,47 @@ fn retag(bytes: Vec<u8>, values: &TagValues, path: &Path) -> Result<Vec<u8>> {
     file.save_to(&mut out, WriteOptions::default())
         .context("write tags")?;
     Ok(out.into_inner())
+}
+
+/// Refuse a write whose tag type the container cannot carry.
+///
+/// lofty identifies a file by sniffing it, and a sniff can be wrong: an Ogg
+/// whose first logical stream is Theora reads to lofty as an MPEG, so it would
+/// write an ID3v2 header onto an Ogg. The fingerprint guard in [`write_tags`]
+/// does not catch that, because symphonia steps over a leading ID3v2 tag and
+/// the audio compares equal either way.
+///
+/// So the container is settled by the demuxer the app already trusts to decode
+/// and fingerprint every track. Its verdict, not the file name, decides — the
+/// name is a claim about the file rather than a reading of one, and trusting it
+/// is what caused the damage this prevents.
+fn check_container(bytes: &[u8], guessed: FileType) -> Result<()> {
+    let stream = MediaSourceStream::new(Box::new(Cursor::new(bytes.to_vec())), Default::default());
+    let format = symphonia::default::get_probe()
+        .probe(
+            &Hint::new(),
+            stream,
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
+        .context("identify the container")?;
+    let container = format.format_info().short_name;
+    let carries = matches!(
+        (container, guessed),
+        ("ogg", FileType::Vorbis | FileType::Opus | FileType::Speex)
+            | ("wave", FileType::Wav)
+            | ("aiff", FileType::Aiff)
+            | ("isomp4", FileType::Mp4)
+            | ("flac", FileType::Flac)
+            | ("mp1" | "mp2" | "mp3", FileType::Mpeg)
+            | ("aac", FileType::Aac)
+    );
+    if !carries {
+        bail!(
+            "this file is {container}, which cannot carry the {guessed:?} tags lofty reads it as"
+        );
+    }
+    Ok(())
 }
 
 fn set(tag: &mut Tag, key: ItemKey, value: Option<String>) {
@@ -458,6 +505,35 @@ mod tests {
         }
     }
 
+    /// lofty identifies a file by sniffing it, and a sniff can be wrong. An
+    /// ID3v2 block in front of a RIFF file reads to it as an MPEG — the same
+    /// misidentification an Ogg carrying a Theora stream first produces, which
+    /// is how one came to be rewritten with an ID3v2 header on it.
+    #[test]
+    fn a_tag_type_the_container_cannot_carry_is_not_written() {
+        let f = fixture(true);
+        let mut wrapped = b"ID3\x04\x00\x00\x00\x00\x00\x00".to_vec();
+        wrapped.extend_from_slice(&std::fs::read(&f.path).unwrap());
+        std::fs::write(&f.path, &wrapped).unwrap();
+
+        f.edit("Edited");
+        f.wait();
+
+        assert_eq!(
+            std::fs::read(&f.path).unwrap(),
+            wrapped,
+            "the file was rewritten"
+        );
+        let failures = f.writer.failures();
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            failures[0].error.contains("cannot carry"),
+            "{}",
+            failures[0].error
+        );
+        assert!(f.leftovers().is_empty(), "a temp file was left behind");
+    }
+
     /// One `TRCK` frame carries both halves, so writing the number without the
     /// total would turn "3/12" into a bare "3".
     #[test]
@@ -593,7 +669,7 @@ mod tests {
         richly_tagged(&f.path);
         let bytes = std::fs::read(&f.path).unwrap();
 
-        let out = retag(bytes, &values_for(&f.path, None, 1), &f.path).unwrap();
+        let out = retag(bytes, &values_for(&f.path, None, 1)).unwrap();
 
         std::fs::write(&f.path, out).unwrap();
         let on_disk = read_file_tags(&f.path.to_string_lossy()).unwrap();
@@ -618,7 +694,7 @@ mod tests {
         let bytes = std::fs::read(&f.path).unwrap();
 
         let values = values_for(&f.path, None, EditedFields::ALBUM_ARTIST);
-        let out = retag(bytes, &values, &f.path).unwrap();
+        let out = retag(bytes, &values).unwrap();
 
         std::fs::write(&f.path, out).unwrap();
         let on_disk = read_file_tags(&f.path.to_string_lossy()).unwrap();
@@ -638,7 +714,7 @@ mod tests {
         let bytes = std::fs::read(&f.path).unwrap();
 
         let values = values_for(&f.path, Some(scanner::TAG_READ_VERSION), 0);
-        let out = retag(bytes, &values, &f.path).unwrap();
+        let out = retag(bytes, &values).unwrap();
 
         std::fs::write(&f.path, out).unwrap();
         let on_disk = read_file_tags(&f.path.to_string_lossy()).unwrap();

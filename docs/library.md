@@ -306,20 +306,29 @@ the edit into the file, so it survives moving the file to another library and a
 database reset. The write runs on a background worker, never inside a scan or
 playback, and never edits the file in place:
 
-1. Read the whole file into memory and set the tags there with `lofty`. The
-   comment replaces only the file's own, undescribed comment — an
-   iTunes-processed file keeps frames like `iTunSMPB`, its gapless-playback
-   data, which a plain overwrite of the comment would destroy. Album artist,
-   the track and disc positions, the key and the comment are written only once
+1. Read the whole file into memory and **settle what the container is**, by
+   probing it with symphonia — the demuxer the app already trusts to decode and
+   fingerprint every track. lofty picks its writer by sniffing the bytes, and a
+   sniff can be wrong: an Ogg whose first logical stream is Theora reads to it
+   as an MPEG, so it would write an ID3v2 header onto an Ogg. A tag type the
+   container cannot carry is refused here, and the file name never gets a vote —
+   a name is a claim about a file rather than a reading of one. The fingerprint
+   check in step 3 does not cover this, because symphonia steps over a leading
+   ID3v2 tag and the audio compares equal either way.
+2. Set the tags there with `lofty`. The comment replaces only the file's own,
+   undescribed comment — an iTunes-processed file keeps frames like `iTunSMPB`,
+   its gapless-playback data, which a plain overwrite of the comment would
+   destroy. Album artist, the track and disc positions, the key and the comment
+   are written only once
    the row has been read at the current tag generation, or for a field the
    operator edited: until the [tag backfill](#tag-backfill) reaches a row those
    columns are empty because nobody has looked, not because the file has none,
    and writing them back would strip the file's own.
-2. Fingerprint the tagged copy. If the fingerprint differs from the stored one,
+3. Fingerprint the tagged copy. If the fingerprint differs from the stored one,
    stop, because the write would cost the track its identity.
-3. Write a sibling `<name>.rdj-tmp`, flush it, copy the file's permissions, and
+4. Write a sibling `<name>.rdj-tmp`, flush it, copy the file's permissions, and
    rename it over the original.
-4. Store the file's new mtime and clear the edited flags, so the next scan sees
+5. Store the file's new mtime and clear the edited flags, so the next scan sees
    no change. An edit saved while the write was running keeps its flags and is
    written next.
 
