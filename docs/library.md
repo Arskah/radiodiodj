@@ -55,11 +55,11 @@ A scan:
    - A known file whose modification time and content type are unchanged is
      skipped without being opened. This is the **delta cache**, and it is what
      keeps a rescan fast.
-   - Anything else has its tags read with `lofty`: title, artist, album, album
-     artist, genre, year, BPM, track and disc number with their totals, ISRC,
-     musical key, comment, duration, sample rate, bitrate, format. A file
-     without a title is named after its file name; one without an artist or
-     album gets `Unknown`.
+   - Anything else has its tags read — see [Reading tags](#reading-tags):
+     title, artist, album, album artist, genre, year, BPM, track and disc
+     number with their totals, ISRC, musical key, comment, duration, sample
+     rate, bitrate, format. A file without a title is named after its file
+     name; one without an artist or album gets `Unknown`.
    - The comment is the tag's _undescribed_ one. lofty maps every ID3v2 `COMM`
      frame onto the same key, so the first one is often iTunes' `iTunNORM`
      volume data rather than anything an operator wrote.
@@ -102,6 +102,46 @@ how music copied onto a share from another computer reaches the library without
 anyone at the studio machine. That scan only adds and updates: a track whose file
 is gone is retired by the operator's scan, never by an automatic one. See
 [Scanning by itself](./library-health.md#scanning-by-itself).
+
+### Reading tags
+
+Tags are read with **`lofty` first, and `symphonia` when lofty refuses the
+file**.
+
+lofty picks its reader from the **extension**. That is usually right and it
+reads ID3v2 well, but it means a file whose contents are not what its name
+claims is rejected outright — an `.ogg` whose first logical stream is Theora
+rather than Vorbis (cover art muxed as a single-frame video, which some
+converters emit) fails with `failed to parse Vorbis file`. Before the fallback
+existed such a file never entered the library at all, and the library check
+reported it as new on every pass.
+
+symphonia identifies a file by **sniffing the bytes**, so it reads that Ogg
+without trouble. It is the demuxer the app already uses to decode and
+fingerprint every track, so nothing new is pulled in for it.
+
+**Why lofty is first rather than symphonia.** A survey of 300 files from a real
+library (the `TAG_CORPUS` test in `library/scanner.rs`) found the two agree on
+almost everything, but each fails where the other does not, so neither can
+simply replace the other:
+
+- symphonia read only **four of nine ID3v2 frames** on a file tagged by Windows
+  Media, losing artist, album, album artist, genre and disc, and reported a
+  track number neither lofty nor `ffprobe` agrees with.
+- lofty silently fell back to the file name on a file whose `TIT2` it could not
+  read, and returned `Unknown` for the artist or album of six files symphonia
+  read correctly.
+
+A tag the reader misses is not a cosmetic loss: an empty column is written back
+to the file as an _absent_ tag, so a reader that drops a frame makes the
+write-back delete it (see [Editing a track](#editing-a-track)). Between the two,
+the one that handles ID3v2 correctly belongs in front, because ID3v2 is most of
+a library.
+
+So symphonia runs only where lofty has already refused, and a file both readers
+refuse still enters the library named after itself. What symphonia cannot supply
+is the **bitrate** — `AudioCodecParameters` carries none — so a track that
+arrives by the fallback has that column empty.
 
 ### The analysis pass
 
