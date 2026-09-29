@@ -70,6 +70,16 @@ A scan:
    - Every read stamps the row with `scanner::TAG_READ_VERSION`, the generation
      of the tag read. A row at an older generation is filled in after launch by
      the **tag backfill** below, since a scan alone would never reopen it.
+   - A **new file whose tags cannot be read** still enters the library, named
+     after its file and with nothing the tags would have carried. Only if it
+     fingerprinted: that proves the head came off the share and demuxed, so the
+     tag read failed on what the file holds rather than on reaching it. A file
+     the share would not deliver is left for the next scan instead. Kept out
+     altogether it would have no row, so the library check would report it as
+     new on every pass and — with _Scan when files change_ on — start a scan
+     that failed the same way, for ever. A known track is never overwritten
+     this way: a tag read that fails on a file already in the library leaves
+     the row exactly as it is.
 3. **Reconciles** everything in one database transaction: changed files are
    re-tagged, moved files are **reattached** to their old track, copies become
    **duplicates**, files that are gone make their track **missing**, and the rest
