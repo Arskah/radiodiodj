@@ -122,10 +122,10 @@ fingerprint every track, so nothing new is pulled in for it.
 
 **Why lofty is first rather than symphonia.** Not because it reads more. A
 survey of 300 files from a real library (the `TAG_CORPUS` test in
-`library/scanner.rs`) has them agreeing on every field symphonia supplies, and
-symphonia ahead in two places: it recovers a year from a `RecordingDate` on 51
-files where lofty finds none, and it reads the real `TIT2` of a file lofty gives
-up on and names after its file instead.
+`library/scanner.rs`) has them agreeing on every field symphonia supplies bar
+four genre spellings, and symphonia ahead in two places: it recovers a year from
+a `RecordingDate` on 51 files where lofty finds none, and it reads the real
+`TIT2` of a file lofty gives up on and names after its file instead.
 
 What lofty has that symphonia has not is the **bitrate** — `AudioCodecParameters`
 carries none — so making symphonia the primary reader would empty that column

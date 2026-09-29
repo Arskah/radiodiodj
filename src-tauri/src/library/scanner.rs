@@ -623,11 +623,10 @@ fn parse_track_symphonia(
 /// track number out of a file with fifteen tags in it.
 ///
 /// Oldest first, because the caller keeps the first value it is given for each
-/// field, so the richer tag wins.
+/// field, so the richer tag wins. `pop` returns the front revision and never
+/// empties the log, so the last one is left for `current`.
 fn all_tags(mut meta: symphonia::core::meta::Metadata<'_>) -> Vec<symphonia::core::meta::Tag> {
     let mut tags = Vec::new();
-    // `pop` discards the front revision and returns it, and never empties the
-    // log, so the last one is left for `current`.
     while let Some(rev) = meta.pop() {
         tags.extend(rev.media.tags);
     }
