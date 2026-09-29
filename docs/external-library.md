@@ -62,9 +62,10 @@ undo that, from the one direction the design has not defended.
 
 **The scan is local by construction.** `scanner::scan_all` walks the roots on
 four workers (`SCAN_CONCURRENCY`, `src-tauri/src/library/scanner.rs`), and the
-analysis pass then **decodes every file** on `cores - 2` workers, capped at eight
-(`MAX_CONCURRENCY`, `src-tauri/src/library/waveform_scan.rs`). That decode is the
-expensive part, and it is what an operator wants off the studio machine.
+analysis pass then **decodes every file** on `cores - 2` workers, capped at six
+(`MAX_CONCURRENCY`, `src-tauri/src/library/waveform_scan.rs`) — reading them one
+at a time, because the share cannot take the fan-out the CPU can. That decode is
+the expensive part, and it is what an operator wants off the studio machine.
 
 **The disk is already polled.** The library check
 (`src-tauri/src/library/check.rs`) lists every root on a timer — fifteen minutes

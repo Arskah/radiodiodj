@@ -187,8 +187,11 @@ than another pass.
 
 Everything kept here is orders of magnitude smaller than the audio it describes:
 the level envelope is one byte per 50 ms window, the onset envelope 100 floats
-per second against ~1.4 MB/s of samples. That is what makes eight concurrent
-workers affordable.
+per second against ~1.4 MB/s of samples. That is what makes several concurrent
+decode workers affordable. What bounds their number is the whole files held
+while they run, and that arithmetic belongs to the caller
+(`library/waveform_scan.rs`), along with the single thread those files are read
+on — this module is handed bytes and never opens anything.
 
 ## The word
 

@@ -26,8 +26,7 @@ use super::cache::Cache;
 use super::cue_points::{CuePoints, Resolved};
 use super::output::Output;
 use super::player::{
-    append_span, clamp_start, decode_bytes, read_file, read_with_retry, Bytes, Cmd, PlayerTuning,
-    RampDone, Topics,
+    append_span, clamp_start, decode_bytes, Bytes, Cmd, PlayerTuning, RampDone, Topics,
 };
 
 const TICK_INTERVAL: Duration = Duration::from_millis(50);
@@ -450,7 +449,7 @@ fn start_load(
     events: &DeckEvents,
     load_tx: &Sender<LoadMsg>,
     cache: &Arc<Cache>,
-    read_retry_backoffs: &[Duration],
+    tuning: &PlayerTuning,
     deck_index: usize,
     id: i64,
     path: PathBuf,
@@ -520,11 +519,22 @@ fn start_load(
         // is in flight per deck at a time — a newer `Load` bumps
         // `generation`, so a stale read's result is discarded rather
         // than another thread being blocked on.
-        let backoffs = read_retry_backoffs.to_vec();
+        //
+        // The cache does the reading, so the bytes become resident and a
+        // file the prefetch worker is already pulling is waited for rather
+        // than fetched a second time. Offering them here rather than in
+        // `apply_load` is deliberate: that runs on the worker thread, which
+        // has no business taking a cache lock, and it discards a superseded
+        // result — whose bytes are still the right bytes for this track.
+        let backoffs = tuning.read_retry_backoffs.clone();
+        let wait_budget = tuning.read_watchdog_timeout;
+        let cache = Arc::clone(cache);
         thread::spawn(move || {
             // Retry transient failures with backoff; hangs are the
-            // watchdog's job (handled in the worker loop, not here).
-            let bytes = read_with_retry(|| read_file(&path), thread::sleep, &backoffs);
+            // watchdog's job (handled in the worker loop, not here). The
+            // budget bounds only the wait for another reader's copy, which
+            // the watchdog cannot see.
+            let bytes = cache.read_for_deck(id, &path, &backoffs, wait_budget);
             let _ = tx.send(LoadMsg {
                 deck: deck_index,
                 generation,
@@ -548,7 +558,7 @@ fn apply(
     events: &DeckEvents,
     load_tx: &Sender<LoadMsg>,
     cache: &Arc<Cache>,
-    read_retry_backoffs: &[Duration],
+    tuning: &PlayerTuning,
     deck_index: usize,
     cmd: Cmd,
 ) {
@@ -566,21 +576,8 @@ fn apply(
             gain,
         } => {
             start_load(
-                app,
-                output,
-                deck,
-                events,
-                load_tx,
-                cache,
-                read_retry_backoffs,
-                deck_index,
-                id,
-                path,
-                duration,
-                cue_points,
-                start_at,
-                autoplay,
-                gain,
+                app, output, deck, events, load_tx, cache, tuning, deck_index, id, path, duration,
+                cue_points, start_at, autoplay, gain,
             );
         }
         Cmd::Play => {
@@ -1039,7 +1036,7 @@ pub(super) fn run(
                         &events[role_index],
                         &load_tx,
                         &cache,
-                        &tuning.read_retry_backoffs,
+                        &tuning,
                         i,
                         cmd,
                     );
@@ -1135,7 +1132,7 @@ pub(super) fn run(
                         &events[role_index],
                         &load_tx,
                         &cache,
-                        &tuning.read_retry_backoffs,
+                        &tuning,
                         i,
                         p.id,
                         p.path,

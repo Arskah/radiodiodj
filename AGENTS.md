@@ -37,6 +37,22 @@ no transcoder. A deck reads the **whole file into RAM** (retry + 10 s watchdog)
 and never streams from the filesystem, which is what survives a wedged network
 share. See [docs/audio.md](docs/audio.md).
 
+**One file never crosses the share twice at once** — the library is a network
+share, and concurrent reads are how a share that was merely slow becomes a share
+that is down. The prefetch worker has always been sequential; the rule is the
+share's, not that worker's, so `audio/cache.rs` holds an **in-flight set** every
+reader claims against, and a deck that misses an id someone else is reading into
+the window waits for that read instead of starting a second one — outside the
+window the bytes would be refused, so it reads without claiming rather than
+serialising two reads for nothing. What a deck reads is offered back to the
+cache, refused only outside the window. The analysis pass keeps the same rule by
+reading on **one thread** and decoding on several — never widen the reader; what
+bounds the pass is whole files resident, not cores. It is per file, not a global
+permit: analysis, prefetch and a deck miss may hold three _different_ files at
+once. See
+[docs/audio.md](docs/audio.md#the-prefetch-cache) and
+[docs/library.md](docs/library.md#the-analysis-pass).
+
 **Measurement is a library** — `audio_measure/` holds everything a decode says
 about a track (the waveform curve, the loudness numbers, the level envelope, the
 tempo) and depends on nothing in the app: no `tauri`, no `Db`, no `Config`, no

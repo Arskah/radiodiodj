@@ -3,7 +3,7 @@
 //!
 //! The metadata scan (tag reads) is fast and finishes quickly. Computing a
 //! track's amplitude curve requires a full audio decode, which is far heavier —
-//! so it runs here, on its own worker thread, after the scan. The same pass
+//! so it runs here, on its own threads, after the scan. The same pass
 //! backfills [fingerprints](crate::audio_measure::fingerprint): from the bytes
 //! already read when a waveform is due, from the head of the file otherwise.
 //! The same decode also yields the
@@ -12,6 +12,14 @@
 //! one at a time and a `waveform-ready` event is emitted per track so the
 //! renderer can refresh a curve for the deck that is currently showing it.
 //!
+//! **One thread reads and several decode.** The library is usually a network
+//! share, and the rule `audio/cache.rs` follows for prefetch is the share's
+//! rule rather than that worker's: concurrent reads are how a share that was
+//! merely slow becomes a share that is down. So the pass pulls one file at a
+//! time and hands it to a pool of decoders over a one-slot channel — the CPU
+//! fan-out costs the share nothing. Every file access the pass makes happens on
+//! the reader, including the head read behind a fingerprint-only job.
+//!
 //! Progress is surfaced separately from the metadata scan via
 //! `waveform-progress` / `waveform-state-changed` so the UI can show a second
 //! bar under the tag-scan bar. Like the metadata scan, the `processed`/`total`
@@ -19,8 +27,9 @@
 //! missing-waveform list spanning every library).
 //!
 //! The job is single-flight (only one worker at a time) and cancelable. A
-//! cancel stops the pass after the file each worker is on, and is consumed by
-//! that pass: it means "not right now", so the next kick — a scan, a
+//! cancel stops the reader after the file it is on and each decoder after the
+//! file it holds, leaving anything read but not yet started undecoded; it is
+//! consumed by that pass: it means "not right now", so the next kick — a scan, a
 //! reclassification, a launch — starts a fresh one. It drains
 //! [`Db::tracks_needing_analysis`] in a loop so tracks added while it runs
 //! are still picked up. A file that cannot be decoded is recorded in the DB and
@@ -34,7 +43,9 @@ use std::collections::HashSet;
 use std::io::Cursor;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
@@ -60,15 +71,26 @@ const WAVEFORM_PROGRESS_EVENT: &str = "waveform-progress";
 /// Running/idle transitions.
 const WAVEFORM_STATE_EVENT: &str = "waveform-state-changed";
 const PROGRESS_THROTTLE: Duration = Duration::from_millis(200);
+/// Whole files the pass may hold in RAM at once: one per decode worker, one
+/// queued ahead of them, and one in the reader's hand. A single track can be
+/// 100 MB, so this — not the worker count — is the number that bounds the pass.
+const MAX_RESIDENT_FILES: usize = 8;
+/// Files the reader may run ahead of the decoders. One slot keeps a decoder
+/// from waiting on the share for bytes the share has already sent; every
+/// further slot is another whole file resident for no extra throughput.
+const READAHEAD: usize = 1;
 /// Hard ceiling on parallel decode workers. Decoding is CPU-heavy and each file
 /// is independent, so we fan out across cores; the actual worker count is
-/// `cores - 2` (reserving headroom for playback/UI) clamped into `2..=MAX`. This
-/// ceiling keeps a huge-core machine — or a networked share — from being flooded
-/// with concurrent reads.
-const MAX_CONCURRENCY: usize = 8;
+/// `cores - 2` (reserving headroom for playback/UI) clamped into `2..=MAX`. The
+/// share is not what this protects — the reader does that by being one thread —
+/// so what bounds it is [`MAX_RESIDENT_FILES`].
+const MAX_CONCURRENCY: usize = MAX_RESIDENT_FILES - READAHEAD - 1;
 /// Cores held back from the decode pool so audio playback and the UI stay
 /// responsive when a backfill runs mid-set.
 const RESERVED_CORES: usize = 2;
+/// How long the reader waits for a free decoder before looking at the cancel
+/// flag again. A blocking hand-off would hold a cancel for a whole decode.
+const HANDOFF_POLL: Duration = Duration::from_millis(25);
 
 /// Progress of the background waveform pass, mirrored to the UI. Cumulative
 /// across all libraries.
@@ -184,22 +206,16 @@ enum Stop {
 
 fn run(job: &WaveformJob, app: &AppHandle, db: &Db, config: &Config) -> Stop {
     // Ids that could not be read or stored this run — skipped on subsequent
-    // passes so the drain loop cannot spin on them. Shared across the decode
-    // threads.
+    // passes so the drain loop cannot spin on them. Written by the reader (a
+    // file it could not read) and by the decoders (a store that failed).
     let failed: Mutex<HashSet<i64>> = Mutex::new(HashSet::new());
-    // Total files processed across all passes; drives the progress numerator.
-    let processed = AtomicUsize::new(0);
-    let last_emit = Mutex::new(
-        Instant::now()
-            .checked_sub(PROGRESS_THROTTLE)
-            .unwrap_or_else(Instant::now),
-    );
+    let progress = Progress::new();
     // Balanced pool: use the cores that exist minus a reserve for playback/UI,
     // never fewer than 2, never more than the MAX_CONCURRENCY ceiling.
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
-    let concurrency = cores
+    let decoders = cores
         .saturating_sub(RESERVED_CORES)
         .clamp(2, MAX_CONCURRENCY);
     let mut started = false;
@@ -241,20 +257,41 @@ fn run(job: &WaveformJob, app: &AppHandle, db: &Db, config: &Config) -> Stop {
 
         // Total for this pass. It can grow across passes if a concurrent scan
         // adds tracks; `processed` only ever climbs.
-        let total = processed.load(Ordering::Relaxed) + pending.len();
-        // Shared cursor into `pending`; each worker claims the next index.
-        let next = AtomicUsize::new(0);
-        std::thread::scope(|scope| {
-            for _ in 0..concurrency {
-                scope.spawn(|| loop {
-                    if job.cancel.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(track) = pending.get(i) else {
-                        break;
-                    };
-                    match analyse(track, db, app, config) {
+        progress.begin_pass(pending.len());
+        run_pass(job, app, db, config, pending, &progress, &failed, decoders);
+    };
+
+    if started {
+        job.set_status(app, WaveformStatus::Idle);
+    }
+    stop
+}
+
+/// One drain's worth of work: read on this thread, decode on `decoders`.
+///
+/// The reader is deliberately singular. `docs/audio.md` states the rule for the
+/// prefetch cache — hammering a network share with concurrent reads is how a
+/// share that was merely slow becomes a share that is down — and the rule
+/// belongs to the share, not to that worker. Decoding is what fans out.
+#[allow(clippy::too_many_arguments)]
+fn run_pass(
+    job: &WaveformJob,
+    app: &AppHandle,
+    db: &Db,
+    config: &Config,
+    pending: Vec<AnalysisJob>,
+    progress: &Progress,
+    failed: &Mutex<HashSet<i64>>,
+    decoders: usize,
+) {
+    let (tx, rx) = sync_channel::<Fetched>(READAHEAD);
+    let rx = Mutex::new(rx);
+    std::thread::scope(|scope| {
+        for _ in 0..decoders {
+            scope.spawn(|| {
+                decode_loop(&rx, &job.cancel, |fetched| {
+                    let Fetched { track, payload } = fetched;
+                    match analyse(&track, payload, db, app, config) {
                         Outcome::Done => {}
                         Outcome::Retry => {
                             failed.lock().insert(track.id);
@@ -266,32 +303,210 @@ fn run(job: &WaveformJob, app: &AppHandle, db: &Db, config: &Config) -> Stop {
                             }
                         }
                     }
-                    let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
-                    *job.status.lock() = WaveformStatus::Running {
-                        processed: done,
-                        total,
-                    };
-                    let mut le = last_emit.lock();
-                    if le.elapsed() >= PROGRESS_THROTTLE {
-                        *le = Instant::now();
-                        drop(le);
-                        let _ = app.emit(
-                            WAVEFORM_PROGRESS_EVENT,
-                            WaveformProgress {
-                                processed: done,
-                                total,
-                            },
-                        );
-                    }
+                    tick(progress, job, app);
                 });
-            }
-        });
-    };
+            });
+        }
+        // The reader runs on this thread, and dropping `tx` when it returns is
+        // what tells the decoders nothing more is coming.
+        read_loop(
+            pending,
+            tx,
+            &job.cancel,
+            |track| {
+                failed.lock().insert(track.id);
+                tick(progress, job, app);
+            },
+            fetch,
+        );
+    });
+}
 
-    if started {
-        job.set_status(app, WaveformStatus::Idle);
+/// Count one disposed job: mirror it into the job's status, and emit progress
+/// if the throttle window has elapsed.
+///
+/// Status is written directly rather than through `set_status`, which would
+/// also emit `waveform-state-changed` — that topic is for running/idle
+/// transitions, not for every file.
+fn tick(progress: &Progress, job: &WaveformJob, app: &AppHandle) {
+    let (processed, total, due) = progress.record(Instant::now());
+    *job.status.lock() = WaveformStatus::Running { processed, total };
+    if due {
+        let _ = app.emit(
+            WAVEFORM_PROGRESS_EVENT,
+            WaveformProgress { processed, total },
+        );
     }
-    stop
+}
+
+/// Cumulative progress across every pass of one run.
+struct Progress {
+    processed: AtomicUsize,
+    total: AtomicUsize,
+    last_emit: Mutex<Instant>,
+}
+
+impl Progress {
+    fn new() -> Self {
+        Self {
+            processed: AtomicUsize::new(0),
+            total: AtomicUsize::new(0),
+            last_emit: Mutex::new(
+                Instant::now()
+                    .checked_sub(PROGRESS_THROTTLE)
+                    .unwrap_or_else(Instant::now),
+            ),
+        }
+    }
+
+    /// Start a pass: the denominator is what has been done plus what is queued,
+    /// so it grows when a concurrent scan adds work and never shrinks.
+    fn begin_pass(&self, pending: usize) -> usize {
+        let total = self.processed.load(Ordering::Relaxed) + pending;
+        self.total.store(total, Ordering::Relaxed);
+        total
+    }
+
+    /// Count one disposed job. Returns the snapshot to publish and whether the
+    /// throttle window has elapsed; `now` is injected so it is testable.
+    fn record(&self, now: Instant) -> (usize, usize, bool) {
+        let processed = self.processed.fetch_add(1, Ordering::Relaxed) + 1;
+        let total = self.total.load(Ordering::Relaxed);
+        let mut last = self.last_emit.lock();
+        let due = now.saturating_duration_since(*last) >= PROGRESS_THROTTLE;
+        if due {
+            *last = now;
+        }
+        (processed, total, due)
+    }
+}
+
+/// What the reader has to pull off the share for one job.
+enum Fetch {
+    /// The whole file: something here needs a decode.
+    Whole,
+    /// The head only, for a job that wants nothing but a fingerprint.
+    Head,
+}
+
+/// Which read one job needs. A job with no decode work left is a fingerprint
+/// backfill — every track in the library becomes one after a
+/// [`fingerprint::VERSION`] bump, which is the case this pass most has to stay
+/// polite for.
+fn fetch_kind(job: &AnalysisJob) -> Fetch {
+    if job.needs_waveform
+        || job.needs_loudness
+        || job.needs_auto_cue
+        || job.needs_auto_cue_levels
+        || job.needs_bpm
+        || job.needs_key
+    {
+        Fetch::Whole
+    } else {
+        Fetch::Head
+    }
+}
+
+/// What the reader pulled off the share for one job.
+enum Payload {
+    /// The whole file, for a job that needs a decode.
+    Whole(Bytes),
+    /// A job that needed a fingerprint and nothing else. The head read and the
+    /// hash both happen on the reader thread — a sha256 over a megabyte is
+    /// nothing beside the read it is attached to, and keeping it there is what
+    /// makes "one analysis read at a time" true rather than nearly true. `Err`
+    /// is the file's fault: a read failure never gets this far.
+    Fingerprint(Result<String, String>),
+}
+
+/// One job's bytes, off the share and on the way to a decode worker.
+struct Fetched {
+    track: AnalysisJob,
+    payload: Payload,
+}
+
+/// Pull one job off the share. `Err` is a read failure — the share's fault, and
+/// worth another try on the next run.
+fn fetch(track: &AnalysisJob) -> Result<Payload, String> {
+    match fetch_kind(track) {
+        Fetch::Whole => std::fs::read(&track.path)
+            .map(|v| Payload::Whole(Arc::from(v.into_boxed_slice())))
+            .map_err(|e| e.to_string()),
+        Fetch::Head => match fingerprint::of_file(Path::new(&track.path)) {
+            Ok(fp) => Ok(Payload::Fingerprint(Ok(fp))),
+            Err(e) if fingerprint::is_read_error(&e) => Err(format!("{e:#}")),
+            Err(e) => Ok(Payload::Fingerprint(Err(format!("fingerprint: {e:#}")))),
+        },
+    }
+}
+
+/// Read `jobs` off the share one at a time and hand each to a decoder.
+///
+/// `read` is injected so the loop can be driven without a filesystem, in the
+/// same spirit as `player::read_with_retry`. `dropped` disposes of a job whose
+/// read failed: it never reaches a decoder.
+fn read_loop<R, D>(
+    jobs: Vec<AnalysisJob>,
+    tx: SyncSender<Fetched>,
+    cancel: &AtomicBool,
+    mut dropped: D,
+    mut read: R,
+) where
+    R: FnMut(&AnalysisJob) -> Result<Payload, String>,
+    D: FnMut(&AnalysisJob),
+{
+    for track in jobs {
+        if cancel.load(Ordering::SeqCst) {
+            return;
+        }
+        let payload = match read(&track) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("analysis: read {} failed: {}", track.path, e);
+                dropped(&track);
+                continue;
+            }
+        };
+        let mut fetched = Fetched { track, payload };
+        loop {
+            match tx.try_send(fetched) {
+                Ok(()) => break,
+                Err(TrySendError::Full(f)) => {
+                    // Every decoder is busy. Poll rather than block: the
+                    // receiver belongs to the scope, not to the workers, so a
+                    // blocking send would not see them leave on a cancel and
+                    // would wait for a receiver that is never coming.
+                    if cancel.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    fetched = f;
+                    thread::sleep(HANDOFF_POLL);
+                }
+                Err(TrySendError::Disconnected(_)) => return,
+            }
+        }
+    }
+}
+
+/// Take fetched jobs until the reader is done or the pass is cancelled. The
+/// file a worker already holds is finished; anything merely queued is dropped
+/// unread, which is what keeps a cancel to one file per thread.
+fn decode_loop(
+    rx: &Mutex<Receiver<Fetched>>,
+    cancel: &AtomicBool,
+    mut analyse: impl FnMut(Fetched),
+) {
+    loop {
+        // The guard is held across `recv`, so exactly one worker waits on the
+        // reader at a time and the rest wait on the lock.
+        let Ok(fetched) = ({ rx.lock().recv() }) else {
+            return;
+        };
+        if cancel.load(Ordering::SeqCst) {
+            return;
+        }
+        analyse(fetched);
+    }
 }
 
 /// What analysing one track came to.
@@ -301,121 +516,127 @@ fn run(job: &WaveformJob, app: &AppHandle, db: &Db, config: &Config) -> Stop {
 /// the drain loop takes it again against the file that is there now.
 enum Outcome {
     Done,
-    /// The file could not be read, or a result could not be stored. Worth
-    /// another try on the next run.
+    /// A result could not be stored. Worth another try on the next run.
+    ///
+    /// A file that could not be *read* never reaches here: the reader disposes
+    /// of it, so by the time a decoder has a job the share has already given up
+    /// its bytes.
     Retry,
     /// The file was read but cannot be decoded.
     Unreadable(String),
 }
 
-/// Fill whatever `job` is missing and store it.
-fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle, config: &Config) -> Outcome {
-    let path = Path::new(&job.path);
+/// Fill whatever `job` is missing from what the reader pulled, and store it.
+fn analyse(
+    job: &AnalysisJob,
+    payload: Payload,
+    db: &Db,
+    app: &AppHandle,
+    config: &Config,
+) -> Outcome {
     let mut retry = false;
     let mut errors: Vec<String> = Vec::new();
-    let fingerprint = if job.needs_waveform
-        || job.needs_loudness
-        || job.needs_auto_cue
-        || job.needs_auto_cue_levels
-        || job.needs_bpm
-        || job.needs_key
-    {
-        let start = Instant::now();
-        let bytes: Bytes = match std::fs::read(path) {
-            Ok(v) => Arc::from(v.into_boxed_slice()),
-            Err(e) => {
-                log::warn!("waveform: read {} failed: {}", job.path, e);
-                return Outcome::Retry;
-            }
-        };
-        // Read per track for the same reason `store_auto_cue` does: a threshold
-        // changed mid-backfill applies from the next file on.
-        let silence_dbfs = config.get_tuning().auto_cue.silence_dbfs;
-        match waveform::analyze(Arc::clone(&bytes), silence_dbfs) {
-            Ok(analysis) => {
-                let decode_ms = start.elapsed().as_millis();
-                let store_start = Instant::now();
-                if job.needs_waveform {
-                    match db.set_waveform(job.id, &analysis.curve, job.mtime) {
-                        Err(e) => {
-                            log::error!("waveform: store {} failed: {}", job.id, e);
-                            retry = true;
+    let fingerprint = match payload {
+        Payload::Whole(bytes) => {
+            let start = Instant::now();
+            // Read per track for the same reason `store_auto_cue` does: a threshold
+            // changed mid-backfill applies from the next file on.
+            let silence_dbfs = config.get_tuning().auto_cue.silence_dbfs;
+            match waveform::analyze(Arc::clone(&bytes), silence_dbfs) {
+                Ok(analysis) => {
+                    let decode_ms = start.elapsed().as_millis();
+                    let store_start = Instant::now();
+                    if job.needs_waveform {
+                        match db.set_waveform(job.id, &analysis.curve, job.mtime) {
+                            Err(e) => {
+                                log::error!("waveform: store {} failed: {}", job.id, e);
+                                retry = true;
+                            }
+                            Ok(false) => log::debug!("waveform: {} moved on", job.path),
+                            Ok(true) => {
+                                log::debug!(
+                                    "waveform: {} decode {}ms write {}ms",
+                                    job.path,
+                                    decode_ms,
+                                    store_start.elapsed().as_millis()
+                                );
+                                let _ = app.emit(WAVEFORM_READY_EVENT, job.id);
+                            }
                         }
-                        Ok(false) => log::debug!("waveform: {} moved on", job.path),
-                        Ok(true) => {
-                            log::debug!(
-                                "waveform: {} decode {}ms write {}ms",
+                    }
+                    if job.needs_loudness {
+                        let m = analysis.loudness;
+                        let gain = m.map(|l| loudness::gain_db(l.lufs));
+                        let peak = m.map(|l| f64::from(l.peak));
+                        match db.set_loudness(job.id, gain, peak, now_ms(), job.mtime) {
+                            Err(e) => {
+                                log::error!("loudness: store {} failed: {}", job.id, e);
+                                retry = true;
+                            }
+                            Ok(false) => log::debug!("loudness: {} moved on", job.path),
+                            Ok(true) => log::debug!(
+                                "loudness: {} {:?} LUFS gain {:?} dB",
                                 job.path,
-                                decode_ms,
-                                store_start.elapsed().as_millis()
-                            );
-                            let _ = app.emit(WAVEFORM_READY_EVENT, job.id);
+                                m.map(|l| l.lufs),
+                                gain
+                            ),
+                        }
+                    }
+                    if job.needs_bpm {
+                        match db.set_bpm(job.id, analysis.bpm, now_ms(), job.mtime) {
+                            Err(e) => {
+                                log::error!("bpm: store {} failed: {}", job.id, e);
+                                retry = true;
+                            }
+                            Ok(false) => log::debug!("bpm: {} moved on", job.path),
+                            Ok(true) => log::debug!("bpm: {} {:?}", job.path, analysis.bpm),
+                        }
+                    }
+                    if job.needs_key {
+                        match db.set_key(job.id, analysis.key, now_ms(), job.mtime) {
+                            Err(e) => {
+                                log::error!("key: store {} failed: {}", job.id, e);
+                                retry = true;
+                            }
+                            Ok(false) => log::debug!("key: {} moved on", job.path),
+                            Ok(true) => {
+                                log::debug!(
+                                    "key: {} {:?}",
+                                    job.path,
+                                    analysis.key.map(|k| k.name())
+                                )
+                            }
+                        }
+                    }
+                    let levels = (job.needs_auto_cue || job.needs_auto_cue_levels)
+                        .then(|| analysis.windows.envelope());
+                    if let Some(levels) = &levels {
+                        if job.needs_auto_cue {
+                            store_auto_cue(job, db, app, config, levels, &mut retry);
+                        } else {
+                            // The trio is already derived and belongs to whatever
+                            // thresholds produced it. Only the table is missing.
+                            store_auto_cue_levels(job, db, levels, &mut retry);
                         }
                     }
                 }
-                if job.needs_loudness {
-                    let m = analysis.loudness;
-                    let gain = m.map(|l| loudness::gain_db(l.lufs));
-                    let peak = m.map(|l| f64::from(l.peak));
-                    match db.set_loudness(job.id, gain, peak, now_ms(), job.mtime) {
-                        Err(e) => {
-                            log::error!("loudness: store {} failed: {}", job.id, e);
-                            retry = true;
-                        }
-                        Ok(false) => log::debug!("loudness: {} moved on", job.path),
-                        Ok(true) => log::debug!(
-                            "loudness: {} {:?} LUFS gain {:?} dB",
-                            job.path,
-                            m.map(|l| l.lufs),
-                            gain
-                        ),
-                    }
-                }
-                if job.needs_bpm {
-                    match db.set_bpm(job.id, analysis.bpm, now_ms(), job.mtime) {
-                        Err(e) => {
-                            log::error!("bpm: store {} failed: {}", job.id, e);
-                            retry = true;
-                        }
-                        Ok(false) => log::debug!("bpm: {} moved on", job.path),
-                        Ok(true) => log::debug!("bpm: {} {:?}", job.path, analysis.bpm),
-                    }
-                }
-                if job.needs_key {
-                    match db.set_key(job.id, analysis.key, now_ms(), job.mtime) {
-                        Err(e) => {
-                            log::error!("key: store {} failed: {}", job.id, e);
-                            retry = true;
-                        }
-                        Ok(false) => log::debug!("key: {} moved on", job.path),
-                        Ok(true) => {
-                            log::debug!("key: {} {:?}", job.path, analysis.key.map(|k| k.name()))
-                        }
-                    }
-                }
-                let levels = (job.needs_auto_cue || job.needs_auto_cue_levels)
-                    .then(|| analysis.windows.envelope());
-                if let Some(levels) = &levels {
-                    if job.needs_auto_cue {
-                        store_auto_cue(job, db, app, config, levels, &mut retry);
-                    } else {
-                        // The trio is already derived and belongs to whatever
-                        // thresholds produced it. Only the table is missing.
-                        store_auto_cue_levels(job, db, levels, &mut retry);
-                    }
+                Err(e) => {
+                    log::warn!("waveform: decode {} failed: {:#}", job.path, e);
+                    errors.push(format!("waveform: {e:#}"));
                 }
             }
-            Err(e) => {
-                log::warn!("waveform: decode {} failed: {:#}", job.path, e);
-                errors.push(format!("waveform: {e:#}"));
-            }
+            // Hashed from the bytes already in hand, never a second read. An error
+            // out of an in-memory source is the file's fault by construction: the
+            // only I/O error a `Cursor` can raise is an early end of stream, which
+            // `fingerprint::is_read_error` already excludes.
+            job.needs_fingerprint.then(|| {
+                let ext = Path::new(&job.path).extension().and_then(|e| e.to_str());
+                fingerprint::of_source(Box::new(Cursor::new(bytes)), ext)
+                    .map_err(|e| format!("fingerprint: {e:#}"))
+            })
         }
-        job.needs_fingerprint.then(|| {
-            let ext = path.extension().and_then(|e| e.to_str());
-            fingerprint::of_source(Box::new(Cursor::new(bytes)), ext)
-        })
-    } else {
-        job.needs_fingerprint.then(|| fingerprint::of_file(path))
+        // The reader hashed the head itself; a read failure never gets here.
+        Payload::Fingerprint(result) => Some(result),
     };
     match fingerprint {
         Some(Ok(fp)) => {
@@ -425,12 +646,8 @@ fn analyse(job: &AnalysisJob, db: &Db, app: &AppHandle, config: &Config) -> Outc
             }
         }
         Some(Err(e)) => {
-            log::warn!("fingerprint: {} failed: {:#}", job.path, e);
-            if fingerprint::is_read_error(&e) {
-                retry = true;
-            } else {
-                errors.push(format!("fingerprint: {e:#}"));
-            }
+            log::warn!("fingerprint: {} failed: {}", job.path, e);
+            errors.push(e);
         }
         None => {}
     }
@@ -593,5 +810,285 @@ mod tests {
         job.running.store(true, Ordering::SeqCst);
 
         assert!(!job.claim_rerun());
+    }
+
+    /// The pass holds one whole file per decoder, one queued, and one in the
+    /// reader's hand. A track can be 100 MB, so this is the arithmetic that
+    /// bounds it — stated here so raising either constant forces a cut to the
+    /// other.
+    #[test]
+    fn the_pass_never_holds_more_than_its_file_budget() {
+        assert_eq!(MAX_CONCURRENCY + READAHEAD + 1, MAX_RESIDENT_FILES);
+    }
+
+    fn analysis_job(id: i64) -> AnalysisJob {
+        AnalysisJob {
+            id,
+            path: format!("/library/{id}.flac"),
+            mtime: None,
+            content_type: "music".into(),
+            needs_waveform: true,
+            needs_fingerprint: false,
+            needs_loudness: false,
+            needs_auto_cue: false,
+            needs_auto_cue_levels: false,
+            needs_bpm: false,
+            needs_key: false,
+        }
+    }
+
+    fn fingerprint_only(id: i64) -> AnalysisJob {
+        AnalysisJob {
+            needs_waveform: false,
+            needs_fingerprint: true,
+            ..analysis_job(id)
+        }
+    }
+
+    fn some_bytes() -> Payload {
+        Payload::Whole(Arc::from(vec![0u8; 16].into_boxed_slice()))
+    }
+
+    /// Every measurement that needs a decode needs the whole file; a job that
+    /// wants nothing but a fingerprint gets the head. This fails the moment a
+    /// seventh measurement is added and the reader is not told about it.
+    #[test]
+    fn only_a_fingerprint_backfill_reads_the_head_alone() {
+        type Flag = (&'static str, fn(&mut AnalysisJob));
+        let flags: [Flag; 6] = [
+            ("waveform", |j| j.needs_waveform = true),
+            ("loudness", |j| j.needs_loudness = true),
+            ("auto cue", |j| j.needs_auto_cue = true),
+            ("auto cue levels", |j| j.needs_auto_cue_levels = true),
+            ("bpm", |j| j.needs_bpm = true),
+            ("key", |j| j.needs_key = true),
+        ];
+        for (name, set) in flags {
+            let mut job = fingerprint_only(1);
+            set(&mut job);
+            assert!(
+                matches!(fetch_kind(&job), Fetch::Whole),
+                "{name} needs the whole file"
+            );
+        }
+        assert!(matches!(fetch_kind(&fingerprint_only(1)), Fetch::Head));
+    }
+
+    /// The point of the whole change: however many decoders are running, the
+    /// share is only ever asked for one file at a time.
+    #[test]
+    fn the_reader_reads_one_file_at_a_time() {
+        let jobs: Vec<AnalysisJob> = (1..=12).map(analysis_job).collect();
+        let cancel = AtomicBool::new(false);
+        let reading = AtomicUsize::new(0);
+        let (tx, rx) = sync_channel::<Fetched>(READAHEAD);
+        let rx = Mutex::new(rx);
+
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    decode_loop(&rx, &cancel, |_| thread::sleep(Duration::from_millis(1)));
+                });
+            }
+            read_loop(
+                jobs,
+                tx,
+                &cancel,
+                |_| panic!("no read failed"),
+                |_| {
+                    assert_eq!(
+                        reading.fetch_add(1, Ordering::SeqCst),
+                        0,
+                        "a second read started while one was in flight"
+                    );
+                    thread::sleep(Duration::from_millis(1));
+                    reading.fetch_sub(1, Ordering::SeqCst);
+                    Ok(some_bytes())
+                },
+            );
+        });
+    }
+
+    #[test]
+    fn a_file_the_share_would_not_give_up_never_reaches_a_decoder() {
+        let jobs: Vec<AnalysisJob> = (1..=3).map(analysis_job).collect();
+        let cancel = AtomicBool::new(false);
+        let decoded: Mutex<Vec<i64>> = Mutex::new(Vec::new());
+        let dropped: Mutex<Vec<i64>> = Mutex::new(Vec::new());
+        let (tx, rx) = sync_channel::<Fetched>(READAHEAD);
+        let rx = Mutex::new(rx);
+
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                decode_loop(&rx, &cancel, |f| decoded.lock().push(f.track.id));
+            });
+            read_loop(
+                jobs,
+                tx,
+                &cancel,
+                |track| dropped.lock().push(track.id),
+                |track| {
+                    if track.id == 2 {
+                        Err("share went away".into())
+                    } else {
+                        Ok(some_bytes())
+                    }
+                },
+            );
+        });
+
+        assert_eq!(*dropped.lock(), vec![2], "the reader disposed of it");
+        let mut got = decoded.lock().clone();
+        got.sort_unstable();
+        assert_eq!(got, vec![1, 3]);
+    }
+
+    #[test]
+    fn every_fetched_job_reaches_exactly_one_decoder() {
+        let jobs: Vec<AnalysisJob> = (1..=20).map(analysis_job).collect();
+        let cancel = AtomicBool::new(false);
+        let decoded: Mutex<Vec<i64>> = Mutex::new(Vec::new());
+        let (tx, rx) = sync_channel::<Fetched>(READAHEAD);
+        let rx = Mutex::new(rx);
+
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    decode_loop(&rx, &cancel, |f| decoded.lock().push(f.track.id));
+                });
+            }
+            read_loop(
+                jobs,
+                tx,
+                &cancel,
+                |_| panic!("no read failed"),
+                |_| Ok(some_bytes()),
+            );
+        });
+
+        let mut got = decoded.lock().clone();
+        got.sort_unstable();
+        assert_eq!(got, (1..=20).collect::<Vec<_>>());
+    }
+
+    /// Dropping the sender is what ends the pass. Without it the scope would
+    /// never join.
+    #[test]
+    fn decoders_stop_when_the_reader_is_done() {
+        let cancel = AtomicBool::new(false);
+        let (tx, rx) = sync_channel::<Fetched>(READAHEAD);
+        let rx = Mutex::new(rx);
+
+        std::thread::scope(|scope| {
+            for _ in 0..3 {
+                scope.spawn(|| decode_loop(&rx, &cancel, |_| {}));
+            }
+            read_loop(Vec::new(), tx, &cancel, |_| {}, |_| Ok(some_bytes()));
+        });
+    }
+
+    #[test]
+    fn a_cancel_stops_the_reader_before_the_next_file() {
+        let jobs: Vec<AnalysisJob> = (1..=5).map(analysis_job).collect();
+        let cancel = AtomicBool::new(false);
+        let reads = AtomicUsize::new(0);
+        let (tx, rx) = sync_channel::<Fetched>(READAHEAD);
+        let rx = Mutex::new(rx);
+
+        std::thread::scope(|scope| {
+            scope.spawn(|| decode_loop(&rx, &cancel, |_| {}));
+            read_loop(
+                jobs,
+                tx,
+                &cancel,
+                |_| panic!("no read failed"),
+                |_| {
+                    reads.fetch_add(1, Ordering::SeqCst);
+                    cancel.store(true, Ordering::SeqCst);
+                    Ok(some_bytes())
+                },
+            );
+        });
+
+        assert_eq!(reads.load(Ordering::SeqCst), 1, "the reader stopped");
+    }
+
+    /// A cancel while every decoder is busy must not leave the reader parked in
+    /// the hand-off: the receiver belongs to the scope, so a blocking send
+    /// would wait for a reader that is never coming.
+    #[test]
+    fn a_cancel_frees_the_reader_from_a_full_handoff() {
+        let jobs: Vec<AnalysisJob> = (1..=8).map(analysis_job).collect();
+        let cancel = AtomicBool::new(false);
+        let (tx, _rx) = sync_channel::<Fetched>(READAHEAD);
+
+        // No decoder at all, so the channel fills at once and stays full.
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                thread::sleep(Duration::from_millis(50));
+                cancel.store(true, Ordering::SeqCst);
+            });
+            read_loop(jobs, tx, &cancel, |_| {}, |_| Ok(some_bytes()));
+        });
+    }
+
+    #[test]
+    fn a_cancelled_decoder_leaves_queued_bytes_undecoded() {
+        let cancel = AtomicBool::new(false);
+        let decoded = AtomicUsize::new(0);
+        let (tx, rx) = sync_channel::<Fetched>(4);
+        let rx = Mutex::new(rx);
+        for id in 1..=3 {
+            tx.try_send(Fetched {
+                track: analysis_job(id),
+                payload: some_bytes(),
+            })
+            .expect("queued");
+        }
+        drop(tx);
+        cancel.store(true, Ordering::SeqCst);
+
+        decode_loop(&rx, &cancel, |_| {
+            decoded.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert_eq!(decoded.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn every_disposed_job_is_counted_once() {
+        let progress = Progress::new();
+        progress.begin_pass(3);
+        let now = Instant::now();
+
+        assert_eq!(progress.record(now).0, 1);
+        assert_eq!(progress.record(now).0, 2);
+        let (processed, total, _) = progress.record(now);
+        assert_eq!((processed, total), (3, 3));
+    }
+
+    #[test]
+    fn progress_carries_across_passes() {
+        let progress = Progress::new();
+        progress.begin_pass(3);
+        let now = Instant::now();
+        for _ in 0..3 {
+            progress.record(now);
+        }
+
+        // A concurrent scan added two more tracks; the denominator grows.
+        assert_eq!(progress.begin_pass(2), 5);
+        assert_eq!(progress.record(now).1, 5);
+    }
+
+    #[test]
+    fn the_progress_emit_is_throttled() {
+        let progress = Progress::new();
+        progress.begin_pass(3);
+        let start = Instant::now();
+
+        assert!(progress.record(start).2, "the first one is always due");
+        assert!(!progress.record(start + Duration::from_millis(1)).2);
+        assert!(progress.record(start + PROGRESS_THROTTLE).2);
     }
 }
