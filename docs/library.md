@@ -46,9 +46,10 @@ A scan:
 
 1. **Lists** every library path. Hidden files and folders (a leading `.`) are
    skipped, and symbolic links are not followed. Only files with an audio
-   extension are kept: `mp3`, `flac`, `wav`, `ogg`, `oga`, `aac`, `m4a`,
-   `opus`, `webm`, `aiff`, `aif`, `mka`, `mp2`. WMA is not supported; convert
-   such files first (see [Unsupported formats](#unsupported-formats)).
+   extension are kept: `mp3`, `flac`, `wav`, `aiff`, `aif`, `ogg`, `oga`,
+   `aac`, `m4a`, `mp2` — which is exactly what a deck can play. Anything else,
+   WMA and Opus included, is skipped; convert it first (see [Unsupported
+   formats](#unsupported-formats)).
 2. **Inspects** each file on up to four threads at once, which hides the latency
    of a network share without flooding it.
    - A known file whose modification time and content type are unchanged is
@@ -378,7 +379,20 @@ the Settings button says when there is something to look at. See
 
 ## Unsupported formats
 
-WMA (Windows Media Audio) files are not supported, and a scan skips them.
+The scan accepts a format only if a deck can play it. A file the app cannot
+decode has no business in a library: it would be listed, take a row, fail the
+analysis pass and then fail on air. So the accepted extensions and the decoders
+compiled into the build are two halves of one list — `audio_measure/formats.rs`
+and the `symphonia` and `rodio` features in `Cargo.toml`.
+
+Skipped, and why:
+
+| format         | why                                                                |
+| -------------- | ------------------------------------------------------------------ |
+| WMA            | no decoder                                                         |
+| Opus           | symphonia demuxes Ogg Opus but ships no Opus decoder               |
+| Matroska, WebM | would need the `mkv` feature, and WebM audio is nearly always Opus |
+
 Convert them with [ffmpeg](https://ffmpeg.org/) first, e.g. to MP3:
 
 ```bash
@@ -391,7 +405,8 @@ or a whole folder at once:
 for f in *.wma; do ffmpeg -i "$f" -c:a libmp3lame -q:a 2 "${f%.wma}.mp3"; done
 ```
 
-Tags are carried over. Delete or move the `.wma` originals afterwards.
+Tags are carried over. Delete or move the originals afterwards. An Opus file
+converts the same way, and a `.webm` holding Opus with `-c:a libmp3lame` too.
 
 ## Where it is stored
 

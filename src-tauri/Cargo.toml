@@ -43,7 +43,7 @@ serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
 rusqlite_migration = "=2.6.0"
-symphonia = { version = "=0.6.1", default-features = false, features = ["aac", "flac", "id3v2", "isomp4", "mp3", "ogg", "pcm", "vorbis", "wav"] }
+symphonia = { version = "=0.6.1", default-features = false, features = ["aac", "aiff", "flac", "id3v2", "isomp4", "mp2", "mp3", "ogg", "pcm", "vorbis", "wav"] }
 parking_lot = "=0.12.5"
 anyhow = "=1.0.104"
 walkdir = "=2.5.0"
@@ -51,7 +51,7 @@ lofty = "=0.25.4"
 base64 = "=0.23.1"
 tokio = { version = "=1.53.1", features = ["rt", "sync", "time"] }
 log = "=0.4.34"
-rodio = { version = "=0.21.1", features = ["symphonia-aac", "symphonia-isomp4"] }
+rodio = { version = "=0.21.1", features = ["symphonia-aac", "symphonia-aiff", "symphonia-isomp4", "symphonia-mp2"] }
 cpal = "=0.16.0"
 reqwest = { version = "=0.13.5", default-features = false, features = ["json", "rustls"] }
 hmac = "=0.13.0"
