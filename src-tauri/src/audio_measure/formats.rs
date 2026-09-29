@@ -1,21 +1,8 @@
 /// The extensions a scan accepts, which is exactly what a deck can play.
 ///
-/// A file the app cannot decode has no business in a library: it would be
-/// listed, take a row, fail the analysis pass and then fail on air. So this list
-/// and the decoders in the build are two halves of one thing, and both halves
-/// live in `Cargo.toml`.
-///
-/// **There are two copies of symphonia, and they answer different questions.**
-/// The direct dependency is 0.6 and serves the demuxing this crate does — tags
-/// and fingerprints. `rodio` brings its own 0.5, and that is the one that
-/// *decodes*, so a format is only playable once it is enabled on rodio's copy
-/// too. Adding `symphonia/aiff` alone makes a file fingerprint and go no
-/// further; `rodio/symphonia-aiff` is what lets a deck play it. Both are set.
-///
-/// Not here, and why: `opus` demuxes (the Ogg Opus mapper exists) but neither
-/// copy ships an Opus decoder at any feature setting. `mka` and `webm` would
-/// need `mkv`, and `WebM` audio is overwhelmingly Opus, so most of it still
-/// could not be decoded.
+/// Enabling a format takes a feature on *both* copies of symphonia in the build,
+/// and `opus`, `webm` and `mka` are left out on purpose. See
+/// `docs/library.md#unsupported-formats`.
 pub const AUDIO_EXTENSIONS: &[&str] = &[
     "mp3", "flac", "wav", "aiff", "aif", "ogg", "oga", "aac", "m4a", "mp2",
 ];

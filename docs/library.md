@@ -385,6 +385,13 @@ analysis pass and then fail on air. So the accepted extensions and the decoders
 compiled into the build are two halves of one list — `audio_measure/formats.rs`
 and the `symphonia` and `rodio` features in `Cargo.toml`.
 
+**Enabling a format takes two features, not one.** There are two copies of
+symphonia in the build and they do not unify: the direct dependency is 0.6 and
+serves the demuxing the app does itself, for tags and fingerprints, while `rodio`
+brings its own 0.5 and that is the one that _decodes_. So `symphonia/aiff` alone
+makes a file fingerprint and go no further; `rodio/symphonia-aiff` is what lets a
+deck play it. Both are set for every accepted format.
+
 Skipped, and why:
 
 | format         | why                                                                |
