@@ -301,7 +301,63 @@ fn inspect(file: &Found, known: &Known) -> Option<Step> {
             });
         }
     }
-    parse(fingerprint).map(Step::New)
+    match parse(fingerprint.clone()) {
+        Some(track) => Some(Step::New(track)),
+        // Only for a file that fingerprinted: its head came off the share and
+        // demuxed, so the tag read failed on what the file holds rather than on
+        // reaching it. A share that flaked returns nothing here and the file is
+        // left for the next scan, exactly as before.
+        None => fingerprint
+            .map(|fp| untagged_track(&file.path, file.content_type, mtime_ms, Some(fp)))
+            .map(Step::New),
+    }
+}
+
+/// The row a file enters the library as when its tags cannot be read: named
+/// after its file, carrying nothing the tags would have said.
+///
+/// Left out instead, it would have no row at all, so the library check would
+/// report it as new on every pass — and with _Scan when files change_ on, start
+/// a scan that fails the same way, for ever.
+fn untagged_track(
+    path: &str,
+    content_type: &str,
+    mtime_ms: i64,
+    fingerprint: Option<String>,
+) -> TrackInsert {
+    let p = Path::new(path);
+    TrackInsert {
+        path: path.to_string(),
+        content_type: content_type.to_string(),
+        title: Some(
+            p.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string(),
+        ),
+        artist: Some("Unknown".into()),
+        album: Some("Unknown".into()),
+        genre: None,
+        year: None,
+        duration: None,
+        bpm: None,
+        sample_rate: None,
+        bitrate: None,
+        format: p
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_ascii_lowercase()),
+        mtime: Some(mtime_ms),
+        album_artist: None,
+        track_no: None,
+        track_total: None,
+        disc_no: None,
+        disc_total: None,
+        isrc: None,
+        initial_key: None,
+        comment: None,
+        fingerprint,
+    }
 }
 
 fn fingerprint_of(path: &str) -> Option<String> {
@@ -507,6 +563,25 @@ mod tests {
         assert_eq!(outcome.added, 2);
         assert!(!outcome.canceled);
         assert_eq!(titles(&db), ["a", "b"]);
+    }
+
+    /// lofty picks its reader from the extension, so a file whose contents are
+    /// not what its name claims is rejected outright — the same failure a real
+    /// `.ogg` whose first logical stream is Theora produces. symphonia sniffs
+    /// instead, so the file still fingerprints, and the track enters the library
+    /// named after its file rather than being reported as new by every check
+    /// from here on.
+    #[test]
+    fn a_file_whose_tags_cannot_be_read_still_enters_the_library() {
+        let (dir, db) = library();
+        write_wav(&dir.path().join("a.wav"), 1, 1);
+        scan(&db, &[music(dir.path())]);
+
+        write_wav(&dir.path().join("mislabelled.ogg"), 2, 1);
+        let outcome = scan(&db, &[music(dir.path())]);
+
+        assert_eq!(outcome.total, 2);
+        assert_eq!(titles(&db), ["a", "mislabelled"]);
     }
 
     /// lofty maps every ID3v2 `COMM` frame onto `ItemKey::Comment`, so
