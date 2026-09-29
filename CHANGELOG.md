@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.25.0](https://github.com/Arskah/radiodiodj/compare/v0.24.0...v0.25.0) (2026-09-29)
+
+
+### Features
+
+* **library:** let the check start the scan it predicts ([#497](https://github.com/Arskah/radiodiodj/issues/497)) ([b287dd0](https://github.com/Arskah/radiodiodj/commit/b287dd0363eed90edb4a827975a610832234d267))
+
+
+### Miscellaneous Chores
+
+* **deps:** update dependency @sveltejs/vite-plugin-svelte to v7.3.1 ([#488](https://github.com/Arskah/radiodiodj/issues/488)) ([f1b39f2](https://github.com/Arskah/radiodiodj/commit/f1b39f21f2d059fc5d434111a7fbef1b7f730132))
+* **deps:** update dependency prettier to v3.9.9 ([#481](https://github.com/Arskah/radiodiodj/issues/481)) ([88cd8f4](https://github.com/Arskah/radiodiodj/commit/88cd8f4b7d18bed5ccc577faf0e31ee48e475bbb))
+* **deps:** update dependency vite to v8.3.1 ([#493](https://github.com/Arskah/radiodiodj/issues/493)) ([25cefd2](https://github.com/Arskah/radiodiodj/commit/25cefd2282010e81ca2c1794c5223b53d5a9d85e))
+* **deps:** update vitest monorepo to v5.0.2 ([#500](https://github.com/Arskah/radiodiodj/issues/500)) ([7dbfdb1](https://github.com/Arskah/radiodiodj/commit/7dbfdb1cf3228b761af5ca7012be3b5d57c92253))
+
+
+### Performance Improvements
+
+* **playlist:** take the transport off the main thread ([#490](https://github.com/Arskah/radiodiodj/issues/490)) ([5959414](https://github.com/Arskah/radiodiodj/commit/5959414959db268764690a65096056e1b7312b1f))
+* read the library one file at a time ([#506](https://github.com/Arskah/radiodiodj/issues/506)) ([f0e5525](https://github.com/Arskah/radiodiodj/commit/f0e552513be37b4df9cacb2d446e07f812ff304e))
+* take every command that does I/O off the main thread ([#507](https://github.com/Arskah/radiodiodj/issues/507)) ([7e86686](https://github.com/Arskah/radiodiodj/commit/7e86686f1f9960d24ce87ba2ed7ce4832490f4de))
+
+
+### Documentation
+
+* investigate an external library ([#496](https://github.com/Arskah/radiodiodj/issues/496)) ([0f3a361](https://github.com/Arskah/radiodiodj/commit/0f3a3614c1657db8e79cc59a26d79960b9aff62b))
+
 ## [0.24.0](https://github.com/Arskah/radiodiodj/compare/v0.23.0...v0.24.0) (2026-09-26)
 
 
