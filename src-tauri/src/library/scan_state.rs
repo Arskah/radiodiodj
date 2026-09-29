@@ -1,5 +1,6 @@
 use parking_lot::Mutex;
 use serde::Serialize;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -10,6 +11,9 @@ use super::listing;
 use super::scanner::{self, Missing};
 use super::waveform_scan::WaveformJob;
 use crate::persist::config::Config;
+
+/// Running/idle transitions of the metadata scan.
+const STATE_EVENT: &str = "scan-state-changed";
 
 #[derive(Serialize, Clone)]
 #[serde(tag = "status", rename_all = "camelCase")]
@@ -96,7 +100,7 @@ impl ScanState {
 
     fn emit_status(&self, app: &AppHandle, next: ScanStatus) {
         self.inner.lock().status = next.clone();
-        let _ = app.emit("scan-state-changed", &next);
+        let _ = app.emit(STATE_EVENT, &next);
     }
 
     /// Start the scan the operator asked for: it applies everything, missing
@@ -147,7 +151,7 @@ impl ScanState {
             g.cancel = Some(cancel.clone());
         }
         let _ = app.emit(
-            "scan-state-changed",
+            STATE_EVENT,
             &ScanStatus::Running {
                 processed: 0,
                 total: 0,
@@ -156,11 +160,53 @@ impl ScanState {
 
         let s = Arc::clone(&self);
         std::thread::spawn(move || {
-            run(s, app, db, config, waveform, missing, cancel);
+            let emit = |next: ScanStatus| {
+                let _ = app.emit(STATE_EVENT, &next);
+            };
+            s.guarded_run(
+                || {
+                    run(
+                        Arc::clone(&s),
+                        app.clone(),
+                        db,
+                        config,
+                        waveform,
+                        missing,
+                        cancel,
+                    )
+                },
+                emit,
+            );
         });
         StartResult {
             already_running: false,
         }
+    }
+
+    /// Run one scan and leave the state terminal however it ends — a panic
+    /// included.
+    ///
+    /// `Running` *is* the single-flight slot here, so a panic that unwinds past
+    /// the tail of [`run`] leaves every later scan answering `already_running`
+    /// for the life of the process, with the bar stuck where it stopped and
+    /// Cancel poking a token nobody reads. A scan is lofty and symphonia over
+    /// operator files, so that is a realistic file away — `inspect_all` catches
+    /// per file, and this is the backstop for everything else. The panic itself
+    /// is logged by the hook `lib.rs` installs.
+    ///
+    /// `scan` and `emit` are injected so the recovery can be driven without a
+    /// filesystem or an `AppHandle`.
+    fn guarded_run(&self, scan: impl FnOnce(), emit: impl FnOnce(ScanStatus)) {
+        if catch_unwind(AssertUnwindSafe(scan)).is_err() {
+            log::error!("scan: the scan panicked; releasing the slot");
+            let next = ScanStatus::Error {
+                message: "the scan stopped unexpectedly — see the log".to_string(),
+            };
+            self.inner.lock().status = next.clone();
+            emit(next);
+        }
+        // Both paths out of a scan come through here, panic included.
+        self.inner.lock().cancel = None;
     }
 }
 
@@ -230,6 +276,57 @@ fn run(
             );
         }
     }
+}
 
-    state.inner.lock().cancel = None;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Running` is the single-flight slot, so a panic that skips the terminal
+    /// status leaves every later scan answering `already_running` for the life of
+    /// the process.
+    #[test]
+    fn a_panicking_scan_releases_the_slot() {
+        let state = ScanState::default();
+        state.inner.lock().status = ScanStatus::Running {
+            processed: 0,
+            total: 0,
+        };
+        state.inner.lock().cancel = Some(Arc::new(AtomicBool::new(true)));
+        let emitted: Mutex<Vec<ScanStatus>> = Mutex::new(Vec::new());
+
+        state.guarded_run(
+            || panic!("a tag parser went down"),
+            |next| emitted.lock().push(next),
+        );
+
+        assert!(!state.is_running(), "the slot is free");
+        assert!(
+            matches!(emitted.lock().as_slice(), [ScanStatus::Error { .. }]),
+            "the bar is cleared with an error"
+        );
+        assert!(
+            state.inner.lock().cancel.is_none(),
+            "Cancel stops poking a token nobody reads"
+        );
+    }
+
+    #[test]
+    fn a_scan_that_returns_keeps_the_status_it_emitted() {
+        let state = ScanState::default();
+        let emitted: Mutex<Vec<ScanStatus>> = Mutex::new(Vec::new());
+
+        state.guarded_run(
+            || {
+                state.inner.lock().status = ScanStatus::Idle { last_result: None };
+            },
+            |next| emitted.lock().push(next),
+        );
+
+        assert!(emitted.lock().is_empty(), "nothing to recover from");
+        assert!(matches!(
+            state.inner.lock().status,
+            ScanStatus::Idle { last_result: None }
+        ));
+    }
 }
