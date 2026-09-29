@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use base64::Engine;
 use lofty::file::TaggedFileExt;
 use lofty::prelude::*;
@@ -366,7 +366,33 @@ fn fingerprint_of(path: &str) -> Option<String> {
         .ok()
 }
 
+/// The tags `path` holds, read by whichever reader can make sense of the file.
+///
+/// lofty first, because it is the one that reads ID3v2 correctly: on a file
+/// tagged by Windows Media it drops five frames of nine, and a column that
+/// comes back empty is a column the write-back goes on to strip from the
+/// operator's file. symphonia is the rescue, for a container lofty cannot
+/// identify — it picks its reader by sniffing the bytes rather than trusting the
+/// extension, which is what reads an Ogg whose first logical stream is Theora.
+///
+/// See `docs/library.md#reading-tags`.
 fn parse_track(
+    path: &str,
+    content_type: &str,
+    mtime_ms: i64,
+    fingerprint: Option<String>,
+) -> Result<TrackInsert> {
+    match parse_track_lofty(path, content_type, mtime_ms, fingerprint.clone()) {
+        Ok(track) => Ok(track),
+        Err(e) => {
+            let track = parse_track_symphonia(path, content_type, mtime_ms, fingerprint)?;
+            log::info!("scan: {path} read by symphonia; lofty refused it: {e}");
+            Ok(track)
+        }
+    }
+}
+
+fn parse_track_lofty(
     path: &str,
     content_type: &str,
     mtime_ms: i64,
@@ -455,6 +481,166 @@ fn parse_track(
         comment,
         fingerprint,
     })
+}
+
+/// The fallback in [`parse_track`]: symphonia's reading of the same file.
+///
+/// It has no bitrate to offer — `AudioCodecParameters` carries none — so a track
+/// that arrives this way has that column empty.
+fn parse_track_symphonia(
+    path: &str,
+    content_type: &str,
+    mtime_ms: i64,
+    fingerprint: Option<String>,
+) -> Result<TrackInsert> {
+    use symphonia::core::codecs::CodecParameters;
+    use symphonia::core::formats::probe::Hint;
+    use symphonia::core::formats::{FormatOptions, TrackType};
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::{MetadataOptions, StandardTag};
+
+    let p = Path::new(path);
+    let file = std::fs::File::open(path).context("open")?;
+    let mut hint = Hint::new();
+    if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+    let mut format = symphonia::default::get_probe()
+        .probe(
+            &hint,
+            MediaSourceStream::new(Box::new(file), Default::default()),
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
+        .context("probe")?;
+
+    let track = format
+        .default_track(TrackType::Audio)
+        .context("no audio track")?;
+    let duration = match (track.num_frames, track.time_base) {
+        (Some(frames), Some(base)) => base
+            .calc_time((frames as i64).into())
+            .map(|t| t.as_secs_f64()),
+        _ => None,
+    };
+    let sample_rate = track
+        .codec_params
+        .as_ref()
+        .and_then(CodecParameters::audio)
+        .and_then(|a| a.sample_rate)
+        .map(i64::from);
+
+    let mut meta = format.metadata();
+    meta.skip_to_latest();
+    let tags = meta
+        .current()
+        .map(|rev| rev.media.tags.clone())
+        .unwrap_or_default();
+
+    let mut title = None;
+    let mut artist = None;
+    let mut album = None;
+    let mut genre = None;
+    let mut year = None;
+    let mut bpm = None;
+    let mut album_artist = None;
+    let mut isrc = None;
+    let mut initial_key = None;
+    let mut track_no = None;
+    let mut track_total = None;
+    let mut disc_no = None;
+    let mut disc_total = None;
+    let mut recording_date: Option<String> = None;
+
+    for tag in &tags {
+        let Some(std) = &tag.std else { continue };
+        let take = |slot: &mut Option<String>, v: &std::sync::Arc<String>| {
+            if slot.is_none() && !v.is_empty() {
+                *slot = Some(v.to_string());
+            }
+        };
+        match std {
+            StandardTag::TrackTitle(v) => take(&mut title, v),
+            StandardTag::Artist(v) => take(&mut artist, v),
+            StandardTag::Album(v) => take(&mut album, v),
+            StandardTag::Genre(v) => take(&mut genre, v),
+            StandardTag::AlbumArtist(v) => take(&mut album_artist, v),
+            StandardTag::IdentIsrc(v) => take(&mut isrc, v),
+            StandardTag::InitialKey(v) => take(&mut initial_key, v),
+            StandardTag::RecordingDate(v) => take(&mut recording_date, v),
+            StandardTag::RecordingYear(v) => year = year.or(Some(i64::from(*v))),
+            StandardTag::Bpm(v) => bpm = bpm.or((*v > 0).then_some(*v as f64)),
+            StandardTag::TrackNumber(v) => track_no = track_no.or(Some(*v as i64)),
+            StandardTag::TrackTotal(v) => track_total = track_total.or(Some(*v as i64)),
+            StandardTag::DiscNumber(v) => disc_no = disc_no.or(Some(*v as i64)),
+            StandardTag::DiscTotal(v) => disc_total = disc_total.or(Some(*v as i64)),
+            _ => {}
+        }
+    }
+
+    // A date is only a year here; the column holds one.
+    let year = year.or_else(|| {
+        recording_date
+            .as_deref()
+            .and_then(|d| d.get(..4))
+            .and_then(|y| y.parse::<i64>().ok())
+    });
+
+    Ok(TrackInsert {
+        path: path.to_string(),
+        content_type: content_type.to_string(),
+        title: Some(title.unwrap_or_else(|| {
+            p.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string()
+        })),
+        artist: Some(artist.unwrap_or_else(|| "Unknown".into())),
+        album: Some(album.unwrap_or_else(|| "Unknown".into())),
+        genre,
+        year,
+        duration,
+        bpm,
+        sample_rate,
+        bitrate: None,
+        format: p
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_ascii_lowercase()),
+        mtime: Some(mtime_ms),
+        album_artist,
+        track_no,
+        track_total,
+        disc_no,
+        disc_total,
+        isrc,
+        initial_key,
+        comment: comment_of_symphonia(&tags),
+        fingerprint,
+    })
+}
+
+/// The track's own comment: the undescribed one.
+///
+/// symphonia maps every ID3v2 `COMM` frame onto `StandardTag::Comment`, as
+/// lofty does, but keeps the frame's description in a `SHORT_DESCRIPTION`
+/// sub-field. On an iTunes-processed file the described ones are `iTunNORM` and
+/// `iTunSMPB` — volume and gapless data, not anything an operator wrote.
+fn comment_of_symphonia(tags: &[symphonia::core::meta::Tag]) -> Option<String> {
+    use symphonia::core::meta::StandardTag;
+    const DESCRIPTION: &str = "SHORT_DESCRIPTION";
+    tags.iter()
+        .filter(|t| matches!(t.std, Some(StandardTag::Comment(_))))
+        .find(|t| {
+            t.raw
+                .sub_fields
+                .as_deref()
+                .is_none_or(|subs| !subs.iter().any(|s| s.field == DESCRIPTION))
+        })
+        .and_then(|t| match &t.std {
+            Some(StandardTag::Comment(v)) => (!v.is_empty()).then(|| v.to_string()),
+            _ => None,
+        })
 }
 
 /// The track's own comment, which is not simply `ItemKey::Comment`.
@@ -567,12 +753,17 @@ mod tests {
 
     /// lofty picks its reader from the extension, so a file whose contents are
     /// not what its name claims is rejected outright — the same failure a real
-    /// `.ogg` whose first logical stream is Theora produces. symphonia sniffs
-    /// instead, so the file still fingerprints, and the track enters the library
-    /// named after its file rather than being reported as new by every check
-    /// from here on.
+    /// `.ogg` whose first logical stream is Theora produces. symphonia sniffs the
+    /// bytes instead, so the track enters the library rather than being reported
+    /// as new by every check from here on.
+    ///
+    /// A WAV is the one fixture that can be built without a binary in the repo,
+    /// and symphonia surfaces neither lofty's chunked ID3v2 nor RIFF `LIST INFO`
+    /// from one, so this asserts only that the file is admitted. That the
+    /// fallback carries tags is covered by the corpus survey below, which reads
+    /// real files.
     #[test]
-    fn a_file_whose_tags_cannot_be_read_still_enters_the_library() {
+    fn a_file_lofty_cannot_read_is_read_by_symphonia() {
         let (dir, db) = library();
         write_wav(&dir.path().join("a.wav"), 1, 1);
         scan(&db, &[music(dir.path())]);
@@ -582,6 +773,15 @@ mod tests {
 
         assert_eq!(outcome.total, 2);
         assert_eq!(titles(&db), ["a", "mislabelled"]);
+        let track = db
+            .search("mislabelled", None, None, None)
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("the track is in the library");
+        // symphonia read it, so the duration is there — the row is not the
+        // tagless shell a file neither reader can open would leave.
+        assert!(track.duration > 0.0, "duration {}", track.duration);
     }
 
     /// lofty maps every ID3v2 `COMM` frame onto `ItemKey::Comment`, so
@@ -1302,5 +1502,237 @@ mod tests {
     #[test]
     fn should_skip_when_unchanged() {
         assert!(!should_rescan(Some("music"), Some(100), 100, "music"));
+    }
+}
+
+/// Reads both ways over a real library and reports where they differ.
+///
+/// Kept after the reader question was settled, because it is what answers it
+/// again: if symphonia is ever to become the primary reader, this is the survey
+/// that has to come back clean first. It is what showed that it cannot be, yet
+/// — see `docs/library.md#reading-tags`.
+///
+/// Ignored by default and gated on `TAG_CORPUS`, like the tempo and key surveys
+/// (`audio_measure/bpm.rs`, `audio_measure/key.rs`). It prints rather than
+/// asserts: the point is a person reading the differences before the reader is
+/// swapped, because a field lofty reads and symphonia does not is a field the
+/// write-back would go on to delete from the operator's file.
+///
+/// ```text
+/// TAG_CORPUS=/path/to/library cargo test --manifest-path src-tauri/Cargo.toml \
+///   tag_corpus -- --ignored --nocapture
+/// ```
+#[cfg(test)]
+mod tag_corpus {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    fn files(root: &Path) -> Vec<PathBuf> {
+        let mut stack = vec![root.to_path_buf()];
+        let mut out = Vec::new();
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path
+                    .file_name()
+                    .is_some_and(|n| n.to_str().is_some_and(|n| n.starts_with('.')))
+                {
+                    continue;
+                }
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(crate::audio_measure::formats::is_audio_extension)
+                {
+                    out.push(path);
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// Every column a tag read fills, as `(name, value)` pairs, so two reads can
+    /// be compared without naming each field twice.
+    fn fields(t: &TrackInsert) -> Vec<(&'static str, String)> {
+        fn s(v: &Option<String>) -> String {
+            v.clone().unwrap_or_else(|| "-".into())
+        }
+        fn n<T: std::fmt::Display>(v: &Option<T>) -> String {
+            v.as_ref()
+                .map(|x| x.to_string())
+                .unwrap_or_else(|| "-".into())
+        }
+        vec![
+            ("title", s(&t.title)),
+            ("artist", s(&t.artist)),
+            ("album", s(&t.album)),
+            ("album_artist", s(&t.album_artist)),
+            ("genre", s(&t.genre)),
+            ("year", n(&t.year)),
+            ("bpm", n(&t.bpm)),
+            ("isrc", s(&t.isrc)),
+            ("initial_key", s(&t.initial_key)),
+            ("comment", s(&t.comment)),
+            ("track_no", n(&t.track_no)),
+            ("track_total", n(&t.track_total)),
+            ("disc_no", n(&t.disc_no)),
+            ("disc_total", n(&t.disc_total)),
+            (
+                "duration",
+                t.duration
+                    .map(|d| format!("{d:.1}"))
+                    .unwrap_or_else(|| "-".into()),
+            ),
+            ("sample_rate", n(&t.sample_rate)),
+        ]
+    }
+
+    #[test]
+    #[ignore = "needs a real library; set TAG_CORPUS"]
+    fn lofty_and_symphonia_read_the_same_tags() {
+        let Ok(root) = std::env::var("TAG_CORPUS") else {
+            eprintln!("set TAG_CORPUS to a library root to run this");
+            return;
+        };
+        let all = files(Path::new(&root));
+        let limit: usize = std::env::var("TAG_SAMPLE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(400);
+        let step = (all.len() / limit.max(1)).max(1);
+        let sample: Vec<_> = all.iter().step_by(step).take(limit).collect();
+        println!("{} files under {root}, reading {}", all.len(), sample.len());
+
+        // Per field: how often they agreed, and how often only one side had a
+        // value. Only-lofty is the dangerous column.
+        let mut agreed: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut only_lofty: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut lofty_empty: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut only_symphonia: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut differed: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut lofty_failed = 0usize;
+        let mut symphonia_failed = 0usize;
+        let mut examples: BTreeMap<&str, String> = BTreeMap::new();
+        let mut duration_gaps: Vec<f64> = Vec::new();
+
+        for path in &sample {
+            let p = path.to_string_lossy().to_string();
+            let a = parse_track(&p, "music", 0, None);
+            let b = parse_track_symphonia(&p, "music", 0, None);
+            match (&a, &b) {
+                (Err(e), Err(_)) => {
+                    lofty_failed += 1;
+                    symphonia_failed += 1;
+                    println!("both failed: {p}: {e}");
+                    continue;
+                }
+                (Err(e), Ok(_)) => {
+                    lofty_failed += 1;
+                    println!("lofty only failed: {p}: {e}");
+                    continue;
+                }
+                (Ok(_), Err(e)) => {
+                    symphonia_failed += 1;
+                    println!("SYMPHONIA FAILED: {p}: {e:#}");
+                    continue;
+                }
+                (Ok(_), Ok(_)) => {}
+            }
+            for ((name, la), (_, sa)) in fields(a.as_ref().unwrap())
+                .into_iter()
+                .zip(fields(b.as_ref().unwrap()))
+            {
+                let (lv, sv) = (la == "-", sa == "-");
+                match (lv, sv) {
+                    (false, true) if la.is_empty() => {
+                        // lofty reports an empty tag as a value, symphonia omits
+                        // it. `tag_write::set` removes an empty value too, so
+                        // this changes the column from "" to NULL and nothing
+                        // else.
+                        *lofty_empty.entry(name).or_default() += 1;
+                    }
+                    (false, true) => {
+                        *only_lofty.entry(name).or_default() += 1;
+                        println!("ONLY LOFTY {name}: {p} = {la:?}");
+                    }
+                    (true, false) => *only_symphonia.entry(name).or_default() += 1,
+                    (true, true) => {}
+                    (false, false) if la == sa => *agreed.entry(name).or_default() += 1,
+                    (false, false) if name == "duration" => {
+                        *differed.entry(name).or_default() += 1;
+                        if let (Ok(l), Ok(v)) = (la.parse::<f64>(), sa.parse::<f64>()) {
+                            duration_gaps.push((v - l).abs());
+                        }
+                    }
+                    (false, false) => {
+                        *differed.entry(name).or_default() += 1;
+                        examples
+                            .entry(name)
+                            .or_insert_with(|| format!("{p} lofty={la:?} symphonia={sa:?}"));
+                    }
+                }
+            }
+        }
+
+        println!("\nfailures: lofty {lofty_failed}, symphonia {symphonia_failed}");
+        println!(
+            "\n{:<14} {:>7} {:>7} {:>11} {:>11} {:>9}",
+            "field", "agreed", "differ", "only lofty", "only symph", "lofty \"\""
+        );
+        for (name, _) in fields(&TrackInsert {
+            path: String::new(),
+            content_type: String::new(),
+            title: None,
+            artist: None,
+            album: None,
+            genre: None,
+            year: None,
+            duration: None,
+            bpm: None,
+            sample_rate: None,
+            bitrate: None,
+            format: None,
+            mtime: None,
+            album_artist: None,
+            track_no: None,
+            track_total: None,
+            disc_no: None,
+            disc_total: None,
+            isrc: None,
+            initial_key: None,
+            comment: None,
+            fingerprint: None,
+        }) {
+            println!(
+                "{:<14} {:>7} {:>7} {:>11} {:>11} {:>9}",
+                name,
+                agreed.get(name).unwrap_or(&0),
+                differed.get(name).unwrap_or(&0),
+                only_lofty.get(name).unwrap_or(&0),
+                only_symphonia.get(name).unwrap_or(&0),
+                lofty_empty.get(name).unwrap_or(&0),
+            );
+        }
+        if !duration_gaps.is_empty() {
+            duration_gaps.sort_by(f64::total_cmp);
+            let n = duration_gaps.len();
+            println!(
+                "\nduration gaps over {n}: min {:.2}s median {:.2}s max {:.2}s",
+                duration_gaps[0],
+                duration_gaps[n / 2],
+                duration_gaps[n - 1]
+            );
+        }
+        println!("\nfirst example per field that differed or lofty-only:");
+        for (name, ex) in &examples {
+            println!("  {name}: {ex}");
+        }
     }
 }
