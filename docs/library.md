@@ -120,28 +120,34 @@ symphonia identifies a file by **sniffing the bytes**, so it reads that Ogg
 without trouble. It is the demuxer the app already uses to decode and
 fingerprint every track, so nothing new is pulled in for it.
 
-**Why lofty is first rather than symphonia.** A survey of 300 files from a real
-library (the `TAG_CORPUS` test in `library/scanner.rs`) found the two agree on
-almost everything, but each fails where the other does not, so neither can
-simply replace the other:
+**Why lofty is first rather than symphonia.** Not because it reads more. A
+survey of 300 files from a real library (the `TAG_CORPUS` test in
+`library/scanner.rs`) has them agreeing on every field symphonia supplies, and
+symphonia ahead in two places: it recovers a year from a `RecordingDate` on 51
+files where lofty finds none, and it reads the real `TIT2` of a file lofty gives
+up on and names after its file instead.
 
-- symphonia read only **four of nine ID3v2 frames** on a file tagged by Windows
-  Media, losing artist, album, album artist, genre and disc, and reported a
-  track number neither lofty nor `ffprobe` agrees with.
-- lofty silently fell back to the file name on a file whose `TIT2` it could not
-  read, and returned `Unknown` for the artist or album of six files symphonia
-  read correctly.
+What lofty has that symphonia has not is the **bitrate** — `AudioCodecParameters`
+carries none — so making symphonia the primary reader would empty that column
+for the whole library. Staying with lofty also means no `TAG_READ_VERSION` bump
+and no row anywhere being re-read, so a library that is correct today stays
+exactly as it is. The fallback earns its place on the files lofty cannot open at
+all, and changes nothing else.
 
-A tag the reader misses is not a cosmetic loss: an empty column is written back
-to the file as an _absent_ tag, so a reader that drops a frame makes the
-write-back delete it (see [Editing a track](#editing-a-track)). Between the two,
-the one that handles ID3v2 correctly belongs in front, because ID3v2 is most of
-a library.
+Reading tags correctly matters more than it looks: an empty column is written
+back to the file as an _absent_ tag, so a reader that drops a frame makes the
+write-back delete it (see [Editing a track](#editing-a-track)). That is why the
+survey exists and why it is kept.
 
-So symphonia runs only where lofty has already refused, and a file both readers
-refuse still enters the library named after itself. What symphonia cannot supply
-is the **bitrate** — `AudioCodecParameters` carries none — so a track that
-arrives by the fallback has that column empty.
+A file both readers refuse still enters the library named after itself.
+
+**Read every metadata revision, not the newest.** An MP3 may carry an ID3v2 tag
+at its head and an ID3v1 one at its tail. symphonia reports them as two
+revisions, and the ID3v1 is the _newer_ one — six fixed fields where the ID3v2
+has everything. `Metadata::skip_to_latest` returns that one, which read four
+tags out of a file holding fifteen and took a wrong track number with it. The
+revisions are read oldest first and the first value for each field wins, so the
+richer tag does.
 
 ### The analysis pass
 

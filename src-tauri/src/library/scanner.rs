@@ -368,12 +368,11 @@ fn fingerprint_of(path: &str) -> Option<String> {
 
 /// The tags `path` holds, read by whichever reader can make sense of the file.
 ///
-/// lofty first, because it is the one that reads ID3v2 correctly: on a file
-/// tagged by Windows Media it drops five frames of nine, and a column that
-/// comes back empty is a column the write-back goes on to strip from the
-/// operator's file. symphonia is the rescue, for a container lofty cannot
-/// identify — it picks its reader by sniffing the bytes rather than trusting the
-/// extension, which is what reads an Ogg whose first logical stream is Theora.
+/// lofty first — not because it reads more, but because it is the only one that
+/// reports a bitrate, and leading with symphonia would empty that column for
+/// every track. symphonia is the rescue, for a container lofty cannot identify:
+/// it picks its reader by sniffing the bytes rather than trusting the extension,
+/// which is what reads an Ogg whose first logical stream is Theora.
 ///
 /// See `docs/library.md#reading-tags`.
 fn parse_track(
@@ -530,12 +529,7 @@ fn parse_track_symphonia(
         .and_then(|a| a.sample_rate)
         .map(i64::from);
 
-    let mut meta = format.metadata();
-    meta.skip_to_latest();
-    let tags = meta
-        .current()
-        .map(|rev| rev.media.tags.clone())
-        .unwrap_or_default();
+    let tags = all_tags(format.metadata());
 
     let mut title = None;
     let mut artist = None;
@@ -618,6 +612,29 @@ fn parse_track_symphonia(
         comment: comment_of_symphonia(&tags),
         fingerprint,
     })
+}
+
+/// Every tag the file holds, oldest metadata revision first.
+///
+/// Not `Metadata::skip_to_latest`: that returns the *newest* revision, and an
+/// MP3 may carry an ID3v2 tag at its head and an ID3v1 one at its tail. The
+/// ID3v1 is the newer revision and has six fixed fields where the ID3v2 has
+/// everything, so skipping to it read a title, a year, a comment and a wrong
+/// track number out of a file with fifteen tags in it.
+///
+/// Oldest first, because the caller keeps the first value it is given for each
+/// field, so the richer tag wins.
+fn all_tags(mut meta: symphonia::core::meta::Metadata<'_>) -> Vec<symphonia::core::meta::Tag> {
+    let mut tags = Vec::new();
+    // `pop` discards the front revision and returns it, and never empties the
+    // log, so the last one is left for `current`.
+    while let Some(rev) = meta.pop() {
+        tags.extend(rev.media.tags);
+    }
+    if let Some(rev) = meta.current() {
+        tags.extend(rev.media.tags.iter().cloned());
+    }
+    tags
 }
 
 /// The track's own comment: the undescribed one.
@@ -782,6 +799,61 @@ mod tests {
         // symphonia read it, so the duration is there — the row is not the
         // tagless shell a file neither reader can open would leave.
         assert!(track.duration > 0.0, "duration {}", track.duration);
+    }
+
+    /// An MP3 may carry an ID3v2 tag at its head and an ID3v1 one at its tail.
+    /// The ID3v1 is the *newer* revision and holds six fixed fields, so reading
+    /// only the newest — which is what `Metadata::skip_to_latest` returns — read
+    /// four tags out of a file that had fifteen, and took the wrong track number
+    /// with it.
+    #[test]
+    fn the_richer_tag_wins_when_a_file_carries_two() {
+        use symphonia::core::meta::well_known::{METADATA_ID_ID3V1, METADATA_ID_ID3V2};
+        use symphonia::core::meta::{
+            MetadataBuilder, MetadataInfo, MetadataLog, RawTag, StandardTag, Tag,
+        };
+
+        let info = |id, short_name| MetadataInfo {
+            metadata: id,
+            short_name,
+            long_name: short_name,
+        };
+        let tagged =
+            |key: &str, value: &str, std: StandardTag| Tag::new_std(RawTag::new(key, value), std);
+
+        let mut id3v2 = MetadataBuilder::new(info(METADATA_ID_ID3V2, "id3v2"));
+        id3v2.add_tag(tagged(
+            "TPE1",
+            "The Artist",
+            StandardTag::Artist("The Artist".to_string().into()),
+        ));
+        id3v2.add_tag(tagged("TRCK", "2", StandardTag::TrackNumber(2)));
+
+        // Read later, so the newer revision, and poorer.
+        let mut id3v1 = MetadataBuilder::new(info(METADATA_ID_ID3V1, "id3v1"));
+        id3v1.add_tag(tagged("TRCK", "1", StandardTag::TrackNumber(1)));
+
+        let mut log = MetadataLog::default();
+        log.push(id3v2.build());
+        log.push(id3v1.build());
+
+        let tags = all_tags(log.metadata());
+
+        assert_eq!(tags.len(), 3, "every revision is read: {tags:?}");
+        let first_track = tags
+            .iter()
+            .find_map(|t| match t.std {
+                Some(StandardTag::TrackNumber(n)) => Some(n),
+                _ => None,
+            })
+            .expect("a track number");
+        assert_eq!(first_track, 2, "the ID3v2 track number comes first");
+        assert!(
+            tags.iter().any(
+                |t| matches!(&t.std, Some(StandardTag::Artist(a)) if a.as_str() == "The Artist")
+            ),
+            "the artist only the ID3v2 has survives: {tags:?}"
+        );
     }
 
     /// lofty maps every ID3v2 `COMM` frame onto `ItemKey::Comment`, so
