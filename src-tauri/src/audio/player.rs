@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use rodio::source::SkipDuration;
 use rodio::{Decoder, Sink, Source};
 use std::fs::File;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -28,10 +28,14 @@ use super::envelope::Enveloped;
 /// reads*.
 pub(super) const READ_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How much of a file one `read` call is asked for while filling RAM. Small
-/// enough that progress is published often over a slow share, large enough that
-/// a local read is still one syscall per chunk.
-const READ_CHUNK: usize = 256 * 1024;
+/// How much of a file one `read` call is asked for while filling RAM.
+///
+/// A count published per chunk is a throughput floor as well as a stall
+/// detector: a share too slow to deliver one chunk inside the watchdog budget
+/// still looks stalled. 64 KiB against the 10 s default puts that floor around
+/// 6.5 KB/s — a share slower than that is not one a show can run off — while
+/// keeping the syscall count for a 40 MB track in the hundreds.
+const READ_CHUNK: usize = 64 * 1024;
 
 /// Backoff delays applied between failed read attempts. The read thread makes
 /// one initial attempt plus one retry per entry (4 attempts, 3 backoffs) before
@@ -327,8 +331,10 @@ where
 /// watchdog asks is whether the share is sending anything at all.
 pub(super) type Progress = Arc<AtomicU64>;
 
-/// A [`Progress`] nobody reads, for a read with no watcher.
-pub(super) fn unwatched() -> Progress {
+/// A [`Progress`] at zero, for a read about to start. Whoever else watches it
+/// — the deck that issued the read, or a deck mirroring this one's count
+/// through the cache's in-flight claims — takes a clone of the handle.
+pub(super) fn fresh_progress() -> Progress {
     Arc::new(AtomicU64::new(0))
 }
 
@@ -383,16 +389,30 @@ pub(super) fn read_file_watched(path: &Path, progress: &Progress) -> Result<Byte
         .metadata()
         .map(|m| usize::try_from(m.len()).unwrap_or(0))
         .unwrap_or(0);
-    let mut buf: Vec<u8> = Vec::with_capacity(hint);
-    let mut chunk = vec![0u8; READ_CHUNK];
+    // Read into the destination, never through a staging chunk: a whole-file
+    // copy per track load is a real cost, and the chunking is only here so the
+    // count gets published on the way.
+    let mut buf: Vec<u8> = vec![0u8; hint.max(READ_CHUNK)];
+    let mut filled = 0usize;
     loop {
-        let read = file.read(&mut chunk).with_context(ctx)?;
-        if read == 0 {
-            break;
+        if filled == buf.len() {
+            // The file grew past its metadata, or there was none.
+            buf.resize(filled + READ_CHUNK, 0);
         }
-        buf.extend_from_slice(&chunk[..read]);
-        progress.fetch_add(read as u64, Ordering::Relaxed);
+        let end = (filled + READ_CHUNK).min(buf.len());
+        match file.read(&mut buf[filled..end]) {
+            Ok(0) => break,
+            Ok(read) => {
+                filled += read;
+                progress.fetch_add(read as u64, Ordering::Relaxed);
+            }
+            // `read_to_end` retries this one, and `fs::read` used to get that
+            // for free; a signal is not a failed read.
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e).with_context(ctx),
+        }
     }
+    buf.truncate(filled);
     Ok(Arc::from(buf.into_boxed_slice()))
 }
 
@@ -453,9 +473,11 @@ mod tests {
 
     #[test]
     fn read_file_missing_path_errors() {
-        assert!(
-            read_file_watched(Path::new("/nonexistent/radiodiodj/nope.wav"), &unwatched()).is_err()
-        );
+        assert!(read_file_watched(
+            Path::new("/nonexistent/radiodiodj/nope.wav"),
+            &fresh_progress()
+        )
+        .is_err());
     }
 
     /// A file spanning several chunks comes back whole, and the published count
@@ -467,10 +489,24 @@ mod tests {
         let written: Vec<u8> = (0..READ_CHUNK * 2 + 7).map(|i| (i % 251) as u8).collect();
         std::fs::write(&path, &written).expect("write");
 
-        let progress = unwatched();
+        let progress = fresh_progress();
         let bytes = read_file_watched(&path, &progress).expect("read");
         assert_eq!(&bytes[..], &written[..]);
         assert_eq!(progress.load(Ordering::Relaxed), written.len() as u64);
+
+        // The buffer is sized from the metadata and truncated to what arrived,
+        // so a file shorter than one chunk — or empty — is not padded.
+        let short = dir.path().join("short.bin");
+        std::fs::write(&short, [1u8, 2, 3]).expect("write");
+        assert_eq!(
+            &read_file_watched(&short, &fresh_progress()).expect("read")[..],
+            &[1u8, 2, 3]
+        );
+        let empty = dir.path().join("empty.bin");
+        std::fs::write(&empty, []).expect("write");
+        assert!(read_file_watched(&empty, &fresh_progress())
+            .expect("read")
+            .is_empty());
     }
 
     /// A retried read starts the file over, and the count must not: the
@@ -482,7 +518,7 @@ mod tests {
         let path = dir.path().join("track.bin");
         std::fs::write(&path, vec![7u8; READ_CHUNK]).expect("write");
 
-        let progress = unwatched();
+        let progress = fresh_progress();
         let mut attempts = 0u32;
         let result = read_with_retry(
             || {
@@ -530,7 +566,7 @@ mod tests {
             }
         });
 
-        let progress = unwatched();
+        let progress = fresh_progress();
         let watched = Arc::clone(&progress);
         let reader_path = fifo.clone();
         let reader = std::thread::spawn(move || read_file_watched(&reader_path, &watched));

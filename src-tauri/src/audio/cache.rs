@@ -42,7 +42,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
-use super::player::{read_file_watched, read_with_retry, unwatched, Bytes, Progress, Seen};
+use super::player::{fresh_progress, read_file_watched, read_with_retry, Bytes, Progress, Seen};
 
 /// Default hard cap on total resident bytes, used when no configured value is
 /// supplied (tests, and the config default). The live cap is held per-`Cache`.
@@ -479,7 +479,7 @@ fn run_prefetch(shared: &Arc<Shared>, app: &AppHandle) {
         // entry whose holder then fails is never fetched at all, and its bytes
         // go uncounted against the cap while it is in flight — which would have
         // this run read later entries that land only to be evicted.
-        let progress = unwatched();
+        let progress = fresh_progress();
         let _claim = loop {
             // Abort if a newer window superseded ours; the worker will be woken
             // again for the new window. Checked on every look, so a wait cannot
@@ -670,14 +670,14 @@ mod tests {
     #[test]
     fn a_second_reader_is_turned_away_while_a_read_is_in_flight() {
         let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
-        let first = shared.claim(7, &unwatched());
+        let first = shared.claim(7, &fresh_progress());
         assert!(first.is_some(), "nobody was reading it");
         assert!(
-            shared.claim(7, &unwatched()).is_none(),
+            shared.claim(7, &fresh_progress()).is_none(),
             "someone already is"
         );
         assert!(
-            shared.claim(8, &unwatched()).is_some(),
+            shared.claim(8, &fresh_progress()).is_some(),
             "a different file is free"
         );
     }
@@ -685,9 +685,9 @@ mod tests {
     #[test]
     fn releasing_a_claim_lets_the_next_reader_in() {
         let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
-        drop(shared.claim(7, &unwatched()));
+        drop(shared.claim(7, &fresh_progress()));
         assert!(
-            shared.claim(7, &unwatched()).is_some(),
+            shared.claim(7, &fresh_progress()).is_some(),
             "the claim was released on drop"
         );
     }
@@ -698,7 +698,7 @@ mod tests {
     #[test]
     fn a_claim_publishes_the_holders_progress_to_whoever_waits() {
         let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
-        let holder = unwatched();
+        let holder = fresh_progress();
         let claim = shared.claim(7, &holder).expect("nobody was reading it");
 
         holder.store(64 * 1024, Relaxed);
@@ -715,18 +715,24 @@ mod tests {
     #[test]
     fn prefetch_waits_out_a_track_a_deck_is_already_reading() {
         let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
-        let _claim = shared.claim(7, &unwatched());
-        assert!(matches!(shared.prefetch_step(7, &unwatched()), Step::Busy));
+        let _claim = shared.claim(7, &fresh_progress());
+        assert!(matches!(
+            shared.prefetch_step(7, &fresh_progress()),
+            Step::Busy
+        ));
     }
 
     #[test]
     fn prefetch_claims_the_track_it_decides_to_read() {
         let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
-        let claim = shared.prefetch_step(7, &unwatched());
+        let claim = shared.prefetch_step(7, &fresh_progress());
         assert!(matches!(claim, Step::Read(_)));
         // Deciding and claiming are one lock: nothing can slip a read in
         // between them and have both readers go to the share.
-        assert!(matches!(shared.prefetch_step(7, &unwatched()), Step::Busy));
+        assert!(matches!(
+            shared.prefetch_step(7, &fresh_progress()),
+            Step::Busy
+        ));
     }
 
     #[test]
@@ -734,7 +740,7 @@ mod tests {
         let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
         shared.inner.lock().entries.insert(7, bytes(1024));
         assert!(matches!(
-            shared.prefetch_step(7, &unwatched()),
+            shared.prefetch_step(7, &fresh_progress()),
             Step::Have(1024)
         ));
         assert!(
@@ -747,7 +753,9 @@ mod tests {
     fn a_deck_takes_the_resident_copy() {
         let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
         shared.inner.lock().entries.insert(7, bytes(1024));
-        assert!(matches!(shared.deck_step(7, &unwatched()), DeckStep::Take(b) if b.len() == 1024));
+        assert!(
+            matches!(shared.deck_step(7, &fresh_progress()), DeckStep::Take(b) if b.len() == 1024)
+        );
     }
 
     #[test]
@@ -755,7 +763,7 @@ mod tests {
         let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
         shared.inner.lock().window = win(&[7]);
         assert!(matches!(
-            shared.deck_step(7, &unwatched()),
+            shared.deck_step(7, &fresh_progress()),
             DeckStep::Read(Some(_))
         ));
     }
@@ -764,8 +772,11 @@ mod tests {
     fn a_deck_waits_for_a_read_already_in_flight() {
         let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
         shared.inner.lock().window = win(&[7]);
-        let _claim = shared.claim(7, &unwatched());
-        assert!(matches!(shared.deck_step(7, &unwatched()), DeckStep::Wait));
+        let _claim = shared.claim(7, &fresh_progress());
+        assert!(matches!(
+            shared.deck_step(7, &fresh_progress()),
+            DeckStep::Wait
+        ));
     }
 
     /// A cue audition of an unqueued track: the cache would refuse the bytes,
@@ -775,9 +786,9 @@ mod tests {
     fn a_deck_outside_the_window_reads_rather_than_waiting() {
         let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
         shared.inner.lock().window = win(&[1]);
-        let _held = shared.claim(7, &unwatched());
+        let _held = shared.claim(7, &fresh_progress());
         assert!(matches!(
-            shared.deck_step(7, &unwatched()),
+            shared.deck_step(7, &fresh_progress()),
             DeckStep::Read(None)
         ));
     }
@@ -786,7 +797,7 @@ mod tests {
     fn a_deck_outside_the_window_does_not_hold_the_id() {
         let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
         assert!(matches!(
-            shared.deck_step(7, &unwatched()),
+            shared.deck_step(7, &fresh_progress()),
             DeckStep::Read(None)
         ));
         assert!(

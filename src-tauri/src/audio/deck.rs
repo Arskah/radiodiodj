@@ -26,7 +26,7 @@ use super::cache::Cache;
 use super::cue_points::{CuePoints, Resolved};
 use super::output::Output;
 use super::player::{
-    append_span, clamp_start, decode_bytes, unwatched, Bytes, Cmd, PlayerTuning, Progress,
+    append_span, clamp_start, decode_bytes, fresh_progress, Bytes, Cmd, PlayerTuning, Progress,
     RampDone, Seen, Topics,
 };
 
@@ -484,6 +484,17 @@ fn start_load(
     replay_gain: f32,
 ) {
     let Some((mixer, generation)) = ensure_output(output, app, events) else {
+        // Abandon whatever the *previous* track's read is doing: it is for a
+        // track nothing will play now, and while the watchdog timed every read
+        // out it was abandoned within the budget anyway. Left at the current
+        // generation, a read that keeps delivering would land in `apply_load`
+        // under this deck's new `current_id` and report the wrong track — and
+        // the reset there would drop the load we are about to defer.
+        deck.generation = deck.generation.wrapping_add(1);
+        deck.loading = false;
+        deck.read_progress = None;
+        deck.load_progress = None;
+
         // No device yet: remember the intent and let the idle loop retry the
         // open. `ensure_output` already emitted the error; keep the buffering
         // indicator up while we wait for the device.
@@ -556,7 +567,7 @@ fn start_load(
         let backoffs = tuning.read_retry_backoffs.clone();
         let stall_budget = tuning.read_watchdog_timeout;
         let cache = Arc::clone(cache);
-        let progress = unwatched();
+        let progress = fresh_progress();
         deck.read_progress = Some(Arc::clone(&progress));
         thread::spawn(move || {
             // Retry transient failures with backoff; hangs are the

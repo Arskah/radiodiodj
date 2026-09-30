@@ -65,6 +65,12 @@ The read happens on its own thread, with two protections in `audio/player.rs`:
   those tracks off air (#504). A dead mount still fails in the same 10 s,
   because a read that has delivered nothing is what the budget describes.
 
+  The count moves a chunk at a time (`READ_CHUNK`, 64 KiB), so the budget is
+  also a throughput floor: a share that cannot deliver one chunk inside it
+  still reads as stalled. At the defaults that is about 6.5 KB/s — two orders
+  of magnitude below the rate that used to be required, and below any share a
+  show can run off.
+
 A read that fails or times out emits `{role}:load-failed`, which the playlist
 engine turns into skip-to-cached and a retry timer — see
 [playlist.md](./playlist.md#outages).
