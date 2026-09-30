@@ -517,7 +517,7 @@ impl Config {
     /// A save whose snapshot a later one overtook is skipped rather than
     /// written after it. Every snapshot is the whole config, so the newer one
     /// already carries this caller's change. See
-    /// [docs/architecture.md](../../../docs/architecture.md#commands).
+    /// `docs/architecture.md#commands`.
     fn save_and_unlock(&self, cfg: MutexGuard<'_, AppConfig>) -> Result<()> {
         let seq = {
             let mut next = self.next_save.lock();
