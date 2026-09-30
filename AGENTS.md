@@ -33,11 +33,14 @@ The module map, the event table and the boundary conventions are
 Each entry is the invariant to preserve; the linked doc carries the reasoning.
 
 **Audio playback** — in-process Rust decks, no browser `<audio>`, no `media://`,
-no transcoder. A deck reads the **whole file into RAM** (retry + a 10 s
-watchdog over the **stall**, never over the read: the read publishes a byte
-count the worker loop notes each tick, so a large file on a slow share keeps its
-load and only a count that stops moving is a wedged mount) and never streams
-from the filesystem, which is what survives a wedged network share. See
+no transcoder. A deck reads the **whole file into RAM** and never streams from
+the filesystem, which is what survives a wedged network share. Two bounds on a
+read, never one: a 10 s watchdog over the **stall** (the read publishes a byte
+count the worker loop notes each tick, so only a count that stops moving is a
+wedged mount) and a 3 s **dead-air limit** that applies solely to an on-air deck
+with nothing audible. That is what keeps patience for a slow share from becoming
+silence on air — and the abandoned read runs on, so its bytes still reach the
+cache and the skipped track costs its place in the hour, not the file. See
 [docs/audio.md](docs/audio.md).
 
 **One file never crosses the share twice at once** — the library is a network

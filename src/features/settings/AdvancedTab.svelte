@@ -408,6 +408,24 @@
     </div>
   </div>
   <div class="device-row">
+    <label for="tune-dead-air">Dead-air limit (ms)</label>
+    <input
+      id="tune-dead-air"
+      type="number"
+      min="1"
+      value={tuning.player.deadAirLimitMs}
+      oninput={(e) => numInput(e, (v) => (tuning.player.deadAirLimitMs = v))}
+      onchange={saveTuning}
+    />
+    <div class="hint">
+      How long air may be silent waiting for a track to load before the playlist
+      skips to one already in RAM. The slow read finishes in the background, so
+      the skipped track is instant to play afterwards. Only applies on air with
+      nothing audible — a track loading ahead of a handover, and cue auditions,
+      are left alone.
+    </div>
+  </div>
+  <div class="device-row">
     <label for="tune-open-retry">Output open-retry interval (ms)</label>
     <input
       id="tune-open-retry"

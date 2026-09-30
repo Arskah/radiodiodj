@@ -71,6 +71,27 @@ The read happens on its own thread, with two protections in `audio/player.rs`:
   of magnitude below the rate that used to be required, and below any share a
   show can run off.
 
+- **A dead-air limit.** `DEAD_AIR_LIMIT` (3 s, `player.deadAirLimitMs`) is the
+  second bound, and the reason the watchdog can afford to be patient. A read
+  that keeps arriving is not a wedged mount, but air that keeps being silent is
+  still a show with nothing on it, so a load is given up on once it has kept
+  the station quiet for this long — whatever the read is doing.
+
+  It applies only where there is air to lose: the deck holding `main` on the
+  program bus, a load that asked to play, and nothing audible anywhere in the
+  set. A track loading ahead of a handover has the rest of the outgoing track
+  to arrive in, a session restore is parked silent on purpose, and the cue deck
+  is monitoring — none of them are bounded by it. `DeckSet::on_air` is what the
+  cue worker says no with.
+
+  Both bounds end the same way, in `abandon_load`: `{role}:load-failed`, which
+  the playlist turns into skip-to-cached. What the operator is told differs,
+  because "the share is gone" and "the share is too slow to open a show with"
+  are different problems. **The read is not cancelled** — it cannot be, and one
+  that is merely slow is worth finishing: its bytes still reach the cache, so
+  the track the playlist just skipped is instant to play afterwards. What it
+  costs is its place in this hour, not the file.
+
 A read that fails or times out emits `{role}:load-failed`, which the playlist
 engine turns into skip-to-cached and a retry timer — see
 [playlist.md](./playlist.md#outages).

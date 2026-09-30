@@ -37,6 +37,18 @@ pub(super) const READ_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(10);
 /// keeping the syscall count for a 40 MB track in the hundreds.
 const READ_CHUNK: usize = 64 * 1024;
 
+/// How long air may be silent waiting for a read before the load is given up
+/// on and the playlist skips to a track that is already resident.
+///
+/// The watchdog answers "is this mount dead"; this answers "is this dead air",
+/// which is a much shorter question on a radio station. It applies only to a
+/// deck that is on air and has nothing audible, so an arm-deck load preparing a
+/// handover, a parked restore and a cue audition are left to take as long as
+/// the share needs. The read is not cancelled — its bytes still reach the
+/// cache, so the track is cheap to play once it has landed. See
+/// `docs/audio.md`, *Whole-file reads*.
+pub(super) const DEAD_AIR_LIMIT: Duration = Duration::from_secs(3);
+
 /// Backoff delays applied between failed read attempts. The read thread makes
 /// one initial attempt plus one retry per entry (4 attempts, 3 backoffs) before
 /// giving up. Retries cover *transient* failures (`Err`); hangs are handled by
@@ -60,6 +72,8 @@ pub struct PlayerTuning {
     /// See [`READ_WATCHDOG_TIMEOUT`]. A budget with no progress, not a budget
     /// for the whole read.
     pub read_watchdog_timeout: Duration,
+    /// See [`DEAD_AIR_LIMIT`].
+    pub dead_air_limit: Duration,
     /// See [`OPEN_RETRY_INTERVAL`].
     pub open_retry_interval: Duration,
     /// See [`READ_RETRY_BACKOFFS`]. Must be non-empty (enforced on write).
@@ -70,6 +84,7 @@ impl Default for PlayerTuning {
     fn default() -> Self {
         Self {
             read_watchdog_timeout: READ_WATCHDOG_TIMEOUT,
+            dead_air_limit: DEAD_AIR_LIMIT,
             open_retry_interval: OPEN_RETRY_INTERVAL,
             read_retry_backoffs: READ_RETRY_BACKOFFS.to_vec(),
         }
