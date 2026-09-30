@@ -392,6 +392,7 @@ pub struct TagReadJob {
 }
 
 /// A track the analysis worker still has to read.
+#[derive(Clone)]
 pub struct AnalysisJob {
     pub id: i64,
     pub path: String,

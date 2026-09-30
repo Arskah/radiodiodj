@@ -168,10 +168,11 @@ impl WaveformJob {
     /// bar sits where it stopped. The panic itself is already logged by the hook
     /// `lib.rs` installs, backtrace and all.
     ///
-    /// A caught panic therefore has to do what the pass no longer can: emit the
-    /// terminal status it died holding, and clear the cancel it would have
-    /// consumed — a flag left set makes `status()` disagree with a slot that is
-    /// in fact free.
+    /// A caught panic therefore has to do what the pass no longer can: put the
+    /// bar back down if it had put one up, and answer for the cancel it would
+    /// have consumed. A panic under a cancel is reported as [`Stop::Cancelled`],
+    /// so the flag is consumed exactly where a stopped pass consumes it and the
+    /// stop is not overridden by a kick that was waiting behind it.
     ///
     /// `pass` and `emit` are injected so the loop can be driven without a
     /// filesystem or an `AppHandle`, in the same spirit as [`read_loop`].
@@ -183,9 +184,17 @@ impl WaveformJob {
                 Ok(stop) => stop,
                 Err(_) => {
                     log::error!("waveform: the analysis pass panicked; releasing the slot");
-                    emit(WaveformStatus::Idle);
-                    self.cancel.store(false, Ordering::SeqCst);
-                    Stop::Drained
+                    // Only if the pass got as far as announcing work: an Idle
+                    // that no Running preceded is a transition the topic does
+                    // not have.
+                    if matches!(self.status(), WaveformStatus::Running { .. }) {
+                        emit(WaveformStatus::Idle);
+                    }
+                    if self.cancel.load(Ordering::SeqCst) {
+                        Stop::Cancelled
+                    } else {
+                        Stop::Drained
+                    }
                 }
             };
             if !self.finish(stop) {
@@ -337,8 +346,8 @@ fn run_pass(
                         }
                         tick(progress, job, app);
                     },
-                    |id, _| {
-                        unreadable(db, failed, id, PANICKED_DECODE);
+                    |track| {
+                        unreadable(db, failed, track.id, PANICKED_DECODE);
                         tick(progress, job, app);
                     },
                 );
@@ -569,14 +578,14 @@ fn read_loop<R, D, P>(
 /// unread, which is what keeps a cancel to one file per thread.
 ///
 /// One file's analysis panicking costs that file and not the pass: `panicked` is
-/// handed its id and path, and this worker takes the next job. Uncaught it would
-/// be re-raised when `thread::scope` joins, unwinding every other decode in
-/// flight and the reader with them.
+/// handed the job, and this worker takes the next one. Uncaught it would be
+/// re-raised when `thread::scope` joins, unwinding every other decode in flight
+/// and the reader with them.
 fn decode_loop(
     rx: &Mutex<Receiver<Fetched>>,
     cancel: &AtomicBool,
     mut analyse: impl FnMut(Fetched),
-    mut panicked: impl FnMut(i64, &str),
+    mut panicked: impl FnMut(&AnalysisJob),
 ) {
     loop {
         // The guard is held across `recv`, so exactly one worker waits on the
@@ -587,10 +596,10 @@ fn decode_loop(
         if cancel.load(Ordering::SeqCst) {
             return;
         }
-        let (id, path) = (fetched.track.id, fetched.track.path.clone());
+        let track = fetched.track.clone();
         if catch_unwind(AssertUnwindSafe(|| analyse(fetched))).is_err() {
-            log::error!("analysis: decoding {} panicked", path);
-            panicked(id, &path);
+            log::error!("analysis: decoding {} panicked", track.path);
+            panicked(&track);
         }
     }
 }
@@ -836,6 +845,10 @@ mod tests {
     fn a_panicking_pass_releases_the_slot() {
         let job = WaveformJob::default();
         job.running.store(true, Ordering::SeqCst);
+        *job.status.lock() = WaveformStatus::Running {
+            processed: 1,
+            total: 9,
+        };
         let emitted: Mutex<Vec<WaveformStatus>> = Mutex::new(Vec::new());
 
         job.drain_loop(
@@ -850,17 +863,52 @@ mod tests {
         );
     }
 
-    /// The pass that would have consumed the cancel is gone, so the flag has to
-    /// be cleared for it — otherwise `status` and the slot disagree.
+    /// A pass that died before it found work never put a bar up, and the topic
+    /// carries running/idle transitions — not an idle that follows nothing.
     #[test]
-    fn a_panicking_pass_leaves_no_cancel_behind() {
+    fn a_pass_that_panicked_before_finding_work_says_nothing() {
+        let job = WaveformJob::default();
+        job.running.store(true, Ordering::SeqCst);
+        let emitted: Mutex<Vec<WaveformStatus>> = Mutex::new(Vec::new());
+
+        job.drain_loop(
+            || panic!("the work list query went down"),
+            |next| emitted.lock().push(next),
+        );
+
+        assert!(!job.running.load(Ordering::SeqCst), "the slot is free");
+        assert!(
+            emitted.lock().is_empty(),
+            "no bar went up, so none comes down"
+        );
+    }
+
+    /// The pass that would have consumed the cancel is gone, so the panic
+    /// consumes it in its place — and stops, rather than letting a kick that was
+    /// waiting behind the cancel start a fresh pass the operator just stopped.
+    #[test]
+    fn a_panicking_pass_under_a_cancel_stops() {
         let job = WaveformJob::default();
         job.running.store(true, Ordering::SeqCst);
         job.cancel();
+        let passes = AtomicUsize::new(0);
 
-        job.drain_loop(|| panic!("a decoder went down"), |_| {});
+        job.drain_loop(
+            || {
+                passes.fetch_add(1, Ordering::SeqCst);
+                job.kicked.store(true, Ordering::SeqCst);
+                panic!("a decoder went down");
+            },
+            |_| {},
+        );
 
-        assert!(!job.cancel.load(Ordering::SeqCst));
+        assert_eq!(passes.load(Ordering::SeqCst), 1, "the stop stands");
+        assert!(!job.cancel.load(Ordering::SeqCst), "the cancel is consumed");
+        assert!(!job.running.load(Ordering::SeqCst), "the slot is free");
+        assert!(
+            job.kicked.load(Ordering::SeqCst),
+            "the kick stands for the next start"
+        );
     }
 
     /// Work that arrived while the pass was dying still gets a pass, the way it
@@ -1033,7 +1081,7 @@ mod tests {
                         &rx,
                         &cancel,
                         |_| thread::sleep(Duration::from_millis(1)),
-                        |_, _| panic!("no decode panicked"),
+                        |_| panic!("no decode panicked"),
                     );
                 });
             }
@@ -1072,7 +1120,7 @@ mod tests {
                     &rx,
                     &cancel,
                     |f| decoded.lock().push(f.track.id),
-                    |_, _| panic!("no decode panicked"),
+                    |_| panic!("no decode panicked"),
                 );
             });
             read_loop(
@@ -1122,7 +1170,7 @@ mod tests {
                 assert_ne!(f.track.id, 2, "id 2 panics before it is recorded");
                 decoded.lock().push(f.track.id);
             },
-            |id, _| panicked.lock().push(id),
+            |track| panicked.lock().push(track.id),
         );
 
         assert_eq!(*decoded.lock(), vec![1, 3]);
@@ -1146,7 +1194,7 @@ mod tests {
                     &rx,
                     &cancel,
                     |f| decoded.lock().push(f.track.id),
-                    |_, _| panic!("no decode panicked"),
+                    |_| panic!("no decode panicked"),
                 );
             });
             read_loop(
@@ -1183,7 +1231,7 @@ mod tests {
                         &rx,
                         &cancel,
                         |f| decoded.lock().push(f.track.id),
-                        |_, _| panic!("no decode panicked"),
+                        |_| panic!("no decode panicked"),
                     );
                 });
             }
@@ -1212,9 +1260,7 @@ mod tests {
 
         std::thread::scope(|scope| {
             for _ in 0..3 {
-                scope.spawn(|| {
-                    decode_loop(&rx, &cancel, |_| {}, |_, _| panic!("no decode panicked"))
-                });
+                scope.spawn(|| decode_loop(&rx, &cancel, |_| {}, |_| panic!("no decode panicked")));
             }
             read_loop(
                 Vec::new(),
@@ -1236,7 +1282,7 @@ mod tests {
         let rx = Mutex::new(rx);
 
         std::thread::scope(|scope| {
-            scope.spawn(|| decode_loop(&rx, &cancel, |_| {}, |_, _| panic!("no decode panicked")));
+            scope.spawn(|| decode_loop(&rx, &cancel, |_| {}, |_| panic!("no decode panicked")));
             read_loop(
                 jobs,
                 tx,
@@ -1302,7 +1348,7 @@ mod tests {
             |_| {
                 decoded.fetch_add(1, Ordering::SeqCst);
             },
-            |_, _| panic!("no decode panicked"),
+            |_| panic!("no decode panicked"),
         );
 
         assert_eq!(decoded.load(Ordering::SeqCst), 0);

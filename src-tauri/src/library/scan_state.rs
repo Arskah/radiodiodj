@@ -98,8 +98,21 @@ impl ScanState {
         }
     }
 
+    /// Publish a status, and release the cancel token with it when it is a
+    /// terminal one.
+    ///
+    /// The status *is* the single-flight slot, so the token has to die under the
+    /// same lock that frees the slot: released afterwards, it would be the token
+    /// of whichever scan claimed the slot in between, and that scan could then
+    /// not be cancelled at all.
     fn emit_status(&self, app: &AppHandle, next: ScanStatus) {
-        self.inner.lock().status = next.clone();
+        {
+            let mut inner = self.inner.lock();
+            inner.status = next.clone();
+            if !matches!(next, ScanStatus::Running { .. }) {
+                inner.cancel = None;
+            }
+        }
         let _ = app.emit(STATE_EVENT, &next);
     }
 
@@ -194,6 +207,11 @@ impl ScanState {
     /// per file, and this is the backstop for everything else. The panic itself
     /// is logged by the hook `lib.rs` installs.
     ///
+    /// Only a scan still showing as running is failed here. A panic after the
+    /// result was published — the analysis kick that follows it is the way in —
+    /// must not replace _2 986 tracks (12 new/updated…)_ with an error for a scan
+    /// that in fact finished and committed.
+    ///
     /// `scan` and `emit` are injected so the recovery can be driven without a
     /// filesystem or an `AppHandle`.
     fn guarded_run(&self, scan: impl FnOnce(), emit: impl FnOnce(ScanStatus)) {
@@ -202,11 +220,19 @@ impl ScanState {
             let next = ScanStatus::Error {
                 message: "the scan stopped unexpectedly — see the log".to_string(),
             };
-            self.inner.lock().status = next.clone();
-            emit(next);
+            let stuck = {
+                let mut inner = self.inner.lock();
+                let stuck = matches!(inner.status, ScanStatus::Running { .. });
+                if stuck {
+                    inner.status = next.clone();
+                    inner.cancel = None;
+                }
+                stuck
+            };
+            if stuck {
+                emit(next);
+            }
         }
-        // Both paths out of a scan come through here, panic included.
-        self.inner.lock().cancel = None;
     }
 }
 
@@ -309,6 +335,39 @@ mod tests {
             state.inner.lock().cancel.is_none(),
             "Cancel stops poking a token nobody reads"
         );
+    }
+
+    /// A panic after the scan published its result — the analysis kick that
+    /// follows it is the way in — must not turn a scan that finished and
+    /// committed into an error.
+    #[test]
+    fn a_panic_after_the_result_leaves_it_standing() {
+        let state = ScanState::default();
+        let emitted: Mutex<Vec<ScanStatus>> = Mutex::new(Vec::new());
+
+        state.guarded_run(
+            || {
+                state.inner.lock().status = ScanStatus::Idle {
+                    last_result: Some(ScanResult {
+                        total: 2986,
+                        added: 12,
+                        reattached: 3,
+                        missing: 1,
+                        replaced: 0,
+                    }),
+                };
+                panic!("the analysis pass could not be spawned");
+            },
+            |next| emitted.lock().push(next),
+        );
+
+        assert!(emitted.lock().is_empty(), "the result stands");
+        assert!(matches!(
+            state.inner.lock().status,
+            ScanStatus::Idle {
+                last_result: Some(_)
+            }
+        ));
     }
 
     #[test]
