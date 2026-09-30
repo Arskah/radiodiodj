@@ -115,6 +115,41 @@ pub struct Health {
     /// next launch checks again anyway.
     check_dismissed: Mutex<Option<u64>>,
     checking: Mutex<bool>,
+    emits: Emits,
+}
+
+/// Keeps the last `library-health` event a listener receives the last report
+/// stored. A caller stamps a sequence while it still holds the report lock, so
+/// sequence order is store order; `send` holds `sent` across the emit, so two
+/// emits cannot interleave between the check and the send and the one that lost
+/// the race is dropped rather than delivered after a newer report.
+///
+/// The report lock itself is never held across the emit: `HEALTH_EVENT` has a
+/// backend listener too (`playlist::service`), which Tauri runs on the emitting
+/// thread.
+#[derive(Default)]
+struct Emits {
+    next: Mutex<u64>,
+    sent: Mutex<u64>,
+}
+
+impl Emits {
+    /// Take the next sequence. Called with the report lock held.
+    fn stamp(&self) -> u64 {
+        let mut next = self.next.lock();
+        *next += 1;
+        *next
+    }
+
+    /// Emit unless a newer report has already gone out.
+    fn send(&self, seq: u64, emit: impl FnOnce()) {
+        let mut sent = self.sent.lock();
+        if seq <= *sent {
+            return;
+        }
+        *sent = seq;
+        emit();
+    }
 }
 
 impl Health {
@@ -133,6 +168,7 @@ impl Health {
             check: Mutex::new(None),
             check_dismissed: Mutex::new(None),
             checking: Mutex::new(false),
+            emits: Emits::default(),
         });
         let weak = Arc::downgrade(&health);
         health.tag_writer.set_listener(move || {
@@ -167,14 +203,17 @@ impl Health {
                     .is_some_and(|c| *self.check_dismissed.lock() == Some(c.signature()));
                 report.check = check;
                 report.tag_write_failures = self.tag_writer.failures();
-                {
+                let seq = {
                     // Under the report lock, so a check starting or ending
                     // meanwhile cannot be overwritten with a stale flag.
                     let mut stored = self.report.lock();
                     report.checking = *self.checking.lock();
                     *stored = report.clone();
-                }
-                let _ = self.app.emit(HEALTH_EVENT, &report);
+                    self.emits.stamp()
+                };
+                self.emits.send(seq, || {
+                    let _ = self.app.emit(HEALTH_EVENT, &report);
+                });
             }
             Err(e) => log::error!("library health: {e:#}"),
         }
@@ -189,16 +228,18 @@ impl Health {
     /// Say whether a library check is running. Re-sends the current report
     /// rather than rebuilding it.
     pub fn set_checking(&self, checking: bool) {
-        let report = {
+        let (seq, report) = {
             let mut report = self.report.lock();
             *self.checking.lock() = checking;
             if report.checking == checking {
                 return;
             }
             report.checking = checking;
-            report.clone()
+            (self.emits.stamp(), report.clone())
         };
-        let _ = self.app.emit(HEALTH_EVENT, &report);
+        self.emits.send(seq, || {
+            let _ = self.app.emit(HEALTH_EVENT, &report);
+        });
     }
 
     /// Finish a check: store its result, if any, and clear `checking` in the
@@ -538,6 +579,39 @@ mod tests {
 
     fn ids(group: &DuplicateGroup) -> Vec<i64> {
         group.tracks.iter().map(|m| m.track.id).collect()
+    }
+
+    #[test]
+    fn an_emit_that_lost_the_race_is_dropped() {
+        let emits = Emits::default();
+        let first = emits.stamp();
+        let second = emits.stamp();
+        let sent = Mutex::new(Vec::new());
+        // The newer report reaches the renderer first: the older one is what a
+        // slower refresh would otherwise deliver last.
+        emits.send(second, || sent.lock().push(second));
+        emits.send(first, || sent.lock().push(first));
+        assert_eq!(*sent.lock(), vec![second]);
+    }
+
+    #[test]
+    fn concurrent_refreshes_emit_in_store_order() {
+        let emits = Emits::default();
+        let sent = Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let (emits, sent) = (&emits, &sent);
+                scope.spawn(move || {
+                    for _ in 0..50 {
+                        let seq = emits.stamp();
+                        emits.send(seq, || sent.lock().push(seq));
+                    }
+                });
+            }
+        });
+        let sent = sent.lock();
+        assert!(sent.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(sent.last().copied(), Some(*emits.next.lock()));
     }
 
     #[test]
