@@ -152,6 +152,18 @@ the rest of `cue_*`, and the `playlist_*` family, which queue on their own
 thread). `cue_load` is the exception among those — it resolves the track before
 it sends, and a database read is I/O like any other.
 
+A read of in-memory state is only that while no lock it takes is held across
+I/O. `Config` is the case that had to be fixed: its setters wrote `config.json`
+under the same mutex `get_tuning()` reads, so a settings save on a roaming data
+directory stalled the transport buttons that call it. A write now clones the
+config under the data lock and releases it before taking the lock that guards
+the file, so no number of saves in flight can make a reader wait: a second
+writer would otherwise hold the data lock while queueing behind the first
+writer's disk write, which is the same stall by another route. Ordering comes
+from a sequence stamped under the data lock instead — a save a newer one
+overtook is skipped, and since every snapshot is the whole config, the newer one
+already carries the skipped change.
+
 One consequence reaches the renderer. Commands answered on the main thread came
 back in the order they were asked; commands answered on the blocking pool do
 not. A renderer that fires the same query repeatedly therefore guards its results

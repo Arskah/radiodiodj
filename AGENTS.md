@@ -184,7 +184,12 @@ an `async` command** — that holds one of the async runtime's worker threads, o
 which there is one per core, and a few slow commands would take every other
 async command down with them. What stays sync is what cannot wait: a read of
 in-memory state, or a send down a channel — a command that looks something up
-before it sends is I/O, not a send. Answering off the main thread also means
+before it sends is I/O, not a send. A lock is part of that rule: `Config` clones
+under its data mutex and releases it before taking the lock that guards
+`config.json`, because a writer queueing for the file while holding the data
+mutex stalls `get_tuning()` exactly as writing under it did. Ordering is a
+sequence stamped under the data mutex, and a save a newer one overtook is
+skipped. Answering off the main thread also means
 answers can arrive out of order, so a renderer that fires the same query
 repeatedly guards its results by request (`AppState.search`), and one that
 mutates a row locates it by id when the answer lands, never by a position
@@ -241,7 +246,10 @@ Never invalidate a measurement on the mtime alone. See
 unreadable tracks, the latest library check), re-emitted as `library-health`
 after scans, the analysis pass, metadata edits, path changes and purges. The app
 never deletes audio files. Dismissals silence the badge only while the finding
-is unchanged. The playlist engine takes missing ids from the same event. The
+is unchanged. The playlist engine takes missing ids from the same event. Refreshes run
+concurrently, so each store stamps a sequence under the report lock and an emit
+that lost the race is dropped — the last event delivered is the last report
+stored, never an older one arriving late. The
 check reports only and never runs alongside a scan. See
 [docs/library-health.md](docs/library-health.md).
 

@@ -398,6 +398,15 @@ The renderer loads it with `library_health` and replaces it on every
   or failed); only the `checking` flag changes then
 - when the tag write failures change
 
+The last event delivered is always the last report stored. Two refreshes can run
+at once — the scan thread, the tag writer's listener and four commands on the
+blocking pool all reach `refresh` — and whichever stores second must also emit
+second, or the renderer mirrors a report that has already been replaced and
+nothing corrects it. Each store stamps a sequence under the report lock, and the
+emit is skipped if a higher sequence has already gone out. The report lock is not
+held across the emit: `library-health` has a backend listener too, which Tauri
+runs on the emitting thread.
+
 The renderer works out whether a missing track is queued from the playlist it
 mirrors. That keeps the report independent of the playlist, which itself
 depends on the report.

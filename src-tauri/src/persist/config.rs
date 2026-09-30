@@ -1,9 +1,10 @@
 use anyhow::{Context, Result};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use super::atomic_write;
 use crate::library::auto_cue::Thresholds;
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
@@ -472,6 +473,13 @@ pub struct AppConfig {
 pub struct Config {
     path: PathBuf,
     inner: Mutex<AppConfig>,
+    /// Stamped under `inner`, so sequence order is the order callers changed
+    /// the config.
+    next_save: Mutex<u64>,
+    /// The sequence `config.json` holds, guarding the write. Taken only after
+    /// `inner` is released, so a save in flight never makes another caller wait
+    /// on the data lock.
+    written: Mutex<u64>,
 }
 
 impl Config {
@@ -481,6 +489,8 @@ impl Config {
         Ok(Self {
             path,
             inner: Mutex::new(inner),
+            next_save: Mutex::new(0),
+            written: Mutex::new(0),
         })
     }
 
@@ -497,9 +507,32 @@ impl Config {
         serde_json::from_value::<AppConfig>(parsed).ok()
     }
 
-    fn save_locked(&self, cfg: &AppConfig) -> Result<()> {
-        let json = serde_json::to_string_pretty(cfg)?;
-        fs::write(&self.path, json).context("write config.json")?;
+    /// Persist the config, releasing the data lock before touching the disk.
+    ///
+    /// The sequence is stamped while `cfg` is still held and the file lock is
+    /// taken only after it is released: no caller ever waits on `inner` for a
+    /// write, however many saves are in flight, which is what keeps
+    /// `get_tuning()` answerable from a command that runs on the main thread.
+    ///
+    /// A save whose snapshot a later one overtook is skipped rather than
+    /// written after it. Every snapshot is the whole config, so the newer one
+    /// already carries this caller's change. See
+    /// `docs/architecture.md#commands`.
+    fn save_and_unlock(&self, cfg: MutexGuard<'_, AppConfig>) -> Result<()> {
+        let seq = {
+            let mut next = self.next_save.lock();
+            *next += 1;
+            *next
+        };
+        let snapshot = cfg.clone();
+        drop(cfg);
+        let mut written = self.written.lock();
+        if seq <= *written {
+            return Ok(());
+        }
+        let json = serde_json::to_string_pretty(&snapshot)?;
+        atomic_write(&self.path, json.as_bytes()).context("write config.json")?;
+        *written = seq;
         Ok(())
     }
 
@@ -535,7 +568,7 @@ impl Config {
             return Ok(false);
         }
         arr.push(resolved);
-        self.save_locked(&cfg)?;
+        self.save_and_unlock(cfg)?;
         Ok(true)
     }
 
@@ -546,7 +579,7 @@ impl Config {
     pub fn set_main_device(&self, device: Option<DeviceRef>) -> Result<()> {
         let mut cfg = self.inner.lock();
         cfg.main_device = device;
-        self.save_locked(&cfg)
+        self.save_and_unlock(cfg)
     }
 
     pub fn get_cue_device(&self) -> Option<DeviceRef> {
@@ -556,7 +589,7 @@ impl Config {
     pub fn set_cue_device(&self, device: Option<DeviceRef>) -> Result<()> {
         let mut cfg = self.inner.lock();
         cfg.cue_device = device;
-        self.save_locked(&cfg)
+        self.save_and_unlock(cfg)
     }
 
     pub fn get_now_playing(&self) -> NowPlayingConfig {
@@ -566,7 +599,7 @@ impl Config {
     pub fn set_now_playing(&self, np: NowPlayingConfig) -> Result<()> {
         let mut cfg = self.inner.lock();
         cfg.now_playing = np;
-        self.save_locked(&cfg)
+        self.save_and_unlock(cfg)
     }
 
     /// The tuning section, normalized on the way out as well as in: a
@@ -583,8 +616,9 @@ impl Config {
     pub fn set_tuning(&self, tuning: TuningConfig) -> Result<TuningConfig> {
         let mut cfg = self.inner.lock();
         cfg.tuning = normalize_tuning(tuning);
-        self.save_locked(&cfg)?;
-        Ok(cfg.tuning.clone())
+        let stored = cfg.tuning.clone();
+        self.save_and_unlock(cfg)?;
+        Ok(stored)
     }
 
     pub fn get_appearance(&self) -> AppearanceConfig {
@@ -597,8 +631,9 @@ impl Config {
     pub fn set_appearance(&self, appearance: AppearanceConfig) -> Result<AppearanceConfig> {
         let mut cfg = self.inner.lock();
         cfg.appearance = normalize_appearance(appearance);
-        self.save_locked(&cfg)?;
-        Ok(cfg.appearance.clone())
+        let stored = cfg.appearance.clone();
+        self.save_and_unlock(cfg)?;
+        Ok(stored)
     }
 
     pub fn password_hash(&self) -> Option<String> {
@@ -608,7 +643,7 @@ impl Config {
     pub fn set_password_hash(&self, hash: Option<String>) -> Result<()> {
         let mut cfg = self.inner.lock();
         cfg.admin.password_hash = hash;
-        self.save_locked(&cfg)
+        self.save_and_unlock(cfg)
     }
 
     pub fn idle_lock_min(&self) -> u64 {
@@ -622,7 +657,7 @@ impl Config {
         let minutes = minutes.clamp(*IDLE_LOCK_MIN_RANGE.start(), *IDLE_LOCK_MIN_RANGE.end());
         let mut cfg = self.inner.lock();
         cfg.admin.idle_lock_min = minutes;
-        self.save_locked(&cfg)?;
+        self.save_and_unlock(cfg)?;
         Ok(minutes)
     }
 
@@ -637,7 +672,7 @@ impl Config {
         };
         if let Some(idx) = arr.iter().position(|p| p == &resolved) {
             arr.remove(idx);
-            self.save_locked(&cfg)?;
+            self.save_and_unlock(cfg)?;
             return Ok(true);
         }
         Ok(false)
@@ -785,6 +820,86 @@ mod tests {
             .unwrap();
         assert!(removed);
         assert!(cfg2.get_paths("music").is_empty());
+    }
+
+    #[test]
+    fn concurrent_saves_leave_a_whole_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path();
+        let config = Config::open(path).unwrap();
+        std::thread::scope(|scope| {
+            for n in 1..=8u64 {
+                let config = &config;
+                scope.spawn(move || {
+                    for _ in 0..25 {
+                        let mut tuning = TuningConfig::default();
+                        // Both values carry the writer's number, and
+                        // `history_cap` defaults to 100, so a file a reader
+                        // caught half-written — which `Config::load` turns into
+                        // defaults — cannot pass for a whole one.
+                        tuning.auto_playlist.history_cap = n as usize;
+                        tuning.auto_playlist.session_save_throttle_ms = n;
+                        config.set_tuning(tuning).unwrap();
+                        let ap = Config::open(path).unwrap().get_tuning().auto_playlist;
+                        assert!((1..=8).contains(&ap.history_cap));
+                        assert_eq!(ap.history_cap as u64, ap.session_save_throttle_ms);
+                    }
+                });
+            }
+        });
+        // What a restart reads back is the last state memory holds: the writes
+        // reached the file in the order they changed the config.
+        assert_eq!(
+            Config::open(path).unwrap().get_tuning(),
+            config.get_tuning()
+        );
+        assert!(!path.join("config.json.tmp").exists());
+    }
+
+    #[test]
+    fn a_save_a_newer_one_overtook_is_skipped() {
+        let dir = tempdir().unwrap();
+        let config = Config::open(dir.path()).unwrap();
+        // A later save already reached the file. Its snapshot is the whole
+        // config, so it carries this change too — writing after it would put
+        // the older state back.
+        *config.written.lock() = 5;
+        let mut cfg = config.inner.lock();
+        cfg.tuning.auto_playlist.history_cap = 7;
+        config.save_and_unlock(cfg).unwrap();
+        assert!(!dir.path().join("config.json").exists());
+
+        *config.next_save.lock() = 5;
+        let mut cfg = config.inner.lock();
+        cfg.tuning.auto_playlist.history_cap = 9;
+        config.save_and_unlock(cfg).unwrap();
+        let reloaded = Config::open(dir.path()).unwrap().get_tuning();
+        assert_eq!(reloaded.auto_playlist.history_cap, 9);
+    }
+
+    #[test]
+    fn a_read_answers_while_a_save_waits_for_the_file() {
+        let dir = tempdir().unwrap();
+        let config = Config::open(dir.path()).unwrap();
+        // Hold the file lock: a save gets as far as stamping its sequence under
+        // the data lock, then parks here with the data lock released.
+        let file = config.written.lock();
+        std::thread::scope(|scope| {
+            let config = &config;
+            scope.spawn(move || config.set_tuning(TuningConfig::default()).unwrap());
+            // The stamp is taken under the data lock, so seeing it means the
+            // save is on its way to the file.
+            while *config.next_save.lock() == 0 {
+                std::thread::yield_now();
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            scope.spawn(move || tx.send(config.get_tuning()).unwrap());
+            // A read that waits here is the data lock being held across the
+            // write, whatever else is in flight.
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .expect("a read waited on a save");
+            drop(file);
+        });
     }
 
     #[test]
