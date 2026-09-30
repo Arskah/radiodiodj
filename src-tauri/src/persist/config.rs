@@ -473,10 +473,13 @@ pub struct AppConfig {
 pub struct Config {
     path: PathBuf,
     inner: Mutex<AppConfig>,
-    /// Taken while `inner` is still held and released after the write, so two
-    /// writers reach `config.json` in the order they changed memory. Nothing may
-    /// take `inner` while holding this.
-    writing: Mutex<()>,
+    /// Stamped under `inner`, so sequence order is the order callers changed
+    /// the config.
+    next_save: Mutex<u64>,
+    /// The sequence `config.json` holds, guarding the write. Taken only after
+    /// `inner` is released, so a save in flight never makes another caller wait
+    /// on the data lock.
+    written: Mutex<u64>,
 }
 
 impl Config {
@@ -486,7 +489,8 @@ impl Config {
         Ok(Self {
             path,
             inner: Mutex::new(inner),
-            writing: Mutex::new(()),
+            next_save: Mutex::new(0),
+            written: Mutex::new(0),
         })
     }
 
@@ -505,17 +509,30 @@ impl Config {
 
     /// Persist the config, releasing the data lock before touching the disk.
     ///
-    /// `writing` is taken while `cfg` is still held, so the order two callers
-    /// change the in-memory config is the order they reach the file. `inner` is
-    /// not held across the write, which is what keeps `get_tuning()` answerable
-    /// from a command that runs on the main thread. See
+    /// The sequence is stamped while `cfg` is still held and the file lock is
+    /// taken only after it is released: no caller ever waits on `inner` for a
+    /// write, however many saves are in flight, which is what keeps
+    /// `get_tuning()` answerable from a command that runs on the main thread.
+    ///
+    /// A save whose snapshot a later one overtook is skipped rather than
+    /// written after it. Every snapshot is the whole config, so the newer one
+    /// already carries this caller's change. See
     /// [docs/architecture.md](../../../docs/architecture.md#commands).
     fn save_and_unlock(&self, cfg: MutexGuard<'_, AppConfig>) -> Result<()> {
-        let _writing = self.writing.lock();
+        let seq = {
+            let mut next = self.next_save.lock();
+            *next += 1;
+            *next
+        };
         let snapshot = cfg.clone();
         drop(cfg);
+        let mut written = self.written.lock();
+        if seq <= *written {
+            return Ok(());
+        }
         let json = serde_json::to_string_pretty(&snapshot)?;
         atomic_write(&self.path, json.as_bytes()).context("write config.json")?;
+        *written = seq;
         Ok(())
     }
 
@@ -837,6 +854,52 @@ mod tests {
             config.get_tuning()
         );
         assert!(!path.join("config.json.tmp").exists());
+    }
+
+    #[test]
+    fn a_save_a_newer_one_overtook_is_skipped() {
+        let dir = tempdir().unwrap();
+        let config = Config::open(dir.path()).unwrap();
+        // A later save already reached the file. Its snapshot is the whole
+        // config, so it carries this change too — writing after it would put
+        // the older state back.
+        *config.written.lock() = 5;
+        let mut cfg = config.inner.lock();
+        cfg.tuning.auto_playlist.history_cap = 7;
+        config.save_and_unlock(cfg).unwrap();
+        assert!(!dir.path().join("config.json").exists());
+
+        *config.next_save.lock() = 5;
+        let mut cfg = config.inner.lock();
+        cfg.tuning.auto_playlist.history_cap = 9;
+        config.save_and_unlock(cfg).unwrap();
+        let reloaded = Config::open(dir.path()).unwrap().get_tuning();
+        assert_eq!(reloaded.auto_playlist.history_cap, 9);
+    }
+
+    #[test]
+    fn a_read_answers_while_a_save_waits_for_the_file() {
+        let dir = tempdir().unwrap();
+        let config = Config::open(dir.path()).unwrap();
+        // Hold the file lock: a save gets as far as stamping its sequence under
+        // the data lock, then parks here with the data lock released.
+        let file = config.written.lock();
+        std::thread::scope(|scope| {
+            let config = &config;
+            scope.spawn(move || config.set_tuning(TuningConfig::default()).unwrap());
+            // The stamp is taken under the data lock, so seeing it means the
+            // save is on its way to the file.
+            while *config.next_save.lock() == 0 {
+                std::thread::yield_now();
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            scope.spawn(move || tx.send(config.get_tuning()).unwrap());
+            // A read that waits here is the data lock being held across the
+            // write, whatever else is in flight.
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .expect("a read waited on a save");
+            drop(file);
+        });
     }
 
     #[test]

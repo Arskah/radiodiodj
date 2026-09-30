@@ -185,10 +185,11 @@ which there is one per core, and a few slow commands would take every other
 async command down with them. What stays sync is what cannot wait: a read of
 in-memory state, or a send down a channel — a command that looks something up
 before it sends is I/O, not a send. A lock is part of that rule: `Config` clones
-under its data mutex and writes `config.json` outside it, ordered by a second
-mutex taken while the data mutex is still held, because `get_tuning()` is a
-synchronous read only while nothing holds that lock over the disk. Answering off
-the main thread also means
+under its data mutex and releases it before taking the lock that guards
+`config.json`, because a writer queueing for the file while holding the data
+mutex stalls `get_tuning()` exactly as writing under it did. Ordering is a
+sequence stamped under the data mutex, and a save a newer one overtook is
+skipped. Answering off the main thread also means
 answers can arrive out of order, so a renderer that fires the same query
 repeatedly guards its results by request (`AppState.search`), and one that
 mutates a row locates it by id when the answer lands, never by a position

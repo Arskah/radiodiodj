@@ -126,7 +126,10 @@ pub struct Health {
 ///
 /// The report lock itself is never held across the emit: `HEALTH_EVENT` has a
 /// backend listener too (`playlist::service`), which Tauri runs on the emitting
-/// thread.
+/// thread. `sent` is held there on purpose — serialising the delivery is the
+/// guarantee, and releasing it before the emit would let two emits reorder
+/// again — so nothing a `HEALTH_EVENT` listener reaches may call back into
+/// [`Health::refresh`]: `parking_lot`'s mutexes are not reentrant.
 #[derive(Default)]
 struct Emits {
     next: Mutex<u64>,
