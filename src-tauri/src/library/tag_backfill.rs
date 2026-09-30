@@ -26,6 +26,7 @@
 
 use parking_lot::Mutex;
 use serde::Serialize;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
@@ -68,6 +69,9 @@ pub struct TagBackfillJob {
     /// Work arrived while a worker was running. See [`TagBackfillJob::start`].
     kicked: AtomicBool,
     cancel: AtomicBool,
+    /// Whether the last thing announced was `Running`. Only then does a pass owe
+    /// the renderer the idle that says the rows it listed have changed.
+    announced: AtomicBool,
 }
 
 impl TagBackfillJob {
@@ -86,15 +90,47 @@ impl TagBackfillJob {
             return;
         }
         self.cancel.store(false, Ordering::SeqCst);
-        std::thread::spawn(move || loop {
+        std::thread::spawn(move || {
+            let announce = |next: TagBackfillStatus| self.announce(&app, next);
+            self.drain_loop(|| run(&self, &app, &db), announce);
+        });
+    }
+
+    /// Drain until nothing asks for another pass, releasing the single-flight
+    /// slot however each one ends — a panic included.
+    ///
+    /// Uncaught, a panic unwinds past the release and holds the slot for the
+    /// life of the process: no row's tags are ever backfilled again, and the
+    /// renderer never gets the idle event that tells it the rows changed. A tag
+    /// read is `read_file_tags` over an operator's file, so the panic is one
+    /// third-party parser away. The panic itself is logged by the hook `lib.rs`
+    /// installs.
+    ///
+    /// A caught panic announces the idle the pass died owing — only if it had
+    /// announced itself running, since that idle is what tells the renderer the
+    /// rows it listed have changed. A panic under a cancel consumes the flag and
+    /// stops, the way the pass it killed would have: a kick waiting behind the
+    /// cancel must not be what starts a fresh pass over the whole queue.
+    ///
+    /// `pass` and `announce` are injected so the loop can be driven without a
+    /// filesystem or an `AppHandle`.
+    fn drain_loop(&self, mut pass: impl FnMut(), mut announce: impl FnMut(TagBackfillStatus)) {
+        loop {
             // Cleared before the drain, so a kick during it is never lost.
             self.kicked.store(false, Ordering::SeqCst);
-            run(&self, &app, &db);
+            let mut cancelled = false;
+            if catch_unwind(AssertUnwindSafe(&mut pass)).is_err() {
+                log::error!("tag backfill: the pass panicked; releasing the slot");
+                if self.announced.load(Ordering::SeqCst) {
+                    announce(TagBackfillStatus::Idle);
+                }
+                cancelled = self.cancel.swap(false, Ordering::SeqCst);
+            }
             self.running.store(false, Ordering::SeqCst);
-            if !self.claim_rerun() {
+            if cancelled || !self.claim_rerun() {
                 break;
             }
-        });
+        }
     }
 
     /// Whether the worker that just released the slot should take it back: only
@@ -107,6 +143,10 @@ impl TagBackfillJob {
     }
 
     fn announce(&self, app: &AppHandle, next: TagBackfillStatus) {
+        self.announced.store(
+            matches!(next, TagBackfillStatus::Running { .. }),
+            Ordering::SeqCst,
+        );
         let _ = app.emit(STATE_EVENT, &next);
     }
 }
@@ -157,7 +197,9 @@ fn run(job: &TagBackfillJob, app: &AppHandle, db: &Db) {
 
 /// Read one chunk's tags across [`READ_CONCURRENCY`] threads, dropping the
 /// files that could not be read at all — those keep their old version and come
-/// back on the next launch.
+/// back on the next launch. A parser that panics rather than returning an error
+/// is dropped the same way: uncaught it would be re-raised when `thread::scope`
+/// joins and take the whole pass with it.
 fn read_batch(job: &TagBackfillJob, chunk: &[TagReadJob]) -> Vec<(TagReadJob, TrackInsert)> {
     let next = AtomicUsize::new(0);
     let out: Mutex<Vec<(TagReadJob, TrackInsert)>> = Mutex::new(Vec::with_capacity(chunk.len()));
@@ -171,14 +213,110 @@ fn read_batch(job: &TagBackfillJob, chunk: &[TagReadJob]) -> Vec<(TagReadJob, Tr
                 let Some(item) = chunk.get(i) else {
                     break;
                 };
-                match read_file_tags(&item.path) {
-                    Ok(parsed) => out.lock().push((item.clone(), parsed)),
-                    Err(e) => {
+                match catch_unwind(AssertUnwindSafe(|| read_file_tags(&item.path))) {
+                    Ok(Ok(parsed)) => out.lock().push((item.clone(), parsed)),
+                    Ok(Err(e)) => {
                         log::warn!("tag backfill: read {} failed: {e:#}", item.path);
+                    }
+                    Err(_) => {
+                        log::error!("tag backfill: reading {} panicked", item.path);
                     }
                 }
             });
         }
     });
     out.into_inner()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A panicking pass must not take the single-flight slot with it: no row's
+    /// tags would ever be backfilled again, and the renderer would never get the
+    /// idle event that tells it rows changed.
+    #[test]
+    fn a_panicking_pass_releases_the_slot() {
+        let job = TagBackfillJob::default();
+        job.running.store(true, Ordering::SeqCst);
+        job.announced.store(true, Ordering::SeqCst);
+        let announced: Mutex<Vec<TagBackfillStatus>> = Mutex::new(Vec::new());
+
+        job.drain_loop(
+            || panic!("a tag parser went down"),
+            |next| announced.lock().push(next),
+        );
+
+        assert!(!job.running.load(Ordering::SeqCst), "the slot is free");
+        assert!(
+            matches!(announced.lock().as_slice(), [TagBackfillStatus::Idle]),
+            "the rows are announced as settled"
+        );
+    }
+
+    /// The idle is what tells the renderer to re-list the library. A pass that
+    /// died before it touched a row has nothing to tell it.
+    #[test]
+    fn a_pass_that_panicked_before_touching_a_row_says_nothing() {
+        let job = TagBackfillJob::default();
+        job.running.store(true, Ordering::SeqCst);
+        let announced: Mutex<Vec<TagBackfillStatus>> = Mutex::new(Vec::new());
+
+        job.drain_loop(
+            || panic!("the queue query went down"),
+            |next| announced.lock().push(next),
+        );
+
+        assert!(!job.running.load(Ordering::SeqCst), "the slot is free");
+        assert!(announced.lock().is_empty(), "nothing was announced");
+    }
+
+    /// The panic consumes the cancel the dead pass would have, and stops with
+    /// it: a kick waiting behind the cancel must not start a fresh pass over the
+    /// whole queue the operator just stopped.
+    #[test]
+    fn a_panicking_pass_under_a_cancel_stops() {
+        let job = TagBackfillJob::default();
+        job.running.store(true, Ordering::SeqCst);
+        job.cancel();
+        let passes = AtomicUsize::new(0);
+
+        job.drain_loop(
+            || {
+                passes.fetch_add(1, Ordering::SeqCst);
+                job.kicked.store(true, Ordering::SeqCst);
+                panic!("a tag parser went down");
+            },
+            |_| {},
+        );
+
+        assert_eq!(passes.load(Ordering::SeqCst), 1, "the stop stands");
+        assert!(!job.cancel.load(Ordering::SeqCst), "the cancel is consumed");
+        assert!(!job.running.load(Ordering::SeqCst), "the slot is free");
+        assert!(
+            job.kicked.load(Ordering::SeqCst),
+            "the kick stands for the next start"
+        );
+    }
+
+    /// Work that arrived while the pass was dying still gets a pass.
+    #[test]
+    fn a_kick_is_served_after_a_panicking_pass() {
+        let job = TagBackfillJob::default();
+        job.running.store(true, Ordering::SeqCst);
+        let passes = AtomicUsize::new(0);
+
+        job.drain_loop(
+            || {
+                if passes.fetch_add(1, Ordering::SeqCst) == 0 {
+                    job.kicked.store(true, Ordering::SeqCst);
+                    panic!("a tag parser went down");
+                }
+            },
+            |_| {},
+        );
+
+        assert_eq!(passes.load(Ordering::SeqCst), 2, "the kick got its pass");
+        assert!(!job.running.load(Ordering::SeqCst));
+    }
 }

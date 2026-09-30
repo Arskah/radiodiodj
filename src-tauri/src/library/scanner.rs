@@ -6,6 +6,7 @@ use lofty::probe::Probe;
 use lofty::tag::ItemKey;
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::UNIX_EPOCH;
@@ -105,7 +106,7 @@ pub fn scan_all(
         fingerprint_new: !index.is_empty(),
     };
 
-    let steps = inspect_all(&listing.found, &known, cancel, &on_progress);
+    let steps = inspect_all(&listing.found, &known, cancel, &on_progress, inspect);
     let canceled = cancel();
     let mut change = Reconcile {
         now_ms: now_ms(),
@@ -215,11 +216,18 @@ enum Step {
 /// across a small pool; each worker claims the next index via `next`. The
 /// resulting rows are applied in one transaction — a per-row autocommit is the
 /// other thing that makes a big scan slow.
+///
+/// A file whose inspection panics is logged and skipped, like one that could not
+/// be parsed: [`inspect`] hands an operator's file to lofty and to symphonia, on
+/// a scoped thread whose panic `thread::scope` re-raises at join — so uncaught,
+/// one bad file abandons the whole scan and leaves the state that tracks it
+/// stuck on `Running`. `inspect` is injected so that can be driven in a test.
 fn inspect_all(
     found: &[Found],
     known: &Known,
     cancel: &(impl Fn() -> bool + Sync),
     on_progress: &(impl Fn(usize, usize) + Sync),
+    inspect: impl Fn(&Found, &Known) -> Option<Step> + Sync,
 ) -> Vec<Step> {
     let total = found.len();
     let next = AtomicUsize::new(0);
@@ -240,8 +248,12 @@ fn inspect_all(
                 let Some(file) = found.get(i) else {
                     break;
                 };
-                if let Some(step) = inspect(file, known) {
-                    steps.lock().push(step);
+                match catch_unwind(AssertUnwindSafe(|| inspect(file, known))) {
+                    Ok(Some(step)) => {
+                        steps.lock().push(step);
+                    }
+                    Ok(None) => {}
+                    Err(_) => log::error!("scan: inspecting {} panicked", file.path),
                 }
                 let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
                 on_progress(done, total);
@@ -996,6 +1008,57 @@ mod tests {
                 }
                 .mtime_ms()
             )
+        );
+    }
+
+    /// One unparseable file must not cost the scan. Uncaught, the panic is
+    /// re-raised at the scope's join and the whole pass is abandoned.
+    #[test]
+    fn a_panicking_inspection_costs_one_file() {
+        let found: Vec<Found> = ["a.wav", "b.wav", "c.wav"]
+            .iter()
+            .map(|name| Found {
+                path: (*name).to_string(),
+                content_type: "music",
+            })
+            .collect();
+        let known = Known {
+            present: HashMap::new(),
+            missing_at: HashMap::new(),
+            fingerprint_new: false,
+        };
+        let progressed = AtomicUsize::new(0);
+
+        let steps = inspect_all(
+            &found,
+            &known,
+            &|| false,
+            &|_, _| {
+                progressed.fetch_add(1, Ordering::Relaxed);
+            },
+            |file, _| {
+                assert_ne!(file.path, "b.wav", "b.wav panics instead of returning");
+                Some(Step::Update(TrackInsert {
+                    path: file.path.clone(),
+                    content_type: file.content_type.to_string(),
+                    ..Default::default()
+                }))
+            },
+        );
+
+        let mut paths: Vec<String> = steps
+            .into_iter()
+            .map(|step| match step {
+                Step::Update(track) => track.path,
+                _ => unreachable!("only updates are produced here"),
+            })
+            .collect();
+        paths.sort();
+        assert_eq!(paths, vec!["a.wav".to_string(), "c.wav".to_string()]);
+        assert_eq!(
+            progressed.load(Ordering::Relaxed),
+            3,
+            "the skipped file is still counted"
         );
     }
 

@@ -88,6 +88,11 @@ A scan:
    stop an unreachable share from looking empty, are in
    [track-identity.md](./track-identity.md#reconciling-a-scan).
 
+A file that brings its parser down rather than returning an error costs that
+file and nothing else: it is logged, skipped, and the scan carries on to the
+next one. A scan that cannot finish at all reports an error and leaves the bar
+free for the next attempt — it never leaves the library unable to scan again.
+
 When the scan finishes, the bar reports what it did, for example _Scan complete
 — 2 986 tracks (12 new/updated, 3 moved, 1 missing)_. The result stays until the
 operator dismisses it or starts another scan. A canceled or failed scan reports
@@ -190,7 +195,11 @@ track missing only one of them costs no more than a track missing all four.
 
 A file that fails to decode is recorded on its track and skipped until a scan
 sees the file change; it is listed under [Unreadable
-tracks](./library-health.md#unreadable-tracks). A file that could not be read is
+tracks](./library-health.md#unreadable-tracks). A file that brings the decoder
+down instead of returning an error is recorded the same way, and for the same
+reason it has to be: it would do it again on every launch, having been pulled
+across the share first. One such file costs one file — never the pass, and never
+the pass's ability to run again. A file that could not be read is
 skipped for the rest of the run only — by the reader, so it never reaches a
 decoder at all. Cancelling a scan cancels the pass too, and the pass can be
 stopped on its own from the status bar without stopping the scan that started
@@ -217,6 +226,10 @@ the delta cache is unaffected; a recorded analysis failure, the level envelope
 and the cue points are left alone; and a column the operator edited keeps the
 operator's value. Each row is written only while its modification time still
 matches what the queue saw, so a scan running alongside it always wins.
+
+A file whose tags bring the parser down is logged and skipped, exactly like one
+whose tags could not be read: the row keeps its old version and comes back on the
+next launch.
 
 Adding another tag field later is a schema step plus a bump of
 `TAG_READ_VERSION` — the whole library requeues and fills itself in.
