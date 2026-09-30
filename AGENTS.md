@@ -33,18 +33,24 @@ The module map, the event table and the boundary conventions are
 Each entry is the invariant to preserve; the linked doc carries the reasoning.
 
 **Audio playback** — in-process Rust decks, no browser `<audio>`, no `media://`,
-no transcoder. A deck reads the **whole file into RAM** (retry + 10 s watchdog)
-and never streams from the filesystem, which is what survives a wedged network
-share. See [docs/audio.md](docs/audio.md).
+no transcoder. A deck reads the **whole file into RAM** (retry + a 10 s
+watchdog over the **stall**, never over the read: the read publishes a byte
+count the worker loop notes each tick, so a large file on a slow share keeps its
+load and only a count that stops moving is a wedged mount) and never streams
+from the filesystem, which is what survives a wedged network share. See
+[docs/audio.md](docs/audio.md).
 
 **One file never crosses the share twice at once** — the library is a network
 share, and concurrent reads are how a share that was merely slow becomes a share
 that is down. The prefetch worker has always been sequential; the rule is the
 share's, not that worker's, so `audio/cache.rs` holds an **in-flight set** every
 reader claims against, and a deck that misses an id someone else is reading into
-the window waits for that read instead of starting a second one — outside the
-window the bytes would be refused, so it reads without claiming rather than
-serialising two reads for nothing. What a deck reads is offered back to the
+the window waits for that read instead of starting a second one. A claim carries
+the holder's read progress, which the waiter mirrors — its own watchdog can only
+see a read of its own, so without it the wait would end on the file's size
+rather than on a stall. Outside the window the bytes would be refused, so it
+reads without claiming rather than serialising two reads for nothing. What a
+deck reads is offered back to the
 cache, refused only outside the window. The analysis pass keeps the same rule by
 reading on **one thread** and decoding on several — never widen the reader; what
 bounds the pass is whole files resident, not cores. It is per file, not a global

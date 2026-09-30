@@ -24,18 +24,25 @@
 //! someone else is already reading into the window waits for that read instead
 //! of starting its own, which is never slower than a read that begins later.
 //! Outside the window there is nothing to share, so such a read takes no claim.
+//!
+//! A claim carries the reader's **progress**, because a waiting deck's watchdog
+//! would otherwise be watching a read of its own that never started: it mirrors
+//! the holder's byte count, so the load is given up on when the *holder* stalls
+//! and not when the file turns out to be large (#504).
 
 use anyhow::Result;
 use parking_lot::{Condvar, Mutex};
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
-use super::player::{read_file, read_with_retry, Bytes};
+use super::player::{read_file_watched, read_with_retry, unwatched, Bytes, Progress, Seen};
 
 /// Default hard cap on total resident bytes, used when no configured value is
 /// supplied (tests, and the config default). The live cap is held per-`Cache`.
@@ -53,10 +60,10 @@ const CACHE_STATE_EVENT: &str = "main-deck:cache-state";
 const PREFETCH_FAILED_EVENT: &str = "main-deck:prefetch-failed";
 
 /// How long a deck waiting on someone else's read sleeps before looking again.
-/// The wait is driven by [`Shared::read_done`]; this bound only keeps a missed
-/// notification from wedging the loop. What actually bounds the wait is the
-/// deck's read watchdog, which fails the load exactly as it would a read of its
-/// own.
+/// The wait is driven by [`Shared::read_done`]; this bound also paces the
+/// mirroring of the holder's progress, and keeps a missed notification from
+/// wedging the loop. What ends the wait is the holder stalling, on the same
+/// budget the deck's watchdog applies to a read of its own.
 const READ_WAIT_POLL: Duration = Duration::from_millis(250);
 
 /// Internal, lock-guarded cache state. All bookkeeping (window membership and
@@ -73,10 +80,15 @@ struct Inner {
     generation: u64,
     /// Hard cap on total resident bytes for this cache (from config).
     cap: usize,
-    /// Ids a read is in flight for, whoever is doing it. Claimed before a read
-    /// and released when it ends, so the share is never asked for one file
-    /// twice at once.
-    in_flight: HashSet<i64>,
+    /// Ids a read is in flight for, whoever is doing it, each paired with that
+    /// read's progress. Claimed before a read and released when it ends, so the
+    /// share is never asked for one file twice at once.
+    ///
+    /// The progress handle is what a *waiter* needs: its own watchdog can only
+    /// see its own read, so without the holder's byte count a deck waiting on
+    /// someone else's copy of a large file would be failed for the size of the
+    /// file rather than for a stall.
+    in_flight: HashMap<i64, Progress>,
 }
 
 impl Inner {
@@ -86,7 +98,7 @@ impl Inner {
             window: Vec::new(),
             generation: 0,
             cap,
-            in_flight: HashSet::new(),
+            in_flight: HashMap::new(),
         }
     }
 
@@ -114,9 +126,16 @@ impl Inner {
         fresh || capped
     }
 
-    /// Mark `id` as being read, unless someone is already reading it.
-    fn claim(&mut self, id: i64) -> bool {
-        self.in_flight.insert(id)
+    /// Mark `id` as being read by the reader behind `progress`, unless someone
+    /// is already reading it.
+    fn claim(&mut self, id: i64, progress: &Progress) -> bool {
+        match self.in_flight.entry(id) {
+            Entry::Occupied(_) => false,
+            Entry::Vacant(slot) => {
+                slot.insert(Arc::clone(progress));
+                true
+            }
+        }
     }
 
     /// Evict cached entries whose id is not in the current window. Returns
@@ -214,22 +233,28 @@ impl Shared {
     /// lock that decided to read, so that no second reader can slip in between
     /// the decision and the claim. This is how a test stands one in.
     #[cfg(test)]
-    fn claim(self: &Arc<Self>, id: i64) -> Option<ReadClaim> {
-        self.inner.lock().claim(id).then(|| ReadClaim {
+    fn claim(self: &Arc<Self>, id: i64, progress: &Progress) -> Option<ReadClaim> {
+        self.inner.lock().claim(id, progress).then(|| ReadClaim {
             shared: Arc::clone(self),
             id,
         })
     }
 
+    /// The progress of the read `id` is in flight for, if any. What a waiter
+    /// mirrors so its watchdog watches the read that is actually happening.
+    fn progress_of(&self, id: i64) -> Option<Progress> {
+        self.inner.lock().in_flight.get(&id).cloned()
+    }
+
     /// What the prefetch worker should do with `id`, claiming it in the same
     /// breath when the read falls to us — see [`Shared::deck_step`] for why
     /// that has to be one step.
-    fn prefetch_step(self: &Arc<Self>, id: i64) -> Step {
+    fn prefetch_step(self: &Arc<Self>, id: i64, progress: &Progress) -> Step {
         let mut guard = self.inner.lock();
         if let Some(b) = guard.entries.get(&id) {
             return Step::Have(b.len());
         }
-        if guard.claim(id) {
+        if guard.claim(id, progress) {
             return Step::Read(ReadClaim {
                 shared: Arc::clone(self),
                 id,
@@ -241,7 +266,7 @@ impl Shared {
     /// What a deck's read should do for `id`, claiming it in the same breath
     /// when the read falls to us — the decision and the claim have to be one
     /// step, or two decks both decide to read.
-    fn deck_step(self: &Arc<Self>, id: i64) -> DeckStep {
+    fn deck_step(self: &Arc<Self>, id: i64, progress: &Progress) -> DeckStep {
         let mut guard = self.inner.lock();
         if let Some(bytes) = guard.entries.get(&id) {
             return DeckStep::Take(Arc::clone(bytes));
@@ -254,7 +279,7 @@ impl Shared {
         if !guard.window.iter().any(|(w, _)| *w == id) {
             return DeckStep::Read(None);
         }
-        if guard.claim(id) {
+        if guard.claim(id, progress) {
             return DeckStep::Read(Some(ReadClaim {
                 shared: Arc::clone(self),
                 id,
@@ -334,13 +359,20 @@ impl Cache {
     /// the share is already sending. What we read ourselves is offered to the
     /// cache, so the next load of the same track is a hit.
     ///
-    /// `wait_budget` bounds the waiting branch, and is the deck's read
-    /// watchdog: the load is failed at the moment the watchdog would have
-    /// failed it anyway. Without it a waiter has no way to learn that its load
-    /// was abandoned — the deck's generation lives on the worker thread — so
-    /// an outage's retries would queue up behind the wedged read and each one
-    /// would, on waking, perform a full read for a load given up on long
-    /// before, delaying the next real one behind it.
+    /// Our own read publishes its byte count into `progress`, which is the
+    /// deck's watchdog handle; a wait mirrors the *holder's* count into it, so
+    /// either way the watchdog is watching the read that is actually
+    /// happening.
+    ///
+    /// `stall_budget` bounds the waiting branch on the same rule the watchdog
+    /// applies to a read of our own: a holder still delivering bytes is waited
+    /// for however long the file takes, one that has delivered nothing for the
+    /// budget is given up on. The branch needs a bound of its own because a
+    /// waiter has no way to learn that its load was abandoned — the deck's
+    /// generation lives on the worker thread — so an outage's retries would
+    /// queue up behind the wedged read and each one would, on waking, perform a
+    /// full read for a load given up on long before, delaying the next real one
+    /// behind it.
     ///
     /// The mutex is never held across a read.
     pub(super) fn read_for_deck(
@@ -348,14 +380,19 @@ impl Cache {
         id: i64,
         path: &Path,
         backoffs: &[Duration],
-        wait_budget: Duration,
+        stall_budget: Duration,
+        progress: &Progress,
     ) -> Result<Bytes> {
-        let deadline = Instant::now() + wait_budget;
+        let mut seen = Seen::issued(Instant::now());
         loop {
-            match self.shared.deck_step(id) {
+            match self.shared.deck_step(id, progress) {
                 DeckStep::Take(bytes) => return Ok(bytes),
                 DeckStep::Read(claim) => {
-                    let read = read_with_retry(|| read_file(path), thread::sleep, backoffs);
+                    let read = read_with_retry(
+                        || read_file_watched(path, progress),
+                        thread::sleep,
+                        backoffs,
+                    );
                     // Resident before the claim is released, so a deck waking
                     // on the notification finds the bytes rather than deciding
                     // to read them again.
@@ -365,10 +402,22 @@ impl Cache {
                     drop(claim);
                     return read;
                 }
-                DeckStep::Wait if Instant::now() >= deadline => {
-                    anyhow::bail!("waited out the read of track {id} another reader holds")
+                DeckStep::Wait => {
+                    // Mirror what the holder has delivered. `fetch_max` because
+                    // the handle is the deck's own and must only ever climb: a
+                    // holder that fails and is replaced by one starting over
+                    // would otherwise read as a rewind.
+                    let holder = self.shared.progress_of(id).map_or(0, |p| p.load(Relaxed));
+                    progress.fetch_max(holder, Relaxed);
+                    let now = Instant::now();
+                    seen = seen.observe(progress.load(Relaxed), now);
+                    if seen.stalled(now, stall_budget) {
+                        anyhow::bail!(
+                            "waited out the stalled read of track {id} another reader holds"
+                        )
+                    }
+                    self.shared.wait_for_read();
                 }
-                DeckStep::Wait => self.shared.wait_for_read(),
             }
         }
     }
@@ -430,6 +479,7 @@ fn run_prefetch(shared: &Arc<Shared>, app: &AppHandle) {
         // entry whose holder then fails is never fetched at all, and its bytes
         // go uncounted against the cap while it is in flight — which would have
         // this run read later entries that land only to be evicted.
+        let progress = unwatched();
         let _claim = loop {
             // Abort if a newer window superseded ours; the worker will be woken
             // again for the new window. Checked on every look, so a wait cannot
@@ -437,7 +487,7 @@ fn run_prefetch(shared: &Arc<Shared>, app: &AppHandle) {
             if shared.inner.lock().generation != generation {
                 return;
             }
-            match shared.prefetch_step(*id) {
+            match shared.prefetch_step(*id, &progress) {
                 Step::Have(len) => {
                     retained_bytes += len;
                     continue 'window;
@@ -448,7 +498,7 @@ fn run_prefetch(shared: &Arc<Shared>, app: &AppHandle) {
         };
 
         // Read on the worker thread — one file at a time.
-        let bytes = match read_file(path) {
+        let bytes = match read_file_watched(path, &progress) {
             Ok(b) => b,
             Err(e) => {
                 log::warn!("cache: prefetch read {} failed: {}", path.display(), e);
@@ -620,41 +670,73 @@ mod tests {
     #[test]
     fn a_second_reader_is_turned_away_while_a_read_is_in_flight() {
         let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
-        let first = shared.claim(7);
+        let first = shared.claim(7, &unwatched());
         assert!(first.is_some(), "nobody was reading it");
-        assert!(shared.claim(7).is_none(), "someone already is");
-        assert!(shared.claim(8).is_some(), "a different file is free");
+        assert!(
+            shared.claim(7, &unwatched()).is_none(),
+            "someone already is"
+        );
+        assert!(
+            shared.claim(8, &unwatched()).is_some(),
+            "a different file is free"
+        );
     }
 
     #[test]
     fn releasing_a_claim_lets_the_next_reader_in() {
         let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
-        drop(shared.claim(7));
-        assert!(shared.claim(7).is_some(), "the claim was released on drop");
+        drop(shared.claim(7, &unwatched()));
+        assert!(
+            shared.claim(7, &unwatched()).is_some(),
+            "the claim was released on drop"
+        );
+    }
+
+    /// What a waiting deck's watchdog reads: the holder publishes into the
+    /// handle it claimed with, so the waiter can mirror bytes it is not reading
+    /// itself (#504).
+    #[test]
+    fn a_claim_publishes_the_holders_progress_to_whoever_waits() {
+        let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
+        let holder = unwatched();
+        let claim = shared.claim(7, &holder).expect("nobody was reading it");
+
+        holder.store(64 * 1024, Relaxed);
+        let mirrored = shared.progress_of(7).expect("the holder is in flight");
+        assert_eq!(mirrored.load(Relaxed), 64 * 1024);
+
+        drop(claim);
+        assert!(
+            shared.progress_of(7).is_none(),
+            "a released claim leaves no progress to mirror"
+        );
     }
 
     #[test]
     fn prefetch_waits_out_a_track_a_deck_is_already_reading() {
         let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
-        let _claim = shared.claim(7);
-        assert!(matches!(shared.prefetch_step(7), Step::Busy));
+        let _claim = shared.claim(7, &unwatched());
+        assert!(matches!(shared.prefetch_step(7, &unwatched()), Step::Busy));
     }
 
     #[test]
     fn prefetch_claims_the_track_it_decides_to_read() {
         let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
-        let claim = shared.prefetch_step(7);
+        let claim = shared.prefetch_step(7, &unwatched());
         assert!(matches!(claim, Step::Read(_)));
         // Deciding and claiming are one lock: nothing can slip a read in
         // between them and have both readers go to the share.
-        assert!(matches!(shared.prefetch_step(7), Step::Busy));
+        assert!(matches!(shared.prefetch_step(7, &unwatched()), Step::Busy));
     }
 
     #[test]
     fn prefetch_counts_a_track_that_is_already_resident() {
         let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
         shared.inner.lock().entries.insert(7, bytes(1024));
-        assert!(matches!(shared.prefetch_step(7), Step::Have(1024)));
+        assert!(matches!(
+            shared.prefetch_step(7, &unwatched()),
+            Step::Have(1024)
+        ));
         assert!(
             shared.inner.lock().in_flight.is_empty(),
             "a resident track is not claimed"
@@ -665,22 +747,25 @@ mod tests {
     fn a_deck_takes_the_resident_copy() {
         let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
         shared.inner.lock().entries.insert(7, bytes(1024));
-        assert!(matches!(shared.deck_step(7), DeckStep::Take(b) if b.len() == 1024));
+        assert!(matches!(shared.deck_step(7, &unwatched()), DeckStep::Take(b) if b.len() == 1024));
     }
 
     #[test]
     fn a_deck_reads_a_track_nobody_is_reading() {
         let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
         shared.inner.lock().window = win(&[7]);
-        assert!(matches!(shared.deck_step(7), DeckStep::Read(Some(_))));
+        assert!(matches!(
+            shared.deck_step(7, &unwatched()),
+            DeckStep::Read(Some(_))
+        ));
     }
 
     #[test]
     fn a_deck_waits_for_a_read_already_in_flight() {
         let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
         shared.inner.lock().window = win(&[7]);
-        let _claim = shared.claim(7);
-        assert!(matches!(shared.deck_step(7), DeckStep::Wait));
+        let _claim = shared.claim(7, &unwatched());
+        assert!(matches!(shared.deck_step(7, &unwatched()), DeckStep::Wait));
     }
 
     /// A cue audition of an unqueued track: the cache would refuse the bytes,
@@ -690,14 +775,20 @@ mod tests {
     fn a_deck_outside_the_window_reads_rather_than_waiting() {
         let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
         shared.inner.lock().window = win(&[1]);
-        let _held = shared.claim(7);
-        assert!(matches!(shared.deck_step(7), DeckStep::Read(None)));
+        let _held = shared.claim(7, &unwatched());
+        assert!(matches!(
+            shared.deck_step(7, &unwatched()),
+            DeckStep::Read(None)
+        ));
     }
 
     #[test]
     fn a_deck_outside_the_window_does_not_hold_the_id() {
         let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
-        assert!(matches!(shared.deck_step(7), DeckStep::Read(None)));
+        assert!(matches!(
+            shared.deck_step(7, &unwatched()),
+            DeckStep::Read(None)
+        ));
         assert!(
             shared.inner.lock().in_flight.is_empty(),
             "an id nobody can share is never claimed"

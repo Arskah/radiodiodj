@@ -277,6 +277,10 @@ impl Default for CacheConfig {
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct PlayerConfig {
+    /// How long a track read may deliver **nothing** before the load is failed
+    /// as a wedged mount. A budget with no progress, not a budget for the whole
+    /// read: a large file on a slow share keeps arriving and keeps its load
+    /// (#504).
     #[serde(default = "default_read_watchdog_timeout_ms")]
     pub read_watchdog_timeout_ms: u64,
     #[serde(default = "default_open_retry_interval_ms")]
