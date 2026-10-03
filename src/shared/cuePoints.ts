@@ -60,16 +60,16 @@ export const CUE_MARKERS: CueMarkerSpec[] = [
     hint: "Ramp down starts here",
   },
   {
-    key: "cue_out_ms",
-    kind: "cue-out",
-    label: "Cue Out",
-    hint: "Playback stops here",
-  },
-  {
     key: "next_start_ms",
     kind: "next-start",
     label: "Next Start",
     hint: "The next track begins here",
+  },
+  {
+    key: "cue_out_ms",
+    kind: "cue-out",
+    label: "Cue Out",
+    hint: "Playback stops here",
   },
 ];
 
