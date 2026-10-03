@@ -55,6 +55,7 @@ const { api } = vi.hoisted(() => {
     onScanStateChanged: vi.fn(),
     onWaveformReady: vi.fn(),
     onCuePointsReady: vi.fn(),
+    onDurationReady: vi.fn(),
     onWaveformProgress: vi.fn(),
     onWaveformStateChanged: vi.fn(),
     onTagBackfillStateChanged: vi.fn(),
@@ -2486,6 +2487,79 @@ describe("AppState cue points", () => {
       app.playlist.filter(isTrackItem).map((i) => i.track.cue_points),
     ).toEqual([trimmed, undefined]);
     expect(app.cueTrack?.cue_points).toEqual(trimmed);
+  });
+
+  // #534 in a running session: the copies were made from the tag's length, and
+  // the deck's waveform crop divides by whichever one goes on air.
+  it("a measured duration refreshes every copy of the track but the one on air", () => {
+    app.tracks = [t(1), t(2)];
+    app.playlist = [trackItem(t(1)), trackItem(t(2))];
+    app.cueTrack = t(1);
+    app.currentTrack = t(1);
+    const before = t(1).duration;
+
+    const onReady = api.onDurationReady.mock.calls[0][0] as (
+      id: number,
+      duration: number,
+    ) => void;
+    onReady(1, 238.968);
+
+    expect(app.tracks.map((x) => x.duration)).toEqual([238.968, before]);
+    expect(
+      app.playlist.filter(isTrackItem).map((i) => i.track.duration),
+    ).toEqual([238.968, before]);
+    expect(app.cueTrack?.duration).toBe(238.968);
+    expect(app.currentTrack?.duration).toBe(before);
+  });
+
+  // Both overlays re-seed their form when the track they were opened on is
+  // replaced, and the pass can finish a decode while one is open.
+  it("a measured duration leaves an edited cue draft and a metadata form alone", () => {
+    app.editingCuePoints = t(1);
+    app.cueEditorDirty = true;
+    app.editingMetadata = t(1);
+    // Read back: what state holds is a proxy of what was assigned.
+    const cueDraft = app.editingCuePoints;
+    const metadata = app.editingMetadata;
+
+    const onReady = api.onDurationReady.mock.calls[0][0] as (
+      id: number,
+      duration: number,
+    ) => void;
+    onReady(1, 238.968);
+
+    expect(app.editingCuePoints).toBe(cueDraft);
+    expect(app.editingMetadata).toBe(metadata);
+  });
+
+  it("a measured duration refreshes an untouched cue editor", () => {
+    app.editingCuePoints = t(1);
+    app.cueEditorDirty = false;
+
+    const onReady = api.onDurationReady.mock.calls[0][0] as (
+      id: number,
+      duration: number,
+    ) => void;
+    onReady(1, 238.968);
+
+    expect(app.editingCuePoints?.duration).toBe(238.968);
+  });
+
+  it("a duration that was already known replaces nothing", () => {
+    app.tracks = [t(1), t(2)];
+    app.editingCuePoints = t(1);
+    app.cueEditorDirty = false;
+    const rows = app.tracks;
+    const editing = app.editingCuePoints;
+
+    const onReady = api.onDurationReady.mock.calls[0][0] as (
+      id: number,
+      duration: number,
+    ) => void;
+    onReady(1, t(1).duration);
+
+    expect(app.tracks).toBe(rows);
+    expect(app.editingCuePoints).toBe(editing);
   });
 
   it("an automatic cue result leaves the on-air track alone", () => {

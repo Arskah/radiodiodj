@@ -265,5 +265,15 @@ drops purged tracks from the playlist. Purge stays explicit, with no retention.
   with the row when it is reattached, and a duplicate copies them. A database
   reset loses edits that were never written into the file; see
   [library.md](./library.md#editing-a-track) for the opt-in write-back.
+- **Audio that changed only past the first megabyte keeps its measurements.**
+  The fingerprint hashes the codec parameters and the first mebibyte of packets,
+  not the frame count or the tail. A file analysed while it was still being
+  copied onto the share, or a recording later trimmed or extended at the end,
+  rescans with a new mtime and the same fingerprint, so every measurement
+  stands — the measured `duration` included, which the deck then resolves an
+  end-anchored Cue Out against. Requeueing on the mtime would cost a full decode
+  for every external tag edit, which is the trade
+  [library.md](./library.md#tracks) rules out. The way back is to replace the
+  file with one whose audio differs from the start, or to purge the row.
 - **Automatic cue ownership** ([#372](https://github.com/Arskah/radiodiodj/issues/372))
   lives on the track row and inherits all of the above.

@@ -67,6 +67,10 @@ const WAVEFORM_READY_EVENT: &str = "waveform-ready";
 /// items, the renderer's rows — derives its duration from these markers, and a
 /// backfill changes them under all of them.
 pub const CUE_POINTS_READY_EVENT: &str = "cue-points-ready";
+/// Event emitted after the decode's length replaces the tag's on a row. Every
+/// copy of a track held outside the DB carries its `duration`, and what the
+/// deck's waveform is cropped to divides by it.
+pub const DURATION_READY_EVENT: &str = "duration-ready";
 /// Throttled `{processed, total}` progress updates.
 const WAVEFORM_PROGRESS_EVENT: &str = "waveform-progress";
 /// Running/idle transitions.
@@ -116,6 +120,15 @@ struct WaveformProgress {
 pub struct CuePointsReady {
     pub id: i64,
     pub cue_points: CuePoints,
+}
+
+/// Payload of [`DURATION_READY_EVENT`].
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DurationReady {
+    pub id: i64,
+    /// Seconds.
+    pub duration: f64,
 }
 
 #[derive(Default)]
@@ -450,6 +463,7 @@ fn fetch_kind(job: &AnalysisJob) -> Fetch {
         || job.needs_auto_cue_levels
         || job.needs_bpm
         || job.needs_key
+        || job.needs_duration
     {
         Fetch::Whole
     } else {
@@ -641,6 +655,29 @@ fn analyse(
                 Ok(analysis) => {
                     let decode_ms = start.elapsed().as_millis();
                     let store_start = Instant::now();
+                    // Unscreened, unlike everything below: the decode counted
+                    // the samples whatever this job came here for.
+                    let measured_ms = analysis.windows.duration_ms;
+                    match db.set_measured_duration(job.id, measured_ms, now_ms(), job.mtime) {
+                        Err(e) => {
+                            log::error!("duration: store {} failed: {}", job.id, e);
+                            retry = true;
+                        }
+                        Ok(false) => log::debug!("duration: {} moved on", job.path),
+                        Ok(true) => {
+                            log::debug!("duration: {} {}ms", job.path, measured_ms);
+                            // A decode that counted nothing changed no length.
+                            if measured_ms > 0 {
+                                let _ = app.emit(
+                                    DURATION_READY_EVENT,
+                                    DurationReady {
+                                        id: job.id,
+                                        duration: measured_ms as f64 / 1000.0,
+                                    },
+                                );
+                            }
+                        }
+                    }
                     if job.needs_waveform {
                         match db.set_waveform(job.id, &analysis.curve, job.mtime) {
                             Err(e) => {
@@ -1024,6 +1061,7 @@ mod tests {
             needs_auto_cue_levels: false,
             needs_bpm: false,
             needs_key: false,
+            needs_duration: false,
         }
     }
 
@@ -1041,17 +1079,18 @@ mod tests {
 
     /// Every measurement that needs a decode needs the whole file; a job that
     /// wants nothing but a fingerprint gets the head. This fails the moment a
-    /// seventh measurement is added and the reader is not told about it.
+    /// eighth measurement is added and the reader is not told about it.
     #[test]
     fn only_a_fingerprint_backfill_reads_the_head_alone() {
         type Flag = (&'static str, fn(&mut AnalysisJob));
-        let flags: [Flag; 6] = [
+        let flags: [Flag; 7] = [
             ("waveform", |j| j.needs_waveform = true),
             ("loudness", |j| j.needs_loudness = true),
             ("auto cue", |j| j.needs_auto_cue = true),
             ("auto cue levels", |j| j.needs_auto_cue_levels = true),
             ("bpm", |j| j.needs_bpm = true),
             ("key", |j| j.needs_key = true),
+            ("duration", |j| j.needs_duration = true),
         ];
         for (name, set) in flags {
             let mut job = fingerprint_only(1);

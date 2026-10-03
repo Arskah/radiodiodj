@@ -1,6 +1,11 @@
 <script lang="ts">
   import { app, formatTime } from "../../shared/state.svelte";
-  import { checkHasChanges, formatAgo, plural } from "../../shared/health";
+  import {
+    badDurationText,
+    checkHasChanges,
+    formatAgo,
+    plural,
+  } from "../../shared/health";
   import { airDuration, hasCuePoints, isTrimmed } from "../../shared/cuePoints";
   import { isTrackItem } from "../../shared/types";
   import type {
@@ -342,6 +347,42 @@
               title="Show in folder"
               aria-label="Show in folder"
               onclick={() => app.revealTrack(u.track)}
+              ><span class="material-symbols-outlined">folder_open</span
+              ></button
+            >
+          </span>
+        </div>
+      {/each}
+    </section>
+  {/if}
+
+  {#if report.badDurations.length > 0}
+    <section class="health-section" id="health-bad-durations">
+      <header>
+        <h5 class="tuning-group-title">
+          Bad durations ({report.badDurations.length})
+        </h5>
+        {@render dismissButton("duration", report.badDurationsDismissed, "")}
+      </header>
+      <p class="health-note">
+        The tags of these files give a length the audio does not have, usually a
+        VBR MP3 with no Xing header. The library plays them at the measured
+        length. Repair or re-encode the file; the next scan picks up the change.
+      </p>
+      {#each report.badDurations as b (b.track.id)}
+        {@const text = badDurationText(b, formatTime)}
+        <div class="health-row">
+          <span class="health-name">
+            <span class="health-title">{b.track.title}</span>
+            <span class="health-sub">{b.track.artist}</span>
+          </span>
+          <span class="health-path" title={b.path}>{b.path}</span>
+          <span class="health-error" title={text}>{text}</span>
+          <span class="health-actions">
+            <button
+              title="Show in folder"
+              aria-label="Show in folder"
+              onclick={() => app.revealTrack(b.track)}
               ><span class="material-symbols-outlined">folder_open</span
               ></button
             >

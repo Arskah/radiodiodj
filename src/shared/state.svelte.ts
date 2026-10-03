@@ -98,6 +98,8 @@ export const EMPTY_HEALTH: HealthReport = {
   possible: [],
   unhashed: 0,
   unreadable: [],
+  badDurations: [],
+  badDurationsDismissed: false,
   check: null,
   checkDismissed: false,
   checking: false,
@@ -468,6 +470,7 @@ export class AppState {
       if (this.cueTrack?.id === id) this.loadCueWaveform(id);
     });
     api.onCuePointsReady((id, points) => this.adoptCuePoints(id, points));
+    api.onDurationReady((id, duration) => this.adoptDuration(id, duration));
 
     api.onWaveformProgress(({ processed, total }) => {
       if (this.waveformStatus.status === "running") {
@@ -1062,6 +1065,38 @@ export class AppState {
         id,
         points,
       );
+    }
+  }
+
+  /**
+   * Take a measured length into every copy of the track the UI holds. Not
+   * `currentTrack`, for the reason {@link AppState.adoptCuePoints} leaves it
+   * alone: the deck resolved its markers against the length it loaded with.
+   *
+   * A copy that already holds the length is left as the object it was. The
+   * pass reports on every decode, and an overlay re-seeds its form whenever the
+   * track it was opened on is replaced — so `editingMetadata`, which shows no
+   * length, is never touched, and a cue editor takes one only while its draft
+   * is untouched.
+   */
+  private adoptDuration(id: number, duration: number): void {
+    const stale = (track: Track | null): track is Track =>
+      track !== null && track.id === id && track.duration !== duration;
+    const apply = <T extends Track | null>(track: T): T =>
+      stale(track) ? { ...track, duration } : track;
+    if (this.tracks.some(stale)) {
+      this.tracks = this.tracks.map(apply);
+    }
+    if (this.playlist.some((i) => isTrackItem(i) && stale(i.track))) {
+      this.playlist = this.playlist.map((i) =>
+        isTrackItem(i) && stale(i.track)
+          ? { ...i, track: { ...i.track, duration } }
+          : i,
+      );
+    }
+    this.cueTrack = apply(this.cueTrack);
+    if (!this.cueEditorDirty) {
+      this.editingCuePoints = apply(this.editingCuePoints);
     }
   }
 

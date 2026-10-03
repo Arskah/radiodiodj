@@ -1,10 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { checkHasChanges, formatAgo, healthAttention, plural } from "./health";
+import {
+  badDurationText,
+  checkHasChanges,
+  formatAgo,
+  healthAttention,
+  plural,
+} from "./health";
 import type {
   CheckReport,
   DuplicateGroup,
   HealthReport,
   MissingTrack,
+  Track,
 } from "./types";
 
 const empty: HealthReport = {
@@ -14,6 +21,8 @@ const empty: HealthReport = {
   possible: [],
   unhashed: 0,
   unreadable: [],
+  badDurations: [],
+  badDurationsDismissed: false,
   check: null,
   checkDismissed: false,
   checking: false,
@@ -100,6 +109,19 @@ describe("healthAttention", () => {
       healthAttention({ ...empty, tagWriteFailures: [failure(1), failure(2)] }),
     ).toBe(2);
   });
+
+  it("counts bad durations once, until they are dismissed", () => {
+    const bad = (id: number) => ({
+      track: { id } as Track,
+      path: `/m/${id}`,
+      contentType: "music" as const,
+      tagDuration: 1477,
+      measuredDuration: 239,
+    });
+    const report = { ...empty, badDurations: [bad(1), bad(2)] };
+    expect(healthAttention(report)).toBe(1);
+    expect(healthAttention({ ...report, badDurationsDismissed: true })).toBe(0);
+  });
 });
 
 describe("checkHasChanges", () => {
@@ -129,5 +151,21 @@ describe("plural", () => {
     expect(plural(1, "track")).toBe("1 track");
     expect(plural(0, "track")).toBe("0 tracks");
     expect(plural(2, "copy", "copies")).toBe("2 copies");
+  });
+});
+
+describe("badDurationText", () => {
+  const format = (s: number) => `${s}s`;
+
+  it("names both lengths when the tag and the audio disagree", () => {
+    expect(
+      badDurationText({ tagDuration: 1477, measuredDuration: 239 }, format),
+    ).toBe("tag says 1477s, audio is 239s");
+  });
+
+  it("says so when nothing could be measured", () => {
+    expect(
+      badDurationText({ tagDuration: null, measuredDuration: null }, format),
+    ).toBe("no audio length could be measured");
   });
 });

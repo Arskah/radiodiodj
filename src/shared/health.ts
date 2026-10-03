@@ -1,4 +1,4 @@
-import type { CheckReport, HealthReport } from "./types";
+import type { BadDurationTrack, CheckReport, HealthReport } from "./types";
 
 /** A check found something the next scan would change. */
 export function checkHasChanges(check: CheckReport | null): boolean {
@@ -17,7 +17,8 @@ export function checkHasChanges(check: CheckReport | null): boolean {
  * and the Library health tab show. Missing tracks count once, not per track,
  * so removing a library path does not put hundreds on the button. An
  * unreachable path cannot be dismissed; it clears when the share is back. A
- * failed tag write counts until it is retried or dismissed.
+ * failed tag write counts until it is retried or dismissed. Bad durations
+ * count once for the same reason missing tracks do.
  */
 export function healthAttention(report: HealthReport): number {
   let count = 0;
@@ -27,6 +28,9 @@ export function healthAttention(report: HealthReport): number {
   if (checkHasChanges(report.check) && !report.checkDismissed) count += 1;
   count += report.check?.unreachable.length ?? 0;
   count += report.tagWriteFailures.length;
+  if (report.badDurations.length > 0 && !report.badDurationsDismissed) {
+    count += 1;
+  }
   return count;
 }
 
@@ -38,6 +42,20 @@ export function formatAgo(ms: number, now = Date.now()): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours} h ago`;
   return `${Math.floor(hours / 24)} d ago`;
+}
+
+/**
+ * What is wrong with a reported length, in the operator's words. Times are
+ * file time, not air time: the finding is about the file.
+ */
+export function badDurationText(
+  bad: Pick<BadDurationTrack, "tagDuration" | "measuredDuration">,
+  format: (seconds: number) => string,
+): string {
+  if (bad.measuredDuration === null) return "no audio length could be measured";
+  if (bad.tagDuration === null)
+    return `audio is ${format(bad.measuredDuration)}`;
+  return `tag says ${format(bad.tagDuration)}, audio is ${format(bad.measuredDuration)}`;
 }
 
 export function plural(n: number, one: string, many = `${one}s`): string {

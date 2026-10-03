@@ -245,6 +245,17 @@ export interface UnreadableTrack {
   failedAt: number;
 }
 
+/** A track whose tags give a length the audio does not have. */
+export interface BadDurationTrack {
+  track: Track;
+  path: string;
+  contentType: ContentType;
+  /** Seconds, as the tags claim. `null` when they carry no length. */
+  tagDuration: number | null;
+  /** Seconds, as the decode counted. `null` when it counted nothing. */
+  measuredDuration: number | null;
+}
+
 /** What a library check found on disk that no scan has applied yet. */
 export interface CheckReport {
   /** Unix ms. */
@@ -267,6 +278,10 @@ export interface HealthReport {
   unhashed: number;
   /** Present tracks the analysis pass could not decode. */
   unreadable: UnreadableTrack[];
+  /** Present tracks whose tags give a length the audio does not have. */
+  badDurations: BadDurationTrack[];
+  /** The operator has seen every track in `badDurations`. */
+  badDurationsDismissed: boolean;
   check: CheckReport | null;
   checkDismissed: boolean;
   /** A library check is running now. */
@@ -286,7 +301,8 @@ export interface TagWriteFailure {
   at: number;
 }
 
-export type FindingKind = "exact" | "possible" | "missing" | "check";
+export type FindingKind =
+  "exact" | "possible" | "missing" | "duration" | "check";
 
 export interface ScanResult {
   total: number;

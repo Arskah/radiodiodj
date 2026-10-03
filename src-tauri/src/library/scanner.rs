@@ -1575,6 +1575,8 @@ mod tests {
             row_mtime(&db, id),
         )
         .unwrap();
+        db.set_measured_duration(id, 1_000, 1234, row_mtime(&db, id))
+            .unwrap();
         prepare(&db, id);
 
         retag_externally(&file, "Retagged", "Tagger");
