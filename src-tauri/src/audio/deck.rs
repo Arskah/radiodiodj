@@ -742,9 +742,14 @@ fn apply_load(
             let Some(sink) = deck.sink.as_ref() else {
                 return;
             };
-            // The decoded duration is the only trustworthy one — the tag value
-            // is wrong on VBR MP3 — and cue points anchored to the file end
-            // need it, so resolution happens here rather than at the caller.
+            // Cue points anchored to the file end need a length, so resolution
+            // happens here rather than at the caller. The row's duration comes
+            // first because once the analysis pass has reached the track it is
+            // that pass's sample count — exact, where this decoder's own answer
+            // is whatever the container claims. The fallback is for a row the
+            // pass has not reached *and* whose tags carried no length at all;
+            // a row that holds the tag's guess still wins here, because nothing
+            // on the row says which of the two it is.
             let final_duration = msg.duration.or(decoded_duration);
             let cue = msg.cue_points.resolve(final_duration);
             let air_duration = cue.air_duration();

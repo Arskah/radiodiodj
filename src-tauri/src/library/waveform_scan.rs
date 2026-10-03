@@ -641,6 +641,19 @@ fn analyse(
                 Ok(analysis) => {
                     let decode_ms = start.elapsed().as_millis();
                     let store_start = Instant::now();
+                    // Unscreened, unlike everything below: the decode counted
+                    // the samples whatever this job came here for, and a row
+                    // only reaches this function because something else about
+                    // it was missing anyway.
+                    let measured_ms = analysis.windows.duration_ms;
+                    match db.set_measured_duration(job.id, measured_ms, job.mtime) {
+                        Err(e) => {
+                            log::error!("duration: store {} failed: {}", job.id, e);
+                            retry = true;
+                        }
+                        Ok(false) => log::debug!("duration: {} moved on", job.path),
+                        Ok(true) => log::debug!("duration: {} {}ms", job.path, measured_ms),
+                    }
                     if job.needs_waveform {
                         match db.set_waveform(job.id, &analysis.curve, job.mtime) {
                             Err(e) => {

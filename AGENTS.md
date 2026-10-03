@@ -130,6 +130,18 @@ a stored fade would otherwise fight over one value. Clamping is backend-owned:
 The toolbar's library _Playtime_ is the one exception. Never optimistically show
 file time. See [docs/audio.md](docs/audio.md#durations-mean-air-time).
 
+**Measured duration** — the decode's sample count, written **in place** over
+the tag's `tracks.duration` by `set_measured_duration`, unscreened on every
+analysis. The one measurement not stored beside its tag value: a tempo read from
+a tag is a claim worth keeping next to a measurement that disagrees, a duration
+is either the length of the audio or it is wrong, and lofty reads a VBR MP3 with
+no Xing header as its file size over its first frame's bitrate. So `duration`
+hangs on `excluded.fingerprint = fingerprint` in `UPSERT_TRACK_SQL` like every
+other measurement, and `Db::adopt_decoded_durations` corrects a row that
+predates the write from the duration its level envelope already carries — at
+every open, idempotently, with no decode. See
+[docs/library.md](docs/library.md#the-analysis-pass).
+
 **Automatic cue points** — cue in, cue out and (for music) next start derived
 from the waveform pass's RMS windows, no second decode. Ownership is a per-track
 state (`pending` / `auto` / `manual`); an operator write that moves the trio

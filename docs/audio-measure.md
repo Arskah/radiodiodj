@@ -118,6 +118,7 @@ at a level:
 | `span_above(dbfs)`     | first and last crossing, plus whether either is at a file edge |
 | `last_end_above(dbfs)` | where the audio last reached a level and did not return        |
 | `duration_ms()`        | the decoded length the positions are clamped to                |
+| `stored_duration_ms()` | the same length out of a stored blob's header alone            |
 
 `Span`'s two flags are facts about the file — the audio was already running when
 it opened — not instructions about what to store. What a caller records for a

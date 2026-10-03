@@ -256,6 +256,23 @@ impl Envelope {
         })
     }
 
+    /// The decoded duration out of a stored envelope's header, without reading
+    /// the codes behind it.
+    ///
+    /// The codes are what [`Envelope::decode`] screens and what makes it the
+    /// authority on whether a blob is usable; a caller that wants only the
+    /// length of the audio has no use for them, and a row may hold many
+    /// thousands. The version byte is still checked, because the duration's
+    /// position in the header is part of the layout that byte names.
+    pub fn stored_duration_ms(bytes: &[u8]) -> Option<i64> {
+        if bytes.len() < LEVELS_HEADER_LEN || bytes[0] != LEVELS_FORMAT_VERSION {
+            return None;
+        }
+        Some(i64::from_le_bytes(
+            bytes[1..LEVELS_HEADER_LEN].try_into().ok()?,
+        ))
+    }
+
     /// Where the audio sits above `dbfs`, or `None` if it never does.
     ///
     /// One comparison serves every caller, including one whose rule reads "at or
@@ -536,6 +553,39 @@ mod tests {
             Some(0),
             "a header alone is a readable envelope of no windows"
         );
+    }
+
+    /// `Db::adopt_decoded_durations` reads the length of a library's worth of
+    /// stored envelopes and nothing else, so it must get the same answer from
+    /// the header alone that a full decode gives — and must still refuse a
+    /// layout it cannot read, since that is what puts the duration where it
+    /// looks for it.
+    #[test]
+    fn a_header_alone_answers_the_decoded_duration() {
+        let mut rng = Rng(0x0DAD_A710);
+        for _ in 0..8 {
+            let envelope = random_windows(&mut rng).envelope();
+            let blob = envelope.encode();
+            assert_eq!(
+                Envelope::stored_duration_ms(&blob[..LEVELS_HEADER_LEN]),
+                Some(envelope.duration_ms),
+            );
+            assert_eq!(
+                Envelope::stored_duration_ms(&blob),
+                Some(envelope.duration_ms),
+                "the codes behind the header change nothing"
+            );
+        }
+
+        let good = windows(run(-6.0, 12)).envelope().encode();
+        let mut wrong_version = good.clone();
+        wrong_version[0] = LEVELS_FORMAT_VERSION.wrapping_add(1);
+        assert_eq!(Envelope::stored_duration_ms(&wrong_version), None);
+        assert_eq!(
+            Envelope::stored_duration_ms(&good[..LEVELS_HEADER_LEN - 1]),
+            None
+        );
+        assert_eq!(Envelope::stored_duration_ms(&[]), None);
     }
 
     /// A threshold outside the resolved range still has to answer. Both ends

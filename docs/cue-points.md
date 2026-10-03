@@ -222,9 +222,12 @@ on the backend playlist — see
 ### Resolution
 
 `NULL` cue-out and `NULL` fade-out both anchor to the end of the file, so
-resolution needs a trustworthy duration. The tag-derived `tracks.duration` is
-nullable and wrong on VBR MP3, so resolution runs in the player worker, against
-`msg.duration.or(decoded_duration)` — the decoded length once the bytes are in.
+resolution needs a trustworthy duration. `tracks.duration` is nullable, and
+until the analysis pass has reached the row it is the tag's — on a VBR MP3 with
+no Xing header, the file size over the first frame's bitrate. So resolution runs
+in the player worker, against `msg.duration.or(decoded_duration)`: the row's
+length first, since once measured it is that pass's sample count, and the
+decoder's own answer for a row that has nothing.
 
 An item override resolves earlier, on the thread that starts the load:
 `load_deck` reads the radio edit off the track row when an item carries no

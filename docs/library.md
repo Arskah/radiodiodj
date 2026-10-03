@@ -184,6 +184,16 @@ track missing only one of them costs no more than a track missing all four.
   [track-identity.md](./track-identity.md#fingerprint).
 - The **loudness** is the EBU R128 measurement the deck plays a track back at.
   Measured here, never read from tags. See [audio.md](./audio.md#replaygain).
+- The **duration** is overwritten with the decode's own sample count. This is
+  the one measurement written in place over its tag-derived value rather than
+  beside it: a tempo or a key read from a tag is a claim worth keeping next to a
+  measurement that disagrees, while a duration is either the length of the audio
+  or it is wrong. lofty reads a VBR MP3 with no Xing header as its file size
+  over its first frame's bitrate, which on one real file is 1477 s of a 239 s
+  track — and everything that divides by a duration, from the deck's waveform
+  crop to the toolbar's _Playtime_, is then wrong by that ratio. A row analysed
+  before this measurement existed is corrected at the next launch without a
+  decode, from the duration its stored level envelope already carries.
 - The **automatic cue points** are the derived trio, and the **level envelope**
   the trio is derived from — the decode reduced to one byte per window, so a
   later threshold change can re-derive a track's markers without reading the
@@ -239,16 +249,17 @@ Adding another tag field later is a schema step plus a bump of
 A track is one row in the library database. Its id never changes, so the
 playlist, the history and the saved session refer to it by id.
 
-| part                   | source            | survives a rescan                    |
-| ---------------------- | ----------------- | ------------------------------------ |
-| path, content type     | where the file is | follows the file                     |
-| tags, duration, format | the file          | re-read when the file changes        |
-| tags edited in the app | the operator      | always                               |
-| cue points             | the operator      | always                               |
-| play count             | airings           | always                               |
-| waveform, loudness     | the analysis pass | re-measured when the _audio_ changes |
-| automatic cue points   | the analysis pass | re-derived when the _audio_ changes  |
-| fingerprint            | the scan          | recomputed when the file changes     |
+| part                   | source                           | survives a rescan                    |
+| ---------------------- | -------------------------------- | ------------------------------------ |
+| path, content type     | where the file is                | follows the file                     |
+| tags, format           | the file                         | re-read when the file changes        |
+| duration               | the tags, then the analysis pass | re-measured when the _audio_ changes |
+| tags edited in the app | the operator                     | always                               |
+| cue points             | the operator                     | always                               |
+| play count             | airings                          | always                               |
+| waveform, loudness     | the analysis pass                | re-measured when the _audio_ changes |
+| automatic cue points   | the analysis pass                | re-derived when the _audio_ changes  |
+| fingerprint            | the scan                         | recomputed when the file changes     |
 
 A file's modification time moving does not mean its audio did. An external
 tagger rewrites every file it touches, and so do `touch`, `rsync` and a share
