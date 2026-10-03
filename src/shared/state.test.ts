@@ -358,8 +358,9 @@ function wirePlaylist(playlist: MockPlaylistBackend): void {
   api.playlistSync.mockImplementation(() =>
     Promise.resolve(playlist.snapshot()),
   );
-  api.playlistAdd.mockImplementation((id: number) =>
-    ok(() => playlist.add(known(id))),
+  api.playlistAdd.mockImplementation(
+    (id: number, cuePoints: CuePoints | null = null) =>
+      ok(() => playlist.add(known(id), cuePoints)),
   );
   api.playlistAddFront.mockImplementation(
     (id: number, cuePoints: CuePoints | null = null) =>
@@ -1932,12 +1933,12 @@ describe("AppState cue deck", () => {
     expect(cueMock.volume).toBe(0.4);
   });
 
-  it("promoteCueToMain inserts cue track at playlist head; cue keeps its track", () => {
+  it("promoteCueToMain appends cue track; cue keeps its track", () => {
     app.addToPlaylist(t(1));
     app.addToPlaylist(t(2));
     app.cueLoad(t(99, { title: "promoted" }));
     app.promoteCueToMain();
-    expect(app.playlist.map(pid)).toEqual([99, 1, 2]);
+    expect(app.playlist.map(pid)).toEqual([1, 2, 99]);
     expect(app.cueTrack?.id).toBe(99);
     expect(cueMock.stopCalls).toBe(0);
   });

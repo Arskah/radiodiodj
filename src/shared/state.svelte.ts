@@ -1139,7 +1139,7 @@ export class AppState {
   }
 
   /**
-   * Insert the cue track at the head of the main playlist as next-up.
+   * Append the cue track to the main playlist.
    * Cue keeps playing — independent transport.
    *
    * A Preview audition that differs from the track's radio edit travels with
@@ -1150,10 +1150,10 @@ export class AppState {
   promoteCueToMain(): void {
     const track = this.cueTrack;
     if (!track) return;
-    this.send(api.playlistAddFront(track.id, this.cuePromoteOverride));
+    this.send(api.playlistAdd(track.id, this.cuePromoteOverride));
   }
 
-  /** The override a promotion would carry, `null` when it would carry none. */
+  /** The override an appended cue item carries, or `null` when it carries none. */
   get cuePromoteOverride(): CuePoints | null {
     const track = this.cueTrack;
     const applied = this.cueAppliedPoints;
@@ -1172,7 +1172,7 @@ export class AppState {
     this.send(api.playlistAddFront(track.id, override));
   }
 
-  /** Whether promoting right now would hand the item its own cue points. */
+  /** Whether adding the cue track now would give its item cue points. */
   get cuePromoteCarriesOverride(): boolean {
     return this.cuePromoteOverride !== null;
   }

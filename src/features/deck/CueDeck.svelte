@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app, formatTime } from "../../shared/state.svelte";
   import { cueMarkerPositions, hasCuePoints } from "../../shared/cuePoints";
+  import { createPointerScrub } from "../../shared/pointerScrub";
   import Waveform from "./Waveform.svelte";
   import defaultCover from "../../assets/radiodiodi_label.svg";
 
@@ -24,7 +25,6 @@
   );
 
   let progressBar: HTMLDivElement | undefined = $state();
-  let scrubbing = false;
   let hoverPct = $state<number | null>(null);
 
   function pctFromClientX(clientX: number): number {
@@ -37,27 +37,11 @@
     app.cueSeekToPct(pctFromClientX(clientX) / 100);
   }
 
-  function onPointerDown(e: PointerEvent): void {
-    if (!progressBar) return;
-    scrubbing = true;
-    progressBar.setPointerCapture(e.pointerId);
-    seekToClientX(e.clientX);
-  }
+  const scrub = createPointerScrub(seekToClientX);
 
   function onPointerMove(e: PointerEvent): void {
     hoverPct = pctFromClientX(e.clientX);
-    if (scrubbing) seekToClientX(e.clientX);
-  }
-
-  function onPointerUp(e: PointerEvent): void {
-    if (!progressBar) return;
-    scrubbing = false;
-    progressBar.releasePointerCapture(e.pointerId);
-  }
-
-  function onPointerCancel(): void {
-    scrubbing = false;
-    hoverPct = null;
+    scrub.move(e);
   }
 
   function onPointerLeave(): void {
@@ -120,9 +104,9 @@
           <button
             class="btn-cue-promote"
             title={app.cuePromoteCarriesOverride
-              ? "Insert as next-up, carrying the cue points you auditioned"
-              : "Insert cue track as next-up in main playlist"}
-            aria-label="Promote cue track to main playlist"
+              ? "Add to end of playlist, carrying the cue points you auditioned"
+              : "Add cue track to end of main playlist"}
+            aria-label="Add cue track to end of playlist"
             disabled={!app.cueTrack}
             onclick={() => app.promoteCueToMain()}
           >
@@ -193,10 +177,14 @@
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={Math.round(app.cueProgressPct)}
-        onpointerdown={onPointerDown}
+        onpointerdown={(e) => scrub.down(e, progressBar)}
         onpointermove={onPointerMove}
-        onpointerup={onPointerUp}
-        onpointercancel={onPointerCancel}
+        onpointerup={scrub.up}
+        onpointercancel={(e) => {
+          scrub.cancel(e);
+          hoverPct = null;
+        }}
+        onlostpointercapture={scrub.lost}
         onpointerleave={onPointerLeave}
       >
         <Waveform

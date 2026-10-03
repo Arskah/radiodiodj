@@ -25,6 +25,7 @@
     type Frame,
   } from "../../shared/cueEditor";
   import { createDrag } from "./cueDrag";
+  import { createPointerScrub } from "../../shared/pointerScrub";
 
   interface Props {
     detail: Uint8Array | null;
@@ -129,9 +130,11 @@
     onend: (id) => onmarkerend(id as CueMarker),
   });
 
+  const scrub = createPointerScrub((clientX) => onseek?.(timeAt(clientX)));
+
   function onSurfaceDown(e: PointerEvent): void {
-    if (!onseek || e.button !== 0) return;
-    onseek(timeAt(e.clientX));
+    if (!onseek) return;
+    scrub.down(e, surface);
   }
 </script>
 
@@ -153,6 +156,7 @@
           onpointermove={drag.move}
           onpointerup={drag.up}
           onpointercancel={drag.up}
+          onlostpointercapture={drag.lost}
           onkeydown={(e) => {
             if (e.key === "Enter") onselect(m.id);
           }}>{m.short}</button
@@ -166,6 +170,10 @@
     bind:this={surface}
     role="presentation"
     onpointerdown={onSurfaceDown}
+    onpointermove={scrub.move}
+    onpointerup={scrub.up}
+    onpointercancel={scrub.cancel}
+    onlostpointercapture={scrub.lost}
   >
     <svg
       class="cue-detail-bars"

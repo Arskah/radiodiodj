@@ -193,10 +193,10 @@ carrying the draft, and never writes to the track. A draft identical to the
 radio edit deliberately carries nothing, so a later correction to the track
 still reaches the queued airing.
 
-**Promoting from the cue deck** attaches one under the same rule, for the case
-where what the deck has applied differs from the radio edit. Promoting from
-_Absolute_ carries nothing: auditioning the whole file is how an in-point gets
-found, not a statement about how the track should air.
+**Adding the cue deck track to the playlist** attaches one under the same rule,
+for the case where what the deck has applied differs from the radio edit.
+Adding from _Absolute_ carries nothing: auditioning the whole file is how an
+in-point gets found, not a statement about how the track should air.
 
 **Clearing** is the marker badge on the playlist row, which hands the item back
 to the track's radio edit.

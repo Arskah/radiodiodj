@@ -390,6 +390,18 @@ describe("gainAt / envelopePoints", () => {
     expect(pts[i - 1].gain).toBe(0);
     expect(pts[i].gain).toBe(1);
   });
+
+  it.each([
+    ["Cue In", points({ cue_in_ms: 10_000 })],
+    ["Next Start", points({ next_start_ms: 190_000 })],
+  ])(
+    "keeps the full-gain sample before the file-end fallback for %s",
+    (_name, cue) => {
+      const pts = envelopePoints(cue, FILE, { from: 0, to: FILE });
+      expect(pts).toContainEqual({ t: FILE - 1e-6, gain: 1 });
+      expect(pts.at(-1)).toEqual({ t: FILE, gain: 0 });
+    },
+  );
 });
 
 describe("stackFlags", () => {

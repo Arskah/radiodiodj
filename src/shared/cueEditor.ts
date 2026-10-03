@@ -359,7 +359,7 @@ export function envelopePoints(
   const EPS = 1e-6;
   const times = new Set<number>([frame.from, frame.to]);
   for (const b of [r.cueIn, r.fadeIn, r.fadeOut, r.cueOut]) {
-    if (b > frame.from && b < frame.to) {
+    if (b > frame.from && b <= frame.to) {
       times.add(b - EPS);
       times.add(b);
     }

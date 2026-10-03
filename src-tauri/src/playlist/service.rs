@@ -370,8 +370,11 @@ impl PlaylistService {
         });
     }
 
-    pub fn add(&self, id: i64) {
-        self.queue(move |inner| Inner::with_track(inner, id, |p, _, track| p.add(track)));
+    /// Queue a track at the end, optionally under an override for one airing.
+    pub fn add(&self, id: i64, cue_override: Option<CuePoints>) {
+        self.queue(move |inner| {
+            Inner::with_track(inner, id, move |p, _, track| p.add(track, cue_override))
+        });
     }
 
     /// Queue a track as next-up, optionally under an override the operator
@@ -428,7 +431,7 @@ impl PlaylistService {
         self.queue(move |inner| {
             let interleave = generate::Interleave::from_config(&inner.config.get_tuning());
             match generate::pick_filler(&inner.db, content_type, &interleave) {
-                Ok(Some(track)) => Inner::apply(inner, move |p, _| p.add(track)),
+                Ok(Some(track)) => Inner::apply(inner, move |p, _| p.add(track, None)),
                 Ok(None) => {}
                 Err(e) => log::error!("playlist: picking a {:?} failed: {}", content_type, e),
             }

@@ -274,13 +274,14 @@ impl Playlist {
 
     // ----- queue mutations -----
 
-    pub fn add(&mut self, track: Track) -> Transition {
-        self.items.push(PlaylistItem::track(track));
+    /// Append a track, optionally with cue points for this airing alone.
+    pub fn add(&mut self, track: Track, cue_override: Option<CuePoints>) -> Transition {
+        self.items
+            .push(PlaylistItem::with_override(track, cue_override));
         Transition::default()
     }
 
-    /// Insert at the head as next-up — cue promotion, and the outgoing track on
-    /// `prev`.
+    /// Insert at the head as next-up — the outgoing track on `prev`.
     ///
     /// `cue_override` is what the operator auditioned on the cue deck when it
     /// differs from the track's radio edit; `None` leaves the item referencing
@@ -1060,7 +1061,7 @@ mod tests {
         let mut p = Playlist::new();
         for item in items {
             match item {
-                Some(id) => p.add(track(*id)),
+                Some(id) => p.add(track(*id), None),
                 None => p.add_stop(),
             };
         }
@@ -1073,6 +1074,14 @@ mod tests {
     fn add_appends_tracks() {
         let p = with(&[Some(1), Some(2)]);
         assert_eq!(queued(&p), vec![Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn add_appends_with_an_override() {
+        let mut p = with(&[Some(1), Some(2)]);
+        p.add(track(9), Some(points(2_000)));
+        assert_eq!(queued(&p), vec![Some(1), Some(2), Some(9)]);
+        assert_eq!(item_override(&p, 2), Some(points(2_000)));
     }
 
     #[test]
@@ -1778,7 +1787,7 @@ mod tests {
         );
 
         // Operator requeues the track that is still in RAM.
-        p.add(track(9));
+        p.add(track(9), None);
         let t = p.on_retry_tick(&NoRefill);
         assert!(t.effects.contains(&play(9)));
         assert!(!p.snapshot().awaiting_network);
@@ -1796,7 +1805,7 @@ mod tests {
         assert!(!p.snapshot().awaiting_network);
         // Back to the top of the schedule, so a later outage waits a second
         // rather than resuming mid-backoff.
-        p.add(track(2));
+        p.add(track(2), None);
         assert_eq!(
             p.on_load_failed(&NoRefill).effects,
             vec![Effect::ArmRetry(0)]
@@ -1837,7 +1846,7 @@ mod tests {
     fn the_prefetch_window_covers_the_whole_queue() {
         let mut p = Playlist::new();
         for id in 1..=20 {
-            p.add(track(id));
+            p.add(track(id), None);
         }
         assert_eq!(p.prefetch_window(), (1..=20).collect::<Vec<_>>());
     }
@@ -2244,8 +2253,8 @@ mod tests {
     fn the_head_of_the_playlist_is_what_gets_armed() {
         let r = FakeRefiller::new();
         let mut p = Playlist::new();
-        p.add(track(1));
-        p.add(track(2));
+        p.add(track(1), None);
+        p.add(track(2), None);
         p.play_index(0, &r);
 
         assert_eq!(
@@ -2263,8 +2272,8 @@ mod tests {
     fn re_reconciling_an_unchanged_queue_arms_nothing() {
         let r = FakeRefiller::new();
         let mut p = Playlist::new();
-        p.add(track(1));
-        p.add(track(2));
+        p.add(track(1), None);
+        p.add(track(2), None);
         p.play_index(0, &r);
         p.reconcile_arm();
 
@@ -2278,9 +2287,9 @@ mod tests {
     fn a_reorder_re_arms() {
         let r = FakeRefiller::new();
         let mut p = Playlist::new();
-        p.add(track(1));
-        p.add(track(2));
-        p.add(track(3));
+        p.add(track(1), None);
+        p.add(track(2), None);
+        p.add(track(3), None);
         p.play_index(0, &r);
         p.reconcile_arm();
 
@@ -2300,8 +2309,8 @@ mod tests {
     fn clearing_the_queue_disarms() {
         let r = FakeRefiller::new();
         let mut p = Playlist::new();
-        p.add(track(1));
-        p.add(track(2));
+        p.add(track(1), None);
+        p.add(track(2), None);
         p.play_index(0, &r);
         p.reconcile_arm();
 
@@ -2316,7 +2325,7 @@ mod tests {
     fn an_item_override_is_armed_with_the_track() {
         let r = FakeRefiller::new();
         let mut p = Playlist::new();
-        p.add(track(1));
+        p.add(track(1), None);
         p.play_index(0, &r);
         p.add_front(track(2), Some(points(3_000)));
 
@@ -2335,9 +2344,9 @@ mod tests {
     fn nothing_is_armed_ahead_of_a_stop_marker() {
         let r = FakeRefiller::new();
         let mut p = Playlist::new();
-        p.add(track(1));
+        p.add(track(1), None);
         p.add_stop();
-        p.add(track(2));
+        p.add(track(2), None);
         p.play_index(0, &r);
 
         assert_eq!(p.reconcile_arm(), None);
@@ -2348,8 +2357,8 @@ mod tests {
     fn manual_mode_arms_nothing() {
         let r = FakeRefiller::new();
         let mut p = Playlist::new();
-        p.add(track(1));
-        p.add(track(2));
+        p.add(track(1), None);
+        p.add(track(2), None);
         p.play_index(0, &r);
         p.reconcile_arm();
 
@@ -2362,7 +2371,7 @@ mod tests {
     #[test]
     fn a_queue_with_nothing_on_air_arms_nothing() {
         let mut p = Playlist::new();
-        p.add(track(1));
+        p.add(track(1), None);
 
         assert_eq!(p.reconcile_arm(), None);
     }
@@ -2373,9 +2382,9 @@ mod tests {
     fn a_missing_head_is_skipped_when_arming() {
         let r = FakeRefiller::new();
         let mut p = Playlist::new();
-        p.add(track(1));
-        p.add(track(2));
-        p.add(track(3));
+        p.add(track(1), None);
+        p.add(track(2), None);
+        p.add(track(3), None);
         p.play_index(0, &r);
         p.on_missing_state(HashSet::from([2]), &r);
 
@@ -2394,8 +2403,8 @@ mod tests {
     fn an_uncached_track_is_still_armed() {
         let r = FakeRefiller::new();
         let mut p = Playlist::new();
-        p.add(track(1));
-        p.add(track(2));
+        p.add(track(1), None);
+        p.add(track(2), None);
         p.play_index(0, &r);
         // Cache membership is known, and the next track is not in it.
         p.on_cache_state(vec![1], &r);
@@ -2414,8 +2423,8 @@ mod tests {
     fn stopping_disarms() {
         let r = FakeRefiller::new();
         let mut p = Playlist::new();
-        p.add(track(1));
-        p.add(track(2));
+        p.add(track(1), None);
+        p.add(track(2), None);
         p.play_index(0, &r);
         p.reconcile_arm();
 
@@ -2433,9 +2442,9 @@ mod tests {
     fn a_handover_advances_without_a_load() {
         let r = FakeRefiller::new();
         let mut p = Playlist::new();
-        p.add(track(1));
-        p.add(track(2));
-        p.add(track(3));
+        p.add(track(1), None);
+        p.add(track(2), None);
+        p.add(track(3), None);
         p.play_index(0, &r);
         p.reconcile_arm();
 
@@ -2467,7 +2476,7 @@ mod tests {
     fn a_handover_keeps_the_item_override() {
         let r = FakeRefiller::new();
         let mut p = Playlist::new();
-        p.add(track(1));
+        p.add(track(1), None);
         p.play_index(0, &r);
         p.add_front(track(2), Some(points(4_000)));
         p.reconcile_arm();
@@ -2490,9 +2499,9 @@ mod tests {
     fn an_overlap_blocks_arming_until_the_tail_is_vacated() {
         let r = FakeRefiller::new();
         let mut p = Playlist::new();
-        p.add(track(1));
-        p.add(track(2));
-        p.add(track(3));
+        p.add(track(1), None);
+        p.add(track(2), None);
+        p.add(track(3), None);
         p.play_index(0, &r);
         p.reconcile_arm();
         p.on_handover(2, &r);
@@ -2519,10 +2528,10 @@ mod tests {
     fn an_explicit_track_change_ends_the_overlap() {
         let r = FakeRefiller::new();
         let mut p = Playlist::new();
-        p.add(track(1));
-        p.add(track(2));
-        p.add(track(3));
-        p.add(track(4));
+        p.add(track(1), None);
+        p.add(track(2), None);
+        p.add(track(3), None);
+        p.add(track(4), None);
         p.play_index(0, &r);
         p.reconcile_arm();
         p.on_handover(2, &r);
@@ -2543,10 +2552,10 @@ mod tests {
     fn stopping_ends_the_overlap() {
         let r = FakeRefiller::new();
         let mut p = Playlist::new();
-        p.add(track(1));
-        p.add(track(2));
-        p.add(track(3));
-        p.add(track(4));
+        p.add(track(1), None);
+        p.add(track(2), None);
+        p.add(track(3), None);
+        p.add(track(4), None);
         p.play_index(0, &r);
         p.reconcile_arm();
         p.on_handover(2, &r);
@@ -2562,8 +2571,8 @@ mod tests {
     fn a_handover_to_an_unqueued_track_changes_nothing() {
         let r = FakeRefiller::new();
         let mut p = Playlist::new();
-        p.add(track(1));
-        p.add(track(2));
+        p.add(track(1), None);
+        p.add(track(2), None);
         p.play_index(0, &r);
 
         let t = p.on_handover(99, &r);
@@ -2579,8 +2588,8 @@ mod tests {
     fn ending_without_a_handover_still_advances() {
         let r = FakeRefiller::new();
         let mut p = Playlist::new();
-        p.add(track(1));
-        p.add(track(2));
+        p.add(track(1), None);
+        p.add(track(2), None);
         p.play_index(0, &r);
 
         let t = p.on_ended(&r);
@@ -2594,8 +2603,8 @@ mod tests {
     fn a_handover_refills_the_lookahead_buffer() {
         let r = FakeRefiller::generating(4, 3);
         let mut p = Playlist::new();
-        p.add(track(1));
-        p.add(track(2));
+        p.add(track(1), None);
+        p.add(track(2), None);
         p.set_auto_playlist(true, &r);
         p.play_index(0, &r);
         let before = queued(&p).len();

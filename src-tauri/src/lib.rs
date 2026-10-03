@@ -323,14 +323,14 @@ fn playlist_sync(app: State<'_, AppState>) -> Snapshot {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn playlist_add(app: State<'_, AppState>, id: i64) {
-    app.playlist.add(id);
+fn playlist_add(app: State<'_, AppState>, id: i64, cue_points: Option<CuePoints>) {
+    app.playlist.add(id, cue_points);
 }
 
-/// Insert at the head as next-up — cue promotion.
+/// Insert at the head as next-up — the cue editor's _Use once_.
 ///
-/// `cue_points` is an override for this one airing, which the cue deck sends
-/// when what the operator auditioned differs from the track's radio edit.
+/// `cue_points` is an override for this one airing, which _Use once_ sends
+/// when the draft differs from the track's radio edit.
 /// Absent or `null` leaves the item referencing the track.
 #[tauri::command(rename_all = "camelCase")]
 fn playlist_add_front(app: State<'_, AppState>, id: i64, cue_points: Option<CuePoints>) {
