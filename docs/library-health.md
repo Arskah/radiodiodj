@@ -285,8 +285,11 @@ Nothing is wrong with how the library plays these. The analysis pass measures
 the length and `tracks.duration` holds that
 ([library.md](./library.md#the-analysis-pass)); `tracks.tag_duration` keeps what
 the tags said, and a track is listed when the two differ by more than a second
-(`BAD_DURATION_TOLERANCE_S`) — encoder delay and padding put an honest tag tens
-of milliseconds out, never seconds. It is a warning because the file is still
+(`BAD_DURATION_TOLERANCE_S`) **and** by more than 2 % of the measured length
+(`BAD_DURATION_TOLERANCE_RATIO`). Encoder delay and padding put an honest tag
+tens of milliseconds out; seconds alone would list every long recording whose
+tag rounds differently, and a percentage alone every short jingle. Both are
+constants, not settings: no health finding has a knob. It is a warning because the file is still
 wrong for every other program that reads it, and a header that gets the length
 this wrong is usually one a decoder cannot seek by either.
 

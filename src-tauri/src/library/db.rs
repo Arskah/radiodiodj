@@ -176,6 +176,11 @@ pub struct BadDurationRow {
 /// milliseconds out; a VBR MP3 with no Xing header is out by minutes.
 pub const BAD_DURATION_TOLERANCE_S: f64 = 1.0;
 
+/// The same tolerance as a fraction of the measured length. A file has to be
+/// outside **both** to be reported: seconds alone lists every long recording
+/// whose tag rounds differently, and a fraction alone lists every short jingle.
+pub const BAD_DURATION_TOLERANCE_RATIO: f64 = 0.02;
+
 /// The operator's acknowledgement of one health finding. `value` is what the
 /// finding looked like when it was dismissed.
 #[derive(Clone, Debug, PartialEq)]
@@ -1611,8 +1616,9 @@ impl Db {
     }
 
     /// Present tracks the pass has measured whose tags disagree with the audio
-    /// by more than [`BAD_DURATION_TOLERANCE_S`], or whose decode counted no
-    /// audio at all, by id.
+    /// by more than both [`BAD_DURATION_TOLERANCE_S`] and
+    /// [`BAD_DURATION_TOLERANCE_RATIO`], or whose decode counted no audio at
+    /// all, by id.
     ///
     /// The library already plays these at the measured length. They are
     /// reported because the file is still wrong for everything else that reads
@@ -1626,7 +1632,9 @@ impl Db {
              FROM tracks \
              WHERE missing_since IS NULL AND duration_measured_at IS NOT NULL \
                AND (COALESCE(duration, 0) <= 0 \
-                    OR abs(tag_duration - duration) > {BAD_DURATION_TOLERANCE_S}) \
+                    OR (abs(tag_duration - duration) > {BAD_DURATION_TOLERANCE_S} \
+                        AND abs(tag_duration - duration) \
+                            > {BAD_DURATION_TOLERANCE_RATIO} * duration)) \
              ORDER BY id"
         ))?;
         let rows = stmt.query_map([], |r| {
@@ -4909,6 +4917,28 @@ mod tests {
             vec![(wrong, Some(200.0), Some(34.0))],
             "{honest} is inside the tolerance and {unmeasured} is not measured"
         );
+    }
+
+    /// Outside one tolerance is not enough. Two and a half seconds on a
+    /// 200 s track is a tag that rounds differently, and half a second on a
+    /// ten-second jingle is 5 % of nothing anybody would hear.
+    #[test]
+    fn a_tag_length_inside_either_tolerance_is_not_reported() {
+        let db = Db::open_in_memory().unwrap();
+        let long = another_music_track(&db, "/long.mp3");
+        let short = another_music_track(&db, "/short.mp3");
+        db.conn
+            .lock()
+            .execute(
+                "UPDATE tracks SET duration = 10.0, tag_duration = 10.0 WHERE id = ?",
+                [short],
+            )
+            .unwrap();
+
+        db.set_measured_duration(long, 202_500, 1, None).unwrap();
+        db.set_measured_duration(short, 10_500, 1, None).unwrap();
+
+        assert!(bad_durations(&db).is_empty());
     }
 
     /// A decode that counted nothing over a tag that gave no length leaves the
