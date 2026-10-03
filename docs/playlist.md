@@ -200,8 +200,9 @@ prev — the renderer-owned design stripped it there, since `currentTrack` was a
 `Track` and not an item.
 
 An override is authored by the cue editor's _Use once_ (queues the track
-next-up carrying the draft, never writing to the track) and by promotion from
-the cue deck, but only when what is applied there differs from the radio edit.
+next-up carrying the draft, never writing to the track) and by adding the cue
+deck track to the end of the playlist, but only when what is applied there
+differs from the radio edit.
 The playlist row's marker badge clears it. See
 [cue-points.md](./cue-points.md#radio-edit-vs-item-override).
 

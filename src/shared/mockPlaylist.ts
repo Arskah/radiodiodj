@@ -54,8 +54,8 @@ export class MockPlaylistBackend {
     this.emit();
   }
 
-  add(track: Track): void {
-    this.playlist.push(trackItem(track));
+  add(track: Track, cueOverride: CuePoints | null = null): void {
+    this.playlist.push(trackItem(track, cueOverride));
     this.emit();
   }
 

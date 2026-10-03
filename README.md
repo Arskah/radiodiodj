@@ -19,7 +19,7 @@ browser audio pipeline, no external transcoder, no subscription.
   _Fade to next_ starts the next item now and fades the outgoing one out
   underneath it ([docs](docs/program-bus.md#live-fades))
 - **Cue deck** — audition any track on a second output device (headphones)
-  without touching what is on air, then promote it to next-up
+  without touching what is on air, then add it to the end of the playlist
   ([docs](docs/audio.md#the-cue-deck))
 - **Now playing** — waveform, elapsed and remaining time, cover art, and a
   progress bar that seeks on double-click (a single click cannot move an on-air
