@@ -17,6 +17,7 @@ export interface DragOptions {
 
 interface Active {
   id: string;
+  pointerId: number;
   startX: number;
   offset: number;
   moved: boolean;
@@ -37,12 +38,13 @@ export function createDrag(opts: DragOptions) {
     },
 
     down(e: PointerLike, id: string, t: number): void {
-      if (e.button !== 0) return;
+      if (e.button !== 0 || active) return;
       e.preventDefault();
       e.stopPropagation();
       (e.currentTarget as Element | null)?.setPointerCapture?.(e.pointerId);
       active = {
         id,
+        pointerId: e.pointerId,
         startX: e.clientX,
         offset: opts.timeAt(e.clientX) - t,
         moved: false,
@@ -51,7 +53,7 @@ export function createDrag(opts: DragOptions) {
     },
 
     move(e: PointerLike): void {
-      if (!active) return;
+      if (!active || e.pointerId !== active.pointerId) return;
       e.stopPropagation();
       if (!active.moved && Math.abs(e.clientX - active.startX) < THRESHOLD_PX) {
         return;
@@ -61,12 +63,23 @@ export function createDrag(opts: DragOptions) {
     },
 
     up(e: PointerLike): void {
-      if (!active) return;
+      if (!active || e.pointerId !== active.pointerId) return;
       e.stopPropagation();
-      (e.currentTarget as Element | null)?.releasePointerCapture?.(e.pointerId);
-      const { id, moved } = active;
-      active = null;
-      if (moved) opts.onend(id);
+      finish(e, true);
+    },
+
+    lost(e: PointerLike): void {
+      finish(e, false);
     },
   };
+
+  function finish(e: PointerLike, release: boolean): void {
+    if (!active || e.pointerId !== active.pointerId) return;
+    const { id, moved } = active;
+    active = null;
+    if (release) {
+      (e.currentTarget as Element | null)?.releasePointerCapture?.(e.pointerId);
+    }
+    if (moved) opts.onend(id);
+  }
 }

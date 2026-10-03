@@ -4,13 +4,14 @@
    * Out move by the tabs on the region's edges, and only by those: a press on
    * the curve can never grab a marker.
    *
-   * The zoom box is the detail strip's window, and it is also its control: its
-   * grips resize it and its middle pans it, which takes framing off the region
-   * until _Fit_ hands it back.
+   * The zoom box is the detail strip's window and its control: the grips resize
+   * it, the middle seeks, and Shift-drag on the middle pans it. Manual gestures
+   * take framing off the region until _Fit_ hands it back.
    */
   import Waveform, { type WaveformMarker } from "../deck/Waveform.svelte";
   import type { Frame } from "../../shared/cueEditor";
   import type { CueMarker } from "../../shared/cuePoints";
+  import { createPointerScrub } from "../../shared/pointerScrub";
   import { createDrag } from "./cueDrag";
 
   interface Props {
@@ -77,9 +78,21 @@
     onend: () => {},
   });
 
+  const scrub = createPointerScrub((clientX) => onseek?.(timeAt(clientX)));
+
   function onSurfaceDown(e: PointerEvent): void {
-    if (!onseek || e.button !== 0) return;
-    onseek(timeAt(e.clientX));
+    if (!onseek) return;
+    scrub.down(e, surface);
+  }
+
+  function onMiddleDown(e: PointerEvent): void {
+    if (e.button !== 0) return;
+    if (e.shiftKey) frameDrag.down(e, "pan", frame.from);
+    else {
+      if (!onseek) return;
+      e.stopPropagation();
+      scrub.down(e, surface);
+    }
   }
 </script>
 
@@ -97,6 +110,7 @@
           onpointermove={drag.move}
           onpointerup={drag.up}
           onpointercancel={drag.up}
+          onlostpointercapture={drag.lost}
         ></button>
       {/each}
     {/if}
@@ -107,6 +121,10 @@
     bind:this={surface}
     role="presentation"
     onpointerdown={onSurfaceDown}
+    onpointermove={scrub.move}
+    onpointerup={scrub.up}
+    onpointercancel={scrub.cancel}
+    onlostpointercapture={scrub.lost}
   >
     <Waveform
       {peaks}
@@ -139,15 +157,17 @@
         onpointermove={frameDrag.move}
         onpointerup={frameDrag.up}
         onpointercancel={frameDrag.up}
+        onlostpointercapture={frameDrag.lost}
       ></div>
       <div
         class="cue-pan"
         role="presentation"
-        title="Drag to move the zoom · double-click to fit the region"
-        onpointerdown={(e) => frameDrag.down(e, "pan", frame.from)}
+        title="Drag to seek · Shift-drag to move the zoom · double-click to fit the region"
+        onpointerdown={onMiddleDown}
         onpointermove={frameDrag.move}
         onpointerup={frameDrag.up}
         onpointercancel={frameDrag.up}
+        onlostpointercapture={frameDrag.lost}
       ></div>
       <div
         class="cue-grip end"
@@ -157,6 +177,7 @@
         onpointermove={frameDrag.move}
         onpointerup={frameDrag.up}
         onpointercancel={frameDrag.up}
+        onlostpointercapture={frameDrag.lost}
       ></div>
     </div>
   </div>

@@ -46,6 +46,17 @@ describe("hasCuePoints", () => {
   });
 });
 
+describe("cueMarkerPositions", () => {
+  it("shows Next Start before Cue Out", () => {
+    expect(
+      cueMarkerPositions(
+        points({ cue_out_ms: 180_000, next_start_ms: 176_000 }),
+        200,
+      ).map(({ id }) => id),
+    ).toEqual(["next_start_ms", "cue_out_ms"]);
+  });
+});
+
 describe("resolveCuePoints", () => {
   it("resolves a bare track to the whole file", () => {
     expect(resolveCuePoints(undefined, 200)).toEqual({
