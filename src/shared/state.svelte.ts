@@ -1072,23 +1072,32 @@ export class AppState {
    * Take a measured length into every copy of the track the UI holds. Not
    * `currentTrack`, for the reason {@link AppState.adoptCuePoints} leaves it
    * alone: the deck resolved its markers against the length it loaded with.
+   *
+   * A copy that already holds the length is left as the object it was. The
+   * pass reports on every decode, and an overlay re-seeds its form whenever the
+   * track it was opened on is replaced — so `editingMetadata`, which shows no
+   * length, is never touched, and a cue editor takes one only while its draft
+   * is untouched.
    */
   private adoptDuration(id: number, duration: number): void {
+    const stale = (track: Track | null): track is Track =>
+      track !== null && track.id === id && track.duration !== duration;
     const apply = <T extends Track | null>(track: T): T =>
-      track && track.id === id ? { ...track, duration } : track;
-    if (this.tracks.some((t) => t.id === id)) {
+      stale(track) ? { ...track, duration } : track;
+    if (this.tracks.some(stale)) {
       this.tracks = this.tracks.map(apply);
     }
-    if (this.playlist.some((i) => isTrackItem(i) && i.track.id === id)) {
+    if (this.playlist.some((i) => isTrackItem(i) && stale(i.track))) {
       this.playlist = this.playlist.map((i) =>
-        isTrackItem(i) && i.track.id === id
+        isTrackItem(i) && stale(i.track)
           ? { ...i, track: { ...i.track, duration } }
           : i,
       );
     }
     this.cueTrack = apply(this.cueTrack);
-    this.editingCuePoints = apply(this.editingCuePoints);
-    this.editingMetadata = apply(this.editingMetadata);
+    if (!this.cueEditorDirty) {
+      this.editingCuePoints = apply(this.editingCuePoints);
+    }
   }
 
   cueTogglePlay(): void {
