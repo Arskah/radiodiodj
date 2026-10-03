@@ -120,9 +120,9 @@
           <button
             class="btn-cue-promote"
             title={app.cuePromoteCarriesOverride
-              ? "Insert as next-up, carrying the cue points you auditioned"
-              : "Insert cue track as next-up in main playlist"}
-            aria-label="Promote cue track to main playlist"
+              ? "Add to end of playlist, carrying the cue points you auditioned"
+              : "Add cue track to end of main playlist"}
+            aria-label="Add cue track to end of playlist"
             disabled={!app.cueTrack}
             onclick={() => app.promoteCueToMain()}
           >

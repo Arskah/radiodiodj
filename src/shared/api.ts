@@ -189,13 +189,15 @@ export const api = {
   revealTrack(id: number): Promise<void> {
     return invoke<void>("reveal_track", { id });
   },
-  playlistAdd(id: number): Promise<void> {
-    return invoke<void>("playlist_add", { id });
+  /** Append a track, optionally under cue points for this airing alone. */
+  playlistAdd(id: number, cuePoints: CuePoints | null = null): Promise<void> {
+    return invoke<void>("playlist_add", { id, cuePoints });
   },
 
   /**
-   * Insert at the head as next-up — cue promotion. `cuePoints` overrides the
-   * track's radio edit for that one airing; `null` references the track.
+   * Insert at the head as next-up — for example, the cue editor's _Use once_.
+   * `cuePoints` overrides the track's radio edit for that airing; `null`
+   * references the track.
    */
   playlistAddFront(
     id: number,
