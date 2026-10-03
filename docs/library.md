@@ -191,9 +191,14 @@ track missing only one of them costs no more than a track missing all four.
   or it is wrong. lofty reads a VBR MP3 with no Xing header as its file size
   over its first frame's bitrate, which on one real file is 1477 s of a 239 s
   track — and everything that divides by a duration, from the deck's waveform
-  crop to the toolbar's _Playtime_, is then wrong by that ratio. A row analysed
-  before this measurement existed is corrected at the next launch without a
-  decode, from the duration its stored level envelope already carries.
+  crop to the toolbar's _Playtime_, is then wrong by that ratio.
+  `duration_measured_at` is what "measured" means, since the column cannot say
+  whose number it holds. A row analysed before this measurement existed is
+  corrected and stamped at the next launch without a decode, from the duration
+  its stored level envelope already carries; a row with no envelope to read —
+  an operator-owned one is never given one — is left unstamped, which queues it
+  for a decode. A decode that counted no audio is stamped too, and leaves the
+  tag's length where it was: zero is not a length.
 - The **automatic cue points** are the derived trio, and the **level envelope**
   the trio is derived from — the decode reduced to one byte per window, so a
   later threshold change can re-derive a track's markers without reading the

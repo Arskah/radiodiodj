@@ -416,6 +416,10 @@ pub struct AnalysisJob {
     /// [`bpm::VERSION`].
     pub needs_bpm: bool,
     pub needs_key: bool,
+    /// `duration` is still what the tags claimed. The one flag a `manual` row
+    /// with nothing else missing can carry, since no stored envelope is ever
+    /// written for it to adopt a length from.
+    pub needs_duration: bool,
 }
 
 /// What one explicit recalculation did. `updated` were re-derived from their
@@ -561,7 +565,7 @@ impl Db {
             apply_auto_cue: AtomicBool::new(true),
             apply_auto_next_start: AtomicBool::new(true),
         };
-        let adopted = db.adopt_decoded_durations()?;
+        let adopted = db.adopt_decoded_durations(scanner::now_ms())?;
         if adopted > 0 {
             log::info!("library: corrected {adopted} tag duration(s) from a stored envelope");
         }
@@ -787,31 +791,37 @@ impl Db {
         Ok(changed > 0)
     }
 
-    /// Adopt the decoded duration every stored level envelope already carries,
-    /// for rows whose `duration` still disagrees with it. Returns how many were
-    /// corrected.
+    /// Adopt the decoded duration a stored level envelope already carries, for
+    /// every row whose `duration` has not been measured. Returns how many
+    /// lengths that corrected.
     ///
     /// A row analysed before [`Db::set_measured_duration`] existed holds the tag
-    /// length, and nothing would ever queue it again: the analysis pass screens
-    /// on missing measurements, and that row is missing none. The answer is
-    /// nonetheless already in the database, in the header of its
-    /// `auto_cue_levels` blob — so this corrects the whole library with no
-    /// decode and no read across the share.
+    /// length, and decoding the whole library again to replace it would be a
+    /// read of every file across the share. The answer is already in the
+    /// database for most of them, in the header of the `auto_cue_levels` blob —
+    /// so those are corrected and stamped `duration_measured_at` here, with no
+    /// decode.
     ///
-    /// Idempotent, which is why it runs at every open rather than once behind a
-    /// marker: a row that already agrees is not written, so the second launch
-    /// does nothing. Only the nine header bytes are read, not the codes, since a
-    /// long track's envelope runs to thousands of them.
+    /// A row this cannot answer for is left unstamped, which is what queues it:
+    /// [`Db::tracks_needing_analysis`] screens on the marker. That covers an
+    /// envelope this build cannot read and a row that has none — a `manual` row
+    /// above all, which is never given one.
     ///
-    /// An envelope this build cannot read is left alone. The level pass will
-    /// replace it, and that decode writes the duration itself.
-    fn adopt_decoded_durations(&self) -> Result<usize> {
+    /// An envelope that counted no audio is stamped and its row's length left
+    /// alone, as [`Db::set_measured_duration`] does with the same answer.
+    ///
+    /// Runs at every open rather than once behind a marker of its own, because
+    /// the stamp already is one: the second launch finds nothing unstamped.
+    /// Only the nine header bytes are read, not the codes, since a long track's
+    /// envelope runs to thousands of them.
+    fn adopt_decoded_durations(&self, at_ms: i64) -> Result<usize> {
         let mut conn = self.conn.lock();
         let header_len = level_envelope::LEVELS_HEADER_LEN as i64;
-        let pending: Vec<(i64, f64)> = {
+        let pending: Vec<(i64, Option<f64>)> = {
             let mut stmt = conn.prepare(
                 "SELECT id, duration, substr(auto_cue_levels, 1, ?) \
-                 FROM tracks WHERE auto_cue_levels IS NOT NULL",
+                 FROM tracks \
+                 WHERE auto_cue_levels IS NOT NULL AND duration_measured_at IS NULL",
             )?;
             let rows = stmt.query_map([header_len], |r| {
                 Ok((
@@ -822,14 +832,12 @@ impl Db {
             })?;
             rows.filter_map(|row| {
                 let (id, stored, header) = row.ok()?;
-                let measured = Envelope::stored_duration_ms(&header)? as f64 / 1000.0;
-                // Half a millisecond: the write below is a millisecond value
-                // through an `f64` seconds column, so a row that already agrees
-                // must not read as disagreeing on the way back.
-                match stored {
-                    Some(s) if (s - measured).abs() < 0.000_5 => None,
-                    _ => Some((id, measured)),
-                }
+                let measured_ms = Envelope::stored_duration_ms(&header)?;
+                let measured = measured_ms as f64 / 1000.0;
+                // Half a millisecond: the column holds seconds as an `f64`, so
+                // a length that already agrees must not count as a correction.
+                let agrees = stored.is_some_and(|s| (s - measured).abs() < 0.000_5);
+                Some((id, (measured_ms > 0 && !agrees).then_some(measured)))
             })
             .collect()
         };
@@ -838,13 +846,17 @@ impl Db {
         }
         let tx = conn.transaction()?;
         {
-            let mut stmt = tx.prepare("UPDATE tracks SET duration = ? WHERE id = ?")?;
+            let mut stmt = tx.prepare(
+                "UPDATE tracks SET duration = COALESCE(?1, duration), \
+                        duration_measured_at = ?2 \
+                 WHERE id = ?3",
+            )?;
             for (id, duration) in &pending {
-                stmt.execute(params![duration, id])?;
+                stmt.execute(params![duration, at_ms, id])?;
             }
         }
         tx.commit()?;
-        Ok(pending.len())
+        Ok(pending.iter().filter(|(_, d)| d.is_some()).count())
     }
 
     /// Store the length the decode measured, over whatever the tags claimed.
@@ -857,18 +869,27 @@ impl Db {
     /// it wrong by a factor of six, because the length a tag reader reports is
     /// then the file size divided by the first frame's bitrate.
     ///
+    /// `duration_measured_at` is what "already measured" means, and it is
+    /// stamped even when the decode counted nothing — a decoder that reported
+    /// no sample rate, or a file with no samples in it. That answer is not a
+    /// length, so the tag's stands; but it is an answer, and the pass must not
+    /// decode the file again on every run to hear it repeated.
+    ///
     /// Guarded on `mtime` like [`Db::set_waveform`]: a file replaced mid-decode
     /// must not land the length of the recording it replaced.
     pub fn set_measured_duration(
         &self,
         id: i64,
         duration_ms: i64,
+        at_ms: i64,
         mtime: Option<i64>,
     ) -> Result<bool> {
         let conn = self.conn.lock();
         let changed = conn.execute(
-            "UPDATE tracks SET duration = ? WHERE id = ? AND mtime IS ?",
-            params![duration_ms as f64 / 1000.0, id, mtime],
+            "UPDATE tracks SET duration = CASE WHEN ?1 > 0 THEN ?1 / 1000.0 ELSE duration END, \
+                    duration_measured_at = ?2 \
+             WHERE id = ?3 AND mtime IS ?4",
+            params![duration_ms, at_ms, id, mtime],
         )?;
         Ok(changed > 0)
     }
@@ -1091,8 +1112,9 @@ impl Db {
             .optional()?)
     }
 
-    /// Every present track still missing a waveform, a loudness measurement, an
-    /// automatic cue or a tempo measurement, or whose fingerprint or tempo was
+    /// Every present track still missing a waveform, a loudness measurement, a
+    /// measured duration, an automatic cue or a tempo measurement, or whose
+    /// fingerprint or tempo was
     /// computed by an older [`fingerprint::VERSION`] / [`bpm::VERSION`], ordered
     /// by id. Drives the background
     /// analysis worker (backfill included). A track whose analysis failed is
@@ -1130,12 +1152,14 @@ impl Db {
         let mut stmt = conn.prepare(&format!(
             "SELECT id, path, mtime, content_type, waveform IS NULL, {stale_fingerprint}, \
                     rg_measured_at IS NULL, auto_cue_state = 'pending', \
-                    {missing_levels}, {stale_bpm}, {stale_key} \
+                    {missing_levels}, {stale_bpm}, {stale_key}, \
+                    duration_measured_at IS NULL \
              FROM tracks \
              WHERE missing_since IS NULL AND analysis_failed_at IS NULL \
                AND (waveform IS NULL OR {stale_fingerprint} \
                     OR rg_measured_at IS NULL OR auto_cue_state = 'pending' \
-                    OR {missing_levels} OR {stale_bpm} OR {stale_key}) \
+                    OR {missing_levels} OR {stale_bpm} OR {stale_key} \
+                    OR duration_measured_at IS NULL) \
              ORDER BY id"
         ))?;
         let rows = stmt.query_map([], |r| {
@@ -1151,6 +1175,7 @@ impl Db {
                 needs_auto_cue_levels: r.get(8)?,
                 needs_bpm: r.get(9)?,
                 needs_key: r.get(10)?,
+                needs_duration: r.get(11)?,
             })
         })?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
@@ -2712,6 +2737,7 @@ const MIGRATION_STEPS: &[M] = &[
     M::up(TRACK_METADATA),
     M::up(DETECTED_TEMPO),
     M::up(DETECTED_KEY),
+    M::up(MEASURED_DURATION),
 ];
 const MIGRATIONS: Migrations = Migrations::from_slice(MIGRATION_STEPS);
 
@@ -2990,8 +3016,9 @@ INSERT INTO tracks_fts(tracks_fts) VALUES('rebuild');
 /// it on insert: the tag's length is only the opening bid, and
 /// [`Db::set_measured_duration`] replaces it with the decode's. Dropping it
 /// back to the tag value for audio that did not change would hand the deck a
-/// headerless VBR MP3's file-size-over-first-frame-bitrate guess again, with
-/// nothing queued to correct it.
+/// headerless VBR MP3's file-size-over-first-frame-bitrate guess again.
+/// `duration_measured_at` moves with it, so a length that does fall back to the
+/// tag's is queued to be measured.
 ///
 /// `isrc` alone has no `edited_fields` guard, because it is the one tag column
 /// the operator cannot edit: the rights registry owns it, so the file always
@@ -3024,6 +3051,8 @@ const UPSERT_TRACK_SQL: &str = "INSERT INTO tracks \
         tags_read_version=excluded.tags_read_version, \
         duration=CASE WHEN excluded.fingerprint = fingerprint \
                  THEN duration ELSE excluded.duration END, \
+        duration_measured_at=CASE WHEN excluded.fingerprint = fingerprint \
+                             THEN duration_measured_at ELSE NULL END, \
         bpm=excluded.bpm, sample_rate=excluded.sample_rate, \
         bitrate=excluded.bitrate, format=excluded.format, mtime=excluded.mtime, \
         fingerprint=COALESCE(excluded.fingerprint, fingerprint), \
@@ -3095,6 +3124,16 @@ ALTER TABLE tracks ADD COLUMN key_confidence REAL;
 const DETECTED_KEY: &str = r#"
 ALTER TABLE tracks ADD COLUMN key_measured_at INTEGER;
 ALTER TABLE tracks ADD COLUMN key_version INTEGER;
+"#;
+
+/// Step 12: whether `duration` is the decode's length or still the tag's.
+///
+/// The column itself cannot say, and the difference decides whether the
+/// analysis pass owes the row a decode: `duration_measured_at` (unix ms) is
+/// what queues a row that is missing nothing else, which is the only way a
+/// `manual` row with no level envelope ever has a wrong tag length replaced.
+const MEASURED_DURATION: &str = r#"
+ALTER TABLE tracks ADD COLUMN duration_measured_at INTEGER;
 "#;
 
 /// A database this build must not touch.
@@ -3421,6 +3460,27 @@ mod tests {
                         bpm_measured_at = 9, bpm_version = 1, \
                         detected_key = 'Am', key_confidence = 0.7, \
                         key_measured_at = 11, key_version = 1; \
+                 INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
+                 SELECT id, 1000, artist, title, duration FROM tracks",
+            )
+            .unwrap();
+        },
+        |conn| {
+            seed_track(conn);
+            seed_dismissal(conn);
+            conn.execute_batch(
+                "UPDATE tracks SET edited_fields = 1, \
+                        analysis_error = 'bad', analysis_failed_at = 5, \
+                        rg_gain = -6.5, rg_peak = 0.98, rg_measured_at = 7, \
+                        auto_cue_state = 'manual', auto_cue_levels = x'00', \
+                        album_artist = 'Various', track_no = 3, track_total = 12, \
+                        disc_no = 1, disc_total = 2, isrc = 'FIFIN2400123', \
+                        initial_key = '8A', comment = 'note', tags_read_version = 1, \
+                        detected_bpm = 128.0, bpm_confidence = 0.8, \
+                        bpm_measured_at = 9, bpm_version = 1, \
+                        detected_key = 'Am', key_confidence = 0.7, \
+                        key_measured_at = 11, key_version = 1, \
+                        duration_measured_at = 13; \
                  INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
                  SELECT id, 1000, artist, title, duration FROM tracks",
             )
@@ -4658,11 +4718,11 @@ mod tests {
             .unwrap();
         put_levels(&db, id, &envelope_of(238_968).encode());
 
-        assert_eq!(db.adopt_decoded_durations().unwrap(), 1);
+        assert_eq!(db.adopt_decoded_durations(1).unwrap(), 1);
         assert_eq!(duration_of(&db, id), Some(238.968));
 
         assert_eq!(
-            db.adopt_decoded_durations().unwrap(),
+            db.adopt_decoded_durations(1).unwrap(),
             0,
             "a row that already agrees is not rewritten, which is what lets \
              this run at every open instead of once behind a marker"
@@ -4681,8 +4741,28 @@ mod tests {
             .unwrap();
         put_levels(&db, id, &envelope_of(238_968).encode());
 
-        assert_eq!(db.adopt_decoded_durations().unwrap(), 1);
+        assert_eq!(db.adopt_decoded_durations(1).unwrap(), 1);
         assert_eq!(duration_of(&db, id), Some(238.968));
+    }
+
+    fn needs_duration(db: &Db, id: i64) -> bool {
+        db.tracks_needing_analysis()
+            .unwrap()
+            .iter()
+            .any(|j| j.id == id && j.needs_duration)
+    }
+
+    /// Everything the pass measures, except the length — the row as a build
+    /// from before [`Db::set_measured_duration`] left it.
+    fn analysed_before_durations(db: &Db, path: &str) -> i64 {
+        let id = another_music_track(db, path);
+        db.set_waveform(id, &[9], None).unwrap();
+        db.set_fingerprint(id, &format!("{}:{path}", fingerprint::VERSION), None)
+            .unwrap();
+        db.set_loudness(id, Some(-6.0), Some(0.9), 1, None).unwrap();
+        db.set_bpm(id, Some(tempo(128.0)), 1, None).unwrap();
+        db.set_key(id, Some(measured_key()), 1, None).unwrap();
+        id
     }
 
     /// Nothing to read the duration out of, either because the row has no
@@ -4692,8 +4772,8 @@ mod tests {
     #[test]
     fn a_duration_with_nothing_to_correct_it_stands() {
         let db = Db::open_in_memory().unwrap();
-        let no_envelope = music_track(&db, "/a.mp3");
-        let unreadable = music_track(&db, "/b.mp3");
+        let no_envelope = another_music_track(&db, "/a.mp3");
+        let unreadable = another_music_track(&db, "/b.mp3");
         let mut blob = envelope_of(238_968).encode();
         blob[0] = level_envelope::LEVELS_FORMAT_VERSION.wrapping_add(1);
         put_levels(&db, unreadable, &blob);
@@ -4704,9 +4784,74 @@ mod tests {
                 .unwrap();
         }
 
-        assert_eq!(db.adopt_decoded_durations().unwrap(), 0);
+        assert_eq!(db.adopt_decoded_durations(1).unwrap(), 0);
         assert_eq!(duration_of(&db, no_envelope), Some(1477.646));
         assert_eq!(duration_of(&db, unreadable), Some(1477.646));
+        assert!(needs_duration(&db, no_envelope));
+        assert!(needs_duration(&db, unreadable));
+    }
+
+    /// The row the envelope cannot reach. An operator who set cue points before
+    /// the pass stored an envelope owns the trio for good, so no envelope is
+    /// ever written for it — and with every other measurement in place nothing
+    /// else would queue it. The marker has to, or the tag's length is permanent.
+    #[test]
+    fn an_operator_owned_row_with_no_envelope_is_queued_for_its_duration() {
+        let db = Db::open_in_memory().unwrap();
+        let id = analysed_before_durations(&db, "/a.mp3");
+        db.conn
+            .lock()
+            .execute(
+                "UPDATE tracks SET duration = 1477.646, auto_cue_state = 'manual' WHERE id = ?",
+                [id],
+            )
+            .unwrap();
+
+        assert_eq!(db.adopt_decoded_durations(1).unwrap(), 0);
+        let jobs = db.tracks_needing_analysis().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert!(jobs[0].needs_duration);
+        assert!(!jobs[0].needs_auto_cue_levels, "still not owed an envelope");
+
+        assert!(db.set_measured_duration(id, 238_968, 1, None).unwrap());
+
+        assert_eq!(duration_of(&db, id), Some(238.968));
+        assert!(db.tracks_needing_analysis().unwrap().is_empty());
+    }
+
+    /// A row the envelope answered for is not decoded again to be told the same
+    /// thing: adopting the length stamps it measured.
+    #[test]
+    fn an_adopted_duration_is_not_queued_for_a_decode() {
+        let db = Db::open_in_memory().unwrap();
+        let id = analysed_before_durations(&db, "/a.mp3");
+        db.set_auto_cue(id, &one_analysis(AutoCue::default(), 1), "music", None)
+            .unwrap();
+        put_levels(&db, id, &envelope_of(238_968).encode());
+        assert!(needs_duration(&db, id));
+
+        db.adopt_decoded_durations(1).unwrap();
+
+        assert!(db.tracks_needing_analysis().unwrap().is_empty());
+    }
+
+    /// A decode that counted nothing — no sample rate, or no samples — reports
+    /// a length of zero. That is not a length, so it must not replace one a tag
+    /// supplied; but it is the decode's answer, so the row is not asked again.
+    #[test]
+    fn a_decode_that_counted_nothing_keeps_the_tag_duration() {
+        let db = Db::open_in_memory().unwrap();
+        let decoded = another_music_track(&db, "/a.mp3");
+        let adopted = another_music_track(&db, "/b.mp3");
+        put_levels(&db, adopted, &envelope_of(0).encode());
+
+        assert!(db.set_measured_duration(decoded, 0, 1, None).unwrap());
+        assert_eq!(db.adopt_decoded_durations(1).unwrap(), 0);
+
+        for id in [decoded, adopted] {
+            assert_eq!(duration_of(&db, id), Some(200.0));
+            assert!(!needs_duration(&db, id));
+        }
     }
 
     /// The pass runs as part of opening the library, so a launch is all an
@@ -6015,7 +6160,7 @@ mod tests {
     fn a_rescan_of_the_same_audio_keeps_the_measured_duration() {
         let db = Db::open_in_memory().unwrap();
         let id = measured(&db, Some("v2:same"));
-        db.set_measured_duration(id, 238_968, None).unwrap();
+        db.set_measured_duration(id, 238_968, 1, None).unwrap();
 
         db.insert_track(&TrackInsert {
             path: "/wave.mp3".into(),
@@ -6027,6 +6172,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(db.get_track(id).unwrap().unwrap().duration, 238.968);
+        assert!(!needs_duration(&db, id));
     }
 
     /// The other side of the same gate: audio this row cannot vouch for takes
@@ -6038,7 +6184,7 @@ mod tests {
         for found in [Some("v2:new"), None] {
             let db = Db::open_in_memory().unwrap();
             let id = measured(&db, Some("v2:old"));
-            db.set_measured_duration(id, 238_968, None).unwrap();
+            db.set_measured_duration(id, 238_968, 1, None).unwrap();
 
             db.insert_track(&TrackInsert {
                 path: "/wave.mp3".into(),
@@ -6054,6 +6200,7 @@ mod tests {
                 1477.646,
                 "{found:?}"
             );
+            assert!(needs_duration(&db, id), "{found:?}");
         }
     }
 
@@ -6127,7 +6274,7 @@ mod tests {
             .set_loudness(id, Some(-6.0), Some(0.9), 1, job.mtime)
             .unwrap());
         assert!(!db.set_fingerprint(id, "v2:old", job.mtime).unwrap());
-        assert!(!db.set_measured_duration(id, 238_968, job.mtime).unwrap());
+        assert!(!db.set_measured_duration(id, 238_968, 1, job.mtime).unwrap());
         assert_eq!(
             db.get_track(id).unwrap().unwrap().duration,
             0.0,
@@ -6235,6 +6382,7 @@ mod tests {
             .unwrap();
         db.set_bpm(b, Some(tempo(128.0)), 1, None).unwrap();
         db.set_key(b, Some(measured_key()), 1, None).unwrap();
+        db.set_measured_duration(b, 200_000, 1, None).unwrap();
 
         let jobs = db.tracks_needing_analysis().unwrap();
         assert_eq!(jobs.len(), 1);
@@ -6265,6 +6413,7 @@ mod tests {
             .unwrap();
         db.set_bpm(id, Some(tempo(128.0)), 1, None).unwrap();
         db.set_key(id, Some(measured_key()), 1, None).unwrap();
+        db.set_measured_duration(id, 200_000, 1, None).unwrap();
 
         db.set_fingerprint(id, "v1:stale", None).unwrap();
         let jobs = db.tracks_needing_analysis().unwrap();
@@ -6312,6 +6461,7 @@ mod tests {
             .unwrap();
         db.set_bpm(id, None, 42, None).unwrap();
         db.set_key(id, None, 42, None).unwrap();
+        db.set_measured_duration(id, 0, 42, None).unwrap();
 
         assert!(db.tracks_needing_analysis().unwrap().is_empty());
     }
@@ -6337,6 +6487,7 @@ mod tests {
             .unwrap();
         db.set_bpm(id, Some(tempo(128.0)), 1, None).unwrap();
         db.set_key(id, Some(measured_key()), 1, None).unwrap();
+        db.set_measured_duration(id, 200_000, 1, None).unwrap();
         assert!(db.tracks_needing_analysis().unwrap().is_empty());
 
         db.conn
@@ -6369,6 +6520,7 @@ mod tests {
             .unwrap();
         db.set_bpm(id, Some(tempo(128.0)), 1, None).unwrap();
         db.set_key(id, Some(measured_key()), 1, None).unwrap();
+        db.set_measured_duration(id, 200_000, 1, None).unwrap();
         assert!(db.tracks_needing_analysis().unwrap().is_empty());
 
         db.conn

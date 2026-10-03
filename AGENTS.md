@@ -137,9 +137,11 @@ a tag is a claim worth keeping next to a measurement that disagrees, a duration
 is either the length of the audio or it is wrong, and lofty reads a VBR MP3 with
 no Xing header as its file size over its first frame's bitrate. So `duration`
 hangs on `excluded.fingerprint = fingerprint` in `UPSERT_TRACK_SQL` like every
-other measurement, and `Db::adopt_decoded_durations` corrects a row that
-predates the write from the duration its level envelope already carries — at
-every open, idempotently, with no decode. See
+other measurement. `duration_measured_at` is the done marker and the only thing
+that queues a `manual` row with no envelope; `Db::adopt_decoded_durations`
+stamps a row that predates the write from the duration its level envelope
+already carries — at every open, with no decode. A decode that counted nothing
+is stamped and **never written**: zero is not a length. See
 [docs/library.md](docs/library.md#the-analysis-pass).
 
 **Automatic cue points** — cue in, cue out and (for music) next start derived

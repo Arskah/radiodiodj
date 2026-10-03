@@ -450,6 +450,7 @@ fn fetch_kind(job: &AnalysisJob) -> Fetch {
         || job.needs_auto_cue_levels
         || job.needs_bpm
         || job.needs_key
+        || job.needs_duration
     {
         Fetch::Whole
     } else {
@@ -642,11 +643,9 @@ fn analyse(
                     let decode_ms = start.elapsed().as_millis();
                     let store_start = Instant::now();
                     // Unscreened, unlike everything below: the decode counted
-                    // the samples whatever this job came here for, and a row
-                    // only reaches this function because something else about
-                    // it was missing anyway.
+                    // the samples whatever this job came here for.
                     let measured_ms = analysis.windows.duration_ms;
-                    match db.set_measured_duration(job.id, measured_ms, job.mtime) {
+                    match db.set_measured_duration(job.id, measured_ms, now_ms(), job.mtime) {
                         Err(e) => {
                             log::error!("duration: store {} failed: {}", job.id, e);
                             retry = true;
@@ -1037,6 +1036,7 @@ mod tests {
             needs_auto_cue_levels: false,
             needs_bpm: false,
             needs_key: false,
+            needs_duration: false,
         }
     }
 
@@ -1054,17 +1054,18 @@ mod tests {
 
     /// Every measurement that needs a decode needs the whole file; a job that
     /// wants nothing but a fingerprint gets the head. This fails the moment a
-    /// seventh measurement is added and the reader is not told about it.
+    /// eighth measurement is added and the reader is not told about it.
     #[test]
     fn only_a_fingerprint_backfill_reads_the_head_alone() {
         type Flag = (&'static str, fn(&mut AnalysisJob));
-        let flags: [Flag; 6] = [
+        let flags: [Flag; 7] = [
             ("waveform", |j| j.needs_waveform = true),
             ("loudness", |j| j.needs_loudness = true),
             ("auto cue", |j| j.needs_auto_cue = true),
             ("auto cue levels", |j| j.needs_auto_cue_levels = true),
             ("bpm", |j| j.needs_bpm = true),
             ("key", |j| j.needs_key = true),
+            ("duration", |j| j.needs_duration = true),
         ];
         for (name, set) in flags {
             let mut job = fingerprint_only(1);
