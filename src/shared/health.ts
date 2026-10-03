@@ -17,7 +17,9 @@ export function checkHasChanges(check: CheckReport | null): boolean {
  * and the Library health tab show. Missing tracks count once, not per track,
  * so removing a library path does not put hundreds on the button. An
  * unreachable path cannot be dismissed; it clears when the share is back. A
- * failed tag write counts until it is retried or dismissed.
+ * failed tag write counts until it is retried or dismissed. Bad durations
+ * count once for the same reason missing tracks do, and until the files are
+ * repaired.
  */
 export function healthAttention(report: HealthReport): number {
   let count = 0;
@@ -27,6 +29,7 @@ export function healthAttention(report: HealthReport): number {
   if (checkHasChanges(report.check) && !report.checkDismissed) count += 1;
   count += report.check?.unreachable.length ?? 0;
   count += report.tagWriteFailures.length;
+  if (report.badDurations.length > 0) count += 1;
   return count;
 }
 

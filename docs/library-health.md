@@ -87,10 +87,13 @@ The tab and the Settings button carry the same **attention count**:
 | a check that found changes, unless dismissed | 1        |
 | unreachable library paths                    | 1 each   |
 | failed tag writes                            | 1 each   |
+| bad durations                                | 1 if any |
 
 Missing tracks count once, however many there are, so removing a library path
-does not put _800_ on the button. An unreachable path cannot be dismissed. It
-clears itself when the share is back.
+does not put _800_ on the button; bad durations count once for the same reason.
+An unreachable path cannot be dismissed. It clears itself when the share is
+back. Bad durations cannot be dismissed either, and count until every listed
+file has been repaired and scanned.
 
 A scan's result bar at the bottom of the window stays until the operator
 dismisses it, so a scan that ends unwatched still says what it moved and marked
@@ -292,8 +295,8 @@ too, as having no length at all.
 
 A track is only listed once the pass has measured it. To fix one, repair the
 header or re-encode the file and scan: the scan re-reads the tags, and the track
-leaves the list when they agree with the audio. Bad durations are not in the
-attention count, and cannot be dismissed.
+leaves the list when they agree with the audio. Bad durations are in the
+attention count, once however many there are, and cannot be dismissed.
 
 ## Duplicates
 

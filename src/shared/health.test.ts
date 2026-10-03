@@ -11,6 +11,7 @@ import type {
   DuplicateGroup,
   HealthReport,
   MissingTrack,
+  Track,
 } from "./types";
 
 const empty: HealthReport = {
@@ -106,6 +107,19 @@ describe("healthAttention", () => {
     expect(
       healthAttention({ ...empty, tagWriteFailures: [failure(1), failure(2)] }),
     ).toBe(2);
+  });
+
+  it("counts bad durations once, however many there are", () => {
+    const bad = (id: number) => ({
+      track: { id } as Track,
+      path: `/m/${id}`,
+      contentType: "music" as const,
+      tagDuration: 1477,
+      measuredDuration: 239,
+    });
+    expect(healthAttention({ ...empty, badDurations: [bad(1), bad(2)] })).toBe(
+      1,
+    );
   });
 });
 
