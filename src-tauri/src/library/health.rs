@@ -33,6 +33,8 @@ pub struct HealthReport {
     pub unreadable: Vec<UnreadableTrack>,
     /// Present tracks whose tags give a length the audio does not have.
     pub bad_durations: Vec<BadDurationTrack>,
+    /// The operator has seen every track in `bad_durations`.
+    pub bad_durations_dismissed: bool,
     /// The latest library check, until a scan makes it moot.
     pub check: Option<CheckReport>,
     pub check_dismissed: bool,
@@ -103,6 +105,7 @@ pub enum FindingKind {
     Exact,
     Possible,
     Missing,
+    Duration,
     Check,
 }
 
@@ -112,6 +115,7 @@ impl FindingKind {
             Self::Exact => "exact",
             Self::Possible => "possible",
             Self::Missing => "missing",
+            Self::Duration => "duration",
             Self::Check => "check",
         }
     }
@@ -293,6 +297,10 @@ impl Health {
                     Some(value) => value,
                     None => bail!("no missing tracks to dismiss"),
                 },
+                FindingKind::Duration => match duration_signature(&report.bad_durations) {
+                    Some(value) => value,
+                    None => bail!("no bad durations to dismiss"),
+                },
                 FindingKind::Check => unreachable!("handled above"),
                 FindingKind::Exact | FindingKind::Possible => {
                     let groups = match kind {
@@ -328,10 +336,10 @@ impl Health {
     }
 }
 
-/// Missing tracks have one dismissal for the whole list.
+/// Missing tracks and bad durations have one dismissal for the whole list.
 fn dismissal_key(kind: FindingKind, key: &str) -> String {
     match kind {
-        FindingKind::Missing => String::new(),
+        FindingKind::Missing | FindingKind::Duration => String::new(),
         _ => key.to_string(),
     }
 }
@@ -385,6 +393,32 @@ pub fn build(db: &Db, roots: &[ScanRoot]) -> Result<HealthReport> {
         live.insert(missing_key);
     }
 
+    let bad_durations: Vec<BadDurationTrack> = db
+        .bad_duration_tracks()?
+        .into_iter()
+        .map(|b| BadDurationTrack {
+            track: b.row.track,
+            path: b.row.path,
+            content_type: b.row.content_type,
+            tag_duration: b.tag_duration,
+            measured_duration: b.measured_duration,
+        })
+        .collect();
+    let duration_key = ("duration".to_string(), String::new());
+    // Dismissed as long as every listed finding was listed, with the same two
+    // lengths, when the operator dismissed. A file repaired since then leaves
+    // the rest dismissed; a new one, or one whose lengths moved, does not.
+    let bad_durations_dismissed = !bad_durations.is_empty()
+        && dismissed.get(&duration_key).is_some_and(|seen| {
+            let seen: HashSet<&str> = seen.split(',').collect();
+            bad_durations
+                .iter()
+                .all(|b| seen.contains(duration_entry(b).as_str()))
+        });
+    if !bad_durations.is_empty() {
+        live.insert(duration_key);
+    }
+
     dismissed.retain(|id, _| !live.contains(id));
     if !dismissed.is_empty() {
         let stale: Vec<(String, String)> = dismissed.into_keys().collect();
@@ -408,17 +442,8 @@ pub fn build(db: &Db, roots: &[ScanRoot]) -> Result<HealthReport> {
                 failed_at: u.failed_at,
             })
             .collect(),
-        bad_durations: db
-            .bad_duration_tracks()?
-            .into_iter()
-            .map(|b| BadDurationTrack {
-                track: b.row.track,
-                path: b.row.path,
-                content_type: b.row.content_type,
-                tag_duration: b.tag_duration,
-                measured_duration: b.measured_duration,
-            })
-            .collect(),
+        bad_durations,
+        bad_durations_dismissed,
         check: None,
         check_dismissed: false,
         checking: false,
@@ -433,6 +458,30 @@ fn group_signature(group: &DuplicateGroup) -> String {
 }
 
 /// `missing` is sorted newest first.
+/// One bad duration as a dismissal remembers it: the track and both lengths in
+/// whole milliseconds, so a finding that changed reads as a different one.
+fn duration_entry(bad: &BadDurationTrack) -> String {
+    let ms = |seconds: Option<f64>| {
+        seconds.map_or_else(
+            || "-".to_string(),
+            |s| ((s * 1000.0).round() as i64).to_string(),
+        )
+    };
+    format!(
+        "{}:{}:{}",
+        bad.track.id,
+        ms(bad.tag_duration),
+        ms(bad.measured_duration)
+    )
+}
+
+fn duration_signature(bad: &[BadDurationTrack]) -> Option<String> {
+    if bad.is_empty() {
+        return None;
+    }
+    Some(bad.iter().map(duration_entry).collect::<Vec<_>>().join(","))
+}
+
 fn missing_signature(missing: &[MissingTrack]) -> Option<String> {
     missing.first().map(|t| t.missing_since.to_string())
 }
@@ -977,6 +1026,72 @@ mod tests {
 
         mark_missing(&db, &[b], 20);
         assert!(!build(&db, &music_root()).unwrap().missing_dismissed);
+    }
+
+    /// Two tracks, each with a tag length a minute short of its audio.
+    fn two_bad_durations(db: &Db) -> (i64, i64) {
+        let a = insert(db, "/music/a.mp3", "music", "X", "One", None);
+        let b = insert(db, "/music/b.mp3", "music", "Y", "Two", None);
+        for id in [a, b] {
+            assert!(db.set_measured_duration(id, 260_000, 7, Some(1)).unwrap());
+        }
+        (a, b)
+    }
+
+    fn dismiss_durations(db: &Db) {
+        let report = build(db, &music_root()).unwrap();
+        let value = duration_signature(&report.bad_durations).unwrap();
+        dismiss(db, FindingKind::Duration, "", &value);
+    }
+
+    /// The badge is for news. A file the operator repaired is not news, so the
+    /// rest of a dismissed list stays dismissed; a file that was not on it is.
+    #[test]
+    fn dismissed_bad_durations_light_again_only_for_a_new_one() {
+        let db = Db::open_in_memory().unwrap();
+        let (a, _) = two_bad_durations(&db);
+        assert!(!build(&db, &music_root()).unwrap().bad_durations_dismissed);
+        dismiss_durations(&db);
+        assert!(build(&db, &music_root()).unwrap().bad_durations_dismissed);
+
+        // `a` is repaired: its measured length now agrees with its tags.
+        assert!(db.set_measured_duration(a, 200_000, 8, Some(1)).unwrap());
+        let report = build(&db, &music_root()).unwrap();
+        assert_eq!(report.bad_durations.len(), 1);
+        assert!(report.bad_durations_dismissed, "one fewer is not news");
+
+        let c = insert(&db, "/music/c.mp3", "music", "Z", "Three", None);
+        assert!(db.set_measured_duration(c, 260_000, 9, Some(1)).unwrap());
+        assert!(!build(&db, &music_root()).unwrap().bad_durations_dismissed);
+    }
+
+    /// The same track with a different length is a different finding: the file
+    /// was replaced, and what replaced it is wrong in its own way.
+    #[test]
+    fn a_dismissed_bad_duration_lights_again_when_its_lengths_move() {
+        let db = Db::open_in_memory().unwrap();
+        let (a, _) = two_bad_durations(&db);
+        dismiss_durations(&db);
+
+        assert!(db.set_measured_duration(a, 90_000, 8, Some(1)).unwrap());
+
+        assert!(!build(&db, &music_root()).unwrap().bad_durations_dismissed);
+    }
+
+    #[test]
+    fn a_duration_dismissal_is_forgotten_once_nothing_is_listed() {
+        let db = Db::open_in_memory().unwrap();
+        let (a, b) = two_bad_durations(&db);
+        dismiss_durations(&db);
+
+        for id in [a, b] {
+            assert!(db.set_measured_duration(id, 200_000, 8, Some(1)).unwrap());
+        }
+        let report = build(&db, &music_root()).unwrap();
+
+        assert!(report.bad_durations.is_empty());
+        assert!(!report.bad_durations_dismissed);
+        assert!(db.dismissals().unwrap().is_empty());
     }
 
     #[test]

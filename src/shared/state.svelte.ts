@@ -99,6 +99,7 @@ export const EMPTY_HEALTH: HealthReport = {
   unhashed: 0,
   unreadable: [],
   badDurations: [],
+  badDurationsDismissed: false,
   check: null,
   checkDismissed: false,
   checking: false,

@@ -280,6 +280,8 @@ export interface HealthReport {
   unreadable: UnreadableTrack[];
   /** Present tracks whose tags give a length the audio does not have. */
   badDurations: BadDurationTrack[];
+  /** The operator has seen every track in `badDurations`. */
+  badDurationsDismissed: boolean;
   check: CheckReport | null;
   checkDismissed: boolean;
   /** A library check is running now. */
@@ -299,7 +301,8 @@ export interface TagWriteFailure {
   at: number;
 }
 
-export type FindingKind = "exact" | "possible" | "missing" | "check";
+export type FindingKind =
+  "exact" | "possible" | "missing" | "duration" | "check";
 
 export interface ScanResult {
   total: number;

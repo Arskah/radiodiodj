@@ -362,6 +362,7 @@
         <h5 class="tuning-group-title">
           Bad durations ({report.badDurations.length})
         </h5>
+        {@render dismissButton("duration", report.badDurationsDismissed, "")}
       </header>
       <p class="health-note">
         The tags of these files give a length the audio does not have, usually a

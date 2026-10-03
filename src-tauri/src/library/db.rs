@@ -2795,6 +2795,7 @@ const MIGRATION_STEPS: &[M] = &[
     M::up(DETECTED_TEMPO),
     M::up(DETECTED_KEY),
     M::up(MEASURED_DURATION),
+    M::up(DURATION_DISMISSALS),
 ];
 const MIGRATIONS: Migrations = Migrations::from_slice(MIGRATION_STEPS);
 
@@ -3206,6 +3207,24 @@ ALTER TABLE tracks ADD COLUMN tag_duration REAL;
 UPDATE tracks SET tag_duration = duration;
 "#;
 
+/// Step 13: `health_dismissals` takes a fourth kind, `duration`.
+///
+/// The kinds are a `CHECK`, which SQLite cannot alter, so the table is rebuilt
+/// around its rows. It holds a handful of them and has no index, trigger or
+/// foreign key to recreate.
+const DURATION_DISMISSALS: &str = r#"
+CREATE TABLE health_dismissals_new (
+  kind  TEXT NOT NULL CHECK (kind IN ('exact', 'possible', 'missing', 'duration')),
+  key   TEXT NOT NULL,
+  value TEXT NOT NULL,
+  PRIMARY KEY (kind, key)
+);
+INSERT INTO health_dismissals_new (kind, key, value)
+  SELECT kind, key, value FROM health_dismissals;
+DROP TABLE health_dismissals;
+ALTER TABLE health_dismissals_new RENAME TO health_dismissals;
+"#;
+
 /// A database this build must not touch.
 #[derive(Debug, PartialEq)]
 pub enum OpenError {
@@ -3556,7 +3575,48 @@ mod tests {
             )
             .unwrap();
         },
+        |conn| {
+            seed_track(conn);
+            seed_dismissal(conn);
+            conn.execute_batch(
+                "UPDATE tracks SET edited_fields = 1; \
+                 INSERT INTO health_dismissals (kind, key, value) \
+                 VALUES ('duration', '', '1:1477600:238968'); \
+                 INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
+                 SELECT id, 1000, artist, title, duration FROM tracks",
+            )
+            .unwrap();
+        },
     ];
+
+    /// Step 13 rebuilds the table around its rows, so the rows have to come out
+    /// the other side — and the kind the rebuild exists for has to be accepted.
+    #[test]
+    fn rebuilding_the_dismissals_table_keeps_what_was_dismissed() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        MIGRATIONS.to_version(&mut conn, 12).unwrap();
+        seed_dismissal(&conn);
+        assert!(conn
+            .execute(
+                "INSERT INTO health_dismissals (kind, key, value) VALUES ('duration', '', 'x')",
+                [],
+            )
+            .is_err());
+
+        MIGRATIONS.to_latest(&mut conn).unwrap();
+
+        let kept: (String, String, String) = conn
+            .query_row("SELECT kind, key, value FROM health_dismissals", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!(kept, ("exact".into(), "v1:ab".into(), "1,2".into()));
+        conn.execute(
+            "INSERT INTO health_dismissals (kind, key, value) VALUES ('duration', '', 'x')",
+            [],
+        )
+        .unwrap();
+    }
 
     /// Operator work written at any schema version survives every later step.
     #[test]

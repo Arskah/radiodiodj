@@ -87,13 +87,12 @@ The tab and the Settings button carry the same **attention count**:
 | a check that found changes, unless dismissed | 1        |
 | unreachable library paths                    | 1 each   |
 | failed tag writes                            | 1 each   |
-| bad durations                                | 1 if any |
+| bad durations, unless dismissed              | 1 if any |
 
 Missing tracks count once, however many there are, so removing a library path
 does not put _800_ on the button; bad durations count once for the same reason.
 An unreachable path cannot be dismissed. It clears itself when the share is
-back. Bad durations cannot be dismissed either, and count until every listed
-file has been repaired and scanned.
+back.
 
 A scan's result bar at the bottom of the window stays until the operator
 dismisses it, so a scan that ends unwatched still says what it moved and marked
@@ -299,7 +298,8 @@ too, as having no length at all.
 A track is only listed once the pass has measured it. To fix one, repair the
 header or re-encode the file and scan: the scan re-reads the tags, and the track
 leaves the list when they agree with the audio. Bad durations are in the
-attention count, once however many there are, and cannot be dismissed.
+attention count, once however many there are, until the list is
+[dismissed](#dismissing).
 
 ## Duplicates
 
@@ -373,14 +373,18 @@ Every finding has _Dismiss_. It takes the finding out of the attention count for
 as long as the finding stays exactly as it was. A dismissed duplicate group
 stays listed, greyed, folded and marked _Dismissed_, with _Undo dismiss_.
 
-| finding        | remembered                 | counts again when                 |
-| -------------- | -------------------------- | --------------------------------- |
-| exact group    | its track ids              | a copy is added or leaves         |
-| possible group | its track ids              | a copy is added or leaves         |
-| missing tracks | the newest `missing_since` | another track goes missing        |
-| disk changes   | what the check found       | a check finds something different |
+| finding        | remembered                 | counts again when                  |
+| -------------- | -------------------------- | ---------------------------------- |
+| exact group    | its track ids              | a copy is added or leaves          |
+| possible group | its track ids              | a copy is added or leaves          |
+| missing tracks | the newest `missing_since` | another track goes missing         |
+| bad durations  | each track and its lengths | a track joins, or its lengths move |
+| disk changes   | what the check found       | a check finds something different  |
 
-Group and missing-track dismissals are stored in the `health_dismissals` table,
+A repaired file leaving the bad-duration list does not light it again: the rest
+were already seen.
+
+Group, missing-track and bad-duration dismissals are stored in the `health_dismissals` table,
 and deleted once their finding is gone. The disk-change dismissal is held in
 memory, since the next launch checks again anyway.
 
@@ -414,6 +418,7 @@ HealthReport
   unreadable       [UnreadableTrack] track, path, contentType, error, failedAt
   badDurations     [BadDurationTrack] track, path, contentType, tagDuration,
                                      measuredDuration
+  badDurationsDismissed bool
   check            CheckReport?      checkedAt, new, changed, gone, unrooted,
                                      unreachable, partial
   checkDismissed   bool
@@ -447,23 +452,24 @@ The renderer works out whether a missing track is queued from the playlist it
 mirrors. That keeps the report independent of the playlist, which itself
 depends on the report.
 
-| command                       | does                                                                                         |
-| ----------------------------- | -------------------------------------------------------------------------------------------- |
-| `library_health`              | returns the current report                                                                   |
-| `purge_tracks(ids)`           | see [Purge](#purge)                                                                          |
-| `health_dismiss(kind, key)`   | `kind` is `exact`, `possible`, `missing` or `check`; `key` is the group key, empty otherwise |
-| `health_undismiss(kind, key)` | undoes a dismissal                                                                           |
-| `library_check_now`           | asks the worker for a check                                                                  |
-| `retry_tag_write(id)`         | queues a failed tag write again                                                              |
-| `dismiss_tag_write(id)`       | drops a failed tag write from the list                                                       |
+| command                       | does                                                                                                     |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `library_health`              | returns the current report                                                                               |
+| `purge_tracks(ids)`           | see [Purge](#purge)                                                                                      |
+| `health_dismiss(kind, key)`   | `kind` is `exact`, `possible`, `missing`, `duration` or `check`; `key` is the group key, empty otherwise |
+| `health_undismiss(kind, key)` | undoes a dismissal                                                                                       |
+| `library_check_now`           | asks the worker for a check                                                                              |
+| `retry_tag_write(id)`         | queues a failed tag write again                                                                          |
+| `dismiss_tag_write(id)`       | drops a failed tag write from the list                                                                   |
 
-Migration step 2 added the dismissals table:
+Migration step 2 added the dismissals table, and step 13 rebuilt it to admit
+`duration`:
 
 ```sql
 CREATE TABLE health_dismissals (
-  kind  TEXT NOT NULL CHECK (kind IN ('exact', 'possible', 'missing')),
+  kind  TEXT NOT NULL CHECK (kind IN ('exact', 'possible', 'missing', 'duration')),
   key   TEXT NOT NULL,   -- fingerprint, normalised "artist\x1falbum\x1ftitle", or ''
-  value TEXT NOT NULL,   -- sorted ids, or the newest missing_since
+  value TEXT NOT NULL,   -- sorted ids, the newest missing_since, or id:tagMs:audioMs,…
   PRIMARY KEY (kind, key)
 );
 ```

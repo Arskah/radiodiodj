@@ -4,8 +4,8 @@ CREATE INDEX tracks_fingerprint ON tracks(fingerprint) WHERE fingerprint IS NOT 
 
 CREATE UNIQUE INDEX tracks_path_present ON tracks(path) WHERE missing_since IS NULL;
 
-CREATE TABLE health_dismissals (
-  kind  TEXT NOT NULL CHECK (kind IN ('exact', 'possible', 'missing')),
+CREATE TABLE "health_dismissals" (
+  kind  TEXT NOT NULL CHECK (kind IN ('exact', 'possible', 'missing', 'duration')),
   key   TEXT NOT NULL,
   value TEXT NOT NULL,
   PRIMARY KEY (kind, key)

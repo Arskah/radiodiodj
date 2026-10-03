@@ -22,6 +22,7 @@ const empty: HealthReport = {
   unhashed: 0,
   unreadable: [],
   badDurations: [],
+  badDurationsDismissed: false,
   check: null,
   checkDismissed: false,
   checking: false,
@@ -109,7 +110,7 @@ describe("healthAttention", () => {
     ).toBe(2);
   });
 
-  it("counts bad durations once, however many there are", () => {
+  it("counts bad durations once, until they are dismissed", () => {
     const bad = (id: number) => ({
       track: { id } as Track,
       path: `/m/${id}`,
@@ -117,9 +118,9 @@ describe("healthAttention", () => {
       tagDuration: 1477,
       measuredDuration: 239,
     });
-    expect(healthAttention({ ...empty, badDurations: [bad(1), bad(2)] })).toBe(
-      1,
-    );
+    const report = { ...empty, badDurations: [bad(1), bad(2)] };
+    expect(healthAttention(report)).toBe(1);
+    expect(healthAttention({ ...report, badDurationsDismissed: true })).toBe(0);
   });
 });
 
