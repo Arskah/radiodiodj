@@ -56,7 +56,7 @@
     "@tauri-apps/cli": "2.12.0",
     "@types/mocha": "10.0.10",
     "@types/node": "25.9.8",
-    "@vitest/coverage-v8": "5.0.2",
+    "@vitest/coverage-v8": "5.0.3",
     "@wdio/cli": "9.32.0",
     "@wdio/globals": "9.31.3",
     "@wdio/local-runner": "9.32.0",
@@ -77,7 +77,7 @@
     "typescript": "6.0.3",
     "typescript-eslint": "8.70.1",
     "vite": "8.3.1",
-    "vitest": "5.0.2",
+    "vitest": "5.0.3",
     "webdriverio": "9.32.0"
   },
   "packageManager": "pnpm@12.7.0+sha512.9c56477e360068d6e9dca6a92efb4e46b3dc5a52fcebf3d84d78b9736c0ded589a561621a52f68219a7a39facc63cdc079c3226ef9c9d5f02b79f74e69a807b6"
