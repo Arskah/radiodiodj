@@ -15,5 +15,19 @@
   "timezone": "Europe/Helsinki",
   "postUpdateOptions": ["pnpmDedupe"],
   "minimumReleaseAge": "3 days",
-  "semanticCommits": "enabled"
+  "semanticCommits": "enabled",
+  "packageRules": [
+    {
+      "description": "tauri build rejects an npm package and its Rust crate on different minors, so both sides of the boundary move in one PR",
+      "matchManagers": ["npm", "cargo"],
+      "matchPackageNames": [
+        "tauri",
+        "tauri-build",
+        "tauri-plugin-*",
+        "@tauri-apps/**"
+      ],
+      "groupName": "tauri",
+      "groupSlug": "tauri"
+    }
+  ]
 }
