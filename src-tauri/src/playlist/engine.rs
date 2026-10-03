@@ -630,6 +630,34 @@ impl Playlist {
         Transition::default()
     }
 
+    /// The analysis pass measured `id`'s length. Queued and aired copies carry
+    /// the track's `duration`, which until now was the tag's guess.
+    ///
+    /// The track on air is left alone, as a radio edit leaves it alone. The
+    /// armed one is forgotten so the reconcile loads it again: its markers were
+    /// resolved against the length it was armed with, and one anchored to the
+    /// end of the file sits wherever the tag said the end was. Only when the
+    /// length moved, though: the pass reports it on every decode, and most
+    /// decodes of a queued track are for something else.
+    pub fn on_duration_measured(&mut self, id: i64, duration: f64) -> Transition {
+        let mut moved = false;
+        for item in &mut self.items {
+            if let PlaylistItem::Track { track, .. } = item {
+                if track.id == id {
+                    moved |= track.duration != duration;
+                    track.duration = duration;
+                }
+            }
+        }
+        for track in self.history.iter_mut().filter(|t| t.id == id) {
+            track.duration = duration;
+        }
+        if moved && self.armed.as_ref().is_some_and(|a| a.id == id) {
+            self.armed = None;
+        }
+        Transition::default()
+    }
+
     // ----- session -----
 
     /// Restore a persisted playlist. The current track is loaded and seeked but
@@ -2060,6 +2088,39 @@ mod tests {
         p.on_cue_points_saved(2, points(4_000));
 
         assert!(matches!(p.reconcile_arm(), Some(Effect::Arm { id: 2, .. })));
+    }
+
+    /// #534, in a running session: a track queued before the analysis pass
+    /// reached it holds the tag's length, and that copy is what goes on air.
+    #[test]
+    fn a_measured_duration_refreshes_the_queued_copies_of_the_track() {
+        let mut p = with(&[Some(1), Some(2)]);
+        let other = p.snapshot().playlist[1].as_track().unwrap().duration;
+
+        p.on_duration_measured(1, 238.968);
+
+        let queued_duration =
+            |p: &Playlist, i: usize| p.snapshot().playlist[i].as_track().map(|t| t.duration);
+        assert_eq!(queued_duration(&p, 0), Some(238.968));
+        assert_eq!(queued_duration(&p, 1), Some(other));
+    }
+
+    /// A marker anchored to the end of the file was resolved against the length
+    /// the deck was armed with, so a new length means arming again.
+    #[test]
+    fn a_measured_duration_re_arms_the_track_it_is_for() {
+        let mut p = with(&[Some(1), Some(2)]);
+        p.play_index(0, &NoRefill);
+        p.reconcile_arm();
+        assert_eq!(p.reconcile_arm(), None, "2 is already armed");
+
+        p.on_duration_measured(2, 238.968);
+
+        assert!(matches!(p.reconcile_arm(), Some(Effect::Arm { id: 2, .. })));
+
+        p.on_duration_measured(2, 238.968);
+
+        assert_eq!(p.reconcile_arm(), None, "the same length again is no news");
     }
 
     /// An edit for some other track leaves the armed deck alone: reloading it

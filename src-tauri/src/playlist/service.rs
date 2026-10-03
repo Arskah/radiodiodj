@@ -29,7 +29,9 @@ use crate::broadcast::BroadcastService;
 use crate::library::db::{Db, Track, TrackLoadInfo};
 use crate::library::health::HEALTH_EVENT;
 use crate::library::scanner::now_ms;
-use crate::library::waveform_scan::{CuePointsReady, CUE_POINTS_READY_EVENT};
+use crate::library::waveform_scan::{
+    CuePointsReady, DurationReady, CUE_POINTS_READY_EVENT, DURATION_READY_EVENT,
+};
 use crate::persist::config::Config;
 use crate::persist::session::SessionState;
 
@@ -306,6 +308,16 @@ impl PlaylistService {
             Inner::adopt_cue_points(&auto_cue, ready.id, ready.cue_points);
         });
 
+        // The same copy carries the track's length, which is the tag's guess
+        // until the analysis pass has measured it.
+        let measured = Arc::clone(&self.inner);
+        app.listen(DURATION_READY_EVENT, move |event| {
+            let Ok(ready) = serde_json::from_str::<DurationReady>(event.payload()) else {
+                return;
+            };
+            Inner::adopt_duration(&measured, ready.id, ready.duration);
+        });
+
         let cache_state = Arc::clone(&self.inner);
         app.listen("main-deck:cache-state", move |event| {
             let ids: Vec<i64> = serde_json::from_str(event.payload()).unwrap_or_default();
@@ -536,6 +548,15 @@ impl Inner {
             return;
         }
         Inner::apply(inner, move |p, _| p.on_cue_points_saved(id, points));
+    }
+
+    /// Take a measured length into the copies of a track held here, under the
+    /// same screen as [`Inner::adopt_cue_points`] and for the same reason.
+    fn adopt_duration(inner: &Arc<Inner>, id: i64, duration: f64) {
+        if !inner.playlist.lock().holds(id) {
+            return;
+        }
+        Inner::apply(inner, move |p, _| p.on_duration_measured(id, duration));
     }
 
     /// Run one transition and settle its consequences.

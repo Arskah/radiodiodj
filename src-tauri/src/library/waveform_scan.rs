@@ -67,6 +67,10 @@ const WAVEFORM_READY_EVENT: &str = "waveform-ready";
 /// items, the renderer's rows — derives its duration from these markers, and a
 /// backfill changes them under all of them.
 pub const CUE_POINTS_READY_EVENT: &str = "cue-points-ready";
+/// Event emitted after the decode's length replaces the tag's on a row. Every
+/// copy of a track held outside the DB carries its `duration`, and what the
+/// deck's waveform is cropped to divides by it.
+pub const DURATION_READY_EVENT: &str = "duration-ready";
 /// Throttled `{processed, total}` progress updates.
 const WAVEFORM_PROGRESS_EVENT: &str = "waveform-progress";
 /// Running/idle transitions.
@@ -116,6 +120,15 @@ struct WaveformProgress {
 pub struct CuePointsReady {
     pub id: i64,
     pub cue_points: CuePoints,
+}
+
+/// Payload of [`DURATION_READY_EVENT`].
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DurationReady {
+    pub id: i64,
+    /// Seconds.
+    pub duration: f64,
 }
 
 #[derive(Default)]
@@ -651,7 +664,19 @@ fn analyse(
                             retry = true;
                         }
                         Ok(false) => log::debug!("duration: {} moved on", job.path),
-                        Ok(true) => log::debug!("duration: {} {}ms", job.path, measured_ms),
+                        Ok(true) => {
+                            log::debug!("duration: {} {}ms", job.path, measured_ms);
+                            // A decode that counted nothing changed no length.
+                            if measured_ms > 0 {
+                                let _ = app.emit(
+                                    DURATION_READY_EVENT,
+                                    DurationReady {
+                                        id: job.id,
+                                        duration: measured_ms as f64 / 1000.0,
+                                    },
+                                );
+                            }
+                        }
                     }
                     if job.needs_waveform {
                         match db.set_waveform(job.id, &analysis.curve, job.mtime) {

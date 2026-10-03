@@ -55,6 +55,7 @@ const { api } = vi.hoisted(() => {
     onScanStateChanged: vi.fn(),
     onWaveformReady: vi.fn(),
     onCuePointsReady: vi.fn(),
+    onDurationReady: vi.fn(),
     onWaveformProgress: vi.fn(),
     onWaveformStateChanged: vi.fn(),
     onTagBackfillStateChanged: vi.fn(),
@@ -2485,6 +2486,29 @@ describe("AppState cue points", () => {
       app.playlist.filter(isTrackItem).map((i) => i.track.cue_points),
     ).toEqual([trimmed, undefined]);
     expect(app.cueTrack?.cue_points).toEqual(trimmed);
+  });
+
+  // #534 in a running session: the copies were made from the tag's length, and
+  // the deck's waveform crop divides by whichever one goes on air.
+  it("a measured duration refreshes every copy of the track but the one on air", () => {
+    app.tracks = [t(1), t(2)];
+    app.playlist = [trackItem(t(1)), trackItem(t(2))];
+    app.cueTrack = t(1);
+    app.currentTrack = t(1);
+    const before = t(1).duration;
+
+    const onReady = api.onDurationReady.mock.calls[0][0] as (
+      id: number,
+      duration: number,
+    ) => void;
+    onReady(1, 238.968);
+
+    expect(app.tracks.map((x) => x.duration)).toEqual([238.968, before]);
+    expect(
+      app.playlist.filter(isTrackItem).map((i) => i.track.duration),
+    ).toEqual([238.968, before]);
+    expect(app.cueTrack?.duration).toBe(238.968);
+    expect(app.currentTrack?.duration).toBe(before);
   });
 
   it("an automatic cue result leaves the on-air track alone", () => {

@@ -469,6 +469,7 @@ export class AppState {
       if (this.cueTrack?.id === id) this.loadCueWaveform(id);
     });
     api.onCuePointsReady((id, points) => this.adoptCuePoints(id, points));
+    api.onDurationReady((id, duration) => this.adoptDuration(id, duration));
 
     api.onWaveformProgress(({ processed, total }) => {
       if (this.waveformStatus.status === "running") {
@@ -1064,6 +1065,29 @@ export class AppState {
         points,
       );
     }
+  }
+
+  /**
+   * Take a measured length into every copy of the track the UI holds. Not
+   * `currentTrack`, for the reason {@link AppState.adoptCuePoints} leaves it
+   * alone: the deck resolved its markers against the length it loaded with.
+   */
+  private adoptDuration(id: number, duration: number): void {
+    const apply = <T extends Track | null>(track: T): T =>
+      track && track.id === id ? { ...track, duration } : track;
+    if (this.tracks.some((t) => t.id === id)) {
+      this.tracks = this.tracks.map(apply);
+    }
+    if (this.playlist.some((i) => isTrackItem(i) && i.track.id === id)) {
+      this.playlist = this.playlist.map((i) =>
+        isTrackItem(i) && i.track.id === id
+          ? { ...i, track: { ...i.track, duration } }
+          : i,
+      );
+    }
+    this.cueTrack = apply(this.cueTrack);
+    this.editingCuePoints = apply(this.editingCuePoints);
+    this.editingMetadata = apply(this.editingMetadata);
   }
 
   cueTogglePlay(): void {

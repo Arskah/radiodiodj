@@ -341,6 +341,18 @@ export const api = {
       (e) => callback(e.payload.id, e.payload.cuePoints),
     );
   },
+
+  /**
+   * Fires when the background worker has measured a track's length, in
+   * seconds, over the one its tags gave.
+   */
+  onDurationReady(
+    callback: (id: number, duration: number) => void,
+  ): Promise<UnlistenFn> {
+    return listen<{ id: number; duration: number }>("duration-ready", (e) =>
+      callback(e.payload.id, e.payload.duration),
+    );
+  },
   getWaveformStatus(): Promise<WaveformStatus> {
     return invoke<WaveformStatus>("get_waveform_status");
   },

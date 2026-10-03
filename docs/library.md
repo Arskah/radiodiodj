@@ -192,7 +192,10 @@ track missing only one of them costs no more than a track missing all four.
   over its first frame's bitrate, which on one real file is 1477 s of a 239 s
   track — and everything that divides by a duration, from the deck's waveform
   crop to the toolbar's _Playtime_, is then wrong by that ratio.
-  `duration_measured_at` is what "measured" means, since the column cannot say
+  The write is announced as `duration-ready`, and the playlist engine and the
+  renderer take the new length into every copy of the track they hold but the
+  one on air — a track queued before the pass reached it would otherwise go to
+  air with the tag's. `duration_measured_at` is what "measured" means, since the column cannot say
   whose number it holds. A row analysed before this measurement existed is
   corrected and stamped at the next launch without a decode, from the duration
   its stored level envelope already carries; a row with no envelope to read —
