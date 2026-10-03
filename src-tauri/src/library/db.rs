@@ -162,6 +162,20 @@ pub struct UnreadableRow {
     pub failed_at: i64,
 }
 
+/// A present track whose measured length is not the one its tags give.
+pub struct BadDurationRow {
+    pub row: HealthRow,
+    /// Seconds, as the tags claim. `None` when they carry no length.
+    pub tag_duration: Option<f64>,
+    /// Seconds, as the decode counted. `None` when it counted nothing.
+    pub measured_duration: Option<f64>,
+}
+
+/// How far a tag's length may sit from the decode's, in seconds, before the
+/// file is reported. Encoder delay and padding put an honest tag tens of
+/// milliseconds out; a VBR MP3 with no Xing header is out by minutes.
+pub const BAD_DURATION_TOLERANCE_S: f64 = 1.0;
+
 /// The operator's acknowledgement of one health finding. `value` is what the
 /// finding looked like when it was dismissed.
 #[derive(Clone, Debug, PartialEq)]
@@ -1596,6 +1610,40 @@ impl Db {
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
 
+    /// Present tracks the pass has measured whose tags disagree with the audio
+    /// by more than [`BAD_DURATION_TOLERANCE_S`], or whose decode counted no
+    /// audio at all, by id.
+    ///
+    /// The library already plays these at the measured length. They are
+    /// reported because the file is still wrong for everything else that reads
+    /// it, and because a length the tags get this wrong usually means a header
+    /// the decoder cannot seek by either.
+    pub fn bad_duration_tracks(&self) -> Result<Vec<BadDurationRow>> {
+        let policy = self.auto_cue_policy();
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {TRACK_COLUMNS}, path, content_type, fingerprint, tag_duration \
+             FROM tracks \
+             WHERE missing_since IS NULL AND duration_measured_at IS NOT NULL \
+               AND (COALESCE(duration, 0) <= 0 \
+                    OR abs(tag_duration - duration) > {BAD_DURATION_TOLERANCE_S}) \
+             ORDER BY id"
+        ))?;
+        let rows = stmt.query_map([], |r| {
+            Ok(BadDurationRow {
+                row: HealthRow {
+                    track: row_to_track(r, policy)?,
+                    path: r.get("path")?,
+                    content_type: r.get("content_type")?,
+                    fingerprint: r.get("fingerprint")?,
+                },
+                tag_duration: r.get("tag_duration")?,
+                measured_duration: r.get::<_, Option<f64>>("duration")?.filter(|d| *d > 0.0),
+            })
+        })?;
+        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+    }
+
     /// Single-track upsert, for tests; the scanner goes through
     /// [`Db::reconcile`].
     #[cfg(test)]
@@ -2424,7 +2472,7 @@ impl Db {
 
 /// Bind params for [`UPSERT_TRACK_SQL`], in column order. Shared by the single
 /// and batch insert paths so the two never drift.
-fn upsert_params(t: &TrackInsert) -> [&dyn rusqlite::ToSql; 23] {
+fn upsert_params(t: &TrackInsert) -> [&dyn rusqlite::ToSql; 24] {
     [
         &t.path,
         &t.content_type,
@@ -2452,6 +2500,7 @@ fn upsert_params(t: &TrackInsert) -> [&dyn rusqlite::ToSql; 23] {
         // marker rides along without having to sit on `TrackInsert`: a parsed
         // track is by definition read at the current version.
         &scanner::TAG_READ_VERSION,
+        &t.duration,
     ]
 }
 
@@ -3018,7 +3067,9 @@ INSERT INTO tracks_fts(tracks_fts) VALUES('rebuild');
 /// back to the tag value for audio that did not change would hand the deck a
 /// headerless VBR MP3's file-size-over-first-frame-bitrate guess again.
 /// `duration_measured_at` moves with it, so a length that does fall back to the
-/// tag's is queued to be measured.
+/// tag's is queued to be measured. `tag_duration` is the tag's claim kept
+/// beside it and follows the file unconditionally, which is what lets
+/// [`Db::bad_duration_tracks`] stop reporting a file once it has been repaired.
 ///
 /// `isrc` alone has no `edited_fields` guard, because it is the one tag column
 /// the operator cannot edit: the rights registry owns it, so the file always
@@ -3027,8 +3078,9 @@ INSERT INTO tracks_fts(tracks_fts) VALUES('rebuild');
 const UPSERT_TRACK_SQL: &str = "INSERT INTO tracks \
      (path, content_type, title, artist, album, genre, year, duration, bpm, \
       sample_rate, bitrate, format, mtime, fingerprint, album_artist, track_no, \
-      track_total, disc_no, disc_total, isrc, initial_key, comment, tags_read_version) \
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
+      track_total, disc_no, disc_total, isrc, initial_key, comment, tags_read_version, \
+      tag_duration) \
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
      ON CONFLICT(path) WHERE missing_since IS NULL DO UPDATE SET \
         content_type=excluded.content_type, \
         title=CASE WHEN edited_fields & 1 THEN title ELSE excluded.title END, \
@@ -3053,6 +3105,7 @@ const UPSERT_TRACK_SQL: &str = "INSERT INTO tracks \
                  THEN duration ELSE excluded.duration END, \
         duration_measured_at=CASE WHEN excluded.fingerprint = fingerprint \
                              THEN duration_measured_at ELSE NULL END, \
+        tag_duration=excluded.tag_duration, \
         bpm=excluded.bpm, sample_rate=excluded.sample_rate, \
         bitrate=excluded.bitrate, format=excluded.format, mtime=excluded.mtime, \
         fingerprint=COALESCE(excluded.fingerprint, fingerprint), \
@@ -3126,14 +3179,23 @@ ALTER TABLE tracks ADD COLUMN key_measured_at INTEGER;
 ALTER TABLE tracks ADD COLUMN key_version INTEGER;
 "#;
 
-/// Step 12: whether `duration` is the decode's length or still the tag's.
+/// Step 12: whether `duration` is the decode's length or still the tag's, and
+/// what the tag's was.
 ///
 /// The column itself cannot say, and the difference decides whether the
 /// analysis pass owes the row a decode: `duration_measured_at` (unix ms) is
 /// what queues a row that is missing nothing else, which is the only way a
 /// `manual` row with no level envelope ever has a wrong tag length replaced.
+///
+/// `tag_duration` keeps the claim the measurement overwrites, so library
+/// health can name the files whose tags are wrong. Every row holds the tag's
+/// length when this step runs — nothing before it wrote any other — so the
+/// copy is exact. It is one statement over `tracks` with no file read behind
+/// it, which is as much as a step on the launch path may cost.
 const MEASURED_DURATION: &str = r#"
 ALTER TABLE tracks ADD COLUMN duration_measured_at INTEGER;
+ALTER TABLE tracks ADD COLUMN tag_duration REAL;
+UPDATE tracks SET tag_duration = duration;
 "#;
 
 /// A database this build must not touch.
@@ -3480,7 +3542,7 @@ mod tests {
                         bpm_measured_at = 9, bpm_version = 1, \
                         detected_key = 'Am', key_confidence = 0.7, \
                         key_measured_at = 11, key_version = 1, \
-                        duration_measured_at = 13; \
+                        duration_measured_at = 13, tag_duration = 1477.6; \
                  INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
                  SELECT id, 1000, artist, title, duration FROM tracks",
             )
@@ -4817,6 +4879,85 @@ mod tests {
 
         assert_eq!(duration_of(&db, id), Some(238.968));
         assert!(db.tracks_needing_analysis().unwrap().is_empty());
+    }
+
+    fn bad_durations(db: &Db) -> Vec<(i64, Option<f64>, Option<f64>)> {
+        db.bad_duration_tracks()
+            .unwrap()
+            .into_iter()
+            .map(|b| (b.row.track.id, b.tag_duration, b.measured_duration))
+            .collect()
+    }
+
+    /// #534, from the operator's side: the library plays the measured length,
+    /// but the file is still wrong, and health is where they learn which.
+    /// Nothing is reported before the pass has measured, because until then
+    /// there is only one number and nothing to hold it against.
+    #[test]
+    fn a_tag_length_the_decode_contradicts_is_reported() {
+        let db = Db::open_in_memory().unwrap();
+        let wrong = another_music_track(&db, "/a.mp3");
+        let honest = another_music_track(&db, "/b.mp3");
+        let unmeasured = another_music_track(&db, "/c.mp3");
+        assert!(bad_durations(&db).is_empty());
+
+        db.set_measured_duration(wrong, 34_000, 1, None).unwrap();
+        db.set_measured_duration(honest, 200_050, 1, None).unwrap();
+
+        assert_eq!(
+            bad_durations(&db),
+            vec![(wrong, Some(200.0), Some(34.0))],
+            "{honest} is inside the tolerance and {unmeasured} is not measured"
+        );
+    }
+
+    /// A decode that counted nothing over a tag that gave no length leaves the
+    /// row with no length at all, which is worth saying too.
+    #[test]
+    fn a_track_with_no_length_at_all_is_reported() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_track(&TrackInsert {
+            path: "/empty.mp3".into(),
+            content_type: "music".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let id = only_id(&db);
+
+        db.set_measured_duration(id, 0, 1, None).unwrap();
+
+        assert_eq!(bad_durations(&db), vec![(id, None, None)]);
+    }
+
+    /// A repaired file is re-read by the scan, and its tags now agree with the
+    /// audio — whether or not the repair moved the fingerprint.
+    #[test]
+    fn a_repaired_tag_length_is_no_longer_reported() {
+        for repaired in ["v2:same", "v2:new"] {
+            let db = Db::open_in_memory().unwrap();
+            let id = measured(&db, Some("v2:same"));
+            db.conn
+                .lock()
+                .execute(
+                    "UPDATE tracks SET duration = 1477.646, tag_duration = 1477.646 \
+                     WHERE id = ?",
+                    [id],
+                )
+                .unwrap();
+            db.set_measured_duration(id, 238_968, 1, None).unwrap();
+            assert_eq!(bad_durations(&db).len(), 1);
+
+            db.insert_track(&TrackInsert {
+                path: "/wave.mp3".into(),
+                content_type: "music".into(),
+                duration: Some(238.97),
+                fingerprint: Some(repaired.into()),
+                ..Default::default()
+            })
+            .unwrap();
+
+            assert!(bad_durations(&db).is_empty(), "{repaired}");
+        }
     }
 
     /// A row the envelope answered for is not decoded again to be told the same

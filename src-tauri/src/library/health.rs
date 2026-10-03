@@ -31,6 +31,8 @@ pub struct HealthReport {
     /// Present tracks the analysis pass could not decode. Never in an exact
     /// group unless their fingerprint was taken before the failure.
     pub unreadable: Vec<UnreadableTrack>,
+    /// Present tracks whose tags give a length the audio does not have.
+    pub bad_durations: Vec<BadDurationTrack>,
     /// The latest library check, until a scan makes it moot.
     pub check: Option<CheckReport>,
     pub check_dismissed: bool,
@@ -81,6 +83,18 @@ pub struct UnreadableTrack {
     pub error: String,
     /// Unix ms.
     pub failed_at: i64,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BadDurationTrack {
+    pub track: Track,
+    pub path: String,
+    pub content_type: String,
+    /// Seconds, as the tags claim. `None` when they carry no length.
+    pub tag_duration: Option<f64>,
+    /// Seconds, as the decode counted. `None` when it counted nothing.
+    pub measured_duration: Option<f64>,
 }
 
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
@@ -394,6 +408,17 @@ pub fn build(db: &Db, roots: &[ScanRoot]) -> Result<HealthReport> {
                 failed_at: u.failed_at,
             })
             .collect(),
+        bad_durations: db
+            .bad_duration_tracks()?
+            .into_iter()
+            .map(|b| BadDurationTrack {
+                track: b.row.track,
+                path: b.row.path,
+                content_type: b.row.content_type,
+                tag_duration: b.tag_duration,
+                measured_duration: b.measured_duration,
+            })
+            .collect(),
         check: None,
         check_dismissed: false,
         checking: false,
@@ -657,6 +682,26 @@ mod tests {
         assert_eq!(u.content_type, "music");
         assert_eq!(u.error, "fingerprint: probe: unsupported");
         assert_eq!(u.failed_at, 7);
+    }
+
+    #[test]
+    fn a_tag_length_the_audio_contradicts_is_a_bad_duration() {
+        let db = Db::open_in_memory().unwrap();
+        let a = insert(&db, "/music/a.mp3", "music", "X", "One", None);
+        let b = insert(&db, "/music/b.mp3", "music", "Y", "Two", None);
+        let tag = db.get_track(a).unwrap().unwrap().duration;
+        let ms = (tag * 1000.0) as i64;
+        assert!(db
+            .set_measured_duration(a, ms + 60_000, 7, Some(1))
+            .unwrap());
+        assert!(db.set_measured_duration(b, ms, 7, Some(1)).unwrap());
+        let report = build(&db, &music_root()).unwrap();
+        assert_eq!(report.bad_durations.len(), 1);
+        let bad = &report.bad_durations[0];
+        assert_eq!(bad.track.id, a);
+        assert_eq!(bad.path, "/music/a.mp3");
+        assert_eq!(bad.tag_duration, Some(tag));
+        assert_eq!(bad.measured_duration, Some(tag + 60.0));
     }
 
     #[test]

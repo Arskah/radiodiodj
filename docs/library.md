@@ -198,7 +198,9 @@ track missing only one of them costs no more than a track missing all four.
   its stored level envelope already carries; a row with no envelope to read —
   an operator-owned one is never given one — is left unstamped, which queues it
   for a decode. A decode that counted no audio is stamped too, and leaves the
-  tag's length where it was: zero is not a length.
+  tag's length where it was: zero is not a length. What the tags said is kept in
+  `tag_duration`, and a file whose tags disagree with its audio is listed under
+  [Bad durations](./library-health.md#bad-durations).
 - The **automatic cue points** are the derived trio, and the **level envelope**
   the trio is derived from — the decode reduced to one byte per window, so a
   later threshold change can re-derive a track's markers without reading the

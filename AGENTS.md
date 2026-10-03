@@ -141,7 +141,9 @@ other measurement. `duration_measured_at` is the done marker and the only thing
 that queues a `manual` row with no envelope; `Db::adopt_decoded_durations`
 stamps a row that predates the write from the duration its level envelope
 already carries — at every open, with no decode. A decode that counted nothing
-is stamped and **never written**: zero is not a length. See
+is stamped and **never written**: zero is not a length. `tag_duration` keeps the
+tag's claim beside it, follows the file on every rescan, and is what library
+health compares against to list a bad duration. See
 [docs/library.md](docs/library.md#the-analysis-pass).
 
 **Automatic cue points** — cue in, cue out and (for music) next start derived

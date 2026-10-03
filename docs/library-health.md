@@ -1,12 +1,13 @@
-# Library health — missing tracks, duplicates, unreadable files and disk changes
+# Library health — missing tracks, duplicates, unreadable files, bad durations and disk changes
 
 The _Library_ tab of _Settings_ tells the operator when the library needs
-attention, and lets them act on it. It reports four things:
+attention, and lets them act on it. It reports five things:
 
 1. **Disk changes** — files added, changed or removed since the last scan.
 2. **Unreadable tracks** — files the analysis pass could not decode.
-3. **Missing tracks** — tracks whose file a scan could not find, one by one.
-4. **Duplicates** — exact copies, and tracks that look like the same song.
+3. **Bad durations** — files whose tags give a length the audio does not have.
+4. **Missing tracks** — tracks whose file a scan could not find, one by one.
+5. **Duplicates** — exact copies, and tracks that look like the same song.
 
 A count on the Settings button says when any of them needs attention.
 
@@ -51,6 +52,9 @@ across _Advanced_.
 │ Unreadable tracks (1)                                        │
 │   Title / Artist   …/bad.mp3   fingerprint: probe: …      F  │
 │                                                              │
+│ Bad durations (1)                                            │
+│   Title / Artist  …/vbr.mp3  tag says 24:37, audio is 3:58 F │
+│                                                              │
 │ Missing tracks (5)                                [Dismiss]  │
 │   ☐ Title / Artist   …/old/path.mp3   2 d ago   ◇ ▶12  ≡     │
 │   ☐ ▸ No longer under a library path (812)                   │
@@ -69,8 +73,8 @@ across _Advanced_.
 F Show in folder   E Edit metadata…   C Cue points…
 ```
 
-A section with nothing to report says _No issues_. Unreadable tracks and tag
-writes are shown only when there is something to list. Disk changes says _Not
+A section with nothing to report says _No issues_. Unreadable tracks, bad
+durations and tag writes are shown only when there is something to list. Disk changes says _Not
 checked since the last scan_ or _No changes_ instead.
 
 The tab and the Settings button carry the same **attention count**:
@@ -267,6 +271,30 @@ To fix one, replace the file with a good copy and scan, or delete it, scan, and
 purge the missing track. Unreadable tracks are not in the attention count, and
 cannot be dismissed.
 
+## Bad durations
+
+A track whose tags give a length the audio does not have. The usual cause is a
+VBR MP3 with no Xing header: a tag reader then reports the file size divided by
+the first frame's bitrate, which can be several times the real length. Each row
+shows both lengths, in file time, and has _Show in folder_.
+
+Nothing is wrong with how the library plays these. The analysis pass measures
+the length and `tracks.duration` holds that
+([library.md](./library.md#the-analysis-pass)); `tracks.tag_duration` keeps what
+the tags said, and a track is listed when the two differ by more than a second
+(`BAD_DURATION_TOLERANCE_S`) — encoder delay and padding put an honest tag tens
+of milliseconds out, never seconds. It is a warning because the file is still
+wrong for every other program that reads it, and a header that gets the length
+this wrong is usually one a decoder cannot seek by either.
+
+A track whose tags carry no length and whose decode counted no audio is listed
+too, as having no length at all.
+
+A track is only listed once the pass has measured it. To fix one, repair the
+header or re-encode the file and scan: the scan re-reads the tags, and the track
+leaves the list when they agree with the audio. Bad durations are not in the
+attention count, and cannot be dismissed.
+
 ## Duplicates
 
 ### Exact copies
@@ -378,6 +406,8 @@ HealthReport
   possible         [DuplicateGroup]
   unhashed         count             present tracks waiting to be fingerprinted
   unreadable       [UnreadableTrack] track, path, contentType, error, failedAt
+  badDurations     [BadDurationTrack] track, path, contentType, tagDuration,
+                                     measuredDuration
   check            CheckReport?      checkedAt, new, changed, gone, unrooted,
                                      unreachable, partial
   checkDismissed   bool
