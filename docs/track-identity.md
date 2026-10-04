@@ -134,7 +134,7 @@ a megabyte per track, once, on the first run of the new build.
 Tracks that are **missing** at that moment keep their old value — their file is
 gone, so there is nothing to re-read. If such a file comes back at a new path
 it is fingerprinted with the current version, does not match the stored one,
-and comes back as a new track. Pre-1.0 this is accepted rather than migrated;
+and comes back as a new track. This is accepted rather than migrated;
 the operator's route back is _Settings → Purge_ and a rescan.
 
 **Why the head only.** A scan on an SMB or NFS share pays about a megabyte per
@@ -258,7 +258,7 @@ drops purged tracks from the playlist. Purge stays explicit, with no retention.
   An unchanged path with an unchanged mtime is trusted without being re-read;
   that trust is what keeps a rescan fast.
 - **Libraries from before the baseline** are reset rather than migrated
-  (see [database.md](./database.md#pre-10-resets)), so this starts from a fresh
+  (see [database.md](./database.md#baseline-resets)), so this starts from a fresh
   library.
 - **Metadata edits live on the row.** A field edited in the app is flagged
   in `edited_fields`, and a rescan of a changed file keeps it. The flags move

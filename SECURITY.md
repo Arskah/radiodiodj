@@ -10,5 +10,5 @@ and what an attacker gains.
 
 ## Supported versions
 
-RadiodioDJ is pre-1.0. Fixes land in the
+Fixes land in the
 [latest release](https://github.com/Arskah/radiodiodj/releases/latest) only.

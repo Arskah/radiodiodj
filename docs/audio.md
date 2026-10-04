@@ -28,12 +28,12 @@ shell out to mpv was dropped with it.
 Supported extensions are the table in `audio_measure/formats.rs`:
 
 ```
-mp3  flac  wav  ogg  oga  aac  m4a  opus  webm  aiff  aif  mka  mp2
+mp3  flac  wav  aiff  aif  ogg  oga  aac  m4a  mp2
 ```
 
-A scan indexes these and skips everything else. WMA is deliberately absent —
-see [library.md](./library.md#unsupported-formats) for converting a folder of
-it.
+A scan indexes these and skips everything else. WMA, Opus and Matroska/WebM are
+deliberately absent — see [library.md](./library.md#unsupported-formats) for why
+and for converting a folder of them.
 
 `audio/player.rs` holds what every deck shares: the `Cmd` vocabulary a deck
 worker accepts, the `Topics` table naming its events, and the read/decode

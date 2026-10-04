@@ -31,8 +31,8 @@ browser audio pipeline, no external transcoder, no subscription.
 - **ReplayGain levelling** — every track measured against one reference during
   analysis, so a 1970s master and a modern one sit at the same level
   ([docs](docs/audio.md#replaygain))
-- **Native audio** — in-process Rust player (rodio + symphonia) for MP3, FLAC,
-  Vorbis, WAV, AAC, M4A, Opus, AIFF and more ([docs](docs/audio.md))
+- **Native audio** — in-process Rust player (rodio + symphonia) for MP3, MP2,
+  FLAC, Vorbis, WAV, AIFF, AAC and M4A ([docs](docs/audio.md))
 
 ### Cue points
 
@@ -186,6 +186,10 @@ Set `RUST_LOG=debug` (or `trace`) before launching to raise verbosity. Default i
 station, sell it — but if you distribute a modified RadiodioDJ, ship its source
 under the same license. Patches back to
 [this repo](https://github.com/Arskah/radiodiodj) are welcome.
+
+The fonts, icons and libraries a bundle carries, and their licenses, are listed
+in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), with the license texts of the
+Rust crates in [THIRD-PARTY-LICENSES.txt](THIRD-PARTY-LICENSES.txt).
 
 ## Sponsoring
 
