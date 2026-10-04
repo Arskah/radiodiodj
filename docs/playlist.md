@@ -4,11 +4,12 @@ The playlist is the ordered sequence of upcoming items that feeds the `main`
 deck, plus the rules that move one item onto air and the next into place. The
 **backend owns all of it**; the renderer is a projection.
 
-| topic                                   | detail                             |
-| --------------------------------------- | ---------------------------------- |
-| which tracks the auto-playlist may pick | [rotation.md](./rotation.md)       |
-| how a queued item reaches air           | [program-bus.md](./program-bus.md) |
-| the markers an item can carry           | [cue-points.md](./cue-points.md)   |
+| topic                                   | detail                                     |
+| --------------------------------------- | ------------------------------------------ |
+| which tracks the auto-playlist may pick | [rotation.md](./rotation.md)               |
+| how a queued item reaches air           | [program-bus.md](./program-bus.md)         |
+| the markers an item can carry           | [cue-points.md](./cue-points.md)           |
+| stored, named lists (planned)           | [saved-playlists.md](./saved-playlists.md) |
 
 ## Backend ownership
 

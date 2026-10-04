@@ -248,6 +248,26 @@ _Avoid_: Recently played, log, previous tracks
 A constraint on what the **Auto-playlist** may select: never reselect a Track, or an artist, that aired inside a configurable window. Both run in SQL, the Playlist counts as already aired, and one generated block never repeats an artist. Jingles and Commercials are exempt.
 _Avoid_: Repeat protection, cooldown, interleave
 
+### Saved playlists
+
+Planned — see [docs/saved-playlists.md](docs/saved-playlists.md).
+
+**Saved playlist**:
+A named, stored, ordered list of **Entries**. Never on air by itself: it is appended to the **Playlist**, or chosen as the **Auto-playlist source**.
+_Avoid_: Playlist (that is the on-air one), show, set list, crate
+
+**Entry**:
+One row of a **Saved playlist**, referring to a Track of any content type. Keeps the artist, title, duration and **Fingerprint** it was written with, so it survives its Track being unknown here.
+_Avoid_: Item (that is a Playlist item), row, song
+
+**Unmatched entry**:
+An **Entry** no Track in this library answers to. Kept in place and shown as missing; bound by **Fingerprint** when its file arrives, or by the operator. Not a **Missing track**, which is a Track whose file is gone.
+_Avoid_: Missing entry, broken, orphan
+
+**Auto-playlist source**:
+Where the **Auto-playlist** draws music from: the Music library, or one **Saved playlist**. Narrows the pool and nothing else; **Rotation rules** and **Interleave** apply as before.
+_Avoid_: Pool, mode, curated mode
+
 ### Appearance
 
 **Theme**:
@@ -318,6 +338,8 @@ _Avoid_: Persist, sync
 - The **Analysis pass** produces the **Level envelope**, and the **Automatic cue points** are derived from it; **Recalculate** re-derives them without a second decode
 - **Cue point ownership** decides what may be re-derived: an `auto` **Track** yes, a `manual` one never
 - An **Airing** is written to the **Airing log** when a **Track** reaches air; the **Rotation rules** read that log to decide what the **Auto-playlist** may select next
+- A **Saved playlist** holds **Entries**; an **Entry** is bound to a **Track** or is an **Unmatched entry**, and only a bound one whose Track is present can air
+- The **Auto-playlist source** is the Music library or one **Saved playlist**; only that saved playlist's music **Entries** are the pool
 - A **Dismissal** silences a **Library health** finding without hiding it
 - A **Track** is identified by its row, not its path: **Prune** makes it **Missing**, **Reattach** or a returning path restores it, and only **Purge** deletes it
 
@@ -377,6 +399,8 @@ _Avoid_: Persist, sync
 - "Player" retired as a domain term → use **Deck**. "Player" remains an implementation detail (Rust worker driving a rodio Sink per deck).
 - "Playlist" vs "Queue" → **Playlist** is canonical. Avoid "queue" to prevent confusion with **Lookahead buffer**.
 - "Auto-playlist" is a mode of **Playlist**, not a separate concept.
+- "Playlist" alone is always the on-air one. The stored, named list is a **Saved playlist**, in code and in prose; only the library tab that lists them is labelled "Playlists".
+- "Missing" on a **Saved playlist** row covers two states: an **Unmatched entry**, and an **Entry** bound to a **Missing track**. Only the second is a missing _track_.
 - "Cue deck" is a Deck (not a UI label), modeled on real-DJ rigs. It is **not** a peer of **Main deck**: Main deck is a **Deck role** that moves between decks on the **Program bus**, while the Cue deck is a fixed off-air deck on its own output device.
 - "Cue point" is a position in a Track; "Cue deck" is the off-air deck; the "Cue editor" is where points are placed. The overlap is inherited from playout software convention.
 - Bare "edit" means **metadata/tag editing** and nothing else. The playback markers are **Cue points**; the stored set of them is a **Radio edit**. Tag-editing code says `metadata` explicitly for this reason.
