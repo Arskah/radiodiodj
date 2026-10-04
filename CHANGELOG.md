@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.25.2](https://github.com/Arskah/radiodiodj/compare/v0.25.1...v0.25.2) (2026-10-04)
+
+
+### Miscellaneous Chores
+
+* **deps:** update dependency vite to v8.3.2 ([#551](https://github.com/Arskah/radiodiodj/issues/551)) ([eafe6f1](https://github.com/Arskah/radiodiodj/commit/eafe6f18c16ff6c6d490479e4795274b3ef96e9b))
+* **site:** add radiodiodj.org landing page ([#550](https://github.com/Arskah/radiodiodj/issues/550)) ([5a1128d](https://github.com/Arskah/radiodiodj/commit/5a1128d827c9c3d4003fe4ae6a6fc925e3031c48))
+* **site:** serve the update manifest ([#556](https://github.com/Arskah/radiodiodj/issues/556)) ([0114207](https://github.com/Arskah/radiodiodj/commit/0114207eba9d8978e8447f82dbc94a08047a5c7a))
+
+
+### Continuous Integration
+
+* **e2e:** fix the 30 s app start that made e2e take 13 minutes ([#554](https://github.com/Arskah/radiodiodj/issues/554)) ([57cb243](https://github.com/Arskah/radiodiodj/commit/57cb24378582b010dd671f96cb628a63218700d0))
+* keep tauri.conf.json in the layout release-please writes ([#559](https://github.com/Arskah/radiodiodj/issues/559)) ([2c5933a](https://github.com/Arskah/radiodiodj/commit/2c5933a798a8c3a49041df547f3fc1205f1c6513))
+* sign and publish updater artifacts ([#555](https://github.com/Arskah/radiodiodj/issues/555)) ([c8126cb](https://github.com/Arskah/radiodiodj/commit/c8126cb9a58a103923959d8d06cd7a34c3412fb0))
+
 ## [0.25.1](https://github.com/Arskah/radiodiodj/compare/v0.25.0...v0.25.1) (2026-10-04)
 
 
