@@ -16,6 +16,8 @@ export const sel = {
   closeSettings: "#btn-close-settings",
   playlist: "#playlist",
   playlistRow: ".playlist-row",
+  /** Puts a queued track on air. The only thing on the row that does. */
+  playlistRowPlay: ".btn-play-track",
   playlistRowDuration: ".pl-duration",
   /** Marks a queued item airing under cue points of its own. */
   playlistRowOverride: ".pl-override",

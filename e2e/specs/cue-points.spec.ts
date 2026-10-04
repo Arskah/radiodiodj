@@ -331,7 +331,7 @@ describe("cue points", () => {
 
     // 7 — air it. The deck reports air time, not the file length.
     const queued = await browser.$$(`${sel.playlist} ${sel.playlistRow}`);
-    await queued[0].doubleClick();
+    await queued[0].$(sel.playlistRowPlay).click();
     await browser.waitUntil(
       async () => (await text(sel.npTitle)) === "cue-fixture",
       { timeout: 10_000, timeoutMsg: "edited track never reached the deck" },
@@ -398,7 +398,7 @@ describe("cue points", () => {
     // And the item that kept it reaches the player: the main deck reports the
     // override's air time, not the file's 30 seconds.
     const queued = await browser.$$(`${sel.playlist} ${sel.playlistRow}`);
-    await queued[1].doubleClick();
+    await queued[1].$(sel.playlistRowPlay).click();
     await browser.waitUntil(
       async () => (await pill(sel.timeDisplay)).total === 4,
       { timeout: 10_000, timeoutMsg: "override never reached the main deck" },

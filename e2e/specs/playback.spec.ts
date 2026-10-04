@@ -39,7 +39,10 @@ describe("playback", () => {
       timeout: 5_000,
     });
 
-    await browser.$(`${sel.playlist} ${sel.playlistRow}`).doubleClick();
+    await browser
+      .$(`${sel.playlist} ${sel.playlistRow}`)
+      .$(sel.playlistRowPlay)
+      .click();
 
     await browser.waitUntil(
       async () => parseTime(await browser.$(sel.timeDisplay).getText()) > 0,
