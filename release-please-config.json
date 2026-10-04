@@ -23,6 +23,7 @@
   ],
   "packages": {
     ".": {
+      "exclude-paths": ["site"],
       "extra-files": [
         {
           "type": "json",

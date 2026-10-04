@@ -4,6 +4,8 @@
 coverage/
 dist/
 e2e-results/
+site/.astro/
+site/dist/
 # No trailing slash: a symlink named node_modules (a worktree pointing at the
 # main checkout's install) must be ignored too, or it lands in a commit and CI
 # checks out a dangling link that pnpm install then trips over.

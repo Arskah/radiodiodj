@@ -4,9 +4,9 @@
   "description": "Radio station music player",
   "author": {
     "name": "Aarni Halinen",
-    "email": "radiodiodj@aarnihalinen.fi"
+    "email": "hello@radiodiodj.org"
   },
-  "homepage": "https://github.com/Arskah/radiodiodj#readme",
+  "homepage": "https://radiodiodj.org",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Arskah/radiodiodj.git"

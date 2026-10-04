@@ -1,0 +1,40 @@
+name: Pages
+
+# Deploys radiodiodj.org. Runs after every Release Please run on main rather
+# than on a push, so a release's bundles are uploaded before the download links
+# are baked. See docs/website.md#deploy.
+
+on:
+  workflow_run:
+    workflows: [Release Please]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'cancelled'
+    uses: ./.github/workflows/site.yml
+    with:
+      upload: true
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

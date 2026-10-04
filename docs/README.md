@@ -54,6 +54,7 @@ Everything here describes what is built, except where a row says otherwise.
 
 ## Release
 
-| doc                        | answers                                                         |
-| -------------------------- | --------------------------------------------------------------- |
-| [signing.md](./signing.md) | Code signing and notarization per platform, and what is set up. |
+| doc                        | answers                                                                            |
+| -------------------------- | ---------------------------------------------------------------------------------- |
+| [signing.md](./signing.md) | Code signing and notarization per platform, and what is set up.                    |
+| [website.md](./website.md) | How radiodiodj.org is built and deployed, and how its download links stay current. |
