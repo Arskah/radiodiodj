@@ -27,7 +27,7 @@ use super::cue_points::{CuePoints, Resolved};
 use super::output::Output;
 use super::player::{
     append_span, clamp_start, decode_bytes, fresh_cancel, fresh_progress, Bytes, Cancel, Cmd,
-    PlayerTuning, Progress, RampDone, Seen, Topics,
+    LoadFailed, PlayerTuning, Progress, RampDone, Seen, Topics,
 };
 
 const TICK_INTERVAL: Duration = Duration::from_millis(50);
@@ -839,7 +839,13 @@ fn apply_load(
             let _ = app.emit(&events.topics.error, format!("read failed: {}", e));
             deck.reset();
             // Programmatic signal carrying the track id (human message above).
-            let _ = app.emit(&events.topics.load_failed, msg.id);
+            let _ = app.emit(
+                &events.topics.load_failed,
+                LoadFailed {
+                    id: msg.id,
+                    abandoned: false,
+                },
+            );
             set_pause_state(app, events, true);
             return;
         }
@@ -852,7 +858,13 @@ fn apply_load(
             // flight. Treat an unopenable output as a load failure.
             let Some((mixer, generation)) = ensure_output(output, app, events) else {
                 deck.reset();
-                let _ = app.emit(&events.topics.load_failed, msg.id);
+                let _ = app.emit(
+                    &events.topics.load_failed,
+                    LoadFailed {
+                        id: msg.id,
+                        abandoned: false,
+                    },
+                );
                 set_pause_state(app, events, true);
                 return;
             };
@@ -917,8 +929,8 @@ fn apply_load(
 }
 
 /// Why a load was given up on. Every answer is the same to everything
-/// downstream — a `:load-failed` the playlist turns into skip-to-cached — and
-/// they differ only in what the operator is told, which is the difference
+/// downstream — an abandoned `:load-failed` the playlist turns into
+/// skip-to-cached — and they differ only in what the operator is told, which is the difference
 /// between "the share is gone" and "the share is too slow to open a show with".
 ///
 /// Which bound expired is not that difference on its own: the dead-air limit is
@@ -990,7 +1002,13 @@ fn abandon_load(
     let _ = app.emit(&events.topics.buffering, false);
     let _ = app.emit(&events.topics.error, message.to_string());
     if let Some(id) = id {
-        let _ = app.emit(&events.topics.load_failed, id);
+        let _ = app.emit(
+            &events.topics.load_failed,
+            LoadFailed {
+                id,
+                abandoned: true,
+            },
+        );
     }
     set_pause_state(app, events, true);
 }
