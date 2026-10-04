@@ -9,6 +9,24 @@ export function appendMessage(added: number, skipped: number): string {
   return `Added ${tracks}, skipped ${skipped} unmatched`;
 }
 
+const words = (text: string): string[] =>
+  text
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((word) => word !== "");
+
+/**
+ * Whether a search matches a row of text fields, by the library search's rule:
+ * every word typed is the start of some word in the fields. An empty search
+ * matches everything.
+ */
+export function matchesSearch(query: string, fields: string[]): boolean {
+  const wanted = words(query);
+  if (wanted.length === 0) return true;
+  const have = fields.flatMap(words);
+  return wanted.every((prefix) => have.some((word) => word.startsWith(prefix)));
+}
+
 /** What the panel says once a file has become a saved playlist. */
 export function importMessage(
   name: string,

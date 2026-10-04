@@ -310,12 +310,17 @@
       <input
         type="text"
         id="search-input"
-        placeholder={onPlaylists
-          ? "Search saved playlists…"
-          : "Search tracks, artists, albums…"}
+        placeholder={!onPlaylists
+          ? "Search tracks, artists, albums…"
+          : app.openSaved
+            ? "Search this playlist…"
+            : "Search saved playlists…"}
         autocomplete="off"
-        aria-label={onPlaylists ? "Search saved playlists" : "Search tracks"}
-        disabled={onPlaylists && app.openSaved !== null}
+        aria-label={!onPlaylists
+          ? "Search tracks"
+          : app.openSaved
+            ? "Search this saved playlist"
+            : "Search saved playlists"}
         bind:value={app.searchQuery}
         oninput={onSearchInput}
         onkeydown={onSearchKeyDown}

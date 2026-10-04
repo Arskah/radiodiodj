@@ -2,7 +2,7 @@
   import { app, formatTime } from "../../shared/state.svelte";
   import type { SavedEntry, SavedPlaylistSummary } from "../../shared/types";
   import { airDuration } from "../../shared/cuePoints";
-  import { sizeLabel } from "../../shared/savedPlaylists";
+  import { matchesSearch, sizeLabel } from "../../shared/savedPlaylists";
   import MissingBadge from "../track/MissingBadge.svelte";
   import { gapAt, moveTarget } from "../playlist/playlistDrop";
   import ContextMenu from "../ui/ContextMenu.svelte";
@@ -17,6 +17,19 @@
   });
 
   const open = $derived(app.openSaved);
+
+  // The search box means the list of saved playlists while none is open and
+  // the open one's entries once one is, so it starts empty on the way in and
+  // on the way out.
+  function openSaved(id: number): void {
+    app.searchQuery = "";
+    void app.openSavedPlaylist(id);
+  }
+
+  function back(): void {
+    app.searchQuery = "";
+    app.closeSavedPlaylist();
+  }
   const openSummary = $derived(
     open ? app.savedPlaylists.find((saved) => saved.id === open.id) : undefined,
   );
@@ -35,7 +48,7 @@
     }
     if (e.key !== "Enter" && e.key !== " ") return;
     e.preventDefault();
-    void app.openSavedPlaylist(saved.id);
+    openSaved(saved.id);
   }
 
   // ----- Row menus -----
@@ -86,7 +99,7 @@
       {
         label: "Open",
         icon: "folder_open",
-        onselect: () => void app.openSavedPlaylist(saved.id),
+        onselect: () => openSaved(saved.id),
       },
     ];
     if (saved.entries > 0) {
@@ -226,6 +239,21 @@
 
   const album = (entry: SavedEntry): string => entry.track?.album ?? "";
 
+  /** The open saved playlist's entries the search leaves, each with its place. */
+  const listed = $derived(
+    (open?.entries ?? [])
+      .map((entry, position) => ({ entry, position }))
+      .filter(({ entry }) =>
+        matchesSearch(app.searchQuery, [
+          title(entry),
+          artist(entry),
+          album(entry),
+        ]),
+      ),
+  );
+  /** A search hides rows, and a position between two shown rows means nothing. */
+  const searching = $derived(app.searchQuery.trim() !== "");
+
   // ----- Dragging -----
   //
   // An entry drags the way a library row does: a bound one can be dropped at a
@@ -247,7 +275,7 @@
   }
 
   function onDragStart(e: DragEvent, entry: SavedEntry, i: number): void {
-    dragFrom = app.isAdmin ? i : -1;
+    dragFrom = app.isAdmin && !searching ? i : -1;
     app.draggedTrackIds = entry.track ? [entry.track.id] : null;
     if (e.dataTransfer) {
       e.dataTransfer.effectAllowed = "copyMove";
@@ -295,7 +323,7 @@
       class="btn-add"
       title="Back to saved playlists"
       aria-label="Back to saved playlists"
-      onclick={() => app.closeSavedPlaylist()}
+      onclick={back}
     >
       <span class="material-symbols-outlined">arrow_back</span>
     </button>
@@ -383,8 +411,15 @@
           >Add tracks from a library row's menu, while admin mode is unlocked.</span
         >
       </div>
+    {:else if listed.length === 0}
+      <div class="empty">
+        <span class="empty-icon"
+          ><span class="material-symbols-outlined">search_off</span></span
+        >
+        <span class="empty-title">No Match In This Playlist</span>
+      </div>
     {:else}
-      {#each open.entries as entry, i (entry.id)}
+      {#each listed as { entry, position: i } (entry.id)}
         <div
           class="track-row saved-entry"
           class:unmatched={entry.track === null}
@@ -469,7 +504,7 @@
       {#each shown as saved (saved.id)}
         <div
           class="track-row saved-row"
-          onclick={() => void app.openSavedPlaylist(saved.id)}
+          onclick={() => openSaved(saved.id)}
           onkeydown={(e) => onRowKeyDown(saved, e)}
           oncontextmenu={(e) => openMenu({ kind: "saved", saved }, e)}
           role="button"

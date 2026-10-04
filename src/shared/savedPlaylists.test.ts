@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { appendMessage, importMessage, sizeLabel } from "./savedPlaylists";
+import {
+  appendMessage,
+  importMessage,
+  matchesSearch,
+  sizeLabel,
+} from "./savedPlaylists";
 
 describe("appendMessage", () => {
   it("counts what was added", () => {
@@ -22,6 +27,31 @@ describe("importMessage", () => {
     expect(importMessage("Show (2)", 12, 2)).toBe(
       "Imported “Show (2)”: 12 tracks · 2 missing",
     );
+  });
+});
+
+describe("matchesSearch", () => {
+  const row = ["Here Comes the Sun", "The Beatles", "Abbey Road"];
+
+  it("matches everything when nothing is typed", () => {
+    expect(matchesSearch("", row)).toBe(true);
+    expect(matchesSearch("  ", row)).toBe(true);
+  });
+
+  it("takes each word as the start of a word, across the fields", () => {
+    expect(matchesSearch("beat abb", row)).toBe(true);
+    expect(matchesSearch("SUN", row)).toBe(true);
+    expect(matchesSearch("road beatles here", row)).toBe(true);
+  });
+
+  it("does not match inside a word, or a word that is nowhere", () => {
+    expect(matchesSearch("eatles", row)).toBe(false);
+    expect(matchesSearch("beat stones", row)).toBe(false);
+  });
+
+  it("splits on punctuation and keeps letters outside ASCII", () => {
+    expect(matchesSearch("yö", ["Hyvää yötä (Live)"])).toBe(true);
+    expect(matchesSearch("live", ["Hyvää yötä (Live)"])).toBe(true);
   });
 });
 

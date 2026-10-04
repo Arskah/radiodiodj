@@ -323,8 +323,16 @@ In the first increment, with a saved playlist open in the _Playlists_ tab:
   playlist. Stop markers and item overrides are not carried.
 
 An open saved playlist also queues one of its tracks by that row's own **+**, as
-a library row does. On the list of saved playlists the search box filters by
-name; with one open it is disabled, since there is nothing it would search.
+a library row does.
+
+The search box follows what is on screen. On the list of saved playlists it
+filters by name. With one open it searches that playlist's entries — title,
+artist and album, by the library search's rule that each word typed starts a
+word — and starts empty on the way in and on the way out. Every entry is
+already in the renderer, so this is a filter and not a query. A row keeps the
+number of its place in the saved playlist, and reordering waits until the
+search is cleared: a drop between two shown rows names no position among the
+hidden ones.
 
 Rows in the _Playlists_ tab have a menu of their own. A saved playlist's offers
 _Open_, both appends, _Use as Auto source_, _Export…_ and, for an admin,
