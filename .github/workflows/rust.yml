@@ -6,9 +6,14 @@ on:
 permissions:
   contents: read
 
+env:
+  # Full debuginfo is most of what a dev build writes and links, and CI only
+  # ever reads a backtrace out of it.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
 jobs:
-  rust:
-    name: Rust
+  lint:
+    name: Lint
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -18,27 +23,22 @@ jobs:
         run: pnpm vite build
 
       - name: Install Linux deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libasound2-dev
+        uses: ./.github/actions/linux-deps
 
       - name: Install Rust toolchain
         uses: ./.github/actions/rust
         with:
           components: rustfmt, clippy
 
+      # Saved from main only: a cache saved on a pull request is one no other
+      # pull request can read.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # Here rather than in lint, because it reads the licence files out of the
-      # crate sources and needs cargo to have fetched them.
+      # Here rather than in lint.yml, because it reads the licence files out of
+      # the crate sources and needs cargo to have fetched them.
       - name: Third-party notices
         run: pnpm notices --check
 
@@ -54,6 +54,27 @@ jobs:
         working-directory: src-tauri
         # Doc-link lints only fire under rustdoc, so clippy never reaches them.
         run: cargo doc --no-deps --document-private-items
+
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup
+
+      - name: Build renderer
+        run: pnpm vite build
+
+      - name: Install Linux deps
+        uses: ./.github/actions/linux-deps
+
+      - name: Install Rust toolchain
+        uses: ./.github/actions/rust
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo test
         working-directory: src-tauri
