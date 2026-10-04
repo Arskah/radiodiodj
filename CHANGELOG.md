@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.27.0](https://github.com/Arskah/radiodiodj/compare/v0.26.1...v0.27.0) (2026-10-04)
+
+
+### Features
+
+* **appearance:** option to stop the vinyl art spinning ([#578](https://github.com/Arskah/radiodiodj/issues/578)) ([ce725cf](https://github.com/Arskah/radiodiodj/commit/ce725cf5bcaa45a1e26c3a53516e1652166e8988)), closes [#572](https://github.com/Arskah/radiodiodj/issues/572)
+* **deck:** keep the vinyl at its angle when playback stops ([#579](https://github.com/Arskah/radiodiodj/issues/579)) ([55c1137](https://github.com/Arskah/radiodiodj/commit/55c11379577dbd96882ae4ab8cf3de8b468af11f)), closes [#571](https://github.com/Arskah/radiodiodj/issues/571)
+* **library:** select several tracks and queue them in one go ([#586](https://github.com/Arskah/radiodiodj/issues/586)) ([bd08565](https://github.com/Arskah/radiodiodj/commit/bd08565a3ef4af9b1c8099f9093cb89d81102f91)), closes [#576](https://github.com/Arskah/radiodiodj/issues/576)
+* **playlist:** drag a library row to a position in the playlist ([#583](https://github.com/Arskah/radiodiodj/issues/583)) ([e262c7f](https://github.com/Arskah/radiodiodj/commit/e262c7ffb4c339a6b3990eb27d6940aeac9ac7bd)), closes [#573](https://github.com/Arskah/radiodiodj/issues/573)
+* **security:** run the webview under a content security policy ([#570](https://github.com/Arskah/radiodiodj/issues/570)) ([db93cb1](https://github.com/Arskah/radiodiodj/commit/db93cb1cf5af2fe1811afe9909da1f46a025e339))
+* third-party notices, linked from the About tab ([#574](https://github.com/Arskah/radiodiodj/issues/574)) ([fa5b206](https://github.com/Arskah/radiodiodj/commit/fa5b206de16c1075d8eb181b871e44ac5ba99d37))
+
+
+### Bug Fixes
+
+* **playlist:** keep a track that never aired out of history, and in the queue ([#562](https://github.com/Arskah/radiodiodj/issues/562)) ([44c23de](https://github.com/Arskah/radiodiodj/commit/44c23dea9439522e887524a5878cb79966487476)), closes [#547](https://github.com/Arskah/radiodiodj/issues/547)
+
 ## [0.26.1](https://github.com/Arskah/radiodiodj/compare/v0.26.0...v0.26.1) (2026-10-04)
 
 
