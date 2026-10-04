@@ -261,9 +261,10 @@ In the first increment, with a saved playlist open in the _Playlists_ tab:
 
 Later, on top of the library selection
 ([#576](https://github.com/Arskah/radiodiodj/issues/576), which queues several
-tracks to the playlist and stops there): the selection gains _Add to saved
-playlist ▸_ and _New saved playlist from selection_, and the entries of an open
-saved playlist become selectable.
+tracks to the playlist and stops there):
+[#587](https://github.com/Arskah/radiodiodj/issues/587) gives the selection _Add
+to saved playlist ▸_ and _New saved playlist from selection_, and makes the
+entries of an open saved playlist selectable.
 [#584](https://github.com/Arskah/radiodiodj/issues/584) adds dragging from the
 library.
 
@@ -332,14 +333,14 @@ settled when #505's transport is designed.
 
 Each is one pull request.
 
-| #   | increment               | delivers                                                                                                                | needs   | issue             |
-| --- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------- | ------- | ----------------- |
-| 1   | Saved playlists exist   | tables, commands and their gating, the _Playlists_ tab, the four authoring actions, the missing badge, both appends     | #576    | #577              |
-| 2   | Export and import       | the file, binding at import, after a scan and after the analysis pass                                                   | 1       | #501              |
-| 3   | Auto-playlist source    | the source in session and `DbRefiller`, the pool predicate, the small-pool note, the empty-pool revert, the switch line | 1       | #503              |
-| 4   | Find in library         | binding an unmatched entry by hand                                                                                      | 2       | #580              |
-| 5   | Selection and drag-drop | the selection's two saved-playlist actions, selecting entries of a saved playlist, dragging library rows onto one       | 1, #576 | #584, one to file |
-| 6   | The web authoring page  | a show built away from the studio                                                                                       | #505    | #581              |
+| #   | increment               | delivers                                                                                                                | needs   | issue      |
+| --- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------- | ------- | ---------- |
+| 1   | Saved playlists exist   | tables, commands and their gating, the _Playlists_ tab, the four authoring actions, the missing badge, both appends     | #576    | #577       |
+| 2   | Export and import       | the file, binding at import, after a scan and after the analysis pass                                                   | 1       | #501       |
+| 3   | Auto-playlist source    | the source in session and `DbRefiller`, the pool predicate, the small-pool note, the empty-pool revert, the switch line | 1       | #503       |
+| 4   | Find in library         | binding an unmatched entry by hand                                                                                      | 2       | #580       |
+| 5   | Selection and drag-drop | the selection's two saved-playlist actions, selecting entries of a saved playlist, dragging library rows onto one       | 1, #576 | #587, #584 |
+| 6   | The web authoring page  | a show built away from the studio                                                                                       | #505    | #581       |
 
 Increment 1 is usable alone: a show built in the app and appended at its hour.
 Increment 2 is what #501 asked for, increment 3 what #503 asked for, and
