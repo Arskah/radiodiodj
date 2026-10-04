@@ -316,6 +316,11 @@ export class AppState {
     return this.appearance?.stationName ?? APP_NAME;
   }
 
+  /** Whether a playing deck turns its vinyl art. On until the operator says otherwise. */
+  get spinVinyl(): boolean {
+    return this.appearance?.spinVinyl ?? true;
+  }
+
   /** Every theme the operator can pick, invalid ones included. */
   themes = $state<ThemeListing[]>([]);
 
@@ -1329,6 +1334,10 @@ export class AppState {
 
   async clearStationImage(slot: ImageSlot): Promise<void> {
     this.applyAppearance(await api.clearStationImage(slot));
+  }
+
+  async setSpinVinyl(enabled: boolean): Promise<void> {
+    this.applyAppearance(await api.setSpinVinyl(enabled));
   }
 
   /**

@@ -541,6 +541,9 @@ export const api = {
   clearStationImage(slot: ImageSlot): Promise<Appearance> {
     return invoke<Appearance>("clear_station_image", { slot });
   },
+  setSpinVinyl(enabled: boolean): Promise<Appearance> {
+    return invoke<Appearance>("set_spin_vinyl", { enabled });
+  },
   /** Pick an image file. The app copies it, so the chosen path is not kept. */
   async pickImageFile(): Promise<string | null> {
     const file = await open({

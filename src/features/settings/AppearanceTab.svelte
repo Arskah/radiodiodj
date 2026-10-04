@@ -179,3 +179,25 @@
     </div>
   {/each}
 </div>
+<div class="settings-section">
+  <h4>Decks</h4>
+  <div class="np-group" class:disabled={!app.spinVinyl}>
+    <div class="np-group-header">
+      <span class="material-symbols-outlined" aria-hidden="true">album</span>
+      <span class="np-group-title">Spin the vinyl</span>
+      <label class="np-toggle" title="Spin the vinyl while a deck plays">
+        <input
+          id="appearance-spin-vinyl"
+          type="checkbox"
+          checked={app.spinVinyl}
+          onchange={(e) => void app.setSpinVinyl(e.currentTarget.checked)}
+        />
+        <span class="np-toggle-track"></span>
+      </label>
+    </div>
+    <p class="settings-section-desc">
+      With this on, the cover art at the centre of a deck's vinyl turns while
+      the deck plays. Off, it stays still and upright.
+    </p>
+  </div>
+</div>

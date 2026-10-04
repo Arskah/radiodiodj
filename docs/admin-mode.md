@@ -16,7 +16,7 @@ While locked:
 - The whole _Settings_ overlay: Audio Output, Library (paths, scan, library
   health, purge, recalculating automatic cue points), Playlist, Now Playing,
   Appearance (picking a theme, reloading themes, the station name and its
-  images) and Advanced. The toolbar's Settings button is disabled, so none of
+  images, the vinyl spin) and Advanced. The toolbar's Settings button is disabled, so none of
   it is reachable in the first place.
 - Metadata edits: the _Edit metadata…_ row action and the row's edit button are
   hidden. Revert, retry and dismiss for tag writes live in the metadata editor

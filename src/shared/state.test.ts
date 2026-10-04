@@ -77,6 +77,7 @@ const { api } = vi.hoisted(() => {
     setStationName: vi.fn(),
     setStationImage: vi.fn(),
     clearStationImage: vi.fn(),
+    setSpinVinyl: vi.fn(),
     pickImageFile: vi.fn(),
     listThemes: vi.fn(),
     setTheme: vi.fn(),
@@ -322,6 +323,9 @@ function resetApi(): void {
     Promise.resolve(appearance({ stationName: name as string | null })),
   );
   api.clearStationImage.mockResolvedValue(appearance());
+  api.setSpinVinyl.mockImplementation((enabled: unknown) =>
+    Promise.resolve(appearance({ spinVinyl: enabled as boolean })),
+  );
 }
 
 /** A resolved appearance, as the backend would hand it over. */
@@ -337,6 +341,7 @@ function appearance(over: Partial<Appearance> = {}): Appearance {
     stationName: null,
     logo: null,
     label: null,
+    spinVinyl: true,
     problem: null,
     ...over,
   };
@@ -1617,6 +1622,16 @@ describe("AppState appearance", () => {
     );
     await app.setStationName("   Radio Foo   ");
     expect(app.appearance?.stationName).toBe("Radio Foo");
+  });
+
+  it("spins the vinyl until the operator switches it off", async () => {
+    expect(app.spinVinyl).toBe(true);
+    await app.loadAppearance();
+    expect(app.spinVinyl).toBe(true);
+
+    await app.setSpinVinyl(false);
+    expect(api.setSpinVinyl).toHaveBeenCalledWith(false);
+    expect(app.spinVinyl).toBe(false);
   });
 
   it("carries the station images through as data URLs", async () => {

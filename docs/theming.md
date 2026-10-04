@@ -451,6 +451,8 @@ pub struct AppearanceConfig {
     pub logo: Option<String>,   // file name inside {app_data_dir}/branding/
     #[serde(default)]
     pub label: Option<String>,
+    #[serde(default = "default_true")]
+    pub spin_vinyl: bool,
 }
 ```
 
@@ -470,6 +472,7 @@ interface Appearance {
   stationName: string | null;
   logo: string | null; // data URL
   label: string | null; // data URL
+  spinVinyl: boolean;
   problem: string | null;
 }
 ```
@@ -485,6 +488,7 @@ without a second command.
 | `set_station_name(name)`        | yes         | `Appearance`        |
 | `set_station_image(slot, path)` | yes         | `Appearance`        |
 | `clear_station_image(slot)`     | yes         | `Appearance`        |
+| `set_spin_vinyl(enabled)`       | yes         | `Appearance`        |
 | `reload_themes`                 | yes         | `Appearance`        |
 | `reveal_themes_dir`             | yes         | `()`                |
 
@@ -528,6 +532,9 @@ and Advanced stays last as the tuning drawer.
 │  Record label  [◉ preview ]  [Choose…] [Clear]            │
 │      Square, and keep anything important inside the       │
 │      circle — cover art wins when a track has it.         │
+│                                                           │
+│ Decks                                                     │
+│  Spin the vinyl                                    [ on ] │
 └───────────────────────────────────────────────────────────┘
 ```
 
@@ -539,6 +546,14 @@ Reverting is selecting the previous entry.
 **Invalid themes are listed, never hidden.** A theme that "didn't show up" is
 the worst failure mode for a drop-in-a-folder feature; listed and disabled with
 the reason turns it into a fixable message.
+
+**_Spin the vinyl_ is neither palette nor identity; it lives here because it is
+how the decks look.** `spinVinyl` gates the `.spinning` class on both the main
+and the cue deck, so off leaves the art with no transform at all — still and
+upright, not frozen mid-turn. It is on by default, and `prefers-reduced-motion`
+still stops the spin whatever the setting says. The word is _spin_ because
+"rotation" is a **Rotation rule** and nothing else — see
+[CONTEXT.md](../CONTEXT.md).
 
 ## Not built
 

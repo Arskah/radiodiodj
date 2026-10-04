@@ -464,6 +464,9 @@ pub struct AppearanceConfig {
     pub logo: Option<String>,
     #[serde(default)]
     pub label: Option<String>,
+    /// Whether the art at the centre of a deck's vinyl turns while it plays.
+    #[serde(default = "default_true")]
+    pub spin_vinyl: bool,
 }
 
 fn default_theme_id() -> String {
@@ -480,6 +483,7 @@ impl Default for AppearanceConfig {
             station_name: None,
             logo: None,
             label: None,
+            spin_vinyl: true,
         }
     }
 }
@@ -1181,6 +1185,7 @@ mod tests {
         assert_eq!(appearance.theme_id, "station-red");
         assert_eq!(appearance.station_name, None);
         assert_eq!(appearance.logo, None);
+        assert!(appearance.spin_vinyl, "a config that predates it spins");
     }
 
     #[test]
@@ -1192,6 +1197,7 @@ mod tests {
             station_name: Some("Radio Foo".to_string()),
             logo: Some("logo.svg".to_string()),
             label: None,
+            spin_vinyl: false,
         })
         .unwrap();
         drop(cfg);
@@ -1201,6 +1207,7 @@ mod tests {
         assert_eq!(appearance.theme_id, "station-red");
         assert_eq!(appearance.station_name.as_deref(), Some("Radio Foo"));
         assert_eq!(appearance.logo.as_deref(), Some("logo.svg"));
+        assert!(!appearance.spin_vinyl);
     }
 
     /// The station name is trimmed and capped, and an empty one means "use the

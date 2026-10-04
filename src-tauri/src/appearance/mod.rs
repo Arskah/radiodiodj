@@ -27,6 +27,7 @@ pub struct Appearance {
     pub station_name: Option<String>,
     pub logo: Option<String>,
     pub label: Option<String>,
+    pub spin_vinyl: bool,
     /// Set when the active theme could not be used, so the UI can say why
     /// without a second command.
     pub problem: Option<String>,
@@ -64,6 +65,7 @@ pub fn resolve(data_dir: &Path, config: &AppearanceConfig) -> Appearance {
         station_name: config.station_name.clone(),
         logo: image_for(identity(&config.logo), resolved.logo),
         label: image_for(identity(&config.label), resolved.label),
+        spin_vinyl: config.spin_vinyl,
         problem,
     }
 }
