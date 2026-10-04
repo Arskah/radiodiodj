@@ -184,12 +184,6 @@
           icon: "playlist_play",
           onselect: () => app.addSelectionToPlaylist(true),
         },
-        {
-          label: "Clear selection",
-          icon: "close",
-          onselect: () => app.clearSelection(),
-          separated: true,
-        },
       ];
     }
     const items: MenuItem[] = [

@@ -360,8 +360,8 @@ Queueing an album, or a run of tracks picked across several searches, is one
 action on a **selection**.
 
 - **Click** a row to pick it, click again to drop it. A checkbox takes the place
-  of the track number on the row under the pointer, and on every row once
-  anything is picked. There is no column for it.
+  of the track number on the row under the pointer and on a picked row; every
+  other row keeps its number. There is no column for it.
 - **Shift-click** picks every row from the last one picked to this one.
 - **Space** picks the focused row, **Shift+Space** a range, **Ctrl/Cmd+A** every
   row in the list, **Escape** clears.
@@ -396,7 +396,9 @@ sight.
 A row's own buttons and a double-click always act on that one row, picked or
 not, and a double-click drops the row from the selection. Dragging a row that is
 not picked carries only that row. The menu on a picked row is the selection's
-when more than one track is picked; _Play now_ is never offered for several.
+when more than one track is picked, and offers the two adds and nothing else:
+_Play now_ is never offered for several, and clearing is the bar's, where the
+count of tracks not shown sits beside it.
 
 _Select all_ takes the rows in the list, which is at most 200. A large add is
 not confirmed — the button carries the number.

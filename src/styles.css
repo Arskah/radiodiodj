@@ -1571,9 +1571,10 @@ body {
   justify-content: flex-end;
 }
 
-/* The checkbox takes the track number's place rather than a column of its own:
-   on the row under the pointer, and on every row while anything is selected.
-   A picked row shows its place in the order it will be queued in. */
+/* The checkbox takes the track number's place rather than a column of its own,
+   and only where it says something: on the row under the pointer, and on a
+   picked row, where it shows the row's place in the order it will be queued
+   in. Every other row keeps its number, which is what an album is picked by. */
 .track-check {
   display: none;
   box-sizing: border-box;
@@ -1589,12 +1590,12 @@ body {
 }
 
 .track-row:hover .track-check,
-#track-list.selecting .track-check {
+.track-row.selected .track-check {
   display: inline-flex;
 }
 
 .track-row:hover .track-no-value,
-#track-list.selecting .track-no-value {
+.track-row.selected .track-no-value {
   display: none;
 }
 
