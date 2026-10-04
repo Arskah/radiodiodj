@@ -93,15 +93,30 @@ function sanitize(s: string): string {
  * removes the race.
  */
 export async function waitForAnimations(selector: string): Promise<void> {
+  let unsettled = "element not found";
   await browser.waitUntil(
-    async () =>
-      browser.execute((s) => {
+    async () => {
+      unsettled = await browser.execute((s) => {
         const el = document.querySelector(s);
-        if (!el) return false;
+        if (!el) return "element not found";
         return el
           .getAnimations({ subtree: true })
-          .every((a) => a.playState === "finished");
-      }, selector),
-    { timeout: 5_000, timeoutMsg: `animations in ${selector} did not settle` },
+          .filter((a) => a.playState !== "finished")
+          .map((a) => {
+            const target = (a.effect as KeyframeEffect | null)?.target;
+            const name =
+              (a as CSSAnimation).animationName ??
+              (a as CSSTransition).transitionProperty;
+            return `${name} on ${target?.tagName}.${target?.className} is ${a.playState} at ${String(a.currentTime)}`;
+          })
+          .join("; ");
+      }, selector);
+      return unsettled === "";
+    },
+    {
+      timeout: 5_000,
+      timeoutMsg: () =>
+        `animations in ${selector} did not settle: ${unsettled}`,
+    },
   );
 }

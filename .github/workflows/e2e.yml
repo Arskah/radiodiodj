@@ -79,7 +79,10 @@ jobs:
           E2E_BINARY: release
           RUST_LOG: debug
           RUST_BACKTRACE: "1"
-        run: xvfb-run -a pnpm e2e
+        # A private session bus: on the runner's systemd user bus every app
+        # launch activates xdg-desktop-portal, which has no desktop to talk to
+        # and holds the app for 30 s before its window appears.
+        run: dbus-run-session -- xvfb-run -a pnpm e2e
 
       - name: Upload failure artifacts
         if: failure()

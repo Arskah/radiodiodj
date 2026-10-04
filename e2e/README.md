@@ -54,9 +54,12 @@ The renderer must be prebuilt (`pnpm vite build`) before the Rust binary will bo
 
 Headless: prefix with `xvfb-run -a` if you don't have a display server.
 
+If every app launch takes ~30 s, the session bus is activating `xdg-desktop-portal` with no desktop behind it. Wrap the run in `dbus-run-session --`, as CI does.
+
 ## Architecture
 
-- **Per-test launch.** Each `it()` spawns a fresh app process with its own `XDG_DATA_HOME=/tmp/radiodiodj-e2e-XXXX`, so `config.json`, `radiodiodj.db`, and `session.json` are hermetic.
+- **Per-test launch.** Each `it()` respawns the app through `launchApp()`, which first wipes `config.json`, `radiodiodj.db` and `session.json`, so no test sees another's state.
+- **One spec file at a time.** `E2E_WORKERS` (default 1) can raise that, and each worker gets its own `tauri-driver`, port pair and `XDG_DATA_HOME=/tmp/radiodiodj-e2e-xdg-XXXX`. It does not pay on a 4-core CI runner: four workers saved ~20 s of a 75 s run and stalled the metadata dialog's slide-in animation, failing the test that waits for it.
 - **Fixture libraries** are synthesized at runtime as 1-second 16-bit mono PCM WAVs. No binaries committed.
 - **Selectors** prefer ARIA (`role`, `aria-label`, `aria-sort`) over CSS classes; falls back to stable `id="..."` attributes.
 - **Audio** in CI uses `snd-dummy`; rodio decodes through symphonia and writes to the dummy device, so `main-deck:time` advances normally.
@@ -66,7 +69,7 @@ Headless: prefix with `xvfb-run -a` if you don't have a display server.
 On test failure, the runner writes to `e2e-results/<spec-name>/`:
 
 - `failure.png` — screenshot
-- `tauri-driver.log` — driver stderr/stdout
+- `tauri-driver-<worker>.log` — driver stderr/stdout, one per worker
 - per-test temp dir snapshot (logs, session.json, radiodiodj.db) when copied by the test's `afterEach`
 
 CI uploads this directory as an artifact with 7-day retention.
@@ -78,20 +81,16 @@ import { launchApp, captureArtifacts } from "../launch";
 import { sel } from "../selectors";
 
 describe("my feature", () => {
-  let cleanup: () => Promise<void>;
-
   afterEach(async function () {
     if (this.currentTest?.state === "failed") {
       await captureArtifacts(this.currentTest.fullTitle());
     }
-    await cleanup();
   });
 
   it("does the thing", async () => {
-    const app = await launchApp({
+    await launchApp({
       musicPaths: [/* fixture dir */],
     });
-    cleanup = app.cleanup;
     // ... assertions
   });
 });
