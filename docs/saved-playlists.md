@@ -4,9 +4,9 @@ A named, stored list of tracks: built before a show or kept as a curated pool,
 moved between machines as a file, appended to the on-air playlist, or used as
 what the auto-playlist draws from.
 
-**Partly built.** Increment 1 of the [table below](#increments) is in: the
-tables, the _Playlists_ tab, authoring and both appends. Import, export and the
-auto-playlist source are not. Designed 2026-10-04 against
+**Partly built.** Increments 1 and 2 of the [table below](#increments) are in:
+the tables, the _Playlists_ tab, authoring, both appends, and the file with its
+import, export and binding. The auto-playlist source is not. Designed 2026-10-04 against
 [#501](https://github.com/Arskah/radiodiodj/issues/501),
 [#503](https://github.com/Arskah/radiodiodj/issues/503) and
 [#577](https://github.com/Arskah/radiodiodj/issues/577). Two things it stands
@@ -106,11 +106,13 @@ playable again with no work here.
 `Db::bind_saved_entries` is one idempotent statement: every entry with no
 `track_id` takes the present track with the same fingerprint. It runs
 
-- at import,
-- at the end of a scan's reconcile transaction, and
-- when the analysis pass goes idle.
+- at import, inside the import's own transaction, and
+- whenever a scan or the analysis pass changes state.
 
-Both of the last two are needed. A fingerprint is written by the scanner for a
+The second is `Health::refresh`, which already listens for both and is where the
+list is re-sent, so binding and the missing counts it changes go out together.
+
+Both a scan and the pass are needed. A fingerprint is written by the scanner for a
 new or changed path, and by `Db::set_fingerprint` from the analysis pass for a
 row that has none — and a first scan into an empty library is tag-only, so there
 the pass is the only writer. See
@@ -156,6 +158,11 @@ library.
 
 No track ids and no paths. An id belongs to one install's database, and a path
 to one machine's mount; the fingerprint is the only identity that travels.
+
+_Import_ is on the list of saved playlists and _Export_ on an open one; both
+are a file picker and one command, and both are open while admin mode is
+locked. The panel says what an import made: its name, its size, and how many
+entries found no track.
 
 Import **never drops an entry and never overwrites a saved playlist**. What does
 not bind arrives unmatched and stays in its place in the order. Replacing an

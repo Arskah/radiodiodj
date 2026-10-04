@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import type {
   AdminStatus,
   Appearance,
@@ -256,6 +256,28 @@ export const api = {
     return invoke<SavedPlaylistSummary>("saved_playlist_create", {
       name,
       trackIds,
+    });
+  },
+  /** Write a saved playlist to `path`, as a file another install can import. */
+  savedPlaylistExport(id: number, path: string): Promise<void> {
+    return invoke<void>("saved_playlist_export", { id, path });
+  },
+  /** Make a new saved playlist from the file at `path`. Never overwrites one. */
+  savedPlaylistImport(path: string): Promise<SavedPlaylistSummary> {
+    return invoke<SavedPlaylistSummary>("saved_playlist_import", { path });
+  },
+  async pickSavedPlaylistFile(): Promise<string | null> {
+    const file = await open({
+      multiple: false,
+      filters: [{ name: "Saved playlist", extensions: ["json"] }],
+    });
+    return typeof file === "string" ? file : null;
+  },
+  /** Ask where to export a saved playlist called `name`. */
+  pickSavedPlaylistTarget(name: string): Promise<string | null> {
+    return save({
+      defaultPath: `${name}.json`,
+      filters: [{ name: "Saved playlist", extensions: ["json"] }],
     });
   },
   /** Admin only. `null` appends, as does an index past the end. */

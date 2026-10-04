@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendMessage, sizeLabel } from "./savedPlaylists";
+import { appendMessage, importMessage, sizeLabel } from "./savedPlaylists";
 
 describe("appendMessage", () => {
   it("counts what was added", () => {
@@ -14,6 +14,14 @@ describe("appendMessage", () => {
   it("says so when there was nothing it could add", () => {
     expect(appendMessage(0, 3)).toBe("Nothing to add: 3 unmatched");
     expect(appendMessage(0, 0)).toBe("Added 0 tracks");
+  });
+});
+
+describe("importMessage", () => {
+  it("names the new saved playlist and what it could not match", () => {
+    expect(importMessage("Show (2)", 12, 2)).toBe(
+      "Imported “Show (2)”: 12 tracks · 2 missing",
+    );
   });
 });
 

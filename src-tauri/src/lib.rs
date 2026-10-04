@@ -38,8 +38,8 @@ use audio::player::{Cmd, PlayerTuning, RampDone};
 use broadcast::{service::default_now_playing_dir, BroadcastService};
 use library::check::LibraryCheck;
 use library::db::{
-    Db, LibraryStats, OpenError, Recalculated, SavedPlaylist, SavedPlaylistSummary, Track,
-    TrackMetadataUpdate,
+    Db, LibraryStats, OpenError, Recalculated, SavedPlaylist, SavedPlaylistFile,
+    SavedPlaylistSummary, Track, TrackMetadataUpdate,
 };
 use library::health::{FindingKind, Health, HealthReport};
 use library::saved_playlists;
@@ -454,6 +454,44 @@ async fn saved_playlist_create(
         let made = db
             .create_saved_playlist(&name, &track_ids, now_ms())
             .map_err(err)?;
+        saved_playlists::emit(&handle, &db);
+        Ok(made)
+    })
+    .await
+}
+
+/// Write a saved playlist to `path` as a file another install can import.
+#[tauri::command(rename_all = "camelCase")]
+async fn saved_playlist_export(
+    state: State<'_, AppState>,
+    id: i64,
+    path: String,
+) -> Result<(), String> {
+    let db = Arc::clone(&state.db);
+    blocking(move || {
+        let file = db
+            .export_saved_playlist(id)
+            .map_err(err)?
+            .ok_or_else(|| format!("no saved playlist {id}"))?;
+        let json = serde_json::to_string_pretty(&file).map_err(err)?;
+        std::fs::write(&path, json).map_err(|e| format!("could not write {path}: {e}"))
+    })
+    .await
+}
+
+/// Make a new saved playlist from the file at `path`. Never overwrites one.
+#[tauri::command(rename_all = "camelCase")]
+async fn saved_playlist_import(
+    handle: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<SavedPlaylistSummary, String> {
+    let db = Arc::clone(&state.db);
+    blocking(move || {
+        let json =
+            std::fs::read_to_string(&path).map_err(|e| format!("could not read {path}: {e}"))?;
+        let file = SavedPlaylistFile::parse(&json).map_err(err)?;
+        let made = db.import_saved_playlist(&file, now_ms()).map_err(err)?;
         saved_playlists::emit(&handle, &db);
         Ok(made)
     })
@@ -1680,6 +1718,8 @@ pub fn run() {
             saved_playlist_list,
             saved_playlist_get,
             saved_playlist_create,
+            saved_playlist_export,
+            saved_playlist_import,
             saved_playlist_add_entries,
             saved_playlist_remove_entry,
             saved_playlist_move_entry,

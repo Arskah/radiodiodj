@@ -141,6 +141,15 @@
       disabled={open.entries.length === 0}
       onclick={() => append(open.id, true)}>+ Jingles &amp; comm</button
     >
+    <button
+      id="btn-saved-export"
+      class="btn-edit"
+      title="Export as a file"
+      aria-label="Export saved playlist"
+      onclick={() => void app.exportSavedPlaylist(open.id, open.name)}
+    >
+      <span class="material-symbols-outlined">file_export</span>
+    </button>
     {#if app.isAdmin}
       <button
         class="btn-edit"
@@ -247,6 +256,14 @@
     {/if}
   </div>
 {:else}
+  <div id="saved-list-header">
+    <button
+      id="btn-saved-import"
+      class="btn-filler"
+      title="Make a saved playlist from a file"
+      onclick={() => void app.importSavedPlaylist()}>Import</button
+    >
+  </div>
   <div id="saved-playlists" role="list">
     {#if app.savedPlaylists.length === 0}
       <div class="empty">
@@ -256,7 +273,7 @@
         <span class="empty-title">No Saved Playlists</span>
         <span class="empty-body"
           >Queue a show, then Save As in the playlist panel to keep it for
-          later.</span
+          later, or import one from a file.</span
         >
       </div>
     {:else}
@@ -387,6 +404,13 @@
 
   .saved-entry.drop-after {
     box-shadow: inset 0 -2px 0 0 var(--primary);
+  }
+
+  #saved-list-header {
+    display: flex;
+    justify-content: flex-end;
+    padding: var(--sp-xs) var(--sp-md);
+    border-bottom: 1px solid var(--outline-variant);
   }
 
   #saved-open-header {

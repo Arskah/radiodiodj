@@ -237,8 +237,8 @@ impl Health {
                     let _ = self.app.emit(HEALTH_EVENT, &report);
                 });
                 // A saved playlist's missing count moves with the same things
-                // this report does.
-                saved_playlists::emit(&self.app, &self.db);
+                // this report does, and so does what its entries can bind to.
+                saved_playlists::refresh(&self.app, &self.db);
             }
             Err(e) => log::error!("library health: {e:#}"),
         }

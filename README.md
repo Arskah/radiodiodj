@@ -84,7 +84,8 @@ browser audio pipeline, no external transcoder, no subscription.
   ([docs](docs/rotation.md))
 - **History** — what actually aired, surviving restarts
 - **Saved playlists** — keep a queued show under a name and add it back later,
-  as written or with jingles and commercials woven in
+  as written or with jingles and commercials woven in; export one as a file and
+  import it on another install, matched by the audio rather than the path
   ([docs](docs/saved-playlists.md))
 
 ### Station

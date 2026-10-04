@@ -31,6 +31,10 @@ const { api } = vi.hoisted(() => {
     onSavedPlaylists: vi.fn(),
     savedPlaylistGet: vi.fn(),
     savedPlaylistCreate: vi.fn(),
+    savedPlaylistExport: vi.fn(),
+    savedPlaylistImport: vi.fn(),
+    pickSavedPlaylistFile: vi.fn(),
+    pickSavedPlaylistTarget: vi.fn(),
     savedPlaylistAddEntries: vi.fn(),
     savedPlaylistRemoveEntry: vi.fn(),
     savedPlaylistMoveEntry: vi.fn(),
@@ -3250,6 +3254,42 @@ describe("AppState saved playlists", () => {
     await app.deleteSavedPlaylist(5);
     expect(api.savedPlaylistDelete).toHaveBeenCalledWith(5);
     expect(app.openSaved).toBeNull();
+  });
+
+  it("imports the picked file and says what it made", async () => {
+    api.pickSavedPlaylistFile.mockResolvedValue("/tmp/show.json");
+    api.savedPlaylistImport.mockResolvedValue({
+      id: 6,
+      name: "Show (2)",
+      entries: 12,
+      missing: 2,
+    });
+    await app.importSavedPlaylist();
+    expect(api.savedPlaylistImport).toHaveBeenCalledWith("/tmp/show.json");
+    expect(app.savedNotice).toBe("Imported “Show (2)”: 12 tracks · 2 missing");
+  });
+
+  it("imports nothing when the picker is cancelled", async () => {
+    api.pickSavedPlaylistFile.mockResolvedValue(null);
+    await app.importSavedPlaylist();
+    expect(api.savedPlaylistImport).not.toHaveBeenCalled();
+    expect(app.savedNotice).toBeNull();
+  });
+
+  it("says why a file was refused", async () => {
+    api.pickSavedPlaylistFile.mockResolvedValue("/tmp/x.json");
+    api.savedPlaylistImport.mockRejectedValue("not a saved playlist file");
+    await app.importSavedPlaylist();
+    expect(app.savedNotice).toBe("Import failed: not a saved playlist file");
+  });
+
+  it("exports to the picked path", async () => {
+    api.pickSavedPlaylistTarget.mockResolvedValue("/tmp/Show.json");
+    api.savedPlaylistExport.mockResolvedValue(undefined);
+    await app.exportSavedPlaylist(5, "Show");
+    expect(api.pickSavedPlaylistTarget).toHaveBeenCalledWith("Show");
+    expect(api.savedPlaylistExport).toHaveBeenCalledWith(5, "/tmp/Show.json");
+    expect(app.savedNotice).toBe("Exported “Show”");
   });
 
   it("hands a refused rename to the caller", async () => {

@@ -3,7 +3,7 @@
 
 use anyhow::{anyhow, bail, Result};
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{placeholders, Db, Track, ID_CHUNK};
 
@@ -45,6 +45,79 @@ pub struct SavedPlaylist {
 pub struct SavedTracks {
     pub tracks: Vec<(i64, String)>,
     pub unmatched: usize,
+}
+
+/// The `format` every saved playlist file carries.
+pub const FILE_FORMAT: &str = "radiodiodj-playlist";
+/// The only file version this build reads and writes.
+pub const FILE_VERSION: u32 = 1;
+
+/// A saved playlist as it travels between installs: no track ids and no paths,
+/// only what identifies a recording anywhere. See `docs/saved-playlists.md`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedPlaylistFile {
+    pub format: String,
+    pub version: u32,
+    pub name: String,
+    pub entries: Vec<FileEntry>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileEntry {
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+    #[serde(default)]
+    pub artist: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub duration: Option<f64>,
+    #[serde(default)]
+    pub content_type: Option<String>,
+}
+
+impl SavedPlaylistFile {
+    /// Parse a file, refusing whole anything this build does not know how to
+    /// read rather than importing what it happens to understand.
+    pub fn parse(json: &str) -> Result<Self> {
+        #[derive(Deserialize)]
+        struct Header {
+            format: Option<String>,
+            version: Option<u32>,
+        }
+        let header: Header =
+            serde_json::from_str(json).map_err(|e| anyhow!("not a saved playlist file: {e}"))?;
+        if header.format.as_deref() != Some(FILE_FORMAT) {
+            bail!("not a saved playlist file");
+        }
+        match header.version {
+            Some(FILE_VERSION) => {}
+            Some(v) => bail!(
+                "this saved playlist file is version {v}, and this build reads version \
+                 {FILE_VERSION}"
+            ),
+            None => bail!("not a saved playlist file"),
+        }
+        serde_json::from_str(json).map_err(|e| anyhow!("not a saved playlist file: {e}"))
+    }
+}
+
+/// Bind every unmatched entry to the present track with its fingerprint. Two
+/// such tracks are told apart by the entry's duration, then by id.
+fn bind(conn: &Connection) -> Result<usize> {
+    const MATCH: &str = "FROM tracks t \
+         WHERE t.fingerprint = saved_playlist_entries.fingerprint AND t.missing_since IS NULL";
+    let sql = format!(
+        "UPDATE saved_playlist_entries SET track_id = ( \
+           SELECT t.id {MATCH} \
+           ORDER BY ABS(COALESCE(t.duration, 0) - COALESCE(saved_playlist_entries.duration, 0)), \
+                    t.id \
+           LIMIT 1) \
+         WHERE track_id IS NULL AND fingerprint IS NOT NULL AND EXISTS (SELECT 1 {MATCH})"
+    );
+    Ok(conn.execute(&sql, [])?)
 }
 
 /// A name as it is compared: trimmed, and without regard to case.
@@ -332,6 +405,100 @@ impl Db {
         Ok(())
     }
 
+    /// Bind unmatched entries whose file has arrived. Idempotent, and cheap
+    /// enough to run whenever a fingerprint may have been written. Returns how
+    /// many entries it bound.
+    pub fn bind_saved_entries(&self) -> Result<usize> {
+        bind(&self.conn.lock())
+    }
+
+    /// A saved playlist as a file. A bound entry is written as its track reads
+    /// now, so a fingerprint version bump never exports a stale identity.
+    pub fn export_saved_playlist(&self, id: i64) -> Result<Option<SavedPlaylistFile>> {
+        let conn = self.conn.lock();
+        let Some(name) = conn
+            .query_row("SELECT name FROM saved_playlists WHERE id = ?", [id], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(t.fingerprint, e.fingerprint), COALESCE(t.artist, e.artist), \
+                    COALESCE(t.title, e.title), COALESCE(t.duration, e.duration), \
+                    COALESCE(t.content_type, e.content_type) \
+             FROM saved_playlist_entries e LEFT JOIN tracks t ON t.id = e.track_id \
+             WHERE e.playlist_id = ? ORDER BY e.position, e.id",
+        )?;
+        let entries = stmt
+            .query_map([id], |r| {
+                Ok(FileEntry {
+                    fingerprint: r.get(0)?,
+                    artist: r.get(1)?,
+                    title: r.get(2)?,
+                    duration: r.get(3)?,
+                    content_type: r.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(Some(SavedPlaylistFile {
+            format: FILE_FORMAT.to_owned(),
+            version: FILE_VERSION,
+            name,
+            entries,
+        }))
+    }
+
+    /// Make a new saved playlist from a file. Every entry is kept, in order;
+    /// what no track answers to arrives unmatched. Never overwrites: a name in
+    /// use takes the next free one.
+    pub fn import_saved_playlist(
+        &self,
+        file: &SavedPlaylistFile,
+        now_ms: i64,
+    ) -> Result<SavedPlaylistSummary> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let name = free_name(&tx, &file.name)?;
+        tx.execute(
+            "INSERT INTO saved_playlists (name, created_at, updated_at) VALUES (?, ?, ?)",
+            params![name, now_ms, now_ms],
+        )?;
+        let id = tx.last_insert_rowid();
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO saved_playlist_entries \
+                   (playlist_id, position, fingerprint, artist, title, duration, content_type) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+            )?;
+            for (position, entry) in file.entries.iter().enumerate() {
+                stmt.execute(params![
+                    id,
+                    position as i64,
+                    entry.fingerprint,
+                    entry.artist,
+                    entry.title,
+                    entry.duration,
+                    entry.content_type,
+                ])?;
+            }
+        }
+        bind(&tx)?;
+        let missing: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM saved_playlist_entries WHERE playlist_id = ? AND track_id IS NULL",
+            [id],
+            |r| r.get(0),
+        )?;
+        tx.commit()?;
+        Ok(SavedPlaylistSummary {
+            id,
+            name,
+            entries: file.entries.len() as i64,
+            missing,
+        })
+    }
+
     /// The bound tracks of a saved playlist, in order, for an append. A missing
     /// track is among them; an unmatched entry is only counted.
     pub fn saved_playlist_tracks(&self, id: i64) -> Result<Option<SavedTracks>> {
@@ -518,6 +685,154 @@ mod tests {
         );
         assert_eq!(offered.unmatched, 1);
         assert_eq!(db.saved_playlist_tracks(999).unwrap(), None);
+    }
+
+    fn file(name: &str, fingerprints: &[&str]) -> SavedPlaylistFile {
+        SavedPlaylistFile {
+            format: FILE_FORMAT.into(),
+            version: FILE_VERSION,
+            name: name.into(),
+            entries: fingerprints
+                .iter()
+                .map(|fp| FileEntry {
+                    fingerprint: Some((*fp).into()),
+                    artist: Some("x".into()),
+                    title: Some(format!("from {fp}")),
+                    duration: Some(100.0),
+                    content_type: Some("music".into()),
+                })
+                .collect(),
+        }
+    }
+
+    fn bound(db: &Db, id: i64) -> Vec<Option<i64>> {
+        db.saved_playlist(id)
+            .unwrap()
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|e| e.track.map(|t| t.id))
+            .collect()
+    }
+
+    #[test]
+    fn an_import_keeps_every_entry_and_binds_the_ones_it_knows() {
+        let (db, ids) = db_with_tracks(&["A", "B"]);
+        let made = db
+            .import_saved_playlist(&file("Show", &["v2:1", "v2:nope", "v2:0"]), 1)
+            .unwrap();
+        assert_eq!((made.entries, made.missing), (3, 1));
+        assert_eq!(bound(&db, made.id), [Some(ids[1]), None, Some(ids[0])]);
+        assert_eq!(titles(&db, made.id)[1], "from v2:nope");
+    }
+
+    #[test]
+    fn an_import_never_overwrites_a_saved_playlist_of_its_name() {
+        let (db, ids) = db_with_tracks(&["A"]);
+        let first = db.create_saved_playlist("Show", &ids, 1).unwrap();
+        let second = db.import_saved_playlist(&file("Show", &[]), 2).unwrap();
+        assert_eq!(second.name, "Show (2)");
+        assert_eq!(titles(&db, first.id), ["A"]);
+    }
+
+    #[test]
+    fn an_unmatched_entry_binds_once_its_file_is_in_the_library() {
+        let (db, _) = db_with_tracks(&[]);
+        let made = db
+            .import_saved_playlist(&file("Show", &["v2:new"]), 1)
+            .unwrap();
+        assert_eq!(db.bind_saved_entries().unwrap(), 0);
+
+        db.conn
+            .lock()
+            .execute(
+                "INSERT INTO tracks (path, title, duration, fingerprint) \
+                 VALUES ('/new.mp3', 'New', 100.0, 'v2:new')",
+                [],
+            )
+            .unwrap();
+
+        assert_eq!(db.bind_saved_entries().unwrap(), 1);
+        assert!(bound(&db, made.id)[0].is_some());
+        assert_eq!(db.bind_saved_entries().unwrap(), 0, "binding is idempotent");
+    }
+
+    #[test]
+    fn a_missing_track_is_not_what_an_entry_binds_to() {
+        let (db, ids) = db_with_tracks(&["A"]);
+        mark_missing(&db, ids[0]);
+        let made = db
+            .import_saved_playlist(&file("Show", &["v2:0"]), 1)
+            .unwrap();
+        assert_eq!(bound(&db, made.id), [None]);
+    }
+
+    #[test]
+    fn duration_tells_two_tracks_of_one_fingerprint_apart() {
+        let (db, _) = db_with_tracks(&[]);
+        {
+            let conn = db.conn.lock();
+            for (path, duration) in [("/edit.mp3", 180.0), ("/album.mp3", 300.0)] {
+                conn.execute(
+                    "INSERT INTO tracks (path, title, duration, fingerprint) \
+                     VALUES (?, 'T', ?, 'v2:same')",
+                    params![path, duration],
+                )
+                .unwrap();
+            }
+        }
+        let mut wanted = file("Show", &["v2:same"]);
+        wanted.entries[0].duration = Some(299.0);
+        let made = db.import_saved_playlist(&wanted, 1).unwrap();
+        assert_eq!(bound(&db, made.id), [Some(2)]);
+    }
+
+    #[test]
+    fn an_export_writes_the_bound_tracks_fingerprint_as_it_reads_now() {
+        let (db, ids) = db_with_tracks(&["A", "B"]);
+        let p = db.create_saved_playlist("Show", &ids, 1).unwrap().id;
+        db.conn
+            .lock()
+            .execute(
+                "UPDATE tracks SET fingerprint = 'v3:0' WHERE id = ?",
+                [ids[0]],
+            )
+            .unwrap();
+        mark_missing(&db, ids[1]);
+        db.purge_tracks(&[ids[1]]).unwrap();
+
+        let out = db.export_saved_playlist(p).unwrap().unwrap();
+        assert_eq!(out.name, "Show");
+        let fingerprints: Vec<_> = out.entries.iter().map(|e| e.fingerprint.clone()).collect();
+        assert_eq!(fingerprints, [Some("v3:0".into()), Some("v2:1".into())]);
+        assert_eq!(out.entries[1].title.as_deref(), Some("B"));
+        assert_eq!(db.export_saved_playlist(999).unwrap(), None);
+    }
+
+    #[test]
+    fn a_file_round_trips_through_json() {
+        let (db, ids) = db_with_tracks(&["A", "B"]);
+        let p = db.create_saved_playlist("Show", &ids, 1).unwrap().id;
+        let json = serde_json::to_string(&db.export_saved_playlist(p).unwrap().unwrap()).unwrap();
+        assert!(json.contains("\"contentType\":\"music\""));
+        let back = db
+            .import_saved_playlist(&SavedPlaylistFile::parse(&json).unwrap(), 2)
+            .unwrap();
+        assert_eq!(back.name, "Show (2)");
+        assert_eq!(bound(&db, back.id), [Some(ids[0]), Some(ids[1])]);
+    }
+
+    #[test]
+    fn a_file_this_build_does_not_know_is_refused_whole() {
+        let newer = r#"{"format":"radiodiodj-playlist","version":2,"name":"X","entries":[]}"#;
+        assert!(SavedPlaylistFile::parse(newer)
+            .unwrap_err()
+            .to_string()
+            .contains("version 2"));
+        let other = r#"{"format":"m3u","version":1,"name":"X","entries":[]}"#;
+        assert!(SavedPlaylistFile::parse(other).is_err());
+        assert!(SavedPlaylistFile::parse("#EXTM3U").is_err());
+        assert!(SavedPlaylistFile::parse(r#"{"version":1}"#).is_err());
     }
 
     #[test]
