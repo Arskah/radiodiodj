@@ -189,10 +189,6 @@ pub enum RampDone {
     EndTrack,
 }
 
-/// The event topics one deck emits on. Built from a prefix, which is a *role*
-/// (`main-deck`, `arm-deck`) for decks on the program bus — so the renderer,
-/// the broadcast service, and the now-playing webhook keep addressing `main`
-/// no matter which physical deck is on air.
 /// Payload of `{role}:load-failed`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LoadFailed {
@@ -204,6 +200,10 @@ pub struct LoadFailed {
     pub abandoned: bool,
 }
 
+/// The event topics one deck emits on. Built from a prefix, which is a *role*
+/// (`main-deck`, `arm-deck`) for decks on the program bus — so the renderer,
+/// the broadcast service, and the now-playing webhook keep addressing `main`
+/// no matter which physical deck is on air.
 pub(super) struct Topics {
     pub time: String,
     pub duration: String,

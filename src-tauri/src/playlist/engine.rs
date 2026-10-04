@@ -849,11 +849,12 @@ impl Playlist {
                     .then(|| self.current.clone())
                     .flatten()
                     .map(|track| PlaylistItem::with_override(track, self.current_override));
-                let transition = self.play_index(index, r);
-                // After the item at `index` is out, so the index still means
-                // what the plan meant by it.
+                // Back in the queue before the track change refills it, or the
+                // generator sees a queue without this track and may pick it
+                // again.
+                let index = index + usize::from(given_up.is_some());
                 self.items.splice(0..0, given_up);
-                transition
+                self.play_index(index, r)
             }
             Plan::Wait => self.arm_retry(),
         }
@@ -1665,6 +1666,26 @@ mod tests {
         p.on_cache_state(vec![1], &NoRefill);
         p.on_load_failed(LoadFailure::GivenUp, &NoRefill);
         assert_eq!(p.prefetch_window(), vec![1, 9]);
+    }
+
+    /// The refill that rides on the track change has to see the returned track
+    /// as queued, or it could generate a second copy of it.
+    #[test]
+    fn a_track_given_up_on_is_back_in_the_queue_before_the_refill() {
+        let r = FakeRefiller::generating(4, 4);
+        let mut p = with(&[Some(1)]);
+        p.set_auto_playlist(true, &r);
+        let on_air = current_id(&p).unwrap();
+        let next = queued(&p)[0].unwrap();
+        p.on_cache_state(vec![next], &r);
+        let before = r.calls().len();
+        p.on_load_failed(LoadFailure::GivenUp, &r);
+        assert_eq!(current_id(&p), Some(next));
+        assert_eq!(queued(&p)[0], Some(on_air));
+        assert!(r.calls()[before..]
+            .iter()
+            .all(|(_, seen)| seen.contains(&on_air)));
+        assert_eq!(queued(&p).len(), 4);
     }
 
     #[test]
