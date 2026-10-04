@@ -19,7 +19,7 @@ use tauri::{AppHandle, Emitter, Listener};
 
 use super::engine::{Effect, LoadFailure, Playlist, Refiller, Transition};
 use super::generate;
-use super::model::{PlaylistItem, Snapshot};
+use super::model::{PlaylistItem, Snapshot, SourceInfo};
 use crate::audio::bus::{ProgramBus, FADED_OUT_EVENT, HANDOVER_EVENT};
 use crate::audio::cache::Cache;
 use crate::audio::cue_points::CuePoints;
@@ -71,6 +71,8 @@ struct DbRefiller<'a> {
     db: &'a Db,
     interleave: generate::Interleave,
     rotation: generate::Rotation,
+    /// The saved playlist music is drawn from, or the music library.
+    pool: Option<i64>,
     buffer: i64,
     threshold: i64,
     history_cap: usize,
@@ -84,6 +86,7 @@ impl Refiller for DbRefiller<'_> {
             queued,
             &self.interleave,
             &self.rotation,
+            self.pool,
             now_ms(),
         )
         .unwrap_or_else(|e| {
@@ -105,8 +108,20 @@ impl Refiller for DbRefiller<'_> {
     }
 }
 
+/// The auto-playlist source the operator chose, and what the service last had
+/// to say about it. See `docs/saved-playlists.md`.
+#[derive(Default)]
+struct Source {
+    /// The saved playlist's id, and its name as last read — kept so a revert
+    /// can still name a source that has been deleted.
+    chosen: Option<(i64, String)>,
+    /// Set when a source ran out of playable music; cleared by the next choice.
+    reverted_from: Option<String>,
+}
+
 struct Inner {
     playlist: Mutex<Playlist>,
+    source: Mutex<Source>,
     db: Arc<Db>,
     config: Arc<Config>,
     bus: Arc<ProgramBus>,
@@ -187,6 +202,7 @@ impl PlaylistService {
     ) -> Self {
         let inner = Arc::new(Inner {
             playlist: Mutex::new(Playlist::new()),
+            source: Mutex::new(Source::default()),
             db,
             config,
             bus,
@@ -356,6 +372,9 @@ impl PlaylistService {
         let seconds = state.current_time;
         let auto_playlist = state.auto_playlist_active;
         let auto_advance = state.auto_advance;
+        // Its name is read back by the first transition, which also drops it
+        // if the saved playlist did not survive the restart.
+        self.inner.source.lock().chosen = state.auto_playlist_source.map(|id| (id, String::new()));
         let cap = self.inner.config.get_tuning().auto_playlist.history_cap;
         let history = self
             .inner
@@ -425,6 +444,21 @@ impl PlaylistService {
                 return;
             }
             Inner::apply(inner, move |p, _| p.insert_many(index, tracks));
+        });
+    }
+
+    /// Choose where the auto-playlist draws its music from: a saved playlist,
+    /// by id and name, or `None` for the music library. Sets the source and
+    /// nothing else — it neither switches the auto-playlist on nor touches what
+    /// is queued. Any choice clears a pending revert notice.
+    pub fn set_source(&self, chosen: Option<(i64, String)>) {
+        self.queue(move |inner| {
+            {
+                let mut source = inner.source.lock();
+                source.chosen = chosen;
+                source.reverted_from = None;
+            }
+            Inner::apply(inner, |p, r| p.on_source_changed(r));
         });
     }
 
@@ -626,10 +660,48 @@ impl Inner {
         })
     }
 
-    fn refiller(&self) -> DbRefiller<'_> {
+    /// Where the auto-playlist draws from for this transition. A source with
+    /// no playable music left — deleted, or every music entry missing or
+    /// unmatched — is dropped for the music library here, before a refill can
+    /// ask it for tracks and get none.
+    fn resolve_source(&self) -> (Option<SourceInfo>, Option<String>) {
+        let mut source = self.source.lock();
+        if let Some((id, known_name)) = source.chosen.clone() {
+            match self.db.saved_playlist_pool(id) {
+                Ok(Some((name, tracks))) if tracks > 0 => {
+                    source.chosen = Some((id, name.clone()));
+                    let info = SourceInfo { id, name, tracks };
+                    return (Some(info), source.reverted_from.clone());
+                }
+                Ok(found) => {
+                    let name = found.map_or(known_name, |(name, _)| name);
+                    log::warn!(
+                        "auto-playlist: source \"{name}\" has no playable music; \
+                         back to the music library"
+                    );
+                    source.chosen = None;
+                    source.reverted_from = (!name.is_empty()).then_some(name);
+                }
+                // A failed read says nothing about the pool; keep the choice.
+                Err(e) => {
+                    log::error!("auto-playlist: reading the source failed: {e:#}");
+                    let info = SourceInfo {
+                        id,
+                        name: known_name,
+                        tracks: 0,
+                    };
+                    return (Some(info), source.reverted_from.clone());
+                }
+            }
+        }
+        (None, source.reverted_from.clone())
+    }
+
+    fn refiller(&self, pool: Option<i64>) -> DbRefiller<'_> {
         let tuning = self.config.get_tuning();
         DbRefiller {
             db: &self.db,
+            pool,
             interleave: generate::Interleave::from_config(&tuning),
             rotation: generate::Rotation::from_config(&tuning),
             buffer: tuning.auto_playlist.auto_playlist_buffer as i64,
@@ -677,9 +749,11 @@ impl Inner {
         F: FnOnce(&mut Playlist, &dyn Refiller) -> Transition,
     {
         let (transition, snapshot, window) = {
-            let refiller = inner.refiller();
+            let (source, reverted_from) = inner.resolve_source();
+            let refiller = inner.refiller(source.as_ref().map(|s| s.id));
             let mut playlist = inner.playlist.lock();
             playlist.set_history_cap(refiller.history_cap());
+            playlist.set_source_view(source, reverted_from);
             let mut transition = f(&mut playlist, &refiller);
             // Bringing the arm deck in line follows every transition rather
             // than each one remembering to ask, for the same reason the

@@ -520,6 +520,11 @@ When _Auto Mode_ is on, the playlist tops itself up from the library:
 - **commercials** are picked at random from the least-played ones, one every _M_
   music tracks, so every spot gets its airings
 
+Music can be drawn from one saved playlist instead of the whole music library:
+_Auto source_ on an open saved playlist. Jingles and commercials still come from
+their libraries. See
+[saved-playlists.md](./saved-playlists.md#as-the-auto-playlists-source).
+
 Tracks already in the playlist, and missing tracks, are never picked. The cadences and
 buffer sizes are under _Settings → Advanced_. _+ Jingle_ and _+ Comm_ in the
 playlist add one filler by the same rules.

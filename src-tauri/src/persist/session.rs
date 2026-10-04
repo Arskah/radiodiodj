@@ -37,6 +37,10 @@ pub struct SessionState {
     pub current_cue_override: Option<CuePoints>,
     #[serde(default)]
     pub auto_playlist_active: bool,
+    /// The saved playlist the auto-playlist draws from; `None` is the music
+    /// library.
+    #[serde(default)]
+    pub auto_playlist_source: Option<i64>,
     #[serde(default = "default_auto_advance")]
     pub auto_advance: bool,
     #[serde(default = "default_volume")]
@@ -62,6 +66,7 @@ impl Default for SessionState {
             current_time: 0.0,
             current_cue_override: None,
             auto_playlist_active: false,
+            auto_playlist_source: None,
             auto_advance: true,
             volume: 1.0,
             cue_volume: 1.0,

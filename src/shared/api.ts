@@ -19,6 +19,7 @@ import type {
   SavedPlaylist,
   SavedPlaylistSummary,
   ScanResult,
+  SourceInfo,
   SortColumn,
   SortDir,
   ImageSlot,
@@ -43,6 +44,8 @@ export interface SessionPersistState {
   /** The override the track on air is playing under, if any. */
   currentCueOverride: CuePoints | null;
   autoPlaylistActive: boolean;
+  /** The auto-playlist source; `null` is the music library. */
+  autoPlaylistSource: number | null;
   autoAdvance: boolean;
   volume: number;
   cueVolume: number;
@@ -71,6 +74,10 @@ export interface PlaylistSnapshot {
   currentOverride: CuePoints | null;
   /** Playback is blocked waiting for the media share. Drives the reconnecting banner. */
   awaitingNetwork: boolean;
+  /** The saved playlist the auto-playlist draws from; `null` is the music library. */
+  source: SourceInfo | null;
+  /** A source dropped for want of playable music, until one is chosen again. */
+  revertedFrom: string | null;
 }
 
 export type ScanStatus =
@@ -229,6 +236,14 @@ export const api = {
    */
   playlistAddSaved(id: number, weave: boolean): Promise<SavedAppend> {
     return invoke<SavedAppend>("playlist_add_saved", { id, weave });
+  },
+
+  /**
+   * Choose the auto-playlist source: a saved playlist, or `null` for the music
+   * library. Rejects for one with no playable music.
+   */
+  playlistSetSource(id: number | null): Promise<void> {
+    return invoke<void>("playlist_set_source", { id });
   },
   /** Keep the upcoming tracks as a new saved playlist. */
   playlistSaveAs(name: string): Promise<SavedPlaylistSummary> {

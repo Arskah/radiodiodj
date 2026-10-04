@@ -221,7 +221,7 @@ Ordered sequence of upcoming tracks that feeds the Main deck.
 _Avoid_: Queue, list
 
 **Auto-playlist**:
-Playlist mode that maintains itself by randomly selecting from the Music library with jingle/commercial interleaving.
+Playlist mode that maintains itself by randomly selecting from the **Auto-playlist source** — the Music library unless a **Saved playlist** is chosen — with jingle/commercial interleaving.
 _Avoid_: Auto-DJ, autoplay
 
 **Lookahead buffer**:
@@ -250,7 +250,7 @@ _Avoid_: Repeat protection, cooldown, interleave
 
 ### Saved playlists
 
-Partly built — see [docs/saved-playlists.md](docs/saved-playlists.md). The **Auto-playlist source** is not built yet.
+See [docs/saved-playlists.md](docs/saved-playlists.md).
 
 **Saved playlist**:
 A named, stored, ordered list of **Entries**. Never on air by itself: it is appended to the **Playlist**, or chosen as the **Auto-playlist source**.

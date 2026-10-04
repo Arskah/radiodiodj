@@ -219,6 +219,9 @@ pub struct SelectionFilter<'a> {
     /// Return at most one track per artist, so the rows of one block spread
     /// across the library instead of stacking up on one act.
     pub spread_artists: bool,
+    /// Draw only from the tracks this saved playlist's entries are bound to.
+    /// See `docs/saved-playlists.md`.
+    pub pool: Option<i64>,
 }
 
 impl<'a> SelectionFilter<'a> {
@@ -265,6 +268,11 @@ impl<'a> SelectionFilter<'a> {
                 placeholders(self.artist_keys.len())
             ));
         }
+        if self.pool.is_some() {
+            sql.push_str(
+                " AND id IN (SELECT track_id FROM saved_playlist_entries WHERE playlist_id = ?)",
+            );
+        }
         sql
     }
 
@@ -279,6 +287,7 @@ impl<'a> SelectionFilter<'a> {
                     .iter()
                     .map(|k| rusqlite::types::Value::Text(k.clone())),
             )
+            .chain(self.pool.map(rusqlite::types::Value::Integer))
     }
 }
 

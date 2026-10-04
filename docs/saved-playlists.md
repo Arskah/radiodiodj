@@ -4,9 +4,10 @@ A named, stored list of tracks: built before a show or kept as a curated pool,
 moved between machines as a file, appended to the on-air playlist, or used as
 what the auto-playlist draws from.
 
-**Partly built.** Increments 1 and 2 of the [table below](#increments) are in:
-the tables, the _Playlists_ tab, authoring, both appends, and the file with its
-import, export and binding. The auto-playlist source is not. Designed 2026-10-04 against
+**Partly built.** Increments 1 to 3 of the [table below](#increments) are in:
+the tables, the _Playlists_ tab, authoring, both appends, the file with its
+import, export and binding, and the auto-playlist source. _Find in library_ and
+what the selection and dragging gain here are not. Designed 2026-10-04 against
 [#501](https://github.com/Arskah/radiodiodj/issues/501),
 [#503](https://github.com/Arskah/radiodiodj/issues/503) and
 [#577](https://github.com/Arskah/radiodiodj/issues/577). Two things it stands
@@ -252,10 +253,15 @@ bound to. Everything else in [rotation.md](./rotation.md) is untouched: both
 windows, the queue counting as aired, the artist spread, the relaxation ladder.
 
 `DbRefiller` is built by the service for each transition, from config; the
-source rides in it beside `rotation`. The `Refiller` trait does not change and
-the engine gains no behaviour. It carries the source as a value, into the
-snapshot so the panel can show it and into `session.json` so it survives a
-restart.
+source rides in it beside `rotation`. The `Refiller` trait does not change.
+
+The choice itself is the service's, not the engine's. Before each transition
+`Inner::resolve_source` reads the chosen saved playlist's name and its count of
+playable music, which is one query and only when a source is set. The engine is
+handed the result and does two things with it: puts it in the snapshot, and
+on a change of source tops the playlist up if a refill was due anyway. The
+renderer writes the source's id into `session.json` with the rest of the
+session, and a restart reads it back.
 
 The rules around it:
 
@@ -292,6 +298,8 @@ The rules around it:
   record of who queued them, so replacing "the generated ones" is not available,
   and clearing would discard what the operator queued by hand. The panel says
   how many queued tracks air first and offers the existing Clear beside it.
+  That line is the renderer's own: it is about the moment of the switch, not a
+  state the backend holds, and it goes when the playlist empties.
 - **Edits apply at the next refill.** The pool is read from the table each time.
 
 ## Authoring

@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::model::{PlaylistItem, Snapshot};
+use super::model::{PlaylistItem, Snapshot, SourceInfo};
 use crate::audio::cue_points::CuePoints;
 use crate::library::db::Track;
 
@@ -188,6 +188,11 @@ pub struct Playlist {
     /// Track ids whose file a scan found gone, from the library health report.
     missing_ids: HashSet<i64>,
     awaiting_network: bool,
+    /// The auto-playlist source and the last one it was reverted from, as the
+    /// service resolved them for this transition. Carried into the snapshot and
+    /// never acted on here: which tracks a refill may pick is the refiller's.
+    source: Option<SourceInfo>,
+    reverted_from: Option<String>,
     /// Index into the backoff schedule for the next retry arm.
     retry_attempt: usize,
     /// A retry timer is pending. Guards against shortening the backoff by
@@ -234,6 +239,8 @@ impl Playlist {
             auto_advance: self.auto_advance,
             current_override: self.current_override,
             awaiting_network: self.awaiting_network,
+            source: self.source.clone(),
+            reverted_from: self.reverted_from.clone(),
         }
     }
 
@@ -453,6 +460,19 @@ impl Playlist {
         self.auto_playlist = false;
         self.overlapping = false;
         Transition::effects(vec![Effect::CancelRetry, Effect::Stop])
+    }
+
+    /// The auto-playlist source changed. Tops the playlist up from the new one
+    /// if it is due a refill, and otherwise leaves what is queued alone.
+    pub fn on_source_changed(&mut self, r: &dyn Refiller) -> Transition {
+        self.refill(r);
+        Transition::default()
+    }
+
+    /// Record what the snapshot says about the auto-playlist source.
+    pub fn set_source_view(&mut self, source: Option<SourceInfo>, reverted_from: Option<String>) {
+        self.source = source;
+        self.reverted_from = reverted_from;
     }
 
     pub fn set_auto_advance(&mut self, on: bool) -> Transition {
@@ -1518,6 +1538,44 @@ mod tests {
         let mut p = with(&[Some(1)]);
         p.play_index(0, &NoRefill);
         assert_eq!(queued(&p), Vec::<Option<i64>>::new());
+    }
+
+    #[test]
+    fn a_new_source_leaves_a_full_queue_alone_and_tops_up_a_short_one() {
+        // Switching the auto-playlist on puts the first of six on air.
+        let mut p = with(&[Some(1), Some(2), Some(3), Some(4), Some(5), Some(6)]);
+        let r = FakeRefiller::generating(20, 5);
+        p.set_auto_playlist(true, &r);
+        p.on_source_changed(&r);
+        assert_eq!(r.calls(), vec![], "five queued is not under the threshold");
+        assert_eq!(queued(&p).len(), 5);
+
+        p.remove(0);
+        p.on_source_changed(&r);
+        assert_eq!(r.calls(), vec![(16, vec![3, 4, 5, 6])]);
+    }
+
+    #[test]
+    fn a_new_source_adds_nothing_while_the_auto_playlist_is_off() {
+        let mut p = Playlist::new();
+        let r = FakeRefiller::generating(20, 5);
+        p.on_source_changed(&r);
+        assert_eq!(r.calls(), vec![]);
+    }
+
+    #[test]
+    fn the_snapshot_carries_the_source_it_was_given() {
+        let mut p = Playlist::new();
+        assert_eq!(p.snapshot().source, None);
+        let source = SourceInfo {
+            id: 3,
+            name: "Friday Rock".into(),
+            tracks: 15,
+        };
+        p.set_source_view(Some(source.clone()), Some("Old".into()));
+        let snapshot = p.snapshot();
+        assert_eq!(snapshot.source, Some(source));
+        assert_eq!(snapshot.reverted_from.as_deref(), Some("Old"));
     }
 
     #[test]

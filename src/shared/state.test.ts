@@ -26,6 +26,7 @@ const { api } = vi.hoisted(() => {
     playlistAddMany: vi.fn(),
     playlistSetItemCuePoints: vi.fn(),
     playlistAddSaved: vi.fn(),
+    playlistSetSource: vi.fn(),
     playlistSaveAs: vi.fn(),
     savedPlaylistList: vi.fn(),
     onSavedPlaylists: vi.fn(),
@@ -3175,9 +3176,11 @@ describe("AppState saved playlists", () => {
     })),
   });
 
+  let playlist: MockPlaylistBackend;
+
   beforeEach(() => {
     resetApi();
-    app = makeApp().app;
+    ({ app, playlist } = makeApp());
     app.tracks = [t(1), t(2)];
   });
 
@@ -3254,6 +3257,40 @@ describe("AppState saved playlists", () => {
     await app.deleteSavedPlaylist(5);
     expect(api.savedPlaylistDelete).toHaveBeenCalledWith(5);
     expect(app.openSaved).toBeNull();
+  });
+
+  it("mirrors the auto-playlist source and a revert from the snapshot", () => {
+    playlist.restore({
+      source: { id: 5, name: "Show", tracks: 15 },
+      revertedFrom: "Old",
+    });
+    playlist.resync();
+    expect(app.autoSource).toEqual({ id: 5, name: "Show", tracks: 15 });
+    expect(app.revertedFrom).toBe("Old");
+  });
+
+  it("says which queued tracks air first after a switch, until the queue is empty", async () => {
+    api.playlistSetSource.mockResolvedValue(undefined);
+    app.addToPlaylist(t(7));
+    await app.setAutoSource(5);
+    expect(api.playlistSetSource).toHaveBeenCalledWith(5);
+    expect(app.sourceSwitchQueued).toBe(true);
+
+    app.clearPlaylist();
+    expect(app.sourceSwitchQueued).toBe(false);
+  });
+
+  it("has nothing to say when the source changes over an empty playlist", async () => {
+    api.playlistSetSource.mockResolvedValue(undefined);
+    await app.setAutoSource(5);
+    expect(app.sourceSwitchQueued).toBe(false);
+  });
+
+  it("says why a source was refused", async () => {
+    api.playlistSetSource.mockRejectedValue("“Show” has no playable music");
+    await app.setAutoSource(5);
+    expect(app.savedNotice).toBe("“Show” has no playable music");
+    expect(app.sourceSwitchQueued).toBe(false);
   });
 
   it("imports the picked file and says what it made", async () => {

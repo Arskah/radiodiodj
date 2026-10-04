@@ -1,4 +1,4 @@
-import type { CuePoints, PlaylistItem, Track } from "./types";
+import type { CuePoints, PlaylistItem, SourceInfo, Track } from "./types";
 import { isStopMarker, stopMarker, trackItem } from "./types";
 import type { PlaylistSnapshot } from "./api";
 
@@ -22,6 +22,8 @@ export class MockPlaylistBackend {
   autoPlaylistActive = false;
   autoAdvance = true;
   awaitingNetwork = false;
+  source: SourceInfo | null = null;
+  revertedFrom: string | null = null;
 
   private listeners = new Set<(snapshot: PlaylistSnapshot) => void>();
 
@@ -41,6 +43,8 @@ export class MockPlaylistBackend {
       autoAdvance: this.autoAdvance,
       currentOverride: this.currentOverride,
       awaitingNetwork: this.awaitingNetwork,
+      source: this.source,
+      revertedFrom: this.revertedFrom,
     };
   }
 
