@@ -62,6 +62,7 @@ describe("sortEntries", () => {
     title,
     artist: "a",
     album: "al",
+    plays: 3 - position,
     duration,
   });
   const rows = [row(0, "beta", 300), row(1, "Alpha", 100), row(2, "älä", 200)];
@@ -78,8 +79,9 @@ describe("sortEntries", () => {
     expect(order(sortEntries(rows, "title", "desc"))).toEqual([0, 1, 2]);
   });
 
-  it("sorts durations as numbers", () => {
+  it("sorts durations and play counts as numbers", () => {
     expect(order(sortEntries(rows, "duration", "asc"))).toEqual([1, 2, 0]);
+    expect(order(sortEntries(rows, "plays", "asc"))).toEqual([2, 1, 0]);
   });
 
   it("leaves ties in the saved playlist's order in both directions", () => {

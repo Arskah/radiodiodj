@@ -322,8 +322,14 @@ In the first increment, with a saved playlist open in the _Playlists_ tab:
 - **Save as** on the playlist panel: the upcoming tracks become a new saved
   playlist. Stop markers and item overrides are not carried.
 
-An open saved playlist also queues one of its tracks by that row's own **+**, as
-a library row does.
+An entry row is a library row wherever it has a track to be one for. It shows
+the same columns, play count and air time included, with a trimmed track's time
+marked. Hovering it shows the track's card. A double-click or its **+** queues
+the track; it has the cue-deck button when a cue device is set and the
+edit-metadata button for an admin; it takes the keyboard's menu bindings. What
+it does not do yet is get picked: a click selects nothing until
+[#587](https://github.com/Arskah/radiodiodj/issues/587)'s other half. An
+unmatched entry has none of this, being text and not a track.
 
 The search box follows what is on screen. On the list of saved playlists it
 filters by name. With one open it searches that playlist's entries — title,
@@ -331,8 +337,8 @@ artist and album, by the library search's rule that each word typed starts a
 word — and starts empty on the way in and on the way out. Every entry is
 already in the renderer, so this is a filter and not a query.
 
-The column headers of an open saved playlist **sort** it: title, artist, album
-and time, a second click reversing. A sort is a way of looking, never a change:
+The column headers of an open saved playlist **sort** it: title, artist, album,
+plays and time, a second click reversing. A sort is a way of looking, never a change:
 the order the saved playlist is stored, queued and exported in is the one under
 `#`, and a click there goes back to it. Rows that tie stay in that order.
 
@@ -351,8 +357,7 @@ entry: an entry holds a track's id and shows the track as it is, so a metadata
 edit made here is the same edit made from the library, and it shows in every
 saved playlist the track is in. A save ends in `Health::refresh`, which re-sends
 the list, which is what redraws the open saved playlist. An unmatched entry has no track, so its menu is that last item or
-nothing. The saved playlist rows take the library's keyboard bindings for the
-menu; entry rows are list items and take the pointer only.
+nothing. Both kinds of row take the library's keyboard bindings for the menu.
 
 What is still to come:
 

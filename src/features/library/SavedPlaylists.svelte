@@ -1,7 +1,7 @@
 <script lang="ts">
   import { app, formatTime } from "../../shared/state.svelte";
   import type { SavedEntry, SavedPlaylistSummary } from "../../shared/types";
-  import { airDuration } from "../../shared/cuePoints";
+  import { airDuration, isTrimmed } from "../../shared/cuePoints";
   import {
     matchesSearch,
     sizeLabel,
@@ -75,6 +75,8 @@
     at: { x: number; y: number } | null,
   ): void {
     if (itemsFor(target).length === 0) return;
+    // The hover tooltip is anchored to the row and would sit under the menu.
+    app.clearHover();
     const rect = row.getBoundingClientRect();
     menuRow = row;
     menu = {
@@ -253,6 +255,33 @@
 
   const album = (entry: SavedEntry): string => entry.track?.album ?? "";
 
+  // ----- What an entry row shares with a library row -----
+
+  function onEnter(entry: SavedEntry, e: MouseEvent): void {
+    if (!entry.track) return;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    app.setHover(entry.track, rect);
+  }
+
+  function onEntryDblClick(entry: SavedEntry, e: MouseEvent): void {
+    if (!entry.track) return;
+    // Two quick presses of a row button are two presses of that button.
+    if (e.target instanceof Element && e.target.closest("button")) return;
+    e.preventDefault();
+    app.addToPlaylist(entry.track);
+  }
+
+  function onEntryKeyDown(entry: SavedEntry, e: KeyboardEvent): void {
+    if (e.target !== e.currentTarget) return;
+    const wantsMenu =
+      e.key === "ContextMenu" ||
+      (e.key === "F10" && e.shiftKey) ||
+      (e.key === "Enter" && e.ctrlKey);
+    if (!wantsMenu) return;
+    e.preventDefault();
+    showMenu({ kind: "entry", entry }, e.currentTarget as HTMLElement, null);
+  }
+
   // ----- Sorting -----
   //
   // A sort is a way of looking at the saved playlist, never a change to it: the
@@ -266,6 +295,7 @@
     { column: "title", label: "Title", cls: "track-title" },
     { column: "artist", label: "Artist", cls: "track-artist" },
     { column: "album", label: "Album", cls: "track-album" },
+    { column: "plays", label: "Plays", cls: "track-plays" },
     { column: "duration", label: "Time", cls: "track-duration" },
   ];
 
@@ -298,6 +328,7 @@
           title: title(entry),
           artist: artist(entry),
           album: album(entry),
+          plays: entry.track?.play_count ?? 0,
           duration: duration(entry),
         }))
         .filter((row) =>
@@ -337,6 +368,8 @@
   }
 
   function onDragStart(e: DragEvent, entry: SavedEntry, i: number): void {
+    // The tooltip is anchored to the row and would hang over the drag.
+    app.clearHover();
     dragFrom = app.isAdmin && inOwnOrder ? i : -1;
     app.draggedTrackIds = entry.track ? [entry.track.id] : null;
     if (e.dataTransfer) {
@@ -462,6 +495,8 @@
         >
       </button>
     {/each}
+    {#if app.cueDevice !== null}<span class="saved-action-space"></span>{/if}
+    {#if app.isAdmin}<span class="saved-action-space"></span>{/if}
     <span class="saved-action-space"></span>
     {#if app.isAdmin}<span class="saved-action-space"></span>{/if}
   </div>
@@ -503,7 +538,14 @@
           ondragstart={(e) => onDragStart(e, entry, i)}
           ondragend={onDragEnd}
           oncontextmenu={(e) => openMenu({ kind: "entry", entry }, e)}
-          role="listitem"
+          ondblclick={(e) => onEntryDblClick(entry, e)}
+          onmouseenter={(e) => onEnter(entry, e)}
+          onmouseleave={() => app.clearHover()}
+          onkeydown={(e) => onEntryKeyDown(entry, e)}
+          role="button"
+          aria-label={`Entry ${i + 1}: ${title(entry)} by ${artist(entry)}`}
+          aria-haspopup="menu"
+          tabindex="0"
           data-entry-id={entry.id}
         >
           <span class="track-no">{i + 1}</span>
@@ -522,9 +564,34 @@
           </span>
           <span class="track-artist">{artist(entry)}</span>
           <span class="track-album">{album(entry)}</span>
-          <span class="track-duration">{formatTime(duration(entry))}</span>
+          <span class="track-plays">{entry.track?.play_count ?? ""}</span>
+          <span
+            class="track-duration"
+            class:trimmed={entry.track !== null && isTrimmed(entry.track)}
+            >{formatTime(duration(entry))}</span
+          >
           {#if entry.track}
             {@const track = entry.track}
+            {#if app.cueDevice !== null}
+              <button
+                class="btn-cue"
+                title="Preview on cue deck"
+                aria-label="Cue track"
+                onclick={() => app.cueLoad(track)}
+              >
+                <span class="material-symbols-outlined">headphones</span>
+              </button>
+            {/if}
+            {#if app.isAdmin}
+              <button
+                class="btn-edit"
+                title="Edit metadata"
+                aria-label="Edit track metadata"
+                onclick={() => (app.editingMetadata = track)}
+              >
+                <span class="material-symbols-outlined">edit</span>
+              </button>
+            {/if}
             <button
               class="btn-add"
               title="Add to playlist"
@@ -534,6 +601,9 @@
               <span class="material-symbols-outlined">add</span>
             </button>
           {:else}
+            {#if app.cueDevice !== null}<span class="saved-action-space"
+              ></span>{/if}
+            {#if app.isAdmin}<span class="saved-action-space"></span>{/if}
             <span class="saved-action-space"></span>
           {/if}
           {#if app.isAdmin}

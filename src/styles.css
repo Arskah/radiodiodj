@@ -1395,7 +1395,8 @@ body {
   opacity: 1;
 }
 
-#track-headers .track-plays {
+#track-headers .track-plays,
+.saved-headers .track-plays {
   text-align: right;
   justify-content: flex-end;
 }

@@ -28,7 +28,8 @@ export function matchesSearch(query: string, fields: string[]): boolean {
 }
 
 /** What an open saved playlist can be sorted by. `position` is its own order. */
-export type EntrySort = "position" | "title" | "artist" | "album" | "duration";
+export type EntrySort =
+  "position" | "title" | "artist" | "album" | "plays" | "duration";
 
 /** One entry as the list shows it, with its place in the saved playlist. */
 export interface EntryRow {
@@ -36,6 +37,7 @@ export interface EntryRow {
   title: string;
   artist: string;
   album: string;
+  plays: number;
   duration: number;
 }
 
@@ -53,6 +55,7 @@ export function sortEntries<T extends EntryRow>(
   const compare = (a: T, b: T): number => {
     if (by === "position") return a.position - b.position;
     if (by === "duration") return a.duration - b.duration;
+    if (by === "plays") return a.plays - b.plays;
     return a[by].localeCompare(b[by], undefined, { sensitivity: "base" });
   };
   return [...rows].sort(
