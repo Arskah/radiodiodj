@@ -7,20 +7,48 @@
 use anyhow::{Context, Result};
 use rodio::source::SkipDuration;
 use rodio::{Decoder, Sink, Source};
-use std::io::Cursor;
+use std::fs::File;
+use std::io::{Cursor, ErrorKind, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::cue_points::{CuePoints, Resolved};
 use super::envelope::Enveloped;
 
-/// A background read that neither completes nor errors within this budget is
+/// A background read that has delivered no further bytes within this budget is
 /// treated as a wedged (e.g. networked) mount. The audio worker stops waiting
 /// on it and declares a timeout; the detached read thread is abandoned (a
 /// blocked `read()` cannot be cancelled — it unwinds whenever the OS finally
 /// errors the mount).
+///
+/// The budget bounds a *stall*, never the read, which is why the read reports
+/// progress at all ([`read_file_watched`]). See `docs/audio.md`, *Whole-file
+/// reads*.
 pub(super) const READ_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How much of a file one `read` call is asked for while filling RAM.
+///
+/// A count published per chunk is a throughput floor as well as a stall
+/// detector: a share too slow to deliver one chunk inside the watchdog budget
+/// still looks stalled. 64 KiB against the 10 s default puts that floor around
+/// 6.5 KB/s — a share slower than that is not one a show can run off — while
+/// keeping the syscall count for a 40 MB track in the hundreds.
+const READ_CHUNK: usize = 64 * 1024;
+
+/// How long air may be silent waiting for a read before the load is given up
+/// on and the playlist skips to a track that is already resident.
+///
+/// The watchdog answers "is this mount dead"; this answers "is this dead air",
+/// which is a much shorter question on a radio station. It applies only to a
+/// playlist-issued load on a deck that is on air with nothing audible, so an
+/// arm-deck load preparing a handover, a parked restore, a cue audition and a
+/// track an operator put on air by hand are all left to take as long as the
+/// share needs. See [`Cmd::Load::bound_dead_air`]. The read is not cancelled — its bytes still reach the
+/// cache, so the track is cheap to play once it has landed. See
+/// `docs/audio.md`, *Whole-file reads*.
+pub(super) const DEAD_AIR_LIMIT: Duration = Duration::from_secs(3);
 
 /// Backoff delays applied between failed read attempts. The read thread makes
 /// one initial attempt plus one retry per entry (4 attempts, 3 backoffs) before
@@ -42,8 +70,11 @@ pub(super) const OPEN_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 /// `persist::config::set_tuning`), so `read_retry_backoffs` is always non-empty.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlayerTuning {
-    /// See [`READ_WATCHDOG_TIMEOUT`].
+    /// See [`READ_WATCHDOG_TIMEOUT`]. A budget with no progress, not a budget
+    /// for the whole read.
     pub read_watchdog_timeout: Duration,
+    /// See [`DEAD_AIR_LIMIT`].
+    pub dead_air_limit: Duration,
     /// See [`OPEN_RETRY_INTERVAL`].
     pub open_retry_interval: Duration,
     /// See [`READ_RETRY_BACKOFFS`]. Must be non-empty (enforced on write).
@@ -54,6 +85,7 @@ impl Default for PlayerTuning {
     fn default() -> Self {
         Self {
             read_watchdog_timeout: READ_WATCHDOG_TIMEOUT,
+            dead_air_limit: DEAD_AIR_LIMIT,
             open_retry_interval: OPEN_RETRY_INTERVAL,
             read_retry_backoffs: READ_RETRY_BACKOFFS.to_vec(),
         }
@@ -87,6 +119,21 @@ pub enum Cmd {
         /// which is what restoring a session needs: a restart must not put
         /// audio on air by itself.
         autoplay: bool,
+        /// Whether air may be taken off this load if the bytes do not arrive.
+        ///
+        /// `true` for a load the playlist issued: the engine has other tracks,
+        /// knows which of them are resident, and dead air is the worse of the
+        /// two outcomes — so the load is given up on at
+        /// [`PlayerTuning::dead_air_limit`] and the playlist skips to a track
+        /// it can start now.
+        ///
+        /// `false` for an operator putting a specific track on air by hand,
+        /// which bypasses the playlist. Substituting some other track for the
+        /// one they chose is not a recovery, it is a different decision, and
+        /// they can skip it themselves in less time than any limit would allow.
+        /// The stall watchdog still covers the load, so a dead mount fails
+        /// either way.
+        bound_dead_air: bool,
         /// Linear factor levelling this track to the ReplayGain reference,
         /// already resolved against the setting and the track's measurement.
         /// `1.0` leaves the track as mastered — the setting is off, or nothing
@@ -308,9 +355,131 @@ where
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("read failed with no attempts")))
 }
 
-pub(super) fn read_file(path: &Path) -> Result<Bytes> {
-    let vec = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
-    Ok(Arc::from(vec.into_boxed_slice()))
+/// Bytes a read has delivered so far, shared with whoever is watching it.
+///
+/// Monotonic and never reset, so a [`read_with_retry`] attempt that starts the
+/// file over still reads as progress rather than as a rewind — what the
+/// watchdog asks is whether the share is sending anything at all.
+pub(super) type Progress = Arc<AtomicU64>;
+
+/// Set when whoever issued a read stops wanting it. Only a *waiter* obeys it
+/// — a read of our own keeps going, because its bytes are still worth having
+/// in the cache — so this is what keeps abandoned loads from leaving a thread
+/// parked behind every slow read of the same file.
+pub(super) type Cancel = Arc<AtomicBool>;
+
+/// A [`Cancel`] not yet set, for a read about to start.
+pub(super) fn fresh_cancel() -> Cancel {
+    Arc::new(AtomicBool::new(false))
+}
+
+/// A [`Progress`] at zero, for a read about to start. Whoever else watches it
+/// — the deck that issued the read, or a deck mirroring this one's count
+/// through the cache's in-flight claims — takes a clone of the handle.
+pub(super) fn fresh_progress() -> Progress {
+    Arc::new(AtomicU64::new(0))
+}
+
+/// The last thing a watcher saw of a read: how many bytes had been delivered,
+/// and when that count last changed.
+///
+/// Pure, so both watchers — the deck's watchdog and a deck waiting on another
+/// reader's copy in [`super::cache`] — decide "stalled" the same way, on an
+/// injected clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Seen {
+    /// Bytes the read had delivered when it was last looked at.
+    pub bytes: u64,
+    /// When `bytes` last changed — the instant a stall is measured from.
+    pub at: Instant,
+}
+
+impl Seen {
+    /// A read that has just been issued: nothing delivered yet, and the clock
+    /// on the first chunk starts now.
+    pub(super) fn issued(now: Instant) -> Self {
+        Self { bytes: 0, at: now }
+    }
+
+    /// Fold in a fresh byte count. The stamp moves only when the count does, so
+    /// the age of a `Seen` is the length of the current stall and nothing else.
+    pub(super) fn observe(self, bytes: u64, now: Instant) -> Self {
+        if bytes == self.bytes {
+            self
+        } else {
+            Self { bytes, at: now }
+        }
+    }
+
+    /// Whether nothing has arrived for `budget`.
+    pub(super) fn stalled(self, now: Instant, budget: Duration) -> bool {
+        now.saturating_duration_since(self.at) >= budget
+    }
+}
+
+/// Read a whole file into RAM, publishing the running byte count into
+/// `progress` as chunks land.
+///
+/// The count is what makes a slow share distinguishable from a dead one: the
+/// watchdog fires on a count that stops moving, so a read is never failed for
+/// the size of the file. Chunking is only for the reporting — the deck still
+/// decodes from one contiguous buffer.
+pub(super) fn read_file_watched(path: &Path, progress: &Progress) -> Result<Bytes> {
+    let ctx = || format!("read {}", path.display());
+    let mut file = File::open(path).with_context(ctx)?;
+    let hint = file
+        .metadata()
+        .map(|m| usize::try_from(m.len()).unwrap_or(0))
+        .unwrap_or(0);
+    // Read into the destination, never through a staging chunk: a whole-file
+    // copy per track load is a real cost, and the chunking is only here so the
+    // count gets published on the way. Sized to the file exactly, so the common
+    // case ends with `len == capacity` and `into_boxed_slice` hands the bytes
+    // on without copying them either. `try_reserve_exact` rather than
+    // `vec![0; n]` because the length came off a network share: a bogus one has
+    // to fail this load, not abort the process out from under the show.
+    let mut buf: Vec<u8> = Vec::new();
+    let want = hint.max(READ_CHUNK);
+    buf.try_reserve_exact(want)
+        .with_context(|| format!("allocate {want} bytes to read {}", path.display()))?;
+    buf.resize(want, 0);
+    let mut filled = 0usize;
+    loop {
+        if filled == buf.len() {
+            // The length said the file ends here. One byte settles whether it
+            // does, where growing the buffer to ask would reallocate (and copy)
+            // the whole file only to find out it was right.
+            let mut probe = [0u8; 1];
+            match file.read(&mut probe) {
+                Ok(0) => break,
+                Ok(_) => {
+                    // It outgrew its own metadata, so now the buffer does have
+                    // to grow — with the byte already in hand going in first.
+                    buf.resize(filled + READ_CHUNK, 0);
+                    buf[filled] = probe[0];
+                    filled += 1;
+                    progress.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e).with_context(ctx),
+            }
+            continue;
+        }
+        let end = (filled + READ_CHUNK).min(buf.len());
+        match file.read(&mut buf[filled..end]) {
+            Ok(0) => break,
+            Ok(read) => {
+                filled += read;
+                progress.fetch_add(read as u64, Ordering::Relaxed);
+            }
+            // `read_to_end` retries this one, and `fs::read` used to get that
+            // for free; a signal is not a failed read.
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e).with_context(ctx),
+        }
+    }
+    buf.truncate(filled);
+    Ok(Arc::from(buf.into_boxed_slice()))
 }
 
 pub(super) fn decode_bytes(bytes: Bytes) -> Result<(Decoder<Cursor<Bytes>>, Option<f64>)> {
@@ -370,7 +539,147 @@ mod tests {
 
     #[test]
     fn read_file_missing_path_errors() {
-        assert!(read_file(Path::new("/nonexistent/radiodiodj/nope.wav")).is_err());
+        assert!(read_file_watched(
+            Path::new("/nonexistent/radiodiodj/nope.wav"),
+            &fresh_progress()
+        )
+        .is_err());
+    }
+
+    /// A file spanning several chunks comes back whole, and the published count
+    /// ends at its length — which is what the watchdog watches.
+    #[test]
+    fn a_watched_read_returns_the_whole_file_and_counts_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("track.bin");
+        let written: Vec<u8> = (0..READ_CHUNK * 2 + 7).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &written).expect("write");
+
+        let progress = fresh_progress();
+        let bytes = read_file_watched(&path, &progress).expect("read");
+        assert_eq!(&bytes[..], &written[..]);
+        assert_eq!(progress.load(Ordering::Relaxed), written.len() as u64);
+
+        // The buffer is sized from the metadata and truncated to what arrived,
+        // so a file shorter than one chunk — or empty — is not padded.
+        let short = dir.path().join("short.bin");
+        std::fs::write(&short, [1u8, 2, 3]).expect("write");
+        assert_eq!(
+            &read_file_watched(&short, &fresh_progress()).expect("read")[..],
+            &[1u8, 2, 3]
+        );
+        let empty = dir.path().join("empty.bin");
+        std::fs::write(&empty, []).expect("write");
+        assert!(read_file_watched(&empty, &fresh_progress())
+            .expect("read")
+            .is_empty());
+    }
+
+    /// A retried read starts the file over, and the count must not: the
+    /// watchdog asks whether the share is sending anything, so a fresh attempt
+    /// is progress, never a rewind.
+    #[test]
+    fn a_retried_read_never_rewinds_the_count() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("track.bin");
+        std::fs::write(&path, vec![7u8; READ_CHUNK]).expect("write");
+
+        let progress = fresh_progress();
+        let mut attempts = 0u32;
+        let result = read_with_retry(
+            || {
+                attempts += 1;
+                let bytes = read_file_watched(&path, &progress)?;
+                if attempts == 1 {
+                    anyhow::bail!("share hiccuped after the bytes landed")
+                }
+                Ok(bytes)
+            },
+            |_| {},
+            &READ_RETRY_BACKOFFS,
+        );
+        assert!(result.is_ok());
+        assert_eq!(
+            progress.load(Ordering::Relaxed),
+            (READ_CHUNK * 2) as u64,
+            "both attempts counted, so the count only ever climbs"
+        );
+    }
+
+    /// The end-to-end of the pair: a file that trickles in publishes its count
+    /// *during* the read, so a watcher applying the watchdog rule never calls
+    /// it a stall. A FIFO stands in for the slow share — the only way to have
+    /// bytes arrive over time without one.
+    #[cfg(unix)]
+    #[test]
+    fn a_trickling_read_publishes_progress_while_it_runs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fifo = dir.path().join("slow.bin");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo")
+            .success());
+
+        let writer_path = fifo.clone();
+        let writer = std::thread::spawn(move || {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&writer_path).expect("open fifo for writing");
+            for _ in 0..8 {
+                f.write_all(&vec![9u8; 64 * 1024]).expect("write chunk");
+                f.flush().expect("flush");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+
+        let progress = fresh_progress();
+        let watched = Arc::clone(&progress);
+        let reader_path = fifo.clone();
+        let reader = std::thread::spawn(move || read_file_watched(&reader_path, &watched));
+
+        // Watch the way the worker loop does. The budget is far longer than the
+        // writer's cadence on purpose: what is under test is that the count
+        // moves at all, and a tighter budget would fail on a loaded machine
+        // that descheduled the writer rather than on anything in the rule.
+        let budget = Duration::from_secs(5);
+        let mut seen = Seen::issued(Instant::now());
+        let mut samples = 0u32;
+        while !reader.is_finished() {
+            std::thread::sleep(Duration::from_millis(5));
+            let now = Instant::now();
+            seen = seen.observe(progress.load(Ordering::Relaxed), now);
+            assert!(
+                !seen.stalled(now, budget),
+                "a read that keeps delivering is not a stall"
+            );
+            samples += 1;
+        }
+
+        let bytes = reader.join().expect("reader thread").expect("read");
+        writer.join().expect("writer thread");
+        assert_eq!(bytes.len(), 8 * 64 * 1024);
+        assert!(samples > 1, "the read was observed while it was running");
+    }
+
+    #[test]
+    fn a_stall_is_measured_from_the_last_byte_not_the_first() {
+        let issued = Instant::now();
+        let seen = Seen::issued(issued);
+        let later = issued.checked_add(Duration::from_secs(30)).unwrap();
+
+        // A count that moved resets the stall clock.
+        let moved = seen.observe(4096, later);
+        assert_eq!(moved.at, later);
+        assert!(!moved.stalled(later, Duration::from_secs(10)));
+
+        // A count that did not move keeps the earlier stamp, so the stall goes
+        // on being measured from it.
+        let same = moved.observe(4096, later.checked_add(Duration::from_secs(5)).unwrap());
+        assert_eq!(same.at, later);
+        assert!(same.stalled(
+            later.checked_add(Duration::from_secs(10)).unwrap(),
+            Duration::from_secs(10)
+        ));
     }
 
     #[test]

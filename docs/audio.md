@@ -52,10 +52,71 @@ cannot stall a decoder that is no longer reading from it.
 The read happens on its own thread, with two protections in `audio/player.rs`:
 
 - **Retry.** Four attempts with backoff between them, covering transient errors.
-- **A watchdog.** `READ_WATCHDOG_TIMEOUT` (10 s) bounds how long the worker
-  waits. A `read()` blocked on a dead mount cannot be cancelled, so the thread
-  is abandoned rather than joined; it unwinds whenever the OS finally errors
-  the mount.
+- **A watchdog over the stall, not the read.** The read is taken in chunks and
+  publishes a running byte count (`read_file_watched`); the worker loop notes it
+  on every tick, and `READ_WATCHDOG_TIMEOUT` (10 s) bounds how long that count
+  may stand still. A `read()` blocked on a dead mount cannot be cancelled, so
+  the thread is abandoned rather than joined; it unwinds whenever the OS finally
+  errors the mount.
+
+  **The budget is never the read's.** A 40 MB FLAC on a share that manages a
+  megabyte a second takes four times the budget to arrive, and a share that is
+  merely slow is a share that works — timing the whole read dropped exactly
+  those tracks off air (#504). A dead mount still fails in the same 10 s,
+  because a read that has delivered nothing is what the budget describes.
+
+  The count moves a chunk at a time (`READ_CHUNK`, 64 KiB), so the budget is
+  also a throughput floor: a share that cannot deliver one chunk inside it
+  still reads as stalled. At the defaults that is about 6.5 KB/s — two orders
+  of magnitude below the rate that used to be required, and below any share a
+  show can run off.
+
+- **A dead-air limit.** `DEAD_AIR_LIMIT` (3 s, `player.deadAirLimitMs`) is the
+  second bound, and the reason the watchdog can afford to be patient. A read
+  that keeps arriving is not a wedged mount, but air that keeps being silent is
+  still a show with nothing on it, so a load is given up on once it has kept
+  the station quiet for this long — whatever the read is doing.
+
+  The two bounds do not stack, they divide the loads between them. The watchdog
+  asks whether a read will ever finish, which is a question about every load on
+  every deck; the dead-air limit asks whether the playlist should put something
+  else on, which is only a question on a silent on-air deck. So the bound that
+  fires is the watchdog for an arm preload, a parked restore, a cue audition or
+  an operator's own choice of track — on the cue deck it is the only bound there
+  will ever be, since nothing else watches a deck that is off the program bus —
+  and the dead-air limit for a load the playlist issued, which reaches 3 s long
+  before the watchdog's 10 s could.
+
+  It applies only where there is air to lose _and_ something to put on
+  instead: the deck holding `main` on the program bus, nothing audible anywhere
+  in the set, and a load the **playlist** issued and asked to play. A track
+  loading ahead of a handover has the rest of the outgoing track to arrive in,
+  a session restore is parked silent on purpose, and the cue deck is
+  monitoring — none of them are bounded by it. `DeckSet::on_air` is what the cue
+  worker says no with.
+
+  Nor is a track an operator put on air by hand, nor anything at all while
+  auto-advance is off (`Cmd::Load`'s `bound_dead_air`, set from `Effect::Play`
+  as `playlist_issued && auto_advance`). Both come off the same premise:
+  **giving up is only a recovery if something else goes on instead.** The
+  engine has a queue and knows which of it is resident — but it acts on
+  `{role}:load-failed` only while it is the one advancing (`on_load_failed`
+  returns immediately otherwise), and giving up on the track someone chose is
+  just a different track, which is not theirs to choose. They can skip it themselves in less time than any limit
+  would allow, and in practice this is the load that reaches the share at all:
+  playlist tracks are prefetched, so a miss on air is usually a library track
+  started by hand. The stall watchdog still covers it, so a dead mount fails the
+  same way it always did.
+
+  Both bounds end the same way, in `abandon_load`: `{role}:load-failed`, which
+  the playlist turns into skip-to-cached. What the operator is told follows what
+  the read had _delivered_, not which bound expired — on a silent on-air deck
+  the dead-air limit is the shorter of the two and so always the one that fires,
+  dead mount or not, and "the share is gone" and "the share is too slow to open
+  a show with" are different problems. **The read is not cancelled** — it cannot be, and one
+  that is merely slow is worth finishing: its bytes still reach the cache, so
+  the track the playlist just skipped is instant to play afterwards. What it
+  costs is its place in this hour, not the file.
 
 A read that fails or times out emits `{role}:load-failed`, which the playlist
 engine turns into skip-to-cached and a retry timer — see
@@ -85,7 +146,10 @@ an **in-flight set**: every reader of a library file claims an id before it
 reads, so one file never crosses the share twice at once. A deck that misses an
 id someone else is already reading into the window waits for that read rather
 than starting its own — never slower than a read that begins later, and bounded
-by the deck's watchdog exactly as a read of its own would be. The analysis pass
+by the deck's watchdog exactly as a read of its own would be. A claim therefore
+carries the holder's **progress**: the waiter mirrors that byte count into its
+own watchdog handle, so the wait ends when the holder stalls rather than when
+the file turns out to be large. The analysis pass
 keeps the same rule from the other side by reading on a single thread
 ([library.md](./library.md#the-analysis-pass)).
 
@@ -312,7 +376,7 @@ the level envelope, the tempo and the extension table — is `audio_measure/`; s
 | file                  | holds                                                       |
 | --------------------- | ----------------------------------------------------------- |
 | `audio/player.rs`     | `Cmd`, `Topics`, whole-file read + retry + watchdog, decode |
-| `audio/cache.rs`      | the prefetch window, its fetch worker, the in-flight set    |
+| `audio/cache.rs`      | the prefetch window, its fetch worker, the in-flight claims |
 | `audio/output.rs`     | one `OutputStream` per device, self-healing open            |
 | `audio/devices.rs`    | cpal enumeration, `DeviceRef` resolution                    |
 | `audio/deck.rs`       | one `Sink` per deck plus the worker loop over a deck set    |

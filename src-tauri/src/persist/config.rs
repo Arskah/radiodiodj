@@ -277,8 +277,22 @@ impl Default for CacheConfig {
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct PlayerConfig {
+    /// How long a track read may deliver **nothing** before the load is failed
+    /// as a wedged mount. A budget with no progress, not a budget for the whole
+    /// read: a large file on a slow share keeps arriving and keeps its load
+    /// (#504).
     #[serde(default = "default_read_watchdog_timeout_ms")]
     pub read_watchdog_timeout_ms: u64,
+    /// How long air may be silent waiting for a read before the load is given
+    /// up on and the playlist skips to something resident. Far shorter than the
+    /// watchdog, because it is measured against dead air rather than against a
+    /// dying mount. It applies only to a load the playlist issued *and* will
+    /// act on the failure of, on a deck that is on air with nothing audible:
+    /// giving up is a recovery only if something else goes on instead, which
+    /// rules out a track an operator put on air by hand and anything at all
+    /// with auto-advance off (#504).
+    #[serde(default = "default_dead_air_limit_ms")]
+    pub dead_air_limit_ms: u64,
     #[serde(default = "default_open_retry_interval_ms")]
     pub open_retry_interval_ms: u64,
     #[serde(default = "default_read_retry_backoffs_ms")]
@@ -316,6 +330,9 @@ pub enum ReplayGainMode {
 fn default_read_watchdog_timeout_ms() -> u64 {
     10_000
 }
+fn default_dead_air_limit_ms() -> u64 {
+    3_000
+}
 fn default_open_retry_interval_ms() -> u64 {
     2_000
 }
@@ -338,6 +355,7 @@ impl Default for PlayerConfig {
     fn default() -> Self {
         Self {
             read_watchdog_timeout_ms: default_read_watchdog_timeout_ms(),
+            dead_air_limit_ms: default_dead_air_limit_ms(),
             open_retry_interval_ms: default_open_retry_interval_ms(),
             read_retry_backoffs_ms: default_read_retry_backoffs_ms(),
             fade_out_ms: default_fade_out_ms(),
@@ -728,6 +746,7 @@ fn normalize_tuning(mut t: TuningConfig) -> TuningConfig {
 
     let p = &mut t.player;
     p.read_watchdog_timeout_ms = p.read_watchdog_timeout_ms.max(1);
+    p.dead_air_limit_ms = p.dead_air_limit_ms.max(1);
     p.open_retry_interval_ms = p.open_retry_interval_ms.max(1);
     if p.read_retry_backoffs_ms.is_empty() {
         p.read_retry_backoffs_ms = default_read_retry_backoffs_ms();

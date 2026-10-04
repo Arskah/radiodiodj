@@ -52,6 +52,7 @@ use std::time::Duration;
 fn player_tuning_from(t: &TuningConfig) -> PlayerTuning {
     PlayerTuning {
         read_watchdog_timeout: Duration::from_millis(t.player.read_watchdog_timeout_ms),
+        dead_air_limit: Duration::from_millis(t.player.dead_air_limit_ms),
         open_retry_interval: Duration::from_millis(t.player.open_retry_interval_ms),
         read_retry_backoffs: t
             .player
@@ -753,6 +754,8 @@ async fn cue_load(
             // Air seconds. The cue editor reloads an edited audition where it
             // was; the worker clamps a start past the new air duration.
             start_at: start_at.unwrap_or(0.0),
+            // The cue deck is off the program bus; nothing it does is air.
+            bound_dead_air: false,
             // Parked by default. Cueing a track is a staging action — the
             // operator decides when it makes noise, and switching audition
             // mode reloads the deck, so autoplay would restart the audio on

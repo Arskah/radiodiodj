@@ -368,6 +368,8 @@ export interface CacheConfig {
 /** Audio-player network-resilience timeouts (ms). */
 export interface PlayerConfig {
   readWatchdogTimeoutMs: number;
+  /** How long air may be silent waiting for a read before the playlist skips ahead. */
+  deadAirLimitMs: number;
   openRetryIntervalMs: number;
   readRetryBackoffsMs: number[];
   /** How long the live Fade out action takes to reach silence. */

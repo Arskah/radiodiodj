@@ -33,18 +33,33 @@ The module map, the event table and the boundary conventions are
 Each entry is the invariant to preserve; the linked doc carries the reasoning.
 
 **Audio playback** — in-process Rust decks, no browser `<audio>`, no `media://`,
-no transcoder. A deck reads the **whole file into RAM** (retry + 10 s watchdog)
-and never streams from the filesystem, which is what survives a wedged network
-share. See [docs/audio.md](docs/audio.md).
+no transcoder. A deck reads the **whole file into RAM** and never streams from
+the filesystem, which is what survives a wedged network share. Two bounds on a
+read, and which one applies depends on the load: a 10 s watchdog over the
+**stall** asks whether the read will ever finish (every deck, every load — the
+read publishes a byte count the worker loop notes each tick, so only a count
+that stops moving is a wedged mount), while a 3 s **dead-air limit** asks
+whether the playlist should put something else on instead, which is only a
+question for a silent on-air deck. So the one that fires is the watchdog on an
+arm preload, a parked restore, a cue audition, a track an operator put on air by
+hand or anything at all with auto-advance off, and the dead-air limit on a load
+the playlist issued and will act on the failure of — never both.
+Exempting the operator is exempting them from the 3 s, not from the 10 s: their
+track survives a slow share, a dead one still reports. The abandoned read runs
+on either way, so its bytes still reach the cache and a skipped track costs its
+place in the hour, not the file. See [docs/audio.md](docs/audio.md).
 
 **One file never crosses the share twice at once** — the library is a network
 share, and concurrent reads are how a share that was merely slow becomes a share
 that is down. The prefetch worker has always been sequential; the rule is the
 share's, not that worker's, so `audio/cache.rs` holds an **in-flight set** every
 reader claims against, and a deck that misses an id someone else is reading into
-the window waits for that read instead of starting a second one — outside the
-window the bytes would be refused, so it reads without claiming rather than
-serialising two reads for nothing. What a deck reads is offered back to the
+the window waits for that read instead of starting a second one. A claim carries
+the holder's read progress, which the waiter mirrors — its own watchdog can only
+see a read of its own, so without it the wait would end on the file's size
+rather than on a stall. Outside the window the bytes would be refused, so it
+reads without claiming rather than serialising two reads for nothing. What a
+deck reads is offered back to the
 cache, refused only outside the window. The analysis pass keeps the same rule by
 reading on **one thread** and decoding on several — never widen the reader; what
 bounds the pass is whole files resident, not cores. It is per file, not a global
