@@ -5,7 +5,11 @@
     formatTime,
     type Track,
   } from "../../shared/state.svelte";
-  import { isStopMarker, type PlaylistItem } from "../../shared/types";
+  import {
+    isStopMarker,
+    isTrackItem,
+    type PlaylistItem,
+  } from "../../shared/types";
   import { airDuration, airedTrack, isTrimmed } from "../../shared/cuePoints";
   import MissingBadge from "../track/MissingBadge.svelte";
   import { gapAt, moveTarget } from "./playlistDrop";
@@ -126,6 +130,13 @@
           class="btn-filler btn-filler-stop"
           title="Stop automatic play when reached"
           onclick={() => app.addStopMarker()}>+ Stop</button
+        >
+        <button
+          id="btn-save-playlist"
+          class="btn-filler"
+          title="Keep the upcoming tracks as a saved playlist"
+          disabled={!app.playlist.some(isTrackItem)}
+          onclick={() => (app.savedDialog = { kind: "saveAs" })}>Save as</button
         >
         <button
           id="btn-clear-playlist"

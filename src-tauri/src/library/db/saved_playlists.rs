@@ -1,0 +1,538 @@
+//! Saved playlists: named, stored, ordered lists of entries. See
+//! `docs/saved-playlists.md`.
+
+use anyhow::{anyhow, bail, Result};
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
+
+use super::{placeholders, Db, Track, ID_CHUNK};
+
+/// One row of the saved playlists list.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedPlaylistSummary {
+    pub id: i64,
+    pub name: String,
+    pub entries: i64,
+    /// Entries that cannot air: unmatched, or bound to a missing track.
+    pub missing: i64,
+}
+
+/// One entry of a saved playlist. `track` is the live track it is bound to;
+/// the rest is what the entry was written with, shown when nothing is bound.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedEntry {
+    pub id: i64,
+    pub track: Option<Track>,
+    pub artist: String,
+    pub title: String,
+    pub duration: f64,
+    pub content_type: Option<String>,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedPlaylist {
+    pub id: i64,
+    pub name: String,
+    pub entries: Vec<SavedEntry>,
+}
+
+/// What a saved playlist offers the on-air playlist: its bound tracks in
+/// order, each with its content type, and how many entries had none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedTracks {
+    pub tracks: Vec<(i64, String)>,
+    pub unmatched: usize,
+}
+
+/// A name as it is compared: trimmed, and without regard to case.
+fn name_key(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
+fn names(conn: &Connection, except: Option<i64>) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT id, name FROM saved_playlists")?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+    let mut taken = Vec::new();
+    for row in rows {
+        let (id, name) = row?;
+        if Some(id) != except {
+            taken.push(name_key(&name));
+        }
+    }
+    Ok(taken)
+}
+
+/// `wanted`, or the first of `wanted (2)`, `wanted (3)`… that is free.
+fn free_name(conn: &Connection, wanted: &str) -> Result<String> {
+    let wanted = wanted.trim();
+    if wanted.is_empty() {
+        bail!("a saved playlist needs a name");
+    }
+    let taken = names(conn, None)?;
+    if !taken.contains(&name_key(wanted)) {
+        return Ok(wanted.to_owned());
+    }
+    let mut n = 2;
+    loop {
+        let candidate = format!("{wanted} ({n})");
+        if !taken.contains(&name_key(&candidate)) {
+            return Ok(candidate);
+        }
+        n += 1;
+    }
+}
+
+fn entry_ids(conn: &Connection, playlist_id: i64) -> Result<Vec<i64>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM saved_playlist_entries WHERE playlist_id = ? ORDER BY position, id",
+    )?;
+    let rows = stmt.query_map([playlist_id], |r| r.get::<_, i64>(0))?;
+    rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+}
+
+fn write_order(conn: &Connection, ids: &[i64]) -> Result<()> {
+    let mut stmt = conn.prepare("UPDATE saved_playlist_entries SET position = ? WHERE id = ?")?;
+    for (position, id) in ids.iter().enumerate() {
+        stmt.execute(params![position as i64, id])?;
+    }
+    Ok(())
+}
+
+/// Append an entry per track id, each with a snapshot of the track as it reads
+/// now, and hand back the new entry ids. An id with no row adds nothing.
+fn insert_entries(conn: &Connection, playlist_id: i64, track_ids: &[i64]) -> Result<Vec<i64>> {
+    let mut stmt = conn.prepare(
+        "INSERT INTO saved_playlist_entries \
+           (playlist_id, position, track_id, fingerprint, artist, title, duration, content_type) \
+         SELECT ?1, -1, id, fingerprint, artist, title, duration, content_type \
+         FROM tracks WHERE id = ?2",
+    )?;
+    let mut added = Vec::with_capacity(track_ids.len());
+    for track_id in track_ids {
+        if stmt.execute(params![playlist_id, track_id])? == 1 {
+            added.push(conn.last_insert_rowid());
+        }
+    }
+    Ok(added)
+}
+
+fn touch(conn: &Connection, playlist_id: i64, now_ms: i64) -> Result<()> {
+    let changed = conn.execute(
+        "UPDATE saved_playlists SET updated_at = ? WHERE id = ?",
+        params![now_ms, playlist_id],
+    )?;
+    if changed == 0 {
+        bail!("no saved playlist {playlist_id}");
+    }
+    Ok(())
+}
+
+impl Db {
+    pub fn saved_playlists(&self) -> Result<Vec<SavedPlaylistSummary>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT p.id, p.name, COUNT(e.id), \
+                    COALESCE(SUM(e.id IS NOT NULL \
+                                 AND (t.id IS NULL OR t.missing_since IS NOT NULL)), 0) \
+             FROM saved_playlists p \
+             LEFT JOIN saved_playlist_entries e ON e.playlist_id = p.id \
+             LEFT JOIN tracks t ON t.id = e.track_id \
+             GROUP BY p.id ORDER BY p.name COLLATE NOCASE, p.id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(SavedPlaylistSummary {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                entries: r.get(2)?,
+                missing: r.get(3)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+    }
+
+    pub fn saved_playlist(&self, id: i64) -> Result<Option<SavedPlaylist>> {
+        type Row = (i64, Option<i64>, String, String, f64, Option<String>);
+        let (name, rows): (String, Vec<Row>) = {
+            let conn = self.conn.lock();
+            let Some(name) = conn
+                .query_row("SELECT name FROM saved_playlists WHERE id = ?", [id], |r| {
+                    r.get::<_, String>(0)
+                })
+                .optional()?
+            else {
+                return Ok(None);
+            };
+            let mut stmt = conn.prepare(
+                "SELECT id, track_id, COALESCE(artist, ''), COALESCE(title, ''), \
+                        COALESCE(duration, 0), content_type \
+                 FROM saved_playlist_entries WHERE playlist_id = ? ORDER BY position, id",
+            )?;
+            let rows = stmt
+                .query_map([id], |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+            (name, rows)
+        };
+        let mut bound: Vec<i64> = rows.iter().filter_map(|r| r.1).collect();
+        bound.sort_unstable();
+        bound.dedup();
+        let mut tracks = std::collections::HashMap::new();
+        for chunk in bound.chunks(ID_CHUNK) {
+            for track in self.get_tracks_by_ids(chunk)? {
+                tracks.insert(track.id, track);
+            }
+        }
+        let entries = rows
+            .into_iter()
+            .map(
+                |(id, track_id, artist, title, duration, content_type)| SavedEntry {
+                    id,
+                    track: track_id.and_then(|t| tracks.get(&t).cloned()),
+                    artist,
+                    title,
+                    duration,
+                    content_type,
+                },
+            )
+            .collect();
+        Ok(Some(SavedPlaylist { id, name, entries }))
+    }
+
+    /// Create a saved playlist holding `track_ids` in order. A name in use
+    /// takes the next free one, so making a list never fails on its name.
+    pub fn create_saved_playlist(
+        &self,
+        name: &str,
+        track_ids: &[i64],
+        now_ms: i64,
+    ) -> Result<SavedPlaylistSummary> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let name = free_name(&tx, name)?;
+        tx.execute(
+            "INSERT INTO saved_playlists (name, created_at, updated_at) VALUES (?, ?, ?)",
+            params![name, now_ms, now_ms],
+        )?;
+        let id = tx.last_insert_rowid();
+        let added = insert_entries(&tx, id, track_ids)?;
+        write_order(&tx, &added)?;
+        tx.commit()?;
+        Ok(SavedPlaylistSummary {
+            id,
+            name,
+            entries: added.len() as i64,
+            missing: 0,
+        })
+    }
+
+    /// Add entries for `track_ids`, in order, ahead of the entry at `index`.
+    /// `None` appends, and so does an index past the end.
+    pub fn add_saved_entries(
+        &self,
+        playlist_id: i64,
+        track_ids: &[i64],
+        index: Option<usize>,
+        now_ms: i64,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        touch(&tx, playlist_id, now_ms)?;
+        let mut order = entry_ids(&tx, playlist_id)?;
+        let added = insert_entries(&tx, playlist_id, track_ids)?;
+        let at = index.map_or(order.len(), |i| i.min(order.len()));
+        order.splice(at..at, added);
+        write_order(&tx, &order)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn remove_saved_entry(&self, entry_id: i64, now_ms: i64) -> Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let playlist_id: i64 = tx
+            .query_row(
+                "DELETE FROM saved_playlist_entries WHERE id = ? RETURNING playlist_id",
+                [entry_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| anyhow!("no saved playlist entry {entry_id}"))?;
+        touch(&tx, playlist_id, now_ms)?;
+        let order = entry_ids(&tx, playlist_id)?;
+        write_order(&tx, &order)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Move the entry at `from` so that it ends up at `to`. Indices past the
+    /// end are clamped: they describe a list that has since shrunk.
+    pub fn move_saved_entry(
+        &self,
+        playlist_id: i64,
+        from: usize,
+        to: usize,
+        now_ms: i64,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        touch(&tx, playlist_id, now_ms)?;
+        let mut order = entry_ids(&tx, playlist_id)?;
+        if from >= order.len() {
+            return Ok(());
+        }
+        let moved = order.remove(from);
+        order.insert(to.min(order.len()), moved);
+        write_order(&tx, &order)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Rename a saved playlist. Refused when another one holds the name.
+    pub fn rename_saved_playlist(&self, id: i64, name: &str, now_ms: i64) -> Result<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            bail!("a saved playlist needs a name");
+        }
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        if names(&tx, Some(id))?.contains(&name_key(name)) {
+            bail!("a saved playlist named \u{201c}{name}\u{201d} already exists");
+        }
+        let changed = tx.execute(
+            "UPDATE saved_playlists SET name = ?, updated_at = ? WHERE id = ?",
+            params![name, now_ms, id],
+        )?;
+        if changed == 0 {
+            bail!("no saved playlist {id}");
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn delete_saved_playlist(&self, id: i64) -> Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM saved_playlist_entries WHERE playlist_id = ?",
+            [id],
+        )?;
+        tx.execute("DELETE FROM saved_playlists WHERE id = ?", [id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The bound tracks of a saved playlist, in order, for an append. A missing
+    /// track is among them; an unmatched entry is only counted.
+    pub fn saved_playlist_tracks(&self, id: i64) -> Result<Option<SavedTracks>> {
+        let conn = self.conn.lock();
+        let exists: Option<i64> = conn
+            .query_row("SELECT id FROM saved_playlists WHERE id = ?", [id], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        if exists.is_none() {
+            return Ok(None);
+        }
+        let mut stmt = conn.prepare(
+            "SELECT t.id, t.content_type \
+             FROM saved_playlist_entries e LEFT JOIN tracks t ON t.id = e.track_id \
+             WHERE e.playlist_id = ? ORDER BY e.position, e.id",
+        )?;
+        let rows = stmt.query_map([id], |r| {
+            Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<String>>(1)?))
+        })?;
+        let mut tracks = Vec::new();
+        let mut unmatched = 0;
+        for row in rows {
+            match row? {
+                (Some(id), Some(content_type)) => tracks.push((id, content_type)),
+                _ => unmatched += 1,
+            }
+        }
+        Ok(Some(SavedTracks { tracks, unmatched }))
+    }
+}
+
+/// Unbind every entry of the purged tracks. Called inside the purge's own
+/// transaction; the entries stay, as unmatched ones.
+pub(super) fn unbind_purged(conn: &Connection, ids: &[i64]) -> Result<()> {
+    for chunk in ids.chunks(ID_CHUNK) {
+        let sql = format!(
+            "UPDATE saved_playlist_entries SET track_id = NULL WHERE track_id IN ({})",
+            placeholders(chunk.len())
+        );
+        conn.execute(&sql, rusqlite::params_from_iter(chunk))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn db_with_tracks(titles: &[&str]) -> (Db, Vec<i64>) {
+        let db = Db::open_in_memory().unwrap();
+        let ids = {
+            let conn = db.conn.lock();
+            titles
+                .iter()
+                .enumerate()
+                .map(|(i, title)| {
+                    conn.execute(
+                        "INSERT INTO tracks (path, content_type, title, artist, album, duration, \
+                                             fingerprint) \
+                         VALUES (?, 'music', ?, 'a', 'al', 100.0, ?)",
+                        params![format!("/{i}.mp3"), title, format!("v2:{i}")],
+                    )
+                    .unwrap();
+                    conn.last_insert_rowid()
+                })
+                .collect()
+        };
+        (db, ids)
+    }
+
+    fn mark_missing(db: &Db, id: i64) {
+        db.conn
+            .lock()
+            .execute("UPDATE tracks SET missing_since = 5 WHERE id = ?", [id])
+            .unwrap();
+    }
+
+    fn titles(db: &Db, id: i64) -> Vec<String> {
+        db.saved_playlist(id)
+            .unwrap()
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|e| e.title)
+            .collect()
+    }
+
+    #[test]
+    fn a_created_list_holds_its_tracks_in_order_and_twice_if_asked() {
+        let (db, ids) = db_with_tracks(&["A", "B", "C"]);
+        let made = db
+            .create_saved_playlist("Show", &[ids[2], ids[0], ids[2]], 1)
+            .unwrap();
+        assert_eq!(made.entries, 3);
+        assert_eq!(titles(&db, made.id), ["C", "A", "C"]);
+    }
+
+    #[test]
+    fn a_track_id_with_no_row_adds_no_entry() {
+        let (db, ids) = db_with_tracks(&["A"]);
+        let made = db.create_saved_playlist("Show", &[ids[0], 999], 1).unwrap();
+        assert_eq!(titles(&db, made.id), ["A"]);
+    }
+
+    #[test]
+    fn a_taken_name_takes_the_next_free_one_whatever_its_case() {
+        let (db, _) = db_with_tracks(&[]);
+        assert_eq!(
+            db.create_saved_playlist("Show", &[], 1).unwrap().name,
+            "Show"
+        );
+        assert_eq!(
+            db.create_saved_playlist(" show ", &[], 1).unwrap().name,
+            "show (2)"
+        );
+        assert_eq!(
+            db.create_saved_playlist("SHOW", &[], 1).unwrap().name,
+            "SHOW (3)"
+        );
+        assert!(db.create_saved_playlist("  ", &[], 1).is_err());
+    }
+
+    #[test]
+    fn renaming_to_a_name_in_use_is_refused_but_recasing_its_own_is_not() {
+        let (db, _) = db_with_tracks(&[]);
+        let a = db.create_saved_playlist("A", &[], 1).unwrap();
+        db.create_saved_playlist("B", &[], 1).unwrap();
+        assert!(db.rename_saved_playlist(a.id, "b", 2).is_err());
+        db.rename_saved_playlist(a.id, "a", 2).unwrap();
+        assert_eq!(db.saved_playlists().unwrap()[0].name, "a");
+    }
+
+    #[test]
+    fn entries_are_added_at_a_position_and_past_the_end_appends() {
+        let (db, ids) = db_with_tracks(&["A", "B", "C", "D"]);
+        let p = db.create_saved_playlist("Show", &ids[..2], 1).unwrap().id;
+        db.add_saved_entries(p, &[ids[2]], Some(1), 2).unwrap();
+        db.add_saved_entries(p, &[ids[3]], Some(99), 2).unwrap();
+        db.add_saved_entries(p, &[ids[0]], None, 2).unwrap();
+        assert_eq!(titles(&db, p), ["A", "C", "B", "D", "A"]);
+    }
+
+    #[test]
+    fn an_entry_moves_and_is_removed_by_its_own_id() {
+        let (db, ids) = db_with_tracks(&["A", "B", "C"]);
+        let p = db.create_saved_playlist("Show", &ids, 1).unwrap().id;
+        db.move_saved_entry(p, 0, 2, 2).unwrap();
+        assert_eq!(titles(&db, p), ["B", "C", "A"]);
+        let first = db.saved_playlist(p).unwrap().unwrap().entries[0].id;
+        db.remove_saved_entry(first, 3).unwrap();
+        assert_eq!(titles(&db, p), ["C", "A"]);
+    }
+
+    #[test]
+    fn a_purged_track_leaves_an_unmatched_entry_with_its_snapshot() {
+        let (db, ids) = db_with_tracks(&["A", "B"]);
+        let p = db.create_saved_playlist("Show", &ids, 1).unwrap().id;
+        mark_missing(&db, ids[0]);
+        assert_eq!(db.saved_playlists().unwrap()[0].missing, 1);
+
+        db.purge_tracks(&[ids[0]]).unwrap();
+
+        let list = db.saved_playlist(p).unwrap().unwrap();
+        assert_eq!(list.entries.len(), 2);
+        assert!(list.entries[0].track.is_none());
+        assert_eq!(list.entries[0].title, "A");
+        assert!(list.entries[1].track.is_some());
+        assert_eq!(db.saved_playlists().unwrap()[0].missing, 1);
+    }
+
+    #[test]
+    fn an_append_takes_a_missing_track_and_counts_an_unmatched_entry() {
+        let (db, ids) = db_with_tracks(&["A", "B", "C"]);
+        let p = db.create_saved_playlist("Show", &ids, 1).unwrap().id;
+        mark_missing(&db, ids[1]);
+        mark_missing(&db, ids[2]);
+        db.purge_tracks(&[ids[2]]).unwrap();
+
+        let offered = db.saved_playlist_tracks(p).unwrap().unwrap();
+        assert_eq!(
+            offered.tracks,
+            [(ids[0], "music".to_owned()), (ids[1], "music".to_owned())]
+        );
+        assert_eq!(offered.unmatched, 1);
+        assert_eq!(db.saved_playlist_tracks(999).unwrap(), None);
+    }
+
+    #[test]
+    fn deleting_a_list_takes_its_entries_with_it() {
+        let (db, ids) = db_with_tracks(&["A"]);
+        let p = db.create_saved_playlist("Show", &ids, 1).unwrap().id;
+        db.delete_saved_playlist(p).unwrap();
+        assert!(db.saved_playlists().unwrap().is_empty());
+        let left: i64 = db
+            .conn
+            .lock()
+            .query_row("SELECT COUNT(*) FROM saved_playlist_entries", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(left, 0);
+    }
+}

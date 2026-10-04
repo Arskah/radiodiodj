@@ -15,6 +15,9 @@ import type {
   Recalculated,
   LibraryStats,
   NowPlayingConfig,
+  SavedAppend,
+  SavedPlaylist,
+  SavedPlaylistSummary,
   ScanResult,
   SortColumn,
   SortDir,
@@ -218,6 +221,66 @@ export const api = {
    */
   playlistAddMany(ids: number[], index: number | null): Promise<void> {
     return invoke<void>("playlist_add_many", { ids, index });
+  },
+
+  /**
+   * Append a saved playlist's tracks; with `weave`, brought up to the
+   * interleave cadence. Resolves to what it added and what it had to skip.
+   */
+  playlistAddSaved(id: number, weave: boolean): Promise<SavedAppend> {
+    return invoke<SavedAppend>("playlist_add_saved", { id, weave });
+  },
+  /** Keep the upcoming tracks as a new saved playlist. */
+  playlistSaveAs(name: string): Promise<SavedPlaylistSummary> {
+    return invoke<SavedPlaylistSummary>("playlist_save_as", { name });
+  },
+
+  savedPlaylistList(): Promise<SavedPlaylistSummary[]> {
+    return invoke<SavedPlaylistSummary[]>("saved_playlist_list");
+  },
+  onSavedPlaylists(
+    callback: (list: SavedPlaylistSummary[]) => void,
+  ): Promise<UnlistenFn> {
+    return listen<SavedPlaylistSummary[]>("saved-playlists", (e) =>
+      callback(e.payload),
+    );
+  },
+  savedPlaylistGet(id: number): Promise<SavedPlaylist | null> {
+    return invoke<SavedPlaylist | null>("saved_playlist_get", { id });
+  },
+  /** Create a saved playlist with its entries. A name in use takes a suffix. */
+  savedPlaylistCreate(
+    name: string,
+    trackIds: number[],
+  ): Promise<SavedPlaylistSummary> {
+    return invoke<SavedPlaylistSummary>("saved_playlist_create", {
+      name,
+      trackIds,
+    });
+  },
+  /** Admin only. `null` appends, as does an index past the end. */
+  savedPlaylistAddEntries(
+    id: number,
+    trackIds: number[],
+    index: number | null,
+  ): Promise<void> {
+    return invoke<void>("saved_playlist_add_entries", { id, trackIds, index });
+  },
+  /** Admin only. */
+  savedPlaylistRemoveEntry(entryId: number): Promise<void> {
+    return invoke<void>("saved_playlist_remove_entry", { entryId });
+  },
+  /** Admin only. */
+  savedPlaylistMoveEntry(id: number, from: number, to: number): Promise<void> {
+    return invoke<void>("saved_playlist_move_entry", { id, from, to });
+  },
+  /** Admin only. Rejects when another saved playlist holds the name. */
+  savedPlaylistRename(id: number, name: string): Promise<void> {
+    return invoke<void>("saved_playlist_rename", { id, name });
+  },
+  /** Admin only. */
+  savedPlaylistDelete(id: number): Promise<void> {
+    return invoke<void>("saved_playlist_delete", { id });
   },
   /** Set (or, with `null`, clear) one queued item's cue-point override. */
   playlistSetItemCuePoints(

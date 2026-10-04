@@ -12,6 +12,7 @@ use tauri::{AppHandle, Emitter, Listener};
 use super::check::CheckReport;
 use super::db::{Db, Dismissal, HealthRow, Track};
 use super::listing::{self, ScanRoot};
+use super::saved_playlists;
 use super::tag_write::{TagWriteFailure, TagWriter};
 use crate::persist::config::Config;
 
@@ -235,6 +236,9 @@ impl Health {
                 self.emits.send(seq, || {
                     let _ = self.app.emit(HEALTH_EVENT, &report);
                 });
+                // A saved playlist's missing count moves with the same things
+                // this report does.
+                saved_playlists::emit(&self.app, &self.db);
             }
             Err(e) => log::error!("library health: {e:#}"),
         }

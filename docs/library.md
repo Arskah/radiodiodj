@@ -320,7 +320,8 @@ file reappears, at the same path or, by fingerprint, at a new one. See
 ## The library panel
 
 The library panel shows one library at a time: _Music_,
-_Commercials_ or _Jingles_.
+_Commercials_ or _Jingles_. A fourth tab, _Playlists_, lists the saved
+playlists instead of tracks — see [saved-playlists.md](./saved-playlists.md).
 
 - **Search** matches title, artist, album, album artist and genre. Each word is a prefix, so
   `beat abb` finds _Abbey Road_ by _The Beatles_. The search runs a quarter of a
@@ -424,7 +425,7 @@ and one snapshot rather than one per track. See
 ### The row menu
 
 The row menu offers _Add to playlist_, _Add as next_, _Preview on cue deck_,
-_Edit metadata…_, _Cue points…_, _Show in folder_ and, set apart and marked as
+_Add to saved playlist…_, _Edit metadata…_, _Cue points…_, _Show in folder_ and, set apart and marked as
 dangerous, _Play now (on air)_. Play now is never the item under the cursor when
 the menu opens, so a stray click cannot reach air.
 
@@ -582,21 +583,22 @@ baseline resets are in [database.md](./database.md).
 
 ## Code map
 
-| area                               | where                                                          |
-| ---------------------------------- | -------------------------------------------------------------- |
-| listing and the changed/gone rules | `src-tauri/src/library/listing.rs`                             |
-| scan and reconcile                 | `library/scanner.rs`, `library/scan_state.rs`, `Db::reconcile` |
-| fingerprint                        | `audio_measure/fingerprint.rs`                                 |
-| waveforms and fingerprints         | `library/waveform_scan.rs`                                     |
-| tag backfill                       | `library/tag_backfill.rs`                                      |
-| health report                      | `library/health.rs`                                            |
-| library check                      | `library/check.rs`                                             |
-| queries and schema                 | `library/db.rs`, `library/schema.sql`                          |
-| search design                      | [library-search.md](./library-search.md)                       |
-| auto-playlist selection            | `playlist/generate.rs`                                         |
-| library panel                      | `src/features/library/LibraryPanel.svelte`                     |
-| selection                          | `src/shared/selection.ts`                                      |
-| hover card                         | `src/features/track/TrackTooltip.svelte`                       |
-| metadata editor                    | `src/features/track/MetadataOverlay.svelte`                    |
-| tag write-back                     | `library/tag_write.rs`                                         |
-| settings and health view           | `src/features/settings/`, `src/features/health/`               |
+| area                               | where                                                                         |
+| ---------------------------------- | ----------------------------------------------------------------------------- |
+| listing and the changed/gone rules | `src-tauri/src/library/listing.rs`                                            |
+| scan and reconcile                 | `library/scanner.rs`, `library/scan_state.rs`, `Db::reconcile`                |
+| fingerprint                        | `audio_measure/fingerprint.rs`                                                |
+| waveforms and fingerprints         | `library/waveform_scan.rs`                                                    |
+| tag backfill                       | `library/tag_backfill.rs`                                                     |
+| health report                      | `library/health.rs`                                                           |
+| library check                      | `library/check.rs`                                                            |
+| queries and schema                 | `library/db.rs`, `library/schema.sql`                                         |
+| search design                      | [library-search.md](./library-search.md)                                      |
+| auto-playlist selection            | `playlist/generate.rs`                                                        |
+| library panel                      | `src/features/library/LibraryPanel.svelte`                                    |
+| selection                          | `src/shared/selection.ts`                                                     |
+| saved playlists                    | `library/db/saved_playlists.rs`, `src/features/library/SavedPlaylists.svelte` |
+| hover card                         | `src/features/track/TrackTooltip.svelte`                                      |
+| metadata editor                    | `src/features/track/MetadataOverlay.svelte`                                   |
+| tag write-back                     | `library/tag_write.rs`                                                        |
+| settings and health view           | `src/features/settings/`, `src/features/health/`                              |

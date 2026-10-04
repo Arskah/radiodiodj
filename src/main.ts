@@ -45,6 +45,7 @@ void app.loadSession();
 void app.hydrateScanStatus();
 void app.hydrateWaveformStatus();
 void app.loadHealth();
+void app.loadSavedPlaylists();
 void app.loadAudioConfig();
 void app.loadAdmin();
 void app.loadUpdate();

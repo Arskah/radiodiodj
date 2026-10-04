@@ -250,7 +250,7 @@ _Avoid_: Repeat protection, cooldown, interleave
 
 ### Saved playlists
 
-Planned — see [docs/saved-playlists.md](docs/saved-playlists.md).
+Partly built — see [docs/saved-playlists.md](docs/saved-playlists.md). The **Auto-playlist source** is not built yet.
 
 **Saved playlist**:
 A named, stored, ordered list of **Entries**. Never on air by itself: it is appended to the **Playlist**, or chosen as the **Auto-playlist source**.

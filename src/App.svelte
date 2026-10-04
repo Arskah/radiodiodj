@@ -10,6 +10,7 @@
   import MetadataOverlay from "./features/track/MetadataOverlay.svelte";
   import CuePointOverlay from "./features/track/CuePointOverlay.svelte";
   import UnlockDialog from "./features/admin/UnlockDialog.svelte";
+  import SavedPlaylistDialog from "./features/library/SavedPlaylistDialog.svelte";
   import { idleLock } from "./features/admin/idleLock";
   import { app } from "./shared/state.svelte";
 
@@ -42,3 +43,4 @@
 <MetadataOverlay />
 <CuePointOverlay />
 <UnlockDialog />
+<SavedPlaylistDialog />

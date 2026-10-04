@@ -15,6 +15,9 @@ use crate::audio_measure::level_envelope::{self, Envelope};
 use crate::library::auto_cue::{self, Analysed, Thresholds};
 use crate::library::scanner;
 
+mod saved_playlists;
+pub use saved_playlists::{SavedPlaylist, SavedPlaylistSummary};
+
 /// `Default` exists for test fixtures, which would otherwise have to name every
 /// column each time one is added. Nothing in the app builds a `Track` that way —
 /// `row_to_track` names every field, so a new column that is forgotten there
@@ -1993,6 +1996,7 @@ impl Db {
             );
             tx.execute(&sql, params_from_iter(chunk))?;
         }
+        saved_playlists::unbind_purged(&tx, &deleted)?;
         tx.commit()?;
         Ok(deleted)
     }
@@ -2807,6 +2811,7 @@ const MIGRATION_STEPS: &[M] = &[
     M::up(DETECTED_KEY),
     M::up(MEASURED_DURATION),
     M::up(DURATION_DISMISSALS),
+    M::up(SAVED_PLAYLISTS),
 ];
 const MIGRATIONS: Migrations = Migrations::from_slice(MIGRATION_STEPS);
 
@@ -3236,6 +3241,36 @@ DROP TABLE health_dismissals;
 ALTER TABLE health_dismissals_new RENAME TO health_dismissals;
 "#;
 
+/// Step 14: saved playlists. See `docs/saved-playlists.md`.
+///
+/// An entry keeps a snapshot beside `track_id` for the reason `play_log` does:
+/// it has to mean something when no track answers to it. No foreign keys, so a
+/// saved playlist's delete removes its entries itself and `purge_tracks` nulls
+/// `track_id`.
+const SAVED_PLAYLISTS: &str = r#"
+CREATE TABLE saved_playlists (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  name       TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE saved_playlist_entries (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  playlist_id  INTEGER NOT NULL,
+  position     INTEGER NOT NULL,
+  track_id     INTEGER,
+  fingerprint  TEXT,
+  artist       TEXT,
+  title        TEXT,
+  duration     REAL,
+  content_type TEXT
+);
+
+CREATE INDEX saved_playlist_entries_list
+  ON saved_playlist_entries(playlist_id, position);
+"#;
+
 /// A database this build must not touch.
 #[derive(Debug, PartialEq)]
 pub enum OpenError {
@@ -3595,6 +3630,22 @@ mod tests {
                  VALUES ('duration', '', '1:1477600:238968'); \
                  INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
                  SELECT id, 1000, artist, title, duration FROM tracks",
+            )
+            .unwrap();
+        },
+        |conn| {
+            seed_track(conn);
+            seed_dismissal(conn);
+            conn.execute_batch(
+                "UPDATE tracks SET edited_fields = 1; \
+                 INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
+                 SELECT id, 1000, artist, title, duration FROM tracks; \
+                 INSERT INTO saved_playlists (name, created_at, updated_at) \
+                 VALUES ('Show', 1, 1); \
+                 INSERT INTO saved_playlist_entries \
+                   (playlist_id, position, track_id, fingerprint, artist, title, duration, \
+                    content_type) \
+                 SELECT 1, 0, id, fingerprint, artist, title, duration, content_type FROM tracks",
             )
             .unwrap();
         },

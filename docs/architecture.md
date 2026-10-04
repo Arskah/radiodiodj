@@ -13,22 +13,23 @@ own.
 
 ## Where a feature lives
 
-| feature                           | backend                                              | renderer                              | doc                                                    |
-| --------------------------------- | ---------------------------------------------------- | ------------------------------------- | ------------------------------------------------------ |
-| decode, devices, levels           | `audio/`                                             | `features/deck/`                      | [audio.md](./audio.md)                                 |
-| what a decode measures            | `audio_measure/`                                     | —                                     | [audio-measure.md](./audio-measure.md)                 |
-| on-air mixing, handover, fades    | `audio/bus.rs`, `audio/deck.rs`                      | `features/deck/NowPlaying.svelte`     | [program-bus.md](./program-bus.md)                     |
-| cue points and their editor       | `audio/cue_points.rs`, `library/auto_cue.rs`         | `features/track/Cue*.svelte`          | [cue-points.md](./cue-points.md)                       |
-| the library and scanning          | `library/`                                           | `features/library/`, `features/scan/` | [library.md](./library.md)                             |
-| track identity across moves       | `audio_measure/fingerprint.rs`, `library/listing.rs` | —                                     | [track-identity.md](./track-identity.md)               |
-| library health                    | `library/health.rs`, `check.rs`                      | `features/health/`                    | [library-health.md](./library-health.md)               |
-| the playlist and advancement      | `playlist/`                                          | `features/playlist/`                  | [playlist.md](./playlist.md)                           |
-| rotation rules and the airing log | `library/db.rs`, `playlist/generate.rs`              | —                                     | [rotation.md](./rotation.md)                           |
-| now-playing output                | `broadcast/`                                         | `features/settings/`                  | [now-playing-broadcast.md](./now-playing-broadcast.md) |
-| themes and station identity       | `appearance/`                                        | `shared/appearance.ts`                | [theming.md](./theming.md)                             |
-| admin mode                        | `admin.rs`                                           | `features/admin/`                     | [admin-mode.md](./admin-mode.md)                       |
-| updates and About                 | `update.rs`                                          | `features/settings/AboutTab.svelte`   | [updates.md](./updates.md)                             |
-| schema and migrations             | `library/db.rs`                                      | —                                     | [database.md](./database.md)                           |
+| feature                           | backend                                                       | renderer                                 | doc                                                    |
+| --------------------------------- | ------------------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------ |
+| decode, devices, levels           | `audio/`                                                      | `features/deck/`                         | [audio.md](./audio.md)                                 |
+| what a decode measures            | `audio_measure/`                                              | —                                        | [audio-measure.md](./audio-measure.md)                 |
+| on-air mixing, handover, fades    | `audio/bus.rs`, `audio/deck.rs`                               | `features/deck/NowPlaying.svelte`        | [program-bus.md](./program-bus.md)                     |
+| cue points and their editor       | `audio/cue_points.rs`, `library/auto_cue.rs`                  | `features/track/Cue*.svelte`             | [cue-points.md](./cue-points.md)                       |
+| the library and scanning          | `library/`                                                    | `features/library/`, `features/scan/`    | [library.md](./library.md)                             |
+| track identity across moves       | `audio_measure/fingerprint.rs`, `library/listing.rs`          | —                                        | [track-identity.md](./track-identity.md)               |
+| library health                    | `library/health.rs`, `check.rs`                               | `features/health/`                       | [library-health.md](./library-health.md)               |
+| the playlist and advancement      | `playlist/`                                                   | `features/playlist/`                     | [playlist.md](./playlist.md)                           |
+| saved playlists                   | `library/db/saved_playlists.rs`, `library/saved_playlists.rs` | `features/library/SavedPlaylists.svelte` | [saved-playlists.md](./saved-playlists.md)             |
+| rotation rules and the airing log | `library/db.rs`, `playlist/generate.rs`                       | —                                        | [rotation.md](./rotation.md)                           |
+| now-playing output                | `broadcast/`                                                  | `features/settings/`                     | [now-playing-broadcast.md](./now-playing-broadcast.md) |
+| themes and station identity       | `appearance/`                                                 | `shared/appearance.ts`                   | [theming.md](./theming.md)                             |
+| admin mode                        | `admin.rs`                                                    | `features/admin/`                        | [admin-mode.md](./admin-mode.md)                       |
+| updates and About                 | `update.rs`                                                   | `features/settings/AboutTab.svelte`      | [updates.md](./updates.md)                             |
+| schema and migrations             | `library/db.rs`                                               | —                                        | [database.md](./database.md)                           |
 
 ## Rust backend (`src-tauri/src/`)
 
@@ -119,18 +120,19 @@ Deck events are **role-mapped**. Whichever deck holds the `main` role emits
 renderer, the broadcast service and the now-playing webhook never learn which
 physical deck is on air. The cue deck, being off the bus, emits `cue:*`.
 
-| topic                                                                                                                                  | from                 | carries                                     |
-| -------------------------------------------------------------------------------------------------------------------------------------- | -------------------- | ------------------------------------------- |
-| `{role}:time` (10 Hz), `:duration`, `:pause-state`, `:ended`, `:loaded`, `:load-failed`, `:buffering`, `:error`, `:output-unavailable` | a deck               | transport state on the air timeline         |
-| `cue:*`                                                                                                                                | the cue deck         | the same set, off air                       |
-| `program:roles`                                                                                                                        | the bus              | the slot → role map                         |
-| `program:handover`                                                                                                                     | the bus              | the role move the engine reconciles against |
-| `program:faded-out`                                                                                                                    | the bus              | a completed fade to silence on `main`       |
-| `program:playlist-state`                                                                                                               | the playlist service | the whole playlist snapshot                 |
-| `library-health`                                                                                                                       | `library/health.rs`  | the whole health report                     |
-| `scan-progress`, `scan-state-changed`                                                                                                  | the scan worker      | counts, current file, run state             |
-| `cache-state`                                                                                                                          | the prefetch cache   | which track ids are resident in RAM         |
-| `update:state`                                                                                                                         | `update.rs`          | the whole updater snapshot                  |
+| topic                                                                                                                                  | from                         | carries                                     |
+| -------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- | ------------------------------------------- |
+| `{role}:time` (10 Hz), `:duration`, `:pause-state`, `:ended`, `:loaded`, `:load-failed`, `:buffering`, `:error`, `:output-unavailable` | a deck                       | transport state on the air timeline         |
+| `cue:*`                                                                                                                                | the cue deck                 | the same set, off air                       |
+| `program:roles`                                                                                                                        | the bus                      | the slot → role map                         |
+| `program:handover`                                                                                                                     | the bus                      | the role move the engine reconciles against |
+| `program:faded-out`                                                                                                                    | the bus                      | a completed fade to silence on `main`       |
+| `program:playlist-state`                                                                                                               | the playlist service         | the whole playlist snapshot                 |
+| `library-health`                                                                                                                       | `library/health.rs`          | the whole health report                     |
+| `saved-playlists`                                                                                                                      | `library/saved_playlists.rs` | the whole list of saved playlists           |
+| `scan-progress`, `scan-state-changed`                                                                                                  | the scan worker              | counts, current file, run state             |
+| `cache-state`                                                                                                                          | the prefetch cache           | which track ids are resident in RAM         |
+| `update:state`                                                                                                                         | `update.rs`                  | the whole updater snapshot                  |
 
 ## Commands
 

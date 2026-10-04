@@ -285,6 +285,46 @@ pub fn interleave_evenly(
     out
 }
 
+/// How many of a content type to draw so a list holding `own` of it reaches
+/// the cadence for `music` music tracks. Never negative: a list already past
+/// the cadence is left as it is.
+fn top_up(music: i64, own: i64, every: i64) -> i64 {
+    (cadence_count(music, every) - own).max(0)
+}
+
+/// A saved playlist's tracks brought up to the interleave cadence: the list in
+/// its own order, with the jingles and commercials it is short of drawn from
+/// the libraries and spread through it. `queued_ids` is what the playlist
+/// already holds. See `docs/saved-playlists.md`.
+pub fn weave(
+    db: &Db,
+    list: Vec<(Track, String)>,
+    queued_ids: &[i64],
+    il: &Interleave,
+) -> Result<Vec<Track>> {
+    let count = |t: ContentType| list.iter().filter(|(_, c)| c == t.as_ref()).count() as i64;
+    let music = count(ContentType::Music);
+    let jingle_count = top_up(music, count(ContentType::Jingle), il.jingle_every);
+    let commercial_count = top_up(music, count(ContentType::Commercial), il.commercial_every);
+
+    let mut exclude_ids: Vec<i64> = queued_ids.to_vec();
+    exclude_ids.extend(list.iter().map(|(t, _)| t.id));
+    let jingles = db.get_random_tracks(
+        ContentType::Jingle.as_ref(),
+        jingle_count,
+        &SelectionFilter::excluding(&exclude_ids),
+    )?;
+    let commercials = db.pick_random_from_bottom(
+        ContentType::Commercial.as_ref(),
+        commercial_count,
+        commercial_bucket_size(commercial_count, il),
+        &exclude_ids,
+    )?;
+
+    let list = list.into_iter().map(|(t, _)| t).collect();
+    Ok(interleave_evenly(list, jingles, commercials))
+}
+
 fn pick_even_slots(total: usize, count: usize) -> HashSet<usize> {
     let mut slots = HashSet::new();
     if count == 0 || total == 0 {
@@ -355,6 +395,88 @@ mod tests {
             .unwrap();
         }
         db
+    }
+
+    /// `music` songs, then `jingles` jingles and `commercials` commercials, ids
+    /// running from 1 in that order.
+    fn mixed_library(music: usize, jingles: usize, commercials: usize) -> Db {
+        let db = Db::open_in_memory().unwrap();
+        let kinds = [
+            ("music", music),
+            ("jingle", jingles),
+            ("commercial", commercials),
+        ];
+        for (content_type, n) in kinds {
+            for i in 0..n {
+                db.insert_track(&TrackInsert {
+                    path: format!("/{content_type}{i}.mp3"),
+                    content_type: content_type.into(),
+                    title: Some(format!("{content_type}{i}")),
+                    duration: Some(100.0),
+                    ..Default::default()
+                })
+                .unwrap();
+            }
+        }
+        db
+    }
+
+    fn listed(db: &Db, ids: &[i64]) -> Vec<(Track, String)> {
+        let kind = |id: i64| match id {
+            1..=8 => "music",
+            9..=12 => "jingle",
+            _ => "commercial",
+        };
+        db.get_tracks_by_ids(ids)
+            .unwrap()
+            .into_iter()
+            .map(|t| {
+                let content_type = kind(t.id).to_owned();
+                (t, content_type)
+            })
+            .collect()
+    }
+
+    fn kinds_of(tracks: &[Track]) -> (usize, usize, usize) {
+        let count = |from: i64, to: i64| {
+            tracks
+                .iter()
+                .filter(|t| (from..=to).contains(&t.id))
+                .count()
+        };
+        (count(1, 8), count(9, 12), count(13, 16))
+    }
+
+    #[test]
+    fn weaving_brings_a_music_list_up_to_the_cadence() {
+        let db = mixed_library(8, 4, 4);
+        let list = listed(&db, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        let woven = weave(&db, list, &[], &Interleave::default()).unwrap();
+        assert_eq!(kinds_of(&woven), (8, 2, 1));
+        let music: Vec<i64> = woven.iter().map(|t| t.id).filter(|id| *id <= 8).collect();
+        assert_eq!(music, [1, 2, 3, 4, 5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn weaving_counts_what_the_list_already_holds() {
+        let db = mixed_library(8, 4, 4);
+        let list = listed(&db, &[9, 1, 2, 3, 4, 5, 6, 7, 8, 13, 14]);
+        let woven = weave(&db, list, &[], &Interleave::default()).unwrap();
+        assert_eq!(kinds_of(&woven), (8, 2, 2));
+        assert_eq!(woven[0].id, 9, "the list's own entries keep their order");
+    }
+
+    #[test]
+    fn weaving_never_draws_what_is_queued_or_listed() {
+        let db = mixed_library(8, 4, 4);
+        let list = listed(&db, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        let woven = weave(&db, list, &[9, 10, 11], &Interleave::default()).unwrap();
+        let jingles: Vec<i64> = woven
+            .iter()
+            .map(|t| t.id)
+            .filter(|id| (9..=12).contains(id))
+            .collect();
+        assert_eq!(jingles, [12], "one jingle left to draw, though two are due");
     }
 
     fn block(db: &Db, count: i64, queued: &[&Track], rot: &Rotation) -> Vec<Track> {

@@ -45,6 +45,11 @@ pub const ADMIN_COMMANDS: &[&str] = &[
     "admin_clear_password",
     "admin_set_idle_lock_min",
     "update_install",
+    "saved_playlist_add_entries",
+    "saved_playlist_remove_entry",
+    "saved_playlist_move_entry",
+    "saved_playlist_rename",
+    "saved_playlist_delete",
 ];
 
 pub const LOCKED_ERROR: &str = "admin mode is locked";
@@ -170,6 +175,11 @@ mod tests {
         "playlist_add",
         "playlist_insert",
         "playlist_add_many",
+        "playlist_add_saved",
+        "playlist_save_as",
+        "saved_playlist_list",
+        "saved_playlist_get",
+        "saved_playlist_create",
         "playlist_set_item_cue_points",
         "cue_load",
         "get_waveform_detail",

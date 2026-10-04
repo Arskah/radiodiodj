@@ -25,6 +25,9 @@ While locked:
   same way a metadata edit does.
 - Cancelling a running scan, or the analysis pass behind it, from the status
   bar.
+- Changing a saved playlist that exists: adding, removing and reordering its
+  entries, renaming it, deleting it. Making one and using one stay open — see
+  [saved-playlists.md](./saved-playlists.md#admin-mode).
 
 Still open while locked: playback, the playlist, library search and browsing,
 the cue deck, _Show in folder_, and the cue-point editor's _Use once_ and

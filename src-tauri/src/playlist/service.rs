@@ -428,6 +428,63 @@ impl PlaylistService {
         });
     }
 
+    /// Queue a saved playlist's tracks at the end as one run. `entries` is each
+    /// track with its content type, in the list's order; with `weave` the run is
+    /// brought up to the interleave cadence first. See
+    /// `docs/saved-playlists.md`.
+    pub fn add_saved(&self, entries: Vec<(i64, String)>, weave: bool) {
+        self.queue(move |inner| {
+            let ids: Vec<i64> = entries.iter().map(|(id, _)| *id).collect();
+            let tracks = match inner.db.get_tracks_by_ids(&ids) {
+                Ok(tracks) => tracks,
+                Err(e) => {
+                    log::error!("playlist: lookup of {} tracks failed: {}", ids.len(), e);
+                    return;
+                }
+            };
+            if tracks.len() < ids.len() {
+                log::error!(
+                    "playlist: {} of {} tracks are not in the library",
+                    ids.len() - tracks.len(),
+                    ids.len()
+                );
+            }
+            let tracks = if weave {
+                let types: HashMap<i64, String> = entries.into_iter().collect();
+                let list = tracks
+                    .iter()
+                    .map(|t| {
+                        let content_type = types.get(&t.id).cloned().unwrap_or_default();
+                        (t.clone(), content_type)
+                    })
+                    .collect();
+                let queued: Vec<i64> = inner
+                    .playlist
+                    .lock()
+                    .snapshot()
+                    .playlist
+                    .iter()
+                    .filter_map(|item| item.as_track().map(|t| t.id))
+                    .collect();
+                let interleave = generate::Interleave::from_config(&inner.config.get_tuning());
+                match generate::weave(&inner.db, list, &queued, &interleave) {
+                    Ok(woven) => woven,
+                    // The operator named the list; it goes on as written.
+                    Err(e) => {
+                        log::error!("playlist: weaving a saved playlist failed: {}", e);
+                        tracks
+                    }
+                }
+            } else {
+                tracks
+            };
+            if tracks.is_empty() {
+                return;
+            }
+            Inner::apply(inner, move |p, _| p.insert_many(None, tracks));
+        });
+    }
+
     /// The automatic-cue policy changed, so every copy held here is stale at
     /// once. Re-reads them from the library, which applies the policy, in one
     /// transition rather than one per track.
