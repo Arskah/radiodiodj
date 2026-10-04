@@ -26,7 +26,8 @@ use super::cache::Cache;
 use super::cue_points::{CuePoints, Resolved};
 use super::output::Output;
 use super::player::{
-    append_span, clamp_start, decode_bytes, Bytes, Cmd, PlayerTuning, RampDone, Topics,
+    append_span, clamp_start, decode_bytes, fresh_progress, Bytes, Cmd, PlayerTuning, Progress,
+    RampDone, Seen, Topics,
 };
 
 const TICK_INTERVAL: Duration = Duration::from_millis(50);
@@ -201,9 +202,14 @@ pub(super) struct Deck {
     /// A background read is in flight; suppresses ended-detection and time
     /// emits until the source is ready.
     loading: bool,
-    /// When the in-flight read started; drives the watchdog timeout. `None`
+    /// What the in-flight read has delivered so far, published by the reading
+    /// thread. `None` whenever no read of our own is pending — a cache hit
+    /// routes resident bytes with nothing to read.
+    read_progress: Option<Progress>,
+    /// The last progress the worker loop saw of the in-flight read; drives the
+    /// watchdog, which fires on a stall rather than on the read's age. `None`
     /// whenever no read is pending.
-    load_start: Option<Instant>,
+    load_progress: Option<Seen>,
     /// Monotonic token identifying the most recent load intent. Bumped on every
     /// `Load` and `Stop`; background reads carry the token they were issued for.
     generation: u64,
@@ -240,7 +246,8 @@ impl Deck {
             seek_offset: 0.0,
             active: false,
             loading: false,
-            load_start: None,
+            read_progress: None,
+            load_progress: None,
             generation: 0,
             volume: 1.0,
             gain: 1.0,
@@ -327,13 +334,30 @@ impl Deck {
         }
     }
 
+    /// Fold the in-flight read's published byte count into `load_progress`, so
+    /// the watchdog measures the current stall rather than the read's age.
+    ///
+    /// A read with no publisher (a cache hit) keeps the stamp it was issued
+    /// with: there is nothing to deliver, and a hit that never completes should
+    /// still time out.
+    fn note_read_progress(&mut self, now: Instant) {
+        let Some(progress) = self.read_progress.as_ref() else {
+            return;
+        };
+        let bytes = progress.load(Ordering::Relaxed);
+        if let Some(seen) = self.load_progress {
+            self.load_progress = Some(seen.observe(bytes, now));
+        }
+    }
+
     /// Drop everything about the loaded track. Shared by `Stop` and by every
     /// failure path, which want exactly the same end state: nothing loaded,
     /// nothing in flight, no deferred load waiting on a device.
     fn reset(&mut self) {
         self.active = false;
         self.loading = false;
-        self.load_start = None;
+        self.read_progress = None;
+        self.load_progress = None;
         self.current_id = None;
         self.current_path = None;
         self.current_duration = None;
@@ -460,6 +484,17 @@ fn start_load(
     replay_gain: f32,
 ) {
     let Some((mixer, generation)) = ensure_output(output, app, events) else {
+        // Abandon whatever the *previous* track's read is doing: it is for a
+        // track nothing will play now, and while the watchdog timed every read
+        // out it was abandoned within the budget anyway. Left at the current
+        // generation, a read that keeps delivering would land in `apply_load`
+        // under this deck's new `current_id` and report the wrong track — and
+        // the reset there would drop the load we are about to defer.
+        deck.generation = deck.generation.wrapping_add(1);
+        deck.loading = false;
+        deck.read_progress = None;
+        deck.load_progress = None;
+
         // No device yet: remember the intent and let the idle loop retry the
         // open. `ensure_output` already emitted the error; keep the buffering
         // indicator up while we wait for the device.
@@ -493,13 +528,16 @@ fn start_load(
     deck.seek_offset = 0.0;
     deck.active = false;
     deck.loading = true;
-    deck.load_start = Some(Instant::now());
+    deck.load_progress = Some(Seen::issued(Instant::now()));
     let _ = app.emit(&events.topics.buffering, true);
     report_load_start(app, events, start_at, autoplay);
 
     let generation = deck.generation;
     let tx = load_tx.clone();
     if let Some(bytes) = cache.get(id) {
+        // Nothing reads, so nothing publishes progress — and the watchdog still
+        // holds here, on a `Seen` that never moves.
+        deck.read_progress = None;
         // Cache hit: route the resident bytes through the same
         // completion path as a background read — no filesystem access.
         let _ = tx.send(LoadMsg {
@@ -527,14 +565,16 @@ fn start_load(
         // has no business taking a cache lock, and it discards a superseded
         // result — whose bytes are still the right bytes for this track.
         let backoffs = tuning.read_retry_backoffs.clone();
-        let wait_budget = tuning.read_watchdog_timeout;
+        let stall_budget = tuning.read_watchdog_timeout;
         let cache = Arc::clone(cache);
+        let progress = fresh_progress();
+        deck.read_progress = Some(Arc::clone(&progress));
         thread::spawn(move || {
             // Retry transient failures with backoff; hangs are the
             // watchdog's job (handled in the worker loop, not here). The
-            // budget bounds only the wait for another reader's copy, which
-            // the watchdog cannot see.
-            let bytes = cache.read_for_deck(id, &path, &backoffs, wait_budget);
+            // budget bounds the wait for another reader's copy, on the same
+            // stall rule the watchdog applies here.
+            let bytes = cache.read_for_deck(id, &path, &backoffs, stall_budget, &progress);
             let _ = tx.send(LoadMsg {
                 deck: deck_index,
                 generation,
@@ -705,7 +745,8 @@ fn apply_load(
         return; // superseded
     }
     deck.loading = false;
-    deck.load_start = None;
+    deck.read_progress = None;
+    deck.load_progress = None;
     let _ = app.emit(&events.topics.buffering, false);
 
     let bytes = match msg.bytes {
@@ -827,19 +868,23 @@ fn handle_load_timeout(app: &AppHandle, deck: &mut Deck, events: &DeckEvents, ti
     set_pause_state(app, events, true);
 }
 
-/// Decide whether an in-flight read has exceeded the watchdog budget. Pure
-/// (given the clock via `now`) so it is unit-testable without threads or sleeps.
-/// A read is timed out only while `loading` is true, a `load_start` is recorded,
-/// and at least `READ_WATCHDOG_TIMEOUT` has elapsed. When a result has arrived
-/// the worker sets `loading = false`, so this returns false.
+/// Decide whether an in-flight read has **stalled** past the watchdog budget.
+/// Pure (given the clock via `now`) so it is unit-testable without threads or
+/// sleeps.
+///
+/// A read is timed out only while `loading` is true, a `load_progress` is
+/// recorded, and nothing has arrived for at least `READ_WATCHDOG_TIMEOUT`. When
+/// a result has arrived the worker sets `loading = false`, so this returns
+/// false. Why the budget bounds the stall and never the read:
+/// `docs/audio.md`, *Whole-file reads*.
 fn watchdog_timed_out(
     loading: bool,
-    load_start: Option<Instant>,
+    load_progress: Option<Seen>,
     now: Instant,
     timeout: Duration,
 ) -> bool {
-    match load_start {
-        Some(start) if loading => now.saturating_duration_since(start) >= timeout,
+    match load_progress {
+        Some(seen) if loading => seen.stalled(now, timeout),
         _ => false,
     }
 }
@@ -1087,14 +1132,16 @@ pub(super) fn run(
             apply_load(&app, &mut output, deck, &events[role_index], msg);
         }
 
-        // Watchdog: a read that neither completed nor errored within the budget
-        // is a wedged mount. Declare a timeout and abandon the detached read
-        // thread — the worker never blocks waiting on it.
+        // Watchdog: a read that has delivered nothing for the budget is a
+        // wedged mount. Declare a timeout and abandon the detached read thread
+        // — the worker never blocks waiting on it. Note the reader's progress
+        // first, so a read that is merely slow keeps its budget refreshed.
         let now = Instant::now();
         for deck in decks.iter_mut() {
+            deck.note_read_progress(now);
             if watchdog_timed_out(
                 deck.loading,
-                deck.load_start,
+                deck.load_progress,
                 now,
                 tuning.read_watchdog_timeout,
             ) {
@@ -1291,33 +1338,34 @@ mod tests {
     }
 
     #[test]
-    fn watchdog_times_out_only_after_budget_while_loading() {
-        let start = Instant::now();
-        let before = start
+    fn watchdog_times_out_only_after_a_stall_while_loading() {
+        let issued = Instant::now();
+        let before = issued
             .checked_add(READ_WATCHDOG_TIMEOUT - Duration::from_millis(1))
             .unwrap();
-        let after = start
+        let after = issued
             .checked_add(READ_WATCHDOG_TIMEOUT + Duration::from_millis(1))
             .unwrap();
+        let seen = Seen::issued(issued);
 
-        // Under budget: not timed out.
+        // Nothing has arrived, but the budget has not run out.
         assert!(!watchdog_timed_out(
             true,
-            Some(start),
+            Some(seen),
             before,
             READ_WATCHDOG_TIMEOUT
         ));
-        // Over budget while loading: timed out.
+        // Nothing has arrived for the whole budget: a wedged mount.
         assert!(watchdog_timed_out(
             true,
-            Some(start),
+            Some(seen),
             after,
             READ_WATCHDOG_TIMEOUT
         ));
         // A result arrived (loading == false): never a timeout.
         assert!(!watchdog_timed_out(
             false,
-            Some(start),
+            Some(seen),
             after,
             READ_WATCHDOG_TIMEOUT
         ));
@@ -1326,6 +1374,39 @@ mod tests {
             true,
             None,
             after,
+            READ_WATCHDOG_TIMEOUT
+        ));
+    }
+
+    /// The bug in #504: a large file on a slow share kept arriving and was
+    /// failed anyway, because the budget was measured from the read's start.
+    /// Bytes landing at a tenth of the budget carry the read as far as it has
+    /// to go.
+    #[test]
+    fn a_read_that_keeps_delivering_is_never_timed_out() {
+        let mut now = Instant::now();
+        let mut seen = Seen::issued(now);
+        let step = READ_WATCHDOG_TIMEOUT / 10;
+        let mut delivered = 0u64;
+
+        // Ten budgets' worth of elapsed time, a chunk every tenth of one.
+        for _ in 0..100 {
+            now = now.checked_add(step).unwrap();
+            delivered += 256 * 1024;
+            seen = seen.observe(delivered, now);
+            assert!(
+                !watchdog_timed_out(true, Some(seen), now, READ_WATCHDOG_TIMEOUT),
+                "a read still delivering bytes is not a wedged mount"
+            );
+        }
+
+        // The share then goes quiet with the file half read.
+        let stalled = now.checked_add(READ_WATCHDOG_TIMEOUT).unwrap();
+        seen = seen.observe(delivered, stalled);
+        assert!(watchdog_timed_out(
+            true,
+            Some(seen),
+            stalled,
             READ_WATCHDOG_TIMEOUT
         ));
     }

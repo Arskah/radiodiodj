@@ -402,8 +402,9 @@
       onchange={saveTuning}
     />
     <div class="hint">
-      A read stalled longer than this counts as a network hiccup and triggers
-      recovery.
+      A read that has delivered no bytes for this long counts as a network
+      hiccup and triggers recovery. File size does not matter: a read that keeps
+      arriving — at least 64 KiB within the budget — is never given up on.
     </div>
   </div>
   <div class="device-row">

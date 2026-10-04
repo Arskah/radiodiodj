@@ -52,10 +52,24 @@ cannot stall a decoder that is no longer reading from it.
 The read happens on its own thread, with two protections in `audio/player.rs`:
 
 - **Retry.** Four attempts with backoff between them, covering transient errors.
-- **A watchdog.** `READ_WATCHDOG_TIMEOUT` (10 s) bounds how long the worker
-  waits. A `read()` blocked on a dead mount cannot be cancelled, so the thread
-  is abandoned rather than joined; it unwinds whenever the OS finally errors
-  the mount.
+- **A watchdog over the stall, not the read.** The read is taken in chunks and
+  publishes a running byte count (`read_file_watched`); the worker loop notes it
+  on every tick, and `READ_WATCHDOG_TIMEOUT` (10 s) bounds how long that count
+  may stand still. A `read()` blocked on a dead mount cannot be cancelled, so
+  the thread is abandoned rather than joined; it unwinds whenever the OS finally
+  errors the mount.
+
+  **The budget is never the read's.** A 40 MB FLAC on a share that manages a
+  megabyte a second takes four times the budget to arrive, and a share that is
+  merely slow is a share that works — timing the whole read dropped exactly
+  those tracks off air (#504). A dead mount still fails in the same 10 s,
+  because a read that has delivered nothing is what the budget describes.
+
+  The count moves a chunk at a time (`READ_CHUNK`, 64 KiB), so the budget is
+  also a throughput floor: a share that cannot deliver one chunk inside it
+  still reads as stalled. At the defaults that is about 6.5 KB/s — two orders
+  of magnitude below the rate that used to be required, and below any share a
+  show can run off.
 
 A read that fails or times out emits `{role}:load-failed`, which the playlist
 engine turns into skip-to-cached and a retry timer — see
@@ -85,7 +99,10 @@ an **in-flight set**: every reader of a library file claims an id before it
 reads, so one file never crosses the share twice at once. A deck that misses an
 id someone else is already reading into the window waits for that read rather
 than starting its own — never slower than a read that begins later, and bounded
-by the deck's watchdog exactly as a read of its own would be. The analysis pass
+by the deck's watchdog exactly as a read of its own would be. A claim therefore
+carries the holder's **progress**: the waiter mirrors that byte count into its
+own watchdog handle, so the wait ends when the holder stalls rather than when
+the file turns out to be large. The analysis pass
 keeps the same rule from the other side by reading on a single thread
 ([library.md](./library.md#the-analysis-pass)).
 
@@ -312,7 +329,7 @@ the level envelope, the tempo and the extension table — is `audio_measure/`; s
 | file                  | holds                                                       |
 | --------------------- | ----------------------------------------------------------- |
 | `audio/player.rs`     | `Cmd`, `Topics`, whole-file read + retry + watchdog, decode |
-| `audio/cache.rs`      | the prefetch window, its fetch worker, the in-flight set    |
+| `audio/cache.rs`      | the prefetch window, its fetch worker, the in-flight claims |
 | `audio/output.rs`     | one `OutputStream` per device, self-healing open            |
 | `audio/devices.rs`    | cpal enumeration, `DeviceRef` resolution                    |
 | `audio/deck.rs`       | one `Sink` per deck plus the worker loop over a deck set    |
