@@ -200,8 +200,9 @@ Mechanics worth knowing before touching `build.yml`:
 - **The macOS archive is renamed.** Both architectures build `RadiodioDJ.app.tar.gz`, and
   a release has one flat list of assets, so the stage step adds the architecture. A
   signature covers the bytes, not the name.
-- **A keyed release with no `.sig` fails.** `release.yml` checks, because a release
-  nothing can update to otherwise looks like any other.
+- **A keyed release with an unsigned bundle fails.** `release.yml` checks each archive,
+  AppImage and Windows installer for its `.sig`, because a release nothing can update to
+  otherwise looks like any other.
 
 ### Set up or re-create
 

@@ -101,7 +101,7 @@ jobs:
           fi
           gh release upload "$TAG" "${files[@]}" --clobber
 
-      # A release without signatures is one no install can update to.
+      # A bundle without a signature is one no install can update to.
       - name: Fail on missing updater signatures
         env:
           UPDATER_KEY_SET: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
@@ -109,14 +109,22 @@ jobs:
         run: |
           [ "$UPDATER_KEY_SET" = true ] || exit 0
           shopt -s nullglob globstar
-          sigs=(artifacts/**/*.sig)
-          if [ ${#sigs[@]} -eq 0 ]; then
-            echo "::error::no updater signatures were built"
-            exit 1
+          bundles=(artifacts/**/*.app.tar.gz artifacts/**/*.AppImage artifacts/**/*-setup.exe artifacts/**/*.msi)
+          missing=0
+          for bundle in "${bundles[@]}"; do
+            if [ ! -f "$bundle.sig" ]; then
+              echo "::error::no updater signature for ${bundle##*/}"
+              missing=1
+            fi
+          done
+          if [ ${#bundles[@]} -eq 0 ]; then
+            echo "::error::no updater bundles were built"
+            missing=1
           fi
+          exit "$missing"
 
       - name: Fail on incomplete release
-        if: contains(needs.*.result, 'failure')
+        if: ${{ !cancelled() && contains(needs.*.result, 'failure') }}
         shell: bash
         env:
           NEEDS: ${{ toJSON(needs) }}
