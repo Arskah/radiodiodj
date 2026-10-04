@@ -23,6 +23,8 @@ import type {
   Track,
   TrackMetadataInput,
   TuningConfig,
+  UpdateState,
+  ProjectLink,
 } from "./types";
 import { METADATA_KEYS } from "./types";
 
@@ -482,6 +484,29 @@ export const api = {
     return listen<AdminStatus>("admin-state-changed", (e) =>
       callback(e.payload),
     );
+  },
+
+  /** The running version, and what the last update check found. */
+  updateStatus(): Promise<UpdateState> {
+    return invoke<UpdateState>("update_status");
+  },
+  /** Ask for a newer release now. Resolves with the state it leaves. */
+  updateCheck(): Promise<UpdateState> {
+    return invoke<UpdateState>("update_check");
+  },
+
+  /**
+   * Install the offered release and restart. Settles only on failure: on
+   * success the process is gone before an answer exists.
+   */
+  updateInstall(): Promise<void> {
+    return invoke<void>("update_install");
+  },
+  onUpdateState(callback: (state: UpdateState) => void): Promise<UnlistenFn> {
+    return listen<UpdateState>("update:state", (e) => callback(e.payload));
+  },
+  openLink(link: ProjectLink): Promise<void> {
+    return invoke<void>("open_link", { link });
   },
 
   /**

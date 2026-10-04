@@ -96,6 +96,8 @@ browser audio pipeline, no external transcoder, no subscription.
 - **Admin mode** — a password that locks settings and destructive actions while
   leaving playback, cueing and browsing open to whoever is on shift
   ([docs](docs/admin-mode.md))
+- **Updates** — tells you when a newer version is out and installs it when you
+  say so; it never restarts on its own ([docs](docs/updates.md))
 
 ## Usage
 

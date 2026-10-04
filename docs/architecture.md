@@ -27,6 +27,7 @@ own.
 | now-playing output                | `broadcast/`                                         | `features/settings/`                  | [now-playing-broadcast.md](./now-playing-broadcast.md) |
 | themes and station identity       | `appearance/`                                        | `shared/appearance.ts`                | [theming.md](./theming.md)                             |
 | admin mode                        | `admin.rs`                                           | `features/admin/`                     | [admin-mode.md](./admin-mode.md)                       |
+| updates and About                 | `update.rs`                                          | `features/settings/AboutTab.svelte`   | [updates.md](./updates.md)                             |
 | schema and migrations             | `library/db.rs`                                      | —                                     | [database.md](./database.md)                           |
 
 ## Rust backend (`src-tauri/src/`)
@@ -39,6 +40,8 @@ Grouped by domain.
 - **`main.rs`** — a thin `pub fn main() { radiodiodj_lib::run() }` binary entry.
 - **`admin.rs`** — admin mode: the `AdminLock` (unlocked flag, Argon2 password
   check), the `ADMIN_COMMANDS` list, and the gate the invoke handler applies.
+- **`update.rs`** — in-app updates: the `Updater` that checks the manifest on a
+  timer and installs on request, and the `UpdateState` the renderer mirrors.
 - **`audio/`** — playback: the decode path, output devices, decks, the program
   bus, the cue deck, cue points, the fade envelope and the ReplayGain setting.
   Its own code map is in [audio.md](./audio.md#code-map).
@@ -127,6 +130,7 @@ physical deck is on air. The cue deck, being off the bus, emits `cue:*`.
 | `library-health`                                                                                                                       | `library/health.rs`  | the whole health report                     |
 | `scan-progress`, `scan-state-changed`                                                                                                  | the scan worker      | counts, current file, run state             |
 | `cache-state`                                                                                                                          | the prefetch cache   | which track ids are resident in RAM         |
+| `update:state`                                                                                                                         | `update.rs`          | the whole updater snapshot                  |
 
 ## Commands
 

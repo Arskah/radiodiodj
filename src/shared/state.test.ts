@@ -90,6 +90,11 @@ const { api } = vi.hoisted(() => {
     adminClearPassword: vi.fn(),
     adminSetIdleLockMin: vi.fn(),
     onAdminStateChanged: vi.fn(),
+    updateStatus: vi.fn(),
+    updateCheck: vi.fn(),
+    updateInstall: vi.fn(),
+    onUpdateState: vi.fn(),
+    openLink: vi.fn(),
   };
   return { api };
 });
@@ -133,6 +138,7 @@ function defaultTuning() {
       silenceDbfs: -70,
       segueDbfs: -20,
     },
+    updates: { autoCheck: true },
   };
 }
 
@@ -2922,6 +2928,57 @@ describe("AppState library health", () => {
     const { app } = makeApp();
     await app.loadHealth();
     expect(app.health).toEqual(EMPTY_HEALTH);
+  });
+});
+
+describe("updates", () => {
+  let app: AppState;
+
+  const idle = {
+    currentVersion: "1.0.0",
+    phase: { kind: "idle" },
+    offer: null,
+  };
+  const offered = {
+    currentVersion: "1.0.0",
+    phase: { kind: "available" },
+    offer: { version: "1.1.0", notes: "", date: null, installable: true },
+  };
+
+  beforeEach(() => {
+    resetApi();
+    api.updateStatus.mockResolvedValue(idle);
+    api.updateInstall.mockResolvedValue(undefined);
+    app = makeApp().app;
+  });
+
+  it("mirrors the backend's state", async () => {
+    await app.loadUpdate();
+    expect(app.update.currentVersion).toBe("1.0.0");
+    expect(app.updateWaiting).toBe(false);
+
+    const handler = api.onUpdateState.mock.calls[0][0];
+    handler(offered);
+    expect(app.updateWaiting).toBe(true);
+  });
+
+  it("adopts what a requested check resolves with", async () => {
+    api.updateCheck.mockResolvedValue(offered);
+    await app.checkForUpdate();
+    expect(app.update.offer?.version).toBe("1.1.0");
+  });
+
+  it("saves the session before the install restarts the app", async () => {
+    await app.installUpdate();
+    expect(api.saveSession).toHaveBeenCalled();
+    expect(api.saveSession.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      api.updateInstall.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("keeps a failed install from escaping as a rejection", async () => {
+    api.updateInstall.mockRejectedValue("signature mismatch");
+    await expect(app.installUpdate()).resolves.toBeUndefined();
   });
 });
 

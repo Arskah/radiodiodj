@@ -356,6 +356,12 @@ body {
   margin-left: auto;
 }
 
+/* A waiting update: worth knowing, not a fault. */
+.attention-badge--update {
+  background: var(--primary);
+  color: var(--on-primary);
+}
+
 .attention-badge--corner {
   position: absolute;
   top: 0;
@@ -3026,4 +3032,48 @@ body {
 .btn-close:hover {
   color: var(--on-surface);
   background: color-mix(in srgb, var(--on-surface) 10%, transparent);
+}
+
+/* ============================================================
+   Settings → About
+   ============================================================ */
+.about-identity {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-md);
+  margin-bottom: var(--sp-lg);
+}
+
+.about-version {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--on-surface-variant);
+}
+
+.about-status {
+  font-size: 13px;
+}
+
+.about-status--failed {
+  color: var(--error);
+}
+
+.about-notes {
+  max-height: 220px;
+  overflow-y: auto;
+  margin-top: var(--sp-md);
+  padding: var(--sp-md);
+  border-radius: var(--r-lg);
+  background: var(--surface-container-low);
+  color: var(--on-surface-variant);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.about-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-sm);
 }

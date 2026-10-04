@@ -50,6 +50,7 @@ Everything here describes what is built, except where a row says otherwise.
 | ------------------------------------------------------ | ------------------------------------------------------------------- |
 | [admin-mode.md](./admin-mode.md)                       | What a password locks, and what stays available while it is locked. |
 | [theming.md](./theming.md)                             | Writing a theme, the token contract, and station identity.          |
+| [updates.md](./updates.md)                             | In-app updates: what is automatic, what is a click, what restarts.  |
 | [now-playing-broadcast.md](./now-playing-broadcast.md) | The outbound webhook and file output for stream overlays.           |
 
 ## Release

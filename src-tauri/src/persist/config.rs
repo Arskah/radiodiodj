@@ -65,6 +65,25 @@ pub struct TuningConfig {
     pub library: LibraryConfig,
     #[serde(default)]
     pub auto_cue: AutoCueConfig,
+    #[serde(default)]
+    pub updates: UpdatesConfig,
+}
+
+/// In-app update behaviour. See `docs/updates.md`.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdatesConfig {
+    /// Whether the app asks for a newer release by itself. Off, it only asks
+    /// when an operator presses the button — for a station that must not
+    /// reach the internet unprompted.
+    #[serde(default = "default_apply")]
+    pub auto_check: bool,
+}
+
+impl Default for UpdatesConfig {
+    fn default() -> Self {
+        Self { auto_check: true }
+    }
 }
 
 /// Whether derived cue points are applied, and the levels the analyser works

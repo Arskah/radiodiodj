@@ -43,6 +43,7 @@ pub const ADMIN_COMMANDS: &[&str] = &[
     "admin_set_password",
     "admin_clear_password",
     "admin_set_idle_lock_min",
+    "update_install",
 ];
 
 pub const LOCKED_ERROR: &str = "admin mode is locked";
@@ -172,6 +173,9 @@ mod tests {
         "reveal_track",
         "library_health",
         "library_check_now",
+        "update_status",
+        "update_check",
+        "open_link",
         "admin_status",
         "admin_unlock",
         "admin_lock",

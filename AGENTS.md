@@ -21,7 +21,7 @@ pnpm -C site build                                # astro check + static build �
 
 Tauri 2 app. Two process boundaries: a Rust backend (`src-tauri/src/`, grouped
 by domain — `audio/`, `audio_measure/`, `library/`, `playlist/`, `broadcast/`,
-`appearance/`, `persist/`, `admin.rs`) and a Svelte 5 / Vite renderer (`src/`, one folder per
+`appearance/`, `persist/`, `admin.rs`, `update.rs`) and a Svelte 5 / Vite renderer (`src/`, one folder per
 UI feature under `features/` plus `shared/`), talking over Tauri `invoke` +
 `emit`/`listen`.
 
@@ -305,6 +305,14 @@ rejects every command in `admin::ADMIN_COMMANDS` while locked. The unlocked flag
 lives only in `AppState`; the renderer mirrors it and runs the idle timer, which
 can lock but never unlock. Not a security boundary. See
 [docs/admin-mode.md](docs/admin-mode.md).
+
+**Updates** — checking is automatic, installing is an admin's click, and
+nothing ever restarts the app unasked: a restart is dead air. The backend owns
+the updater and emits one whole `update:state`; an unprompted check never
+reports a failure. Every exit path runs `shut_down`, including the plugin's
+`on_before_exit`, because on Windows the installer ends the process with no
+exit event. The manifest is on radiodiodj.org, keyed by installer type. See
+[docs/updates.md](docs/updates.md).
 
 **Naming** — "edit" means metadata and nothing else (`MetadataOverlay.svelte`,
 `app.editingMetadata`); playback markers are always "cue points"

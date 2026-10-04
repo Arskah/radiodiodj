@@ -442,7 +442,45 @@ export interface TuningConfig {
   player: PlayerConfig;
   library: LibraryConfig;
   autoCue: AutoCueConfig;
+  updates: UpdatesConfig;
 }
+
+/** In-app update behaviour. See `docs/updates.md`. */
+export interface UpdatesConfig {
+  /** Whether the app asks for a newer release without being told to. */
+  autoCheck: boolean;
+}
+
+/** Where the updater is in its work. */
+export type UpdatePhase =
+  | { kind: "idle" }
+  | { kind: "checking" }
+  | { kind: "upToDate" }
+  | { kind: "available" }
+  | { kind: "downloading"; done: number; total: number | null }
+  | { kind: "installing" }
+  | { kind: "failed"; message: string };
+
+/** A release newer than the running one. */
+export interface UpdateOffer {
+  version: string;
+  /** Release notes as Markdown; empty when this installation has no bundle. */
+  notes: string;
+  date: string | null;
+  /** False when the operator has to fetch it from the website. */
+  installable: boolean;
+}
+
+/** The updater as the backend reports it. See `docs/updates.md`. */
+export interface UpdateState {
+  currentVersion: string;
+  phase: UpdatePhase;
+  /** Outlives a later failed check. */
+  offer: UpdateOffer | null;
+}
+
+/** A project page the backend will open in the browser. */
+export type ProjectLink = "website" | "changelog" | "source" | "licence";
 
 export interface DeviceInfo {
   name: string;
