@@ -36,13 +36,18 @@ changes nothing and deletes nothing, so there is no reason for the backend to
 refuse one. `ADMIN_COMMANDS` gates the commands that _change_ the library, and a
 test pins `library_check_now` as deliberately outside it.
 
+Checking for an update is open as well, by the same reasoning: `update_check`
+reads a manifest and changes nothing. Installing one is not — `update_install`
+restarts the app. See [updates.md](./updates.md).
+
 Reading the appearance is **not** gated, and cannot be: the renderer paints
 itself from `get_appearance` before it mounts, on a launch that starts locked.
 Only the commands that change it are in `ADMIN_COMMANDS`. See
 [theming.md](./theming.md).
 
-The library-health badge stays on the Settings button while locked. It tells
-whoever is at the desk that an admin should log in.
+The library-health badge stays on the Settings button while locked, and so does
+the one for a waiting update. Either tells whoever is at the desk that an admin
+should log in.
 
 ## Locking and unlocking
 

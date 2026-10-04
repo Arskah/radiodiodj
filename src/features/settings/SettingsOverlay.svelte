@@ -8,6 +8,7 @@
   import NowPlayingTab from "./NowPlayingTab.svelte";
   import AppearanceTab from "./AppearanceTab.svelte";
   import AdvancedTab from "./AdvancedTab.svelte";
+  import AboutTab from "./AboutTab.svelte";
 
   // Editable draft of the tuning config, shared by every tab that shows a
   // tuning field. Synced from `app.tuning` whenever the overlay opens; each
@@ -130,6 +131,22 @@
           <span class="material-symbols-outlined">tune</span>
           Advanced
         </button>
+        <button
+          class="settings-tab"
+          class:active={app.settingsTab === "about"}
+          role="tab"
+          aria-selected={app.settingsTab === "about"}
+          onclick={() => (app.settingsTab = "about")}
+        >
+          <span class="material-symbols-outlined">info</span>
+          About
+          {#if app.updateWaiting}
+            <span
+              class="attention-badge attention-badge--update"
+              aria-label="Update available">↑</span
+            >
+          {/if}
+        </button>
       </div>
 
       <div id="settings-content">
@@ -145,6 +162,8 @@
           <AppearanceTab />
         {:else if app.settingsTab === "advanced"}
           <AdvancedTab bind:tuning {saveTuning} {flushTuning} />
+        {:else if app.settingsTab === "about"}
+          <AboutTab bind:tuning {saveTuning} />
         {/if}
       </div>
     </div>

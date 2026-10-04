@@ -2,15 +2,23 @@
   import { app } from "../../shared/state.svelte";
   import ErrorBanner from "../ui/ErrorBanner.svelte";
 
+  // The version rides along because a locked desk cannot open About, and
+  // whoever reports a bug from there still needs to say what they are running.
   const settingsTitle = $derived.by(() => {
-    if (!app.isAdmin) {
-      return app.healthAttention > 0
-        ? `Settings — the library needs attention (${app.healthAttention}); unlock admin mode`
-        : "Settings — unlock admin mode";
+    const notes: string[] = [];
+    if (app.healthAttention > 0) {
+      notes.push(`the library needs attention (${app.healthAttention})`);
     }
-    return app.healthAttention > 0
-      ? `Settings — the library needs attention (${app.healthAttention})`
-      : "Settings — library paths, audio devices, scan";
+    if (app.update.offer) {
+      notes.push(`version ${app.update.offer.version} is available`);
+    }
+    if (!app.isAdmin) notes.push("unlock admin mode");
+    const what =
+      notes.length > 0
+        ? notes.join("; ")
+        : "library paths, audio devices, scan";
+    const version = app.update.currentVersion;
+    return `Settings — ${what}${version ? ` · v${version}` : ""}`;
   });
 
   function toggleLock(): void {
@@ -120,6 +128,11 @@
       {#if app.healthAttention > 0}
         <span class="attention-badge attention-badge--corner" aria-hidden="true"
           >{app.healthAttention}</span
+        >
+      {:else if app.updateWaiting}
+        <span
+          class="attention-badge attention-badge--corner attention-badge--update"
+          aria-hidden="true">↑</span
         >
       {/if}
     </button>

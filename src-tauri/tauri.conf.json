@@ -46,6 +46,7 @@
       "endpoints": [
         "https://radiodiodj.org/update.json"
       ],
+      "requireSignedVersion": true,
       "windows": {
         "installMode": "passive"
       }

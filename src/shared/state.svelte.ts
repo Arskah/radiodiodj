@@ -17,6 +17,7 @@ import type {
   Track,
   TrackMetadataInput,
   TuningConfig,
+  UpdateState,
 } from "./types";
 import { METADATA_KEYS } from "./types";
 import { isStopMarker, isTrackItem } from "./types";
@@ -90,6 +91,7 @@ const DEFAULT_TUNING: TuningConfig = {
     silenceDbfs: -70,
     segueDbfs: -20,
   },
+  updates: { autoCheck: true },
 };
 
 export const EMPTY_HEALTH: HealthReport = {
@@ -109,7 +111,13 @@ export const EMPTY_HEALTH: HealthReport = {
 
 export type PlaylistTab = "playlist" | "history";
 export type SettingsTab =
-  "audio" | "library" | "playlist" | "now-playing" | "appearance" | "advanced";
+  | "audio"
+  | "library"
+  | "playlist"
+  | "now-playing"
+  | "appearance"
+  | "advanced"
+  | "about";
 
 /**
  * What the cue deck was showing when a surface borrowed it. `previewing` rather
@@ -248,6 +256,15 @@ export class AppState {
   );
   /** Findings that want attention; badges the Settings button. */
   healthAttention = $derived(attentionOf(this.health));
+
+  /** The updater, mirrored whole from `update:state`. */
+  update = $state<UpdateState>({
+    currentVersion: "",
+    phase: { kind: "idle" },
+    offer: null,
+  });
+  /** Whether a newer release is waiting, for the Settings badge. */
+  updateWaiting = $derived(this.update.offer !== null);
 
   // ----- Cue deck (independent transport on a separate audio device) -----
   cueTrack = $state<Track | null>(null);
@@ -446,6 +463,7 @@ export class AppState {
     );
     void api.onLibraryHealth((report) => (this.health = report));
     void api.onAdminStateChanged((status) => this.applyAdmin(status));
+    void api.onUpdateState((state) => (this.update = state));
 
     api.onScanProgress(({ processed, total }) => {
       if (this.scanStatus.status === "running") {
@@ -1603,6 +1621,37 @@ export class AppState {
       }
     }
     this.scheduleSave();
+  }
+
+  async loadUpdate(): Promise<void> {
+    try {
+      this.update = await api.updateStatus();
+    } catch (err) {
+      logger.error("Update status lookup failed:", err);
+    }
+  }
+
+  async checkForUpdate(): Promise<void> {
+    try {
+      this.update = await api.updateCheck();
+    } catch (err) {
+      logger.error("Update check failed:", err);
+    }
+  }
+
+  /**
+   * Install the offered release and restart. The session is flushed first: the
+   * restart restores from it, and on Windows the installer ends the process
+   * without a close request to save on.
+   */
+  async installUpdate(): Promise<void> {
+    try {
+      await this.flushSave();
+      await api.updateInstall();
+    } catch (err) {
+      // The backend has already put the failure in `update:state`.
+      logger.error("Update install failed:", err);
+    }
   }
 
   async loadAdmin(): Promise<void> {

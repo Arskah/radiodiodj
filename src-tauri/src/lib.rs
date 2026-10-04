@@ -21,6 +21,7 @@ mod broadcast;
 mod library;
 mod persist;
 mod playlist;
+mod update;
 
 use audio::cache::Cache;
 use audio::devices::{list_output_devices, DeviceInfo};
@@ -46,6 +47,7 @@ use persist::config::{AppearanceConfig, Config, DeviceRef, NowPlayingConfig, Tun
 use persist::session::{Session, SessionPlaylistItem, SessionState};
 use playlist::{PlaylistService, Snapshot};
 use std::time::Duration;
+use update::{UpdateState, Updater};
 
 /// Build the audio-player network-resilience tuning from the stored tuning
 /// section. Values are already clamped on write, so the lists are non-empty.
@@ -112,6 +114,8 @@ pub struct AppState {
     /// Shared prefetch byte cache, resident in both deck players.
     cache: Arc<Cache>,
     broadcast: Arc<BroadcastService>,
+    /// Checks for a newer release, and installs one when asked.
+    updater: Arc<Updater>,
     /// Set when this launch replaced a database from an older epoch, so the
     /// renderer can say why the library is rescanning.
     library_reset: bool,
@@ -1220,6 +1224,55 @@ async fn admin_set_idle_lock_min(state: State<'_, AppState>, minutes: u64) -> Re
     blocking(move || admin.set_idle_lock_min(minutes).map_err(err)).await
 }
 
+/// The updater's state: the running version, and what a check last found.
+#[tauri::command(rename_all = "camelCase")]
+fn update_status(state: State<AppState>) -> UpdateState {
+    state.updater.status()
+}
+
+/// Ask whether a newer release exists. Open while admin mode is locked: it
+/// reads a manifest and changes nothing.
+#[tauri::command(rename_all = "camelCase")]
+async fn update_check(state: State<'_, AppState>) -> Result<UpdateState, String> {
+    let updater = Arc::clone(&state.updater);
+    Ok(updater.check(false).await)
+}
+
+/// Install the offered release and restart. Resolves only on failure.
+#[tauri::command(rename_all = "camelCase")]
+async fn update_install(state: State<'_, AppState>) -> Result<(), String> {
+    let updater = Arc::clone(&state.updater);
+    updater.install().await
+}
+
+/// A page the app links out to. Named rather than passed as a URL, so the
+/// renderer cannot open an address of its choosing.
+#[derive(serde::Deserialize, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+enum Link {
+    Website,
+    Changelog,
+    Source,
+    Licence,
+}
+
+impl Link {
+    fn url(self) -> &'static str {
+        match self {
+            Self::Website => "https://radiodiodj.org",
+            Self::Changelog => "https://github.com/Arskah/radiodiodj/blob/main/CHANGELOG.md",
+            Self::Source => "https://github.com/Arskah/radiodiodj",
+            Self::Licence => "https://github.com/Arskah/radiodiodj/blob/main/LICENSE",
+        }
+    }
+}
+
+/// Open one of the project's pages in the default browser.
+#[tauri::command(rename_all = "camelCase")]
+async fn open_link(link: Link) -> Result<(), String> {
+    blocking(move || tauri_plugin_opener::open_url(link.url(), None::<&str>).map_err(err)).await
+}
+
 /// Build the Tauri app and run it: plugins, then the data directory and the
 /// library, then the decks, the playlist and the background jobs.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1252,6 +1305,7 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(
@@ -1367,9 +1421,12 @@ pub fn run() {
                     Arc::clone(&waveform),
                 );
             }
+            let updater = Updater::new(app.handle().clone(), Arc::clone(&config));
+            updater.start();
             app.manage(AppState {
                 db,
                 config,
+                updater,
                 admin,
                 session,
                 scan,
@@ -1476,17 +1533,27 @@ pub fn run() {
             admin_set_password,
             admin_clear_password,
             admin_set_idle_lock_min,
+            update_status,
+            update_check,
+            update_install,
+            open_link,
         ]))
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { .. } = event {
-                if let Some(state) = app.try_state::<AppState>() {
-                    // Before the broadcast goes quiet: a queued transition may
-                    // still owe the airing log a play.
-                    state.playlist.drain();
-                    state.broadcast.shutdown_blocking();
-                }
+                shut_down(app);
             }
         });
+}
+
+/// What the app owes before its process ends. Runs on every exit, and from
+/// the updater on Windows, where the installer ends the process without one.
+pub(crate) fn shut_down(app: &AppHandle) {
+    if let Some(state) = app.try_state::<AppState>() {
+        // Before the broadcast goes quiet: a queued transition may still owe
+        // the airing log a play.
+        state.playlist.drain();
+        state.broadcast.shutdown_blocking();
+    }
 }
