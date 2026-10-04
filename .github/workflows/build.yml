@@ -51,6 +51,8 @@ jobs:
       APPLE_ID_IN: ${{ secrets.APPLE_ID }}
       APPLE_PASSWORD_IN: ${{ secrets.APPLE_PASSWORD }}
       APPLE_TEAM_ID_IN: ${{ secrets.APPLE_TEAM_ID }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
@@ -134,24 +136,47 @@ jobs:
             echo "::warning::Signing without notarization — no notarization credentials set"
           fi
 
+      # Updater artifacts are an overlay because a build with them enabled fails
+      # without the private key. See docs/signing.md.
+      - name: Enable updater artifacts
+        id: updater
+        if: env.TAURI_SIGNING_PRIVATE_KEY != ''
+        shell: bash
+        run: |
+          echo '{"bundle":{"createUpdaterArtifacts":true}}' > src-tauri/updater.conf.json
+          echo "config-arg=--config src-tauri/updater.conf.json" >> "$GITHUB_OUTPUT"
+
       - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         id: tauri
         with:
-          # Each signing overlay is appended only when its platform is being signed.
-          args: ${{ format('{0} {1}', inputs.sign-windows && format('{0} --config src-tauri/signing.windows.conf.json', inputs.args) || inputs.args, steps.macos-signing.outputs.config-arg) }}
+          # Each overlay is appended only when it applies.
+          args: ${{ format('{0} {1} {2}', inputs.sign-windows && format('{0} --config src-tauri/signing.windows.conf.json', inputs.args) || inputs.args, steps.macos-signing.outputs.config-arg, steps.updater.outputs.config-arg) }}
           tauriScript: pnpm tauri
 
       - name: Stage bundles
         shell: bash
         env:
           ARTIFACT_PATHS: ${{ steps.tauri.outputs.artifactPaths }}
+          TARGET: ${{ inputs.target }}
         run: |
           mkdir -p staging
           if [ -n "$ARTIFACT_PATHS" ]; then
             echo "$ARTIFACT_PATHS" | jq -r '.[]' | tr -d '\r' | while read -r p; do
-              [ -n "$p" ] && cp -r "$p" staging/
+              [ -n "$p" ] || continue
+              cp -r "$p" staging/
+              if [ -f "$p.sig" ]; then cp "$p.sig" staging/; fi
             done
           fi
+          # Both macOS builds name their updater archive RadiodioDJ.app.tar.gz,
+          # and a release holds its assets in one flat namespace.
+          case "$TARGET" in
+            aarch64-*) arch=aarch64 ;;
+            *) arch=x64 ;;
+          esac
+          for f in staging/*.app.tar.gz staging/*.app.tar.gz.sig; do
+            [ -e "$f" ] || continue
+            mv "$f" "${f/.app.tar.gz/_${arch}.app.tar.gz}"
+          done
           # Also stage the raw binary so downstream jobs (e.g. e2e) can run
           # the app without rebuilding. Skipped silently if not present.
           for binary in \

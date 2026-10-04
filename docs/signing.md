@@ -1,6 +1,7 @@
 # Application signing
 
-Status of code signing across the three release platforms.
+Status of code signing across the three release platforms. Update signatures are a
+separate key and a separate concern — see [Updater signing](#updater-signing).
 
 | Platform | State                                | OS warning removed?                                                       |
 | -------- | ------------------------------------ | ------------------------------------------------------------------------- |
@@ -173,6 +174,62 @@ Not scaffolded — this route bypasses `signing.windows.conf.json` entirely. Lea
    to SignPath and writes the signed artifacts back over the staged ones, so the existing
    upload job picks them up.
 3. Add the `SIGNPATH_API_TOKEN` secret and the organization / project / policy slugs.
+
+---
+
+## Updater signing
+
+Not code signing: the OS never sees it. Every bundle an install can update itself from
+gets a `.sig` beside it, made with a minisign key pair of our own, and the app refuses an
+update whose signature does not match the public key compiled into it
+(`plugins.updater.pubkey` in `tauri.conf.json`).
+
+| Platform | Signed file                    |
+| -------- | ------------------------------ |
+| macOS    | `RadiodioDJ_<arch>.app.tar.gz` |
+| Windows  | `…-setup.exe`, `….msi`         |
+| Linux    | `….AppImage`, `….deb`, `….rpm` |
+
+Mechanics worth knowing before touching `build.yml`:
+
+- **Overlay, not config.** `bundle.createUpdaterArtifacts` is what makes the bundler sign,
+  and with it on a build without the private key fails. So it stays out of
+  `tauri.conf.json`; the workflow writes `src-tauri/updater.conf.json` (gitignored) and
+  passes it as `--config` only when `TAURI_SIGNING_PRIVATE_KEY` is set. Local builds, CI
+  and forks build unsigned exactly as before.
+- **The macOS archive is renamed.** Both architectures build `RadiodioDJ.app.tar.gz`, and
+  a release has one flat list of assets, so the stage step adds the architecture. A
+  signature covers the bytes, not the name.
+- **A keyed release with an unsigned bundle fails.** `release.yml` checks each archive,
+  AppImage and Windows installer for its `.sig`, because a release nothing can update to
+  otherwise looks like any other.
+
+### Set up or re-create
+
+Generate the key yourself — the private key must never come from an agent or land in the
+repo.
+
+```sh
+pnpm tauri signer generate -w ~/.tauri/radiodiodj.key   # set a password
+```
+
+| Secret                               | Value                                 |
+| ------------------------------------ | ------------------------------------- |
+| `TAURI_SIGNING_PRIVATE_KEY`          | contents of `~/.tauri/radiodiodj.key` |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | the password                          |
+
+The public half (`radiodiodj.key.pub`) goes into `plugins.updater.pubkey`.
+
+**Keep a copy of the private key and its password outside GitHub.** A secret cannot be
+read back, and an install only trusts the key it was built with: lose the private key and
+no existing install can ever be updated again — every operator reinstalls by hand.
+
+### Rotate
+
+An install trusts one key, so a rotation takes two releases: one signed with the **old**
+key that carries the **new** public key, then everything after it signed with the new
+key. Installs that skip the bridging release are stranded, so leave it as the latest
+release long enough for stations to pick it up.
 
 [SignPath Foundation]: https://about.signpath.io/product/open-source
 [`trusted-signing-cli`]: https://github.com/Levminer/trusted-signing-cli

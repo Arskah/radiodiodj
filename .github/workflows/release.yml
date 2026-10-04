@@ -93,7 +93,7 @@ jobs:
         shell: bash
         run: |
           shopt -s nullglob globstar
-          files=(artifacts/**/*.dmg artifacts/**/*.app.tar.gz artifacts/**/*.AppImage artifacts/**/*.deb artifacts/**/*.rpm artifacts/**/*.msi artifacts/**/*.exe artifacts/**/*.nsis.zip radiodiodj-signing-key.asc)
+          files=(artifacts/**/*.dmg artifacts/**/*.app.tar.gz artifacts/**/*.AppImage artifacts/**/*.deb artifacts/**/*.rpm artifacts/**/*.msi artifacts/**/*.exe artifacts/**/*.sig radiodiodj-signing-key.asc)
           if [ ${#files[@]} -eq 0 ]; then
             echo "No bundle artifacts found" >&2
             find artifacts -type f >&2
@@ -101,8 +101,30 @@ jobs:
           fi
           gh release upload "$TAG" "${files[@]}" --clobber
 
+      # A bundle without a signature is one no install can update to.
+      - name: Fail on missing updater signatures
+        env:
+          UPDATER_KEY_SET: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        shell: bash
+        run: |
+          [ "$UPDATER_KEY_SET" = true ] || exit 0
+          shopt -s nullglob globstar
+          bundles=(artifacts/**/*.app.tar.gz artifacts/**/*.AppImage artifacts/**/*-setup.exe artifacts/**/*.msi)
+          missing=0
+          for bundle in "${bundles[@]}"; do
+            if [ ! -f "$bundle.sig" ]; then
+              echo "::error::no updater signature for ${bundle##*/}"
+              missing=1
+            fi
+          done
+          if [ ${#bundles[@]} -eq 0 ]; then
+            echo "::error::no updater bundles were built"
+            missing=1
+          fi
+          exit "$missing"
+
       - name: Fail on incomplete release
-        if: contains(needs.*.result, 'failure')
+        if: ${{ !cancelled() && contains(needs.*.result, 'failure') }}
         shell: bash
         env:
           NEEDS: ${{ toJSON(needs) }}
