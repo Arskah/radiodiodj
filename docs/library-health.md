@@ -265,9 +265,11 @@ RIFF/WAVE container). Each row shows the error and has _Show in folder_.
 The failure is stored on the track (`analysis_error`, `analysis_failed_at`), and
 the pass skips the track from then on. A scan that sees the file change (a new
 modification time or content type), or reattaches it at a new path, clears the
-failure, so a replaced file is tried again. A file that could not be _read_, such
-as one on a share that dropped out, is not recorded: the pass tries it again on
-its next run.
+failure, so a replaced file is tried again. A failure is recorded against the
+modification time the pass read the file at, so one that arrives after such a
+scan is dropped rather than stamped on the replacement. A file that could not be
+_read_, such as one on a share that dropped out, is not recorded: the pass tries
+it again on its next run.
 
 To fix one, replace the file with a good copy and scan, or delete it, scan, and
 purge the missing track. Unreadable tracks are not in the attention count, and

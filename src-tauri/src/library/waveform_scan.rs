@@ -354,13 +354,13 @@ fn run_pass(
                                 failed.lock().insert(track.id);
                             }
                             Outcome::Unreadable(error) => {
-                                unreadable(db, failed, track.id, &error);
+                                unreadable(db, failed, &track, &error);
                             }
                         }
                         tick(progress, job, app);
                     },
                     |track| {
-                        unreadable(db, failed, track.id, PANICKED_DECODE);
+                        unreadable(db, failed, track, PANICKED_DECODE);
                         tick(progress, job, app);
                     },
                 );
@@ -377,7 +377,7 @@ fn run_pass(
                 tick(progress, job, app);
             },
             |track| {
-                unreadable(db, failed, track.id, PANICKED_READ);
+                unreadable(db, failed, track, PANICKED_READ);
                 tick(progress, job, app);
             },
             fetch,
@@ -496,17 +496,24 @@ const PANICKED_DECODE: &str = "panicked while decoding";
 const PANICKED_READ: &str = "panicked while reading";
 
 /// Record that a file was read but cannot be turned into an analysis, keeping it
-/// out of this run if the row refuses the mark.
+/// out of this run if the mark cannot be stored.
 ///
 /// A panicking file is marked rather than only added to `failed`, which is
 /// per-run: without the mark the pass would pull the same file across the share
 /// on every launch and panic on it again. It is the disposition a decode that
 /// returned an error already gets, and it comes back the same way — when a scan
 /// sees the file change.
-fn unreadable(db: &Db, failed: &Mutex<HashSet<i64>>, id: i64, error: &str) {
-    if let Err(e) = db.set_analysis_failed(id, error, now_ms()) {
-        log::error!("analysis: store failure {} failed: {}", id, e);
-        failed.lock().insert(id);
+///
+/// A mark the row refused is left out of `failed` for the reason [`Outcome`]
+/// gives: the rescan that moved the row left it queued.
+fn unreadable(db: &Db, failed: &Mutex<HashSet<i64>>, job: &AnalysisJob, error: &str) {
+    match db.set_analysis_failed(job.id, error, now_ms(), job.mtime) {
+        Err(e) => {
+            log::error!("analysis: store failure {} failed: {}", job.id, e);
+            failed.lock().insert(job.id);
+        }
+        Ok(false) => log::debug!("analysis: {} moved on", job.path),
+        Ok(true) => {}
     }
 }
 

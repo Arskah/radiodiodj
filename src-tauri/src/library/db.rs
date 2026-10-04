@@ -1578,13 +1578,25 @@ impl Db {
 
     /// Record that the file could not be decoded. The analysis pass skips the
     /// track until a scan sees the file change.
-    pub fn set_analysis_failed(&self, id: i64, error: &str, at_ms: i64) -> Result<()> {
+    ///
+    /// Guarded on `mtime` like the measurements beside it: the failure is a
+    /// fact about the bytes the pass read, and a row whose file has changed
+    /// since is already queued for the ones there now. Returns whether the row
+    /// took the mark.
+    pub fn set_analysis_failed(
+        &self,
+        id: i64,
+        error: &str,
+        at_ms: i64,
+        mtime: Option<i64>,
+    ) -> Result<bool> {
         let conn = self.conn.lock();
-        conn.execute(
-            "UPDATE tracks SET analysis_error = ?, analysis_failed_at = ? WHERE id = ?",
-            params![error, at_ms, id],
+        let changed = conn.execute(
+            "UPDATE tracks SET analysis_error = ?, analysis_failed_at = ? \
+             WHERE id = ? AND mtime IS ?",
+            params![error, at_ms, id, mtime],
         )?;
-        Ok(())
+        Ok(changed > 0)
     }
 
     /// Present tracks the analysis pass could not decode, oldest failure first.
@@ -4449,7 +4461,7 @@ mod tests {
         let (id, _) = tailed_track(&db, "/a.mp3");
         let before = db.get_track(id).unwrap().unwrap().cue_points;
         clear_levels(&db, id);
-        db.set_analysis_failed(id, "wedged share", 5).unwrap();
+        assert!(db.set_analysis_failed(id, "wedged share", 5, None).unwrap());
 
         let done = db.recalculate_auto_cue(THRESHOLDS, 99).unwrap();
 
@@ -4705,7 +4717,7 @@ mod tests {
     fn a_recalculation_revives_a_waiting_track_that_failed_to_decode() {
         let db = Db::open_in_memory().unwrap();
         let id = another_music_track(&db, "/wedged.mp3");
-        db.set_analysis_failed(id, "wedged share", 5).unwrap();
+        assert!(db.set_analysis_failed(id, "wedged share", 5, None).unwrap());
 
         let done = db.recalculate_auto_cue(THRESHOLDS, 99).unwrap();
 
@@ -6892,8 +6904,9 @@ mod tests {
         let (a, b) = (jobs[0].id, jobs[1].id);
         assert_eq!(db.unhashed_count().unwrap(), 2);
 
-        db.set_analysis_failed(a, "probe: unsupported feature", 7)
-            .unwrap();
+        assert!(db
+            .set_analysis_failed(a, "probe: unsupported feature", 7, None)
+            .unwrap());
 
         let jobs = db.tracks_needing_analysis().unwrap();
         assert_eq!(jobs.iter().map(|j| j.id).collect::<Vec<_>>(), vec![b]);
@@ -6917,7 +6930,7 @@ mod tests {
         };
         db.insert_track(&file).unwrap();
         let id = only_id(&db);
-        db.set_analysis_failed(id, "bad", 7).unwrap();
+        assert!(db.set_analysis_failed(id, "bad", 7, Some(1)).unwrap());
 
         db.reconcile(&Reconcile {
             upserts: vec![TrackInsert {
@@ -6933,6 +6946,36 @@ mod tests {
         assert_eq!(db.unhashed_count().unwrap(), 1);
     }
 
+    /// The decode of a file a scan has since seen change must not take the
+    /// replacement out of the queue with it.
+    #[test]
+    fn a_failure_from_a_file_that_has_since_changed_is_refused() {
+        let db = Db::open_in_memory().unwrap();
+        let file = TrackInsert {
+            path: "/a.mp3".into(),
+            content_type: "music".into(),
+            mtime: Some(1),
+            ..Default::default()
+        };
+        db.insert_track(&file).unwrap();
+        let job = db.tracks_needing_analysis().unwrap().remove(0);
+
+        db.reconcile(&Reconcile {
+            upserts: vec![TrackInsert {
+                mtime: Some(2),
+                ..file
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert!(!db.set_analysis_failed(job.id, "bad", 7, job.mtime).unwrap());
+        assert!(db.unreadable_tracks().unwrap().is_empty());
+        let queued = db.tracks_needing_analysis().unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!((queued[0].id, queued[0].mtime), (job.id, Some(2)));
+    }
+
     #[test]
     fn a_reattached_file_clears_its_analysis_failure() {
         let db = Db::open_in_memory().unwrap();
@@ -6944,7 +6987,7 @@ mod tests {
         })
         .unwrap();
         let id = only_id(&db);
-        db.set_analysis_failed(id, "bad", 7).unwrap();
+        assert!(db.set_analysis_failed(id, "bad", 7, None).unwrap());
 
         db.reconcile(&Reconcile {
             gone: vec![id],
@@ -6973,7 +7016,7 @@ mod tests {
         })
         .unwrap();
         let id = only_id(&db);
-        db.set_analysis_failed(id, "bad", 7).unwrap();
+        assert!(db.set_analysis_failed(id, "bad", 7, None).unwrap());
         db.reconcile(&Reconcile {
             gone: vec![id],
             now_ms: 9,
@@ -7237,7 +7280,7 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         db.insert_track(&tagged("/broken.mp3", "T", "A")).unwrap();
         let id = only_id(&db);
-        db.set_analysis_failed(id, "not audio", 5).unwrap();
+        assert!(db.set_analysis_failed(id, "not audio", 5, None).unwrap());
         db.conn
             .lock()
             .execute("UPDATE tracks SET tags_read_version = NULL", [])
