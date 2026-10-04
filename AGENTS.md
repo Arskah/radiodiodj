@@ -392,6 +392,11 @@ runs `cargo doc` next to clippy because the rustdoc group only fires there.
   `tauri.conf.json`, so that file is in `.prettierignore` and kept in
   `JSON.stringify(…, null, 2)` layout — a short array on one line would be
   expanded in every release PR and fail the format check there.
+- Only `feat`, `fix`, `perf` and `revert` commits (and any breaking change) open
+  a release PR and appear in the changelog; the other types are `hidden` in
+  `release-please-config.json` and ride along with the next release unlisted.
+  The changelog entry is the release body, which _Settings → About_ shows an
+  operator before an update — pick the type by whether they should read it.
 - `tauri-plugin-log` is initialized first in the builder chain so panics before
   later plugin setup still reach the file sink. Renderer `console.*` is
   intercepted by `attachConsole()` in `main.ts`; vitest must not import
