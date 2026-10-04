@@ -82,10 +82,6 @@ export const config: WebdriverIO.Config = {
   maxInstances: Number(process.env.E2E_WORKERS ?? 4),
   capabilities: [
     {
-      // TEMP diagnostic toggle
-      ...(process.env.E2E_CLASSIC
-        ? { "wdio:enforceWebDriverClassic": true }
-        : {}),
       "tauri:options": {
         application: APP_BINARY,
       },

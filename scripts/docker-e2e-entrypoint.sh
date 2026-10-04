@@ -21,11 +21,6 @@ if [ ! -f "src-tauri/target/${E2E_BINARY}/radiodiodj" ]; then
 fi
 
 mkdir -p e2e-results
-# Pre-create + tail tauri-driver.log so its lines surface in `docker logs`
-# (and bind-mount stdout) live, without piping into the wdio worker's
-# `process.stdout` which causes ERR_STREAM_WRITE_AFTER_END on shutdown.
-: > e2e-results/tauri-driver.log
-tail -F e2e-results/tauri-driver.log &
 
 # Start Xvfb directly instead of via xvfb-run. xvfb-run waits for SIGUSR1
 # from Xvfb to signal readiness; inside this container that handshake
