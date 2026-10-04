@@ -329,10 +329,17 @@ The search box follows what is on screen. On the list of saved playlists it
 filters by name. With one open it searches that playlist's entries — title,
 artist and album, by the library search's rule that each word typed starts a
 word — and starts empty on the way in and on the way out. Every entry is
-already in the renderer, so this is a filter and not a query. A row keeps the
-number of its place in the saved playlist, and reordering waits until the
-search is cleared: a drop between two shown rows names no position among the
-hidden ones.
+already in the renderer, so this is a filter and not a query.
+
+The column headers of an open saved playlist **sort** it: title, artist, album
+and time, a second click reversing. A sort is a way of looking, never a change:
+the order the saved playlist is stored, queued and exported in is the one under
+`#`, and a click there goes back to it. Rows that tie stay in that order.
+
+A row keeps the number of its place in the saved playlist through both. And
+reordering by drag waits until the rows on screen are the saved playlist's own,
+in its own order — no search, sorted by `#` ascending — because only then does
+a drop between two rows name a position.
 
 Rows in the _Playlists_ tab have a menu of their own. A saved playlist's offers
 _Open_, both appends, _Use as Auto source_, _Export…_ and, for an admin,

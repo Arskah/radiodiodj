@@ -3,6 +3,7 @@ import {
   appendMessage,
   importMessage,
   matchesSearch,
+  sortEntries,
   sizeLabel,
 } from "./savedPlaylists";
 
@@ -52,6 +53,43 @@ describe("matchesSearch", () => {
   it("splits on punctuation and keeps letters outside ASCII", () => {
     expect(matchesSearch("yö", ["Hyvää yötä (Live)"])).toBe(true);
     expect(matchesSearch("live", ["Hyvää yötä (Live)"])).toBe(true);
+  });
+});
+
+describe("sortEntries", () => {
+  const row = (position: number, title: string, duration = 100) => ({
+    position,
+    title,
+    artist: "a",
+    album: "al",
+    duration,
+  });
+  const rows = [row(0, "beta", 300), row(1, "Alpha", 100), row(2, "älä", 200)];
+  const order = (sorted: { position: number }[]) =>
+    sorted.map((r) => r.position);
+
+  it("keeps the saved playlist's own order by position, and reverses it", () => {
+    expect(order(sortEntries(rows, "position", "asc"))).toEqual([0, 1, 2]);
+    expect(order(sortEntries(rows, "position", "desc"))).toEqual([2, 1, 0]);
+  });
+
+  it("sorts text without regard to case or accents", () => {
+    expect(order(sortEntries(rows, "title", "asc"))).toEqual([2, 1, 0]);
+    expect(order(sortEntries(rows, "title", "desc"))).toEqual([0, 1, 2]);
+  });
+
+  it("sorts durations as numbers", () => {
+    expect(order(sortEntries(rows, "duration", "asc"))).toEqual([1, 2, 0]);
+  });
+
+  it("leaves ties in the saved playlist's order in both directions", () => {
+    expect(order(sortEntries(rows, "artist", "asc"))).toEqual([0, 1, 2]);
+    expect(order(sortEntries(rows, "artist", "desc"))).toEqual([0, 1, 2]);
+  });
+
+  it("does not reorder the rows it was given", () => {
+    sortEntries(rows, "title", "asc");
+    expect(order(rows)).toEqual([0, 1, 2]);
   });
 });
 

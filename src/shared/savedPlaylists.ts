@@ -27,6 +27,39 @@ export function matchesSearch(query: string, fields: string[]): boolean {
   return wanted.every((prefix) => have.some((word) => word.startsWith(prefix)));
 }
 
+/** What an open saved playlist can be sorted by. `position` is its own order. */
+export type EntrySort = "position" | "title" | "artist" | "album" | "duration";
+
+/** One entry as the list shows it, with its place in the saved playlist. */
+export interface EntryRow {
+  position: number;
+  title: string;
+  artist: string;
+  album: string;
+  duration: number;
+}
+
+/**
+ * Rows in the order a sort asks for. Text sorts without regard to case or
+ * accents; rows that tie keep the saved playlist's own order, whichever way
+ * the sort runs. Returns a new array.
+ */
+export function sortEntries<T extends EntryRow>(
+  rows: readonly T[],
+  by: EntrySort,
+  dir: "asc" | "desc",
+): T[] {
+  const sign = dir === "asc" ? 1 : -1;
+  const compare = (a: T, b: T): number => {
+    if (by === "position") return a.position - b.position;
+    if (by === "duration") return a.duration - b.duration;
+    return a[by].localeCompare(b[by], undefined, { sensitivity: "base" });
+  };
+  return [...rows].sort(
+    (a, b) => sign * compare(a, b) || a.position - b.position,
+  );
+}
+
 /** What the panel says once a file has become a saved playlist. */
 export function importMessage(
   name: string,

@@ -2,7 +2,12 @@
   import { app, formatTime } from "../../shared/state.svelte";
   import type { SavedEntry, SavedPlaylistSummary } from "../../shared/types";
   import { airDuration } from "../../shared/cuePoints";
-  import { matchesSearch, sizeLabel } from "../../shared/savedPlaylists";
+  import {
+    matchesSearch,
+    sizeLabel,
+    sortEntries,
+    type EntrySort,
+  } from "../../shared/savedPlaylists";
   import MissingBadge from "../track/MissingBadge.svelte";
   import { gapAt, moveTarget } from "../playlist/playlistDrop";
   import ContextMenu from "../ui/ContextMenu.svelte";
@@ -23,6 +28,8 @@
   // on the way out.
   function openSaved(id: number): void {
     app.searchQuery = "";
+    sortBy = "position";
+    sortDir = "asc";
     void app.openSavedPlaylist(id);
   }
 
@@ -239,20 +246,68 @@
 
   const album = (entry: SavedEntry): string => entry.track?.album ?? "";
 
-  /** The open saved playlist's entries the search leaves, each with its place. */
+  // ----- Sorting -----
+  //
+  // A sort is a way of looking at the saved playlist, never a change to it: the
+  // order it is stored and queued in is the one under `#`.
+
+  let sortBy = $state<EntrySort>("position");
+  let sortDir = $state<"asc" | "desc">("asc");
+
+  const sortCols: { column: EntrySort; label: string; cls: string }[] = [
+    { column: "position", label: "#", cls: "track-no" },
+    { column: "title", label: "Title", cls: "track-title" },
+    { column: "artist", label: "Artist", cls: "track-artist" },
+    { column: "album", label: "Album", cls: "track-album" },
+    { column: "duration", label: "Time", cls: "track-duration" },
+  ];
+
+  function toggleSort(column: EntrySort): void {
+    if (sortBy === column) {
+      sortDir = sortDir === "asc" ? "desc" : "asc";
+    } else {
+      sortBy = column;
+      sortDir = "asc";
+    }
+  }
+
+  function sortIcon(column: EntrySort): string {
+    if (sortBy !== column) return "unfold_more";
+    return sortDir === "asc" ? "arrow_upward" : "arrow_downward";
+  }
+
+  function ariaSort(column: EntrySort): "ascending" | "descending" | "none" {
+    if (sortBy !== column) return "none";
+    return sortDir === "asc" ? "ascending" : "descending";
+  }
+
+  /** The open saved playlist's entries as shown: searched, then sorted. */
   const listed = $derived(
-    (open?.entries ?? [])
-      .map((entry, position) => ({ entry, position }))
-      .filter(({ entry }) =>
-        matchesSearch(app.searchQuery, [
-          title(entry),
-          artist(entry),
-          album(entry),
-        ]),
-      ),
+    sortEntries(
+      (open?.entries ?? [])
+        .map((entry, position) => ({
+          entry,
+          position,
+          title: title(entry),
+          artist: artist(entry),
+          album: album(entry),
+          duration: duration(entry),
+        }))
+        .filter((row) =>
+          matchesSearch(app.searchQuery, [row.title, row.artist, row.album]),
+        ),
+      sortBy,
+      sortDir,
+    ),
   );
-  /** A search hides rows, and a position between two shown rows means nothing. */
-  const searching = $derived(app.searchQuery.trim() !== "");
+  /**
+   * The rows on screen are the saved playlist's own, in its own order. Only
+   * then does a gap between two of them name a position, so only then can a
+   * drag reorder.
+   */
+  const inOwnOrder = $derived(
+    app.searchQuery.trim() === "" && sortBy === "position" && sortDir === "asc",
+  );
 
   // ----- Dragging -----
   //
@@ -275,7 +330,7 @@
   }
 
   function onDragStart(e: DragEvent, entry: SavedEntry, i: number): void {
-    dragFrom = app.isAdmin && !searching ? i : -1;
+    dragFrom = app.isAdmin && inOwnOrder ? i : -1;
     app.draggedTrackIds = entry.track ? [entry.track.id] : null;
     if (e.dataTransfer) {
       e.dataTransfer.effectAllowed = "copyMove";
@@ -386,11 +441,20 @@
     {/if}
   </div>
   <div class="saved-headers">
-    <span class="track-header track-no">#</span>
-    <span class="track-header track-title">Title</span>
-    <span class="track-header track-artist">Artist</span>
-    <span class="track-header track-album">Album</span>
-    <span class="track-header track-duration">Time</span>
+    {#each sortCols as col (col.column)}
+      <button
+        class="track-header {col.cls}"
+        class:active={sortBy === col.column}
+        role="columnheader"
+        aria-sort={ariaSort(col.column)}
+        onclick={() => toggleSort(col.column)}
+      >
+        {col.label}
+        <span class="material-symbols-outlined" aria-hidden="true"
+          >{sortIcon(col.column)}</span
+        >
+      </button>
+    {/each}
     <span class="saved-action-space"></span>
     {#if app.isAdmin}<span class="saved-action-space"></span>{/if}
   </div>
