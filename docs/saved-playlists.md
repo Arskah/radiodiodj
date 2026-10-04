@@ -344,9 +344,13 @@ a drop between two rows name a position.
 Rows in the _Playlists_ tab have a menu of their own. A saved playlist's offers
 _Open_, both appends, _Use as Auto source_, _Export…_ and, for an admin,
 _Rename…_ and _Delete…_. An entry's offers what a library row's does for its
-track — the two adds, _Preview on cue deck_, _Cue points…_, _Show in folder_
-and, set apart, _Play now (on air)_ — plus _Remove from saved playlist_ for an
-admin. An unmatched entry has no track, so its menu is that last item or
+track — the two adds, _Preview on cue deck_, _Edit metadata…_ for an admin,
+_Cue points…_, _Show in folder_ and, set apart, _Play now (on air)_ — plus
+_Remove from saved playlist_ for an admin. Those act on the track, not on the
+entry: an entry holds a track's id and shows the track as it is, so a metadata
+edit made here is the same edit made from the library, and it shows in every
+saved playlist the track is in. A save ends in `Health::refresh`, which re-sends
+the list, which is what redraws the open saved playlist. An unmatched entry has no track, so its menu is that last item or
 nothing. The saved playlist rows take the library's keyboard bindings for the
 menu; entry rows are list items and take the pointer only.
 

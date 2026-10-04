@@ -175,6 +175,13 @@
           onselect: () => app.cueLoad(track),
         });
       }
+      if (app.isAdmin) {
+        items.push({
+          label: "Edit metadata…",
+          icon: "edit",
+          onselect: () => (app.editingMetadata = track),
+        });
+      }
       items.push(
         {
           label: "Cue points…",
