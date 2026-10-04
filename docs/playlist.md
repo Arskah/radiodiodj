@@ -177,7 +177,9 @@ than dead air.
 - **Skip to cached.** When a load fails, the failed id is dropped from the
   cached set (so stale membership cannot spin an instant retry loop), the track
   is marked for retry, and advancement looks for the next item whose bytes are
-  already resident in RAM — see [audio.md](./audio.md#the-prefetch-cache).
+  already resident in RAM — see [audio.md](./audio.md#the-prefetch-cache). A
+  failure naming a track that is no longer the one on air is ignored: it is
+  about a load that has since been superseded.
 - **Retry.** `ArmRetry(n)` selects a delay from
   `tuning.autoPlaylist.netRetryBackoffsMs` (1 s, 2 s, 5 s, saturating at the
   last). This is the case where nothing queued is resident either, so the

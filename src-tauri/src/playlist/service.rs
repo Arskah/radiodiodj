@@ -292,7 +292,7 @@ impl PlaylistService {
             } else {
                 LoadFailure::Unplayable
             };
-            Inner::apply(&failed, move |p, r| p.on_load_failed(why, r));
+            Inner::apply(&failed, move |p, r| p.on_load_failed(load.id, why, r));
         });
 
         let missing = Arc::clone(&self.inner);
@@ -626,7 +626,9 @@ impl Inner {
                 } else {
                     // A purged row can never load; treat it as a failed read
                     // so advancement moves on.
-                    Inner::apply(inner, |p, r| p.on_load_failed(LoadFailure::Unplayable, r));
+                    Inner::apply(inner, |p, r| {
+                        p.on_load_failed(*id, LoadFailure::Unplayable, r)
+                    });
                 }
             }
             Effect::Resume {
