@@ -93,6 +93,17 @@ When the lookup fails, or the release has no bundles at all:
 A short inline script moves the visitor's platform first. Both macOS builds stay
 listed, because a browser does not report the CPU reliably.
 
+## Contact
+
+Two addresses are public: `hello@radiodiodj.org` in the page footer and in
+`package.json`, and `security@radiodiodj.org` in [SECURITY.md](../SECURITY.md).
+
+The site also serves `/.well-known/security.txt` (RFC 9116). It is an endpoint,
+`site/src/pages/.well-known/security.txt.ts`, not a static file: the format
+requires an `Expires` date, and generating it puts that date 300 days past each
+deploy instead of leaving it to be bumped by hand. `site.yml` uploads the Pages
+artifact with `include-hidden-files`, without which the dot-directory is dropped.
+
 ## Deploy
 
 | workflow    | runs on                                         | does                               |
