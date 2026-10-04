@@ -111,7 +111,8 @@ it runs the same `shut_down`.
 - **It validates the whole manifest.** One malformed entry breaks the check for
   every platform. The website's build fails rather than publish one.
 
-`requireSignedVersion` is left off. It would stop a tampered manifest from
-passing an old, validly signed bundle off as a newer version, but it rejects
-any signature without a version in its trusted comment. Turn it on once a real
-release's `.sig` has been seen to carry one.
+`requireSignedVersion` is on. The manifest is not signed, so without it a
+tampered one could pass an old, validly signed bundle off as a newer version
+and walk an install backwards. With it, the version in the signature's trusted
+comment — which the signature covers — must match the version the manifest
+announces. Every release since v0.25.2 carries one.
