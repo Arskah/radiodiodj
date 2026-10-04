@@ -77,6 +77,16 @@ The read happens on its own thread, with two protections in `audio/player.rs`:
   still a show with nothing on it, so a load is given up on once it has kept
   the station quiet for this long — whatever the read is doing.
 
+  The two bounds do not stack, they divide the loads between them. The watchdog
+  asks whether a read will ever finish, which is a question about every load on
+  every deck; the dead-air limit asks whether the playlist should put something
+  else on, which is only a question on a silent on-air deck. So the bound that
+  fires is the watchdog for an arm preload, a parked restore, a cue audition or
+  an operator's own choice of track — on the cue deck it is the only bound there
+  will ever be, since nothing else watches a deck that is off the program bus —
+  and the dead-air limit for a load the playlist issued, which reaches 3 s long
+  before the watchdog's 10 s could.
+
   It applies only where there is air to lose _and_ something to put on
   instead: the deck holding `main` on the program bus, nothing audible anywhere
   in the set, and a load the **playlist** issued and asked to play. A track

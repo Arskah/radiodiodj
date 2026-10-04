@@ -35,16 +35,18 @@ Each entry is the invariant to preserve; the linked doc carries the reasoning.
 **Audio playback** — in-process Rust decks, no browser `<audio>`, no `media://`,
 no transcoder. A deck reads the **whole file into RAM** and never streams from
 the filesystem, which is what survives a wedged network share. Two bounds on a
-read, never one: a 10 s watchdog over the **stall** (the read publishes a byte
-count the worker loop notes each tick, so only a count that stops moving is a
-wedged mount) and a 3 s **dead-air limit** on a silent on-air deck, which bounds
-patience with a slow share rather than turning it into silence. The dead-air
-limit is the **playlist's** recovery, not a rule about files: it applies only to
-loads the playlist issued, because only there is another track to put on
-instead. A track an operator put on air by hand is left to load, however long it
-takes. The abandoned read runs on either way, so its bytes still reach the cache
-and the skipped track costs its place in the hour, not the file. See
-[docs/audio.md](docs/audio.md).
+read, and which one applies depends on the load: a 10 s watchdog over the
+**stall** asks whether the read will ever finish (every deck, every load — the
+read publishes a byte count the worker loop notes each tick, so only a count
+that stops moving is a wedged mount), while a 3 s **dead-air limit** asks
+whether the playlist should put something else on instead, which is only a
+question for a silent on-air deck. So the one that fires is the watchdog on an
+arm preload, a parked restore, a cue audition or a track an operator put on air
+by hand, and the dead-air limit on a load the playlist issued — never both.
+Exempting the operator is exempting them from the 3 s, not from the 10 s: their
+track survives a slow share, a dead one still reports. The abandoned read runs
+on either way, so its bytes still reach the cache and a skipped track costs its
+place in the hour, not the file. See [docs/audio.md](docs/audio.md).
 
 **One file never crosses the share twice at once** — the library is a network
 share, and concurrent reads are how a share that was merely slow becomes a share
