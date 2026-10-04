@@ -20,3 +20,4 @@ src-tauri/gen/
 *.db
 *.tgz
 src-tauri/signing.macos.conf.json
+src-tauri/updater.conf.json

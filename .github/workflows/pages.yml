@@ -2,11 +2,12 @@ name: Pages
 
 # Deploys radiodiodj.org. Runs after every Release Please run on main rather
 # than on a push, so a release's bundles are uploaded before the download links
-# are baked. See docs/website.md#deploy.
+# are baked, and after a Release run started by hand, which replaces them. See
+# docs/website.md#deploy.
 
 on:
   workflow_run:
-    workflows: [Release Please]
+    workflows: [Release Please, Release]
     types: [completed]
     branches: [main]
   workflow_dispatch:

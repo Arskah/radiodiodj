@@ -106,10 +106,10 @@ artifact with `include-hidden-files`, without which the dot-directory is dropped
 
 ## Deploy
 
-| workflow    | runs on                                         | does                               |
-| ----------- | ----------------------------------------------- | ---------------------------------- |
-| `site.yml`  | called by `ci.yml` and `pages.yml`              | installs and builds `site/`        |
-| `pages.yml` | a **Release Please** run completing, or by hand | calls `site.yml`, deploys to Pages |
+| workflow    | runs on                                                        | does                               |
+| ----------- | -------------------------------------------------------------- | ---------------------------------- |
+| `site.yml`  | called by `ci.yml` and `pages.yml`                             | installs and builds `site/`        |
+| `pages.yml` | a **Release Please** or **Release** run completing, or by hand | calls `site.yml`, deploys to Pages |
 
 The build is in its own workflow because the deploy job needs `pages: write`,
 and a called workflow may not ask for more than its caller grants — a pull
@@ -123,12 +123,15 @@ Please _workflow run_ contains that build as a called workflow, so it completes
 only once `upload-release` has finished. On a push that releases nothing the run
 ends in seconds, and the site deploys just the same.
 
+A **Release** run of its own only exists when `release.yml` is started by hand
+to rebuild a tag. It replaces the bundles, so the site follows it too.
+
 `release-please.yml` itself is not involved: the site reacts to it.
 
 Two consequences:
 
-- `pages.yml` names the workflow, `workflows: [Release Please]`. **Renaming
-  that workflow stops the site deploying**, silently.
+- `pages.yml` names the workflows, `workflows: [Release Please, Release]`.
+  **Renaming either stops the site deploying after it**, silently.
 - Running `pages.yml` by hand while a release is still building fails the
   build — the latest release has no bundles yet. Run it again afterwards.
 
