@@ -945,6 +945,17 @@ async fn clear_station_image(
     .await
 }
 
+/// Whether the art on a deck's vinyl turns while the deck plays.
+#[tauri::command(rename_all = "camelCase")]
+async fn set_spin_vinyl(state: State<'_, AppState>, enabled: bool) -> Result<Appearance, String> {
+    let theme = Theme::of(&state);
+    blocking(move || {
+        theme.update(|appearance| appearance.spin_vinyl = enabled)?;
+        Ok(theme.resolve())
+    })
+    .await
+}
+
 /// Re-read the themes directory and re-resolve the active theme, so an edit to
 /// the theme on screen takes effect. A repaint is always an explicit ask —
 /// there is no filesystem watcher.
@@ -1522,6 +1533,7 @@ pub fn run() {
             set_station_name,
             set_station_image,
             clear_station_image,
+            set_spin_vinyl,
             reload_themes,
             reveal_themes_dir,
             now_playing_test,

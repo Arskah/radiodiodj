@@ -506,6 +506,8 @@ export interface Appearance {
   logo: string | null;
   /** Data URL, or null. */
   label: string | null;
+  /** Whether the art on a deck's vinyl turns while the deck plays. */
+  spinVinyl: boolean;
   /** Set when the active theme could not be used, so the UI can say why. */
   problem: string | null;
 }

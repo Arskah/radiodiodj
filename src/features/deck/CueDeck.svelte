@@ -159,7 +159,7 @@
            (matching the app icon) when the track has no embedded artwork. -->
       <div
         class="vinyl-disc"
-        class:spinning={app.cueIsPlaying}
+        class:spinning={app.cueIsPlaying && app.spinVinyl}
         aria-hidden="true"
       >
         <img

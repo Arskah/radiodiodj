@@ -31,6 +31,7 @@ pub const ADMIN_COMMANDS: &[&str] = &[
     "set_station_name",
     "set_station_image",
     "clear_station_image",
+    "set_spin_vinyl",
     "reload_themes",
     "reveal_themes_dir",
     "health_dismiss",

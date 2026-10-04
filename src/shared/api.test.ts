@@ -76,6 +76,14 @@ describe("api appearance commands", () => {
     ]);
   });
 
+  it("sends the vinyl switch as a named flag", async () => {
+    await api.setSpinVinyl(false);
+    expect(invoke.mock.calls[0]).toEqual([
+      "set_spin_vinyl",
+      { enabled: false },
+    ]);
+  });
+
   it("takes no argument for the readers and the reload", async () => {
     await api.getAppearance();
     await api.listThemes();

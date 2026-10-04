@@ -181,7 +181,11 @@
     <!-- Rotating vinyl disc: cover art in the center label, spinning while the
          deck plays (#271). Falls back to a cream-label RadiodioDJ mark (matching
          the app icon) when the track has no embedded artwork. -->
-    <div class="vinyl-disc" class:spinning={app.isPlaying} aria-hidden="true">
+    <div
+      class="vinyl-disc"
+      class:spinning={app.isPlaying && app.spinVinyl}
+      aria-hidden="true"
+    >
       <img
         class="vinyl-art"
         src={app.coverArt ?? app.appearance?.label ?? defaultCover}
