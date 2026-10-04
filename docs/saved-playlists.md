@@ -7,10 +7,12 @@ what the auto-playlist draws from.
 **Planned — nothing here is built.** Designed 2026-10-04 against
 [#501](https://github.com/Arskah/radiodiodj/issues/501),
 [#503](https://github.com/Arskah/radiodiodj/issues/503) and
-[#577](https://github.com/Arskah/radiodiodj/issues/577). The library selection
-([#576](https://github.com/Arskah/radiodiodj/issues/576)) is built on its own
-and knows nothing of saved playlists; what it and dragging
-([#584](https://github.com/Arskah/radiodiodj/issues/584)) add here comes after
+[#577](https://github.com/Arskah/radiodiodj/issues/577). Two things it stands
+on are built and know nothing of saved playlists: the library **selection** and
+dragging library rows into the playlist, both in
+[library.md](./library.md#selecting-several). What they gain here
+([#587](https://github.com/Arskah/radiodiodj/issues/587),
+[#584](https://github.com/Arskah/radiodiodj/issues/584)) comes after
 increment 1.
 
 ## The problem
@@ -188,14 +190,24 @@ in what happened:
 
 Both **append**. Nothing replaces the operator's playlist.
 
-Either one is a single transition and a single snapshot. The bulk add that takes
-is `Playlist::insert_many`, which
-[#576](https://github.com/Arskah/radiodiodj/issues/576) brings for the library
-selection as `playlist_add_many`. Unplayable entries are skipped, and the panel
-reports "added 31, skipped 2 missing" instead of leaving the operator to count.
-Where that count comes from is open: a playlist command queues its transition
-and returns nothing ([playlist.md](./playlist.md#commands)), so it cannot be the
-command's result as `playlist_add_many` stands.
+Either one is a single transition and a single snapshot, through
+`Playlist::insert_many` — the bulk add the library selection already queues with
+as `playlist_add_many`. The engine needs nothing new: the woven variant
+interleaves in the service and inserts the result as one run.
+
+Unplayable entries are skipped, and the panel reports "added 31, skipped 2
+missing" instead of leaving the operator to count. A playlist command queues its
+transition and returns nothing ([playlist.md](./playlist.md#commands)), so the
+count cannot come back from the transition. `playlist_add_saved` therefore does
+its reading first: it is an `async` command that resolves the saved playlist to
+its playable track ids, returns how many it took and how many it skipped, and
+hands the ids to the same queue `playlist_add_many` uses. A track purged between
+that read and the transition is logged there, as it is for a selection.
+
+This is stricter than the selection, which queues a missing track with its badge
+because the operator picked that track. A saved playlist was written at another
+time, often on another machine, and what it cannot play is reported rather than
+queued to be dropped on its way to air.
 
 This is also how a saved playlist airs **in order**. There is no in-order mode
 of the auto-playlist: appending the whole show puts it in the Upcoming tab,
@@ -252,21 +264,35 @@ The rules around it:
 
 In the first increment, with a saved playlist open in the _Playlists_ tab:
 
-- **Add to saved playlist ▸** in the track row's context menu, from any library
-  tab, the playlist and history. Appends at the end.
+- **Add to saved playlist ▸** in a single track row's menu, from any library
+  tab, the playlist and history. Appends at the end. The menu on a picked row is
+  the selection's once more than one track is picked, and that one is left alone
+  here.
 - **Remove** an entry.
-- **Drag** to reorder, the way playlist rows already do.
+- **Drag** to reorder. The drop position is the playlist's: `gapAt` and
+  `moveTarget` in `features/playlist/playlistDrop.ts` are pure and take any list
+  of rows.
 - **Save playlist as…** on the playlist panel: the upcoming tracks become a new
   saved playlist. Stop markers and item overrides are not carried.
 
-Later, on top of the library selection
-([#576](https://github.com/Arskah/radiodiodj/issues/576), which queues several
-tracks to the playlist and stops there):
-[#587](https://github.com/Arskah/radiodiodj/issues/587) gives the selection _Add
-to saved playlist ▸_ and _New saved playlist from selection_, and makes the
-entries of an open saved playlist selectable.
-[#584](https://github.com/Arskah/radiodiodj/issues/584) adds dragging from the
-library.
+The selection and the library drag meet saved playlists afterwards, and both
+already have their source half:
+
+- [#587](https://github.com/Arskah/radiodiodj/issues/587) gives the selection
+  bar and the selection's menu _Add to saved playlist ▸_ and _New saved playlist
+  from selection_, in pick order, and makes the entries of an open saved
+  playlist selectable. The library selection is keyed by track id and an entry
+  is not a track — the same track can be in a saved playlist twice — so entries
+  take a selection of their own over entry ids, with the same pure rules in
+  `shared/selection.ts`.
+- [#584](https://github.com/Arskah/radiodiodj/issues/584) makes an open saved
+  playlist a second drop target for `app.draggedTrackIds`. A drag of a picked
+  row carries the whole selection, so the drop is `saved_playlist_add_entries`
+  with a position, for one track or for many.
+
+Until #587 the two do not meet. The selection outlives a tab change, so on the
+_Playlists_ tab it is still held and its bar still queues to the playlist;
+_Select all_ and Ctrl/Cmd+A have no track rows to act on there.
 
 ## Admin mode
 
@@ -306,7 +332,11 @@ saved_playlist_rename       saved_playlist_delete       saved_playlist_bind_entr
 ```
 
 `saved_playlist_create` takes its entries with it, which is what keeps creation
-atomic for a guest.
+atomic for a guest. `saved_playlist_add_entries` takes track ids and an optional
+position, the shape of `playlist_add_many`, so a menu add, a selection and a
+drop are one command. `playlist_add_saved` returns its two counts; see
+[Appending to the playlist](#appending-to-the-playlist). The open ones join
+`OPEN_COMMANDS`, the list the admin tests pin as deliberately ungated.
 
 The list of saved playlists — id, name, entry count, missing count — is emitted
 whole as `saved-playlists` on every change to it, and after anything that can
@@ -315,7 +345,9 @@ one. `program:playlist-state` gains the source.
 
 In the renderer `activeTab` is a `ContentType` today and drives the search
 query. The _Playlists_ tab is not a content type, so that type widens, and the
-track list becomes one of two things the panel can show.
+track list becomes one of two things the panel can show. The selection reads the
+listed rows as track ids, so everything that asks "which rows are listed" has to
+answer "none" on that tab rather than be handed entry ids.
 
 ## Open
 
@@ -333,14 +365,14 @@ settled when #505's transport is designed.
 
 Each is one pull request.
 
-| #   | increment               | delivers                                                                                                                | needs   | issue      |
-| --- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------- | ------- | ---------- |
-| 1   | Saved playlists exist   | tables, commands and their gating, the _Playlists_ tab, the four authoring actions, the missing badge, both appends     | #576    | #577       |
-| 2   | Export and import       | the file, binding at import, after a scan and after the analysis pass                                                   | 1       | #501       |
-| 3   | Auto-playlist source    | the source in session and `DbRefiller`, the pool predicate, the small-pool note, the empty-pool revert, the switch line | 1       | #503       |
-| 4   | Find in library         | binding an unmatched entry by hand                                                                                      | 2       | #580       |
-| 5   | Selection and drag-drop | the selection's two saved-playlist actions, selecting entries of a saved playlist, dragging library rows onto one       | 1, #576 | #587, #584 |
-| 6   | The web authoring page  | a show built away from the studio                                                                                       | #505    | #581       |
+| #   | increment               | delivers                                                                                                                | needs | issue      |
+| --- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------- | ----- | ---------- |
+| 1   | Saved playlists exist   | tables, commands and their gating, the _Playlists_ tab, the four authoring actions, the missing badge, both appends     | —     | #577       |
+| 2   | Export and import       | the file, binding at import, after a scan and after the analysis pass                                                   | 1     | #501       |
+| 3   | Auto-playlist source    | the source in session and `DbRefiller`, the pool predicate, the small-pool note, the empty-pool revert, the switch line | 1     | #503       |
+| 4   | Find in library         | binding an unmatched entry by hand                                                                                      | 2     | #580       |
+| 5   | Selection and drag-drop | the selection's two saved-playlist actions, selecting entries of a saved playlist, dragging library rows onto one       | 1     | #587, #584 |
+| 6   | The web authoring page  | a show built away from the studio                                                                                       | #505  | #581       |
 
 Increment 1 is usable alone: a show built in the app and appended at its hour.
 Increment 2 is what #501 asked for, increment 3 what #503 asked for, and
@@ -348,8 +380,8 @@ increment 2 completes #577, whose last criterion is an entry becoming playable
 when its file arrives.
 
 There is no refactor to land first. In-order play is an append, the source is a
-field on a struct the service already builds, and the one engine addition, a
-bulk add, arrives with #576.
+field on a struct the service already builds, and the bulk add the appends need
+is already in the engine.
 
 Increment 4 is the one to drop if it turns out awkward. Without it an unmatched
 entry waits for its exact file, and the operator's way round is to remove it and
