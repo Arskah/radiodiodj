@@ -93,7 +93,7 @@ jobs:
         shell: bash
         run: |
           shopt -s nullglob globstar
-          files=(artifacts/**/*.dmg artifacts/**/*.app.tar.gz artifacts/**/*.AppImage artifacts/**/*.deb artifacts/**/*.rpm artifacts/**/*.msi artifacts/**/*.exe artifacts/**/*.sig radiodiodj-signing-key.asc)
+          files=(artifacts/**/*.dmg artifacts/**/*.app.tar.gz artifacts/**/*.AppImage artifacts/**/*.deb artifacts/**/*.rpm artifacts/**/*.msi artifacts/**/*-setup.exe artifacts/**/*.sig radiodiodj-signing-key.asc)
           if [ ${#files[@]} -eq 0 ]; then
             echo "No bundle artifacts found" >&2
             find artifacts -type f >&2

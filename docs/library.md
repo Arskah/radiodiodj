@@ -508,7 +508,7 @@ converts the same way, and a `.webm` holding Opus with `-c:a libmp3lame` too.
 
 They sit in the app data directory listed in `AGENTS.md`. The database uses
 SQLite in WAL mode with an FTS5 index for search; its schema rules, backups and
-pre-1.0 resets are in [database.md](./database.md).
+baseline resets are in [database.md](./database.md).
 
 ## Code map
 

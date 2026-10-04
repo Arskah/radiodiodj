@@ -31,8 +31,8 @@ browser audio pipeline, no external transcoder, no subscription.
 - **ReplayGain levelling** — every track measured against one reference during
   analysis, so a 1970s master and a modern one sit at the same level
   ([docs](docs/audio.md#replaygain))
-- **Native audio** — in-process Rust player (rodio + symphonia) for MP3, FLAC,
-  Vorbis, WAV, AAC, M4A, Opus, AIFF and more ([docs](docs/audio.md))
+- **Native audio** — in-process Rust player (rodio + symphonia) for MP3, MP2,
+  FLAC, Vorbis, WAV, AIFF, AAC and M4A ([docs](docs/audio.md))
 
 ### Cue points
 
