@@ -1,4 +1,6 @@
 CHANGELOG.md
+# Rewritten whole by release-please, in JSON.stringify layout.
+src-tauri/tauri.conf.json
 **/coverage/
 .husky/
 .nvmrc
