@@ -366,8 +366,10 @@ action on a **selection**.
 - **Space** picks the focused row, **Shift+Space** a range, **Escape** clears.
 - **Ctrl+A** (**Cmd+A** on macOS) picks every row in the list, and drops them
   again once every one is picked. It needs nothing picked first, which the bar's
-  _Select all_ does: the bar is only there while something is. Focus has to be
-  in the track list — in the search box the same keys select the text.
+  _Select all_ does: the bar is only there while something is. It means the
+  library wherever focus is, with two exceptions: in a text field, the search
+  box included, the same keys select the text, and nothing happens while
+  Settings or a dialog is open. Escape follows the same rule.
 
 A selection is **ordered by pick**: tracks are queued in the order they were
 selected, and the checkbox shows each row's place in that order. A range, and

@@ -97,7 +97,24 @@
     app.deselect(track.id);
   }
 
-  function onListKeyDown(e: KeyboardEvent): void {
+  /** A field that takes the keys itself, where Ctrl/Cmd+A selects its text. */
+  function typing(target: EventTarget | null): boolean {
+    return (
+      target instanceof HTMLElement &&
+      (target.isContentEditable ||
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement)
+    );
+  }
+
+  // On the document, not the list: select-all means the library wherever
+  // focus happens to be, and nothing has focus after a click on empty space.
+  function onDocumentKeyDown(e: KeyboardEvent): void {
+    if (typing(e.target) || menuTrack) return;
+    if (app.settingsOpen || document.querySelector('[aria-modal="true"]')) {
+      return;
+    }
     if (e.key === "Escape" && selectedCount > 0) {
       app.clearSelection();
     } else if (e.key === "a" && (e.metaKey || e.ctrlKey)) {
@@ -105,6 +122,11 @@
       app.toggleSelectAll();
     }
   }
+
+  $effect(() => {
+    document.addEventListener("keydown", onDocumentKeyDown);
+    return () => document.removeEventListener("keydown", onDocumentKeyDown);
+  });
 
   // ----- Row context menu (#314) -----
 
@@ -287,7 +309,7 @@
     <span class="track-header track-duration">Time</span>
     <span class="track-header-spacer"></span>
   </div>
-  <div id="track-list-wrap" role="presentation" onkeydown={onListKeyDown}>
+  <div id="track-list-wrap">
     <div id="track-list" class:selecting={selectedCount > 0}>
       {#if app.tracks.length === 0}
         <div class="empty">
