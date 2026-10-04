@@ -203,12 +203,33 @@ export function updateTargets(
 }
 
 /**
- * The latest release as the app's updater reads it.
+ * Downloads one `.sig`.
+ * @param target The updater target it belongs to, for the error.
+ * @param url Where the signature is.
+ * @returns Its content.
+ * @throws {Error} When it cannot be fetched or is empty.
+ */
+async function signatureOf(target: string, url: string): Promise<string> {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`GitHub answered ${response.status}`);
+    const signature = (await response.text()).trim();
+    if (!signature) throw new Error("the file is empty");
+    return signature;
+  } catch (error) {
+    throw new Error(`No signature for ${target} at ${url}`, { cause: error });
+  }
+}
+
+/**
+ * The latest release as the app's updater reads it. A target the manifest
+ * lacks is not "no update" to the updater but a failed lookup, which the app
+ * reads as nothing it can install. See `docs/website.md#updates`.
  * @returns The manifest. With no platforms when the release carries no
  * signatures, or when GitHub could not be reached outside CI.
  * @throws {Error} In CI, when the lookup or a signature download fails. The
  *   updater rejects the whole manifest over one bad entry, so a partial one is
- *   never published.
+ *   never published. Outside CI the target is left out instead.
  */
 export async function updateManifest(): Promise<UpdateManifest> {
   const found = await release();
@@ -216,12 +237,15 @@ export async function updateManifest(): Promise<UpdateManifest> {
 
   const platforms: UpdateManifest["platforms"] = {};
   for (const { target, url, signatureUrl } of updateTargets(found.assets)) {
-    const response = await fetch(signatureUrl);
-    const signature = response.ok ? (await response.text()).trim() : "";
-    if (!signature) {
-      throw new Error(`No signature for ${target} at ${signatureUrl}`);
+    try {
+      platforms[target] = {
+        url,
+        signature: await signatureOf(target, signatureUrl),
+      };
+    } catch (error) {
+      if (process.env.CI) throw error;
+      console.warn(`Leaving ${target} out of the update manifest.`, error);
     }
-    platforms[target] = { url, signature };
   }
 
   return {

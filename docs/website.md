@@ -127,16 +127,27 @@ without it.
 
 - **A target is listed only when the release has both the bundle and its
   `.sig`**; `signature` is that file's content, fetched at build time. A release
-  missing a platform leaves it out, and installs of that kind are offered
-  nothing.
+  missing a platform leaves it out.
+- **A missing target is an error to the updater, not "no update".** It looks its
+  own target up before it compares versions, so an install whose kind is absent
+  gets a failed lookup on every check, newer version or not. The app expects
+  this and reads it as "nothing here I can install"; the manifest cannot say it
+  any other way. The same holds for a release with no signatures at all, whose
+  manifest is valid and has no platforms.
 - **Every key names its installer.** The updater looks up
   `{os}-{arch}-{installer}` before `{os}-{arch}`; with no bare key, an MSI
   install is never handed the NSIS installer, nor a `.deb` install an AppImage.
 - **One bad entry breaks every platform** — the updater validates the whole
   file before it compares versions. So in CI a signature that cannot be fetched
-  fails the build rather than publishing a partial manifest.
-- A release with no signatures at all yields a valid manifest with no
-  platforms. Locally, with GitHub unreachable, so does the fallback.
+  fails the build rather than publishing a partial manifest. Locally that
+  target is left out with a warning, and with GitHub unreachable the manifest
+  has no platforms.
+- **The signature is baked, the bundle is not.** `url` points at a release
+  asset, and running `release.yml` by hand on an existing tag replaces both the
+  bundle and its `.sig`. Until the site redeploys — which that run triggers —
+  the manifest pairs the new bytes with the old signature, and an install that
+  updates in those minutes fails verification and can simply try again. Do not
+  rebuild a tag installs are updating to unless it is broken.
 
 How the bundles come to be signed is [signing.md](./signing.md#updater-signing).
 
