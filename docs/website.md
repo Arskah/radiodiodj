@@ -93,6 +93,64 @@ When the lookup fails, or the release has no bundles at all:
 A short inline script moves the visitor's platform first. Both macOS builds stay
 listed, because a browser does not report the CPU reliably.
 
+## Updates
+
+The app asks `https://radiodiodj.org/update.json` whether a newer version
+exists. It is an endpoint, `site/src/pages/update.json.ts`, built from the same
+release lookup as the download links, in the updater's static-manifest format:
+
+```json
+{
+  "version": "0.26.0",
+  "notes": "…the release notes…",
+  "pub_date": "2026-10-04T12:00:00Z",
+  "platforms": {
+    "darwin-aarch64-app": { "url": "…", "signature": "…" }
+  }
+}
+```
+
+**On our domain, not GitHub's.** The URL is compiled into every install and
+cannot be changed for one already out there. This one stays ours wherever the
+bundles are hosted, and a bad release can be withdrawn by redeploying the site
+without it.
+
+| target                  | asset suffix          |
+| ----------------------- | --------------------- |
+| `darwin-aarch64-app`    | `_aarch64.app.tar.gz` |
+| `darwin-x86_64-app`     | `_x64.app.tar.gz`     |
+| `windows-x86_64-nsis`   | `_x64-setup.exe`      |
+| `windows-x86_64-msi`    | `.msi`                |
+| `linux-x86_64-appimage` | `.AppImage`           |
+| `linux-x86_64-deb`      | `.deb`                |
+| `linux-x86_64-rpm`      | `.rpm`                |
+
+- **A target is listed only when the release has both the bundle and its
+  `.sig`**; `signature` is that file's content, fetched at build time. A release
+  missing a platform leaves it out.
+- **A missing target is an error to the updater, not "no update".** It looks its
+  own target up before it compares versions, so an install whose kind is absent
+  gets a failed lookup on every check, newer version or not. The app expects
+  this and reads it as "nothing here I can install"; the manifest cannot say it
+  any other way. The same holds for a release with no signatures at all, whose
+  manifest is valid and has no platforms.
+- **Every key names its installer.** The updater looks up
+  `{os}-{arch}-{installer}` before `{os}-{arch}`; with no bare key, an MSI
+  install is never handed the NSIS installer, nor a `.deb` install an AppImage.
+- **One bad entry breaks every platform** — the updater validates the whole
+  file before it compares versions. So in CI a signature that cannot be fetched
+  fails the build rather than publishing a partial manifest. Locally that
+  target is left out with a warning, and with GitHub unreachable the manifest
+  has no platforms.
+- **The signature is baked, the bundle is not.** `url` points at a release
+  asset, and running `release.yml` by hand on an existing tag replaces both the
+  bundle and its `.sig`. Until the site redeploys — which that run triggers —
+  the manifest pairs the new bytes with the old signature, and an install that
+  updates in those minutes fails verification and can simply try again. Do not
+  rebuild a tag installs are updating to unless it is broken.
+
+How the bundles come to be signed is [signing.md](./signing.md#updater-signing).
+
 ## Contact
 
 Two addresses are public: `hello@radiodiodj.org` in the page footer and in
