@@ -59,7 +59,7 @@ If every app launch takes ~30 s, the session bus is activating `xdg-desktop-port
 ## Architecture
 
 - **Per-test launch.** Each `it()` respawns the app through `launchApp()`, which first wipes `config.json`, `radiodiodj.db` and `session.json`, so no test sees another's state.
-- **Parallel spec files.** Spec files run side by side in up to `E2E_WORKERS` workers (default 4); tests inside one file stay sequential. Each worker owns a `tauri-driver` on its own port pair and its own `XDG_DATA_HOME=/tmp/radiodiodj-e2e-xdg-XXXX`. A slow file is the floor on the run time, so split one that grows long rather than adding to it.
+- **One spec file at a time.** `E2E_WORKERS` (default 1) can raise that, and each worker gets its own `tauri-driver`, port pair and `XDG_DATA_HOME=/tmp/radiodiodj-e2e-xdg-XXXX`. It does not pay on a 4-core CI runner: four workers saved ~20 s of a 75 s run and stalled the metadata dialog's slide-in animation, failing the test that waits for it.
 - **Fixture libraries** are synthesized at runtime as 1-second 16-bit mono PCM WAVs. No binaries committed.
 - **Selectors** prefer ARIA (`role`, `aria-label`, `aria-sort`) over CSS classes; falls back to stable `id="..."` attributes.
 - **Audio** in CI uses `snd-dummy`; rodio decodes through symphonia and writes to the dummy device, so `main-deck:time` advances normally.

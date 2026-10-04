@@ -78,7 +78,6 @@ jobs:
         env:
           E2E_BINARY: release
           RUST_LOG: debug
-          E2E_WORKERS: "1" # TEMP
           RUST_BACKTRACE: "1"
         # A private session bus: on the runner's systemd user bus every app
         # launch activates xdg-desktop-portal, which has no desktop to talk to
