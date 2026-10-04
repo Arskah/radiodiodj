@@ -3039,8 +3039,14 @@ body {
    ============================================================ */
 .about-identity {
   display: flex;
-  align-items: baseline;
+  flex-wrap: wrap;
+  align-items: center;
   gap: var(--sp-md);
+  margin-bottom: var(--sp-sm);
+}
+
+.about-status {
+  min-height: 1.5em;
   margin-bottom: var(--sp-lg);
 }
 
@@ -3050,11 +3056,7 @@ body {
   color: var(--on-surface-variant);
 }
 
-.about-status {
-  font-size: 13px;
-}
-
-.about-status--failed {
+.np-test-result.about-status--failed {
   color: var(--error);
 }
 
@@ -3075,5 +3077,19 @@ body {
 .about-links {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--sp-sm);
+  gap: var(--sp-xs) var(--sp-lg);
+  margin-top: var(--sp-lg);
+}
+
+.about-link {
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--primary);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.about-link:hover {
+  text-decoration: underline;
 }

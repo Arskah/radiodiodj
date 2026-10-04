@@ -37,7 +37,7 @@
       case "idle":
         return "Not checked yet.";
       case "checking":
-        return "Checking…";
+        return "";
       case "upToDate":
         return "This is the latest version.";
       case "available":
@@ -76,7 +76,22 @@
     <span id="about-version" class="about-version"
       >v{app.update.currentVersion}</span
     >
+    <button
+      id="btn-update-check"
+      class="btn-scan-now"
+      disabled={working}
+      onclick={() => app.checkForUpdate()}
+      >{phase.kind === "checking" ? "Checking…" : "Check for updates"}</button
+    >
   </div>
+  <p
+    id="about-update-status"
+    class="np-test-result about-status"
+    class:about-status--failed={phase.kind === "failed"}
+    role="status"
+  >
+    {status}
+  </p>
 
   <div class="np-group">
     <div class="np-group-header">
@@ -85,68 +100,6 @@
       >
       <span class="np-group-title">Updates</span>
     </div>
-    <p
-      id="about-update-status"
-      class="about-status"
-      class:about-status--failed={phase.kind === "failed"}
-      role="status"
-    >
-      {status}
-    </p>
-
-    {#if offer && phase.kind !== "installing"}
-      {#if offer.notes}
-        <pre class="about-notes">{plainNotes(offer.notes)}</pre>
-      {/if}
-      {#if !offer.installable}
-        <p class="settings-section-desc">
-          This installation cannot update itself. Download the new version from
-          radiodiodj.org and install it the way this one was installed.
-        </p>
-      {:else if confirming}
-        <p class="settings-section-desc" role="alert">
-          Something is on air. Restarting stops playback until the app is back —
-          a few seconds of silence.
-        </p>
-      {/if}
-    {/if}
-
-    <div class="np-action-row">
-      {#if offer?.installable}
-        <button
-          id="btn-update-install"
-          class="btn-scan-now"
-          disabled={working}
-          onclick={install}
-        >
-          {confirming
-            ? "Restart now — this stops playback"
-            : "Download and restart"}
-        </button>
-      {:else if offer}
-        <button
-          id="btn-update-website"
-          class="btn-scan-now"
-          onclick={() => open("website")}
-        >
-          Get it from radiodiodj.org
-        </button>
-      {/if}
-      <button
-        id="btn-update-check"
-        class="np-browse"
-        disabled={working}
-        onclick={() => app.checkForUpdate()}
-      >
-        Check for updates
-      </button>
-      {#if confirming}
-        <button class="np-browse" onclick={() => (confirming = false)}
-          >Cancel</button
-        >
-      {/if}
-    </div>
-
     <div class="np-subsetting">
       <div class="np-group-header">
         <span class="np-group-title">Check automatically</span>
@@ -166,17 +119,67 @@
         button, and the app never restarts on its own.
       </p>
     </div>
+
+    {#if offer && phase.kind !== "installing"}
+      {#if offer.notes}
+        <pre class="about-notes">{plainNotes(offer.notes)}</pre>
+      {/if}
+      {#if !offer.installable}
+        <p class="settings-section-desc">
+          This installation cannot update itself. Download the new version from
+          radiodiodj.org and install it the way this one was installed.
+        </p>
+      {:else if confirming}
+        <p class="settings-section-desc" role="alert">
+          Something is on air. Restarting stops playback until the app is back —
+          a few seconds of silence.
+        </p>
+      {/if}
+    {/if}
+
+    {#if offer}
+      <div class="np-action-row">
+        {#if offer?.installable}
+          <button
+            id="btn-update-install"
+            class="btn-scan-now"
+            disabled={working}
+            onclick={install}
+          >
+            {confirming
+              ? "Restart now — this stops playback"
+              : "Download and restart"}
+          </button>
+          {#if confirming}
+            <button class="btn-scan-now" onclick={() => (confirming = false)}
+              >Cancel</button
+            >
+          {/if}
+        {:else if offer}
+          <button
+            id="btn-update-website"
+            class="btn-scan-now"
+            onclick={() => open("website")}
+          >
+            Get it from radiodiodj.org
+          </button>
+        {/if}
+      </div>
+    {/if}
   </div>
 
-  <div class="about-links">
-    <button class="np-browse" onclick={() => open("website")}>Website</button>
-    <button class="np-browse" onclick={() => open("changelog")}
+  <nav class="about-links" aria-label="Project links">
+    <button class="about-link" onclick={() => open("website")}
+      >radiodiodj.org</button
+    >
+    <button class="about-link" onclick={() => open("changelog")}
       >Changelog</button
     >
-    <button class="np-browse" onclick={() => open("source")}>Source code</button
+    <button class="about-link" onclick={() => open("source")}
+      >Source code</button
     >
-    <button class="np-browse" onclick={() => open("licence")}
-      >Licence (GPL-3.0-or-later)</button
+    <button class="about-link" onclick={() => open("licence")}
+      >Licence · GPL-3.0-or-later</button
     >
-  </div>
+  </nav>
 </div>
