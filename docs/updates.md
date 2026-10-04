@@ -57,6 +57,14 @@ one. Those installs are told a newer version exists and sent to radiodiodj.org.
 The manifest's keys name the installer type, so an install is only ever offered
 its own kind: an MSI install is never handed the NSIS installer.
 
+**An MSI install asks for elevation on every update.** The MSI installs for the
+whole machine, so Windows raises a UAC prompt that passive mode cannot
+suppress. The app has already exited by then, and the station is silent until
+someone with administrator rights answers it — so an MSI install cannot be
+updated with nobody at the desk. The NSIS installer installs for the current
+user and needs no elevation; a station that wants prompt-free updates installs
+from the `-setup.exe`.
+
 ## State
 
 The backend owns the updater (`src-tauri/src/update.rs`); the renderer mirrors
