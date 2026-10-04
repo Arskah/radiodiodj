@@ -81,7 +81,7 @@ export const config: WebdriverIO.Config = {
   specs: [path.join(__dirname, "specs", "**", "*.spec.ts")],
   // One spec file at a time. Several apps on one display starve each other of
   // frames, and a CSS animation that never ticks fails the test waiting on it.
-  maxInstances: Number(process.env.E2E_WORKERS ?? 1),
+  maxInstances: Math.max(1, Number(process.env.E2E_WORKERS) || 1),
   capabilities: [
     {
       "tauri:options": {
