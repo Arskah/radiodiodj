@@ -137,7 +137,9 @@ describe("saved playlists", () => {
     await menu.$(sel.contextMenuItem("Add to saved playlist")).click();
 
     await browser.$(sel.savedDialog).waitForDisplayed({ timeout: 5_000 });
-    await browser.$(sel.savedName).setValue("Picks");
+    // Lower case on purpose: after a right-click the driver drops the Shift of
+    // a leading capital, and "Picks" arrives as "picks".
+    await browser.$(sel.savedName).setValue("picks");
     await browser.$(sel.savedConfirm).click();
     await browser
       .$(sel.savedDialog)
@@ -146,7 +148,7 @@ describe("saved playlists", () => {
     await browser.$(sel.libraryTab("Playlists")).click();
     const saved = browser.$(sel.savedRow);
     await saved.waitForDisplayed({ timeout: 5_000 });
-    await waitForText(sel.savedRow, "Picks");
+    await waitForText(sel.savedRow, "picks");
     await waitForText(sel.savedRow, "1 track");
     await saved.click();
     await browser.waitUntil(async () => (await entryTitles()).length === 1, {
