@@ -139,6 +139,11 @@ role moves. And `TrackPlayed` is issued when the track actually reached the deck
 never when a load was merely asked for, because a read that fails over a dead
 share is not an airing.
 
+History keeps the same rule from the other end. A track joins it when it leaves
+the deck **having aired**, so one whose load failed or was given up on is in
+neither record, and `prev` — which reads the newest history entry — steps back
+to something the listeners heard.
+
 ## Modes
 
 **Auto advance** (AUTO / MANUAL) decides whether the end of a track pulls the
@@ -175,8 +180,21 @@ than dead air.
   already resident in RAM — see [audio.md](./audio.md#the-prefetch-cache).
 - **Retry.** `ArmRetry(n)` selects a delay from
   `tuning.autoPlaylist.netRetryBackoffsMs` (1 s, 2 s, 5 s, saturating at the
-  last). A fresh `cache-state` naming the track is what makes it a candidate
-  again, and the interrupted track goes back on when the share returns.
+  last). This is the case where nothing queued is resident either, so the
+  failed track stays on the deck: a fresh `cache-state` naming it is what makes
+  it a candidate again, and it goes back on when the share returns.
+- **A slow load costs a track its turn, not its place.** `{role}:load-failed`
+  says whether the load was **abandoned** — a time bound gave up on a read that
+  is still running — or the read itself failed. When advancement moves past an
+  abandoned track it returns to the head of the playlist, with its override.
+  That puts it back in the prefetch window, which is the only reason the
+  abandoned read's bytes are kept when they land, and it goes on at the next
+  track change. A track whose read errored, or whose row was purged, is
+  dropped: asking again would fail again, and it would sit at the head being
+  skipped until someone removed it. Only advancement returns a track — an
+  operator who presses next or stop while one is waiting has dropped it.
+- **Neither is an airing.** A track that never reached the deck is not in
+  history and not in the airing log, whichever way it left.
 - **Missing tracks.** `on_missing_state` takes ids from the same
   `library-health` event the health report uses, and advancement drops them up
   to the next stop marker, even on a cold cache. See

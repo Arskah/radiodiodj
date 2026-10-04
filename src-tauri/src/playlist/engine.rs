@@ -124,6 +124,17 @@ impl Transition {
     }
 }
 
+/// Why a load did not land, as far as it changes what the playlist does next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadFailure {
+    /// A time bound gave up on a read that may yet finish. The track lost its
+    /// turn, not its place: it returns to the head of the playlist.
+    GivenUp,
+    /// The read failed, or there was nothing to read. Another attempt would
+    /// end the same way, so the track is dropped.
+    Unplayable,
+}
+
 /// What to play next, given what is queued and what is cached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Plan {
@@ -162,10 +173,10 @@ pub struct Playlist {
     overlapping: bool,
     /// What has aired, oldest first — the display log the History tab shows.
     ///
-    /// Grows where a track actually leaves the deck: an explicit track change,
-    /// a handover, or a stop. Never on a session restore, and never on `prev`,
-    /// which returns the outgoing track to the playlist rather than airing past
-    /// it. The durable record is `play_log`; this is the window of it the
+    /// Grows where a track that aired leaves the deck: an explicit track
+    /// change, a handover, or a stop. Never for a track whose load did not
+    /// land, never on a session restore, and never on `prev`, which returns
+    /// the outgoing track to the playlist rather than airing past it. The durable record is `play_log`; this is the window of it the
     /// renderer displays, hydrated from there at launch.
     history: Vec<Track>,
     /// How many entries [`Playlist::history`] keeps, from the stored tuning.
@@ -186,6 +197,10 @@ pub struct Playlist {
     /// aired, so a recovering share must put *it* back on rather than
     /// advancing past it to the next queued track.
     retry_current: bool,
+    /// That load was given up on rather than failing, so if advancement moves
+    /// past the track it returns to the head of the playlist. Only advancement:
+    /// an operator who skips or stops a track that is waiting has dropped it.
+    requeue_current: bool,
     /// The track on air has been counted as an airing. Set where the airing
     /// becomes real — a successful load, or a handover onto a deck that is
     /// already playing — so a load that never lands writes nothing to the log,
@@ -407,7 +422,7 @@ impl Playlist {
 
     pub fn stop(&mut self) -> Transition {
         self.clear_retry();
-        let aired = self.current.take();
+        let aired = self.take_aired();
         self.push_history(aired);
         self.current_override = None;
         self.auto_playlist = false;
@@ -442,6 +457,7 @@ impl Playlist {
         }
         // Whatever is on air played to its end, so there is nothing to retry.
         self.retry_current = false;
+        self.requeue_current = false;
         self.refill(r);
         self.advance(false, r)
     }
@@ -469,14 +485,14 @@ impl Playlist {
             return Transition::default();
         };
         self.clear_retry();
-        let aired = self.current.replace(track);
+        let outgoing = self.current.replace(track);
         self.current_override = cue_override;
         // The incoming deck is already playing, so this airing is real the
         // moment the role moves — there is no load to wait on.
-        self.current_aired = true;
+        let aired = std::mem::replace(&mut self.current_aired, true);
         self.armed = None;
-        self.overlapping = aired.is_some();
-        self.push_history(aired);
+        self.overlapping = outgoing.is_some();
+        self.push_history(outgoing.filter(|_| aired));
         self.refill(r);
         Transition::effects(vec![
             Effect::CancelRetry,
@@ -495,9 +511,14 @@ impl Playlist {
         Transition::default()
     }
 
-    /// A read failed after retries, or the watchdog fired. Skip to the next
-    /// cached track (or wait for the share) rather than sitting in dead air.
-    pub fn on_load_failed(&mut self, r: &dyn Refiller) -> Transition {
+    /// A read failed after retries, or a time bound gave up on it. Skip to the
+    /// next cached track (or wait for the share) rather than sitting in dead
+    /// air.
+    ///
+    /// A track that was only given up on goes back to the head of the playlist
+    /// when advancement moves past it, which is also what keeps it in the
+    /// prefetch window for the abandoned read to land in.
+    pub fn on_load_failed(&mut self, why: LoadFailure, r: &dyn Refiller) -> Transition {
         if !self.auto_advance {
             return Transition::default();
         }
@@ -507,6 +528,8 @@ impl Playlist {
             // fresh cache-state naming the track makes it a candidate again.
             self.cached_ids.remove(&id);
             self.retry_current = true;
+            // One that already aired is reloading — it had its turn.
+            self.requeue_current = why == LoadFailure::GivenUp && !self.current_aired;
         }
         self.advance(true, r)
     }
@@ -727,9 +750,16 @@ impl Playlist {
         playlist_issued: bool,
         r: &dyn Refiller,
     ) -> Transition {
-        let aired = self.current.take();
+        let aired = self.take_aired();
         self.push_history(aired);
         self.set_current(track, cue_override, playlist_issued, r)
+    }
+
+    /// Take the track off the deck, handing it back only if it aired: a load
+    /// that never landed has nothing to show in history.
+    fn take_aired(&mut self) -> Option<Track> {
+        let track = self.current.take()?;
+        std::mem::take(&mut self.current_aired).then_some(track)
     }
 
     /// Append what just left the deck to history, keeping it within the cap.
@@ -813,7 +843,18 @@ impl Playlist {
             // through the whole playlist.
             Plan::Fallback if after_failure => self.arm_retry(),
             Plan::Fallback => self.play_index(0, r),
-            Plan::Stop(index) | Plan::Play(index) => self.play_index(index, r),
+            Plan::Stop(index) | Plan::Play(index) => {
+                let given_up = self
+                    .requeue_current
+                    .then(|| self.current.clone())
+                    .flatten()
+                    .map(|track| PlaylistItem::with_override(track, self.current_override));
+                let transition = self.play_index(index, r);
+                // After the item at `index` is out, so the index still means
+                // what the plan meant by it.
+                self.items.splice(0..0, given_up);
+                transition
+            }
             Plan::Wait => self.arm_retry(),
         }
     }
@@ -893,6 +934,7 @@ impl Playlist {
             return Transition::default();
         };
         self.retry_current = false;
+        self.requeue_current = false;
         self.end_wait();
         self.refill(r);
         Transition::effects(vec![
@@ -923,6 +965,7 @@ impl Playlist {
         self.end_wait();
         self.retry_attempt = 0;
         self.retry_current = false;
+        self.requeue_current = false;
     }
 
     /// Stop waiting for the share, keeping the backoff index for a retry that
@@ -1096,6 +1139,14 @@ mod tests {
         p.snapshot().history.iter().map(|t| t.id).collect()
     }
 
+    /// Play the item at `index` and report its load as landed: an airing.
+    fn air(p: &mut Playlist, index: usize) {
+        p.play_index(index, &NoRefill);
+        if let Some(id) = current_id(p) {
+            p.on_loaded(id);
+        }
+    }
+
     fn with(items: &[Option<i64>]) -> Playlist {
         let mut p = Playlist::new();
         for item in items {
@@ -1204,8 +1255,8 @@ mod tests {
     #[test]
     fn playing_a_new_track_moves_the_previous_one_into_history() {
         let mut p = with(&[Some(1), Some(2)]);
-        p.play_index(0, &NoRefill);
-        p.play_index(0, &NoRefill);
+        air(&mut p, 0);
+        air(&mut p, 0);
         assert_eq!(history(&p), vec![1]);
         assert_eq!(current_id(&p), Some(2));
     }
@@ -1222,6 +1273,7 @@ mod tests {
     fn play_index_onto_a_stop_marker_stops_and_consumes_it() {
         let mut p = with(&[Some(1), None, Some(2)]);
         p.play_now(track(9), &NoRefill);
+        p.on_loaded(9);
         let t = p.play_index(1, &NoRefill);
         assert_eq!(t.effects, vec![Effect::CancelRetry, Effect::Stop]);
         assert_eq!(history(&p), vec![9]);
@@ -1265,8 +1317,8 @@ mod tests {
     #[test]
     fn prev_airs_the_last_aired_track_and_returns_the_outgoing_one_to_the_head() {
         let mut p = with(&[Some(1), Some(2)]);
-        p.play_index(0, &NoRefill); // 1 on air
-        p.play_index(0, &NoRefill); // 2 on air, 1 in history
+        air(&mut p, 0); // 1 on air
+        air(&mut p, 0); // 2 on air, 1 in history
         let t = p.prev(&NoRefill);
         assert_eq!(current_id(&p), Some(1));
         assert_eq!(queued(&p), vec![Some(2)]);
@@ -1278,8 +1330,8 @@ mod tests {
     #[test]
     fn prev_leaves_the_history_entry_in_place() {
         let mut p = with(&[Some(1), Some(2)]);
-        p.play_index(0, &NoRefill);
-        p.play_index(0, &NoRefill);
+        air(&mut p, 0);
+        air(&mut p, 0);
         p.prev(&NoRefill);
         assert_eq!(history(&p), vec![1]);
     }
@@ -1295,9 +1347,9 @@ mod tests {
     #[test]
     fn prev_cancels_a_pending_outage_retry() {
         let mut p = with(&[Some(1), Some(2), Some(3)]);
+        air(&mut p, 0);
         p.play_index(0, &NoRefill);
-        p.play_index(0, &NoRefill);
-        p.on_load_failed(&NoRefill);
+        p.on_load_failed(LoadFailure::GivenUp, &NoRefill);
         assert!(p.snapshot().awaiting_network);
         let t = p.prev(&NoRefill);
         assert!(t.effects.contains(&Effect::CancelRetry));
@@ -1316,6 +1368,7 @@ mod tests {
     fn stop_clears_the_deck_and_the_auto_playlist_and_logs_the_airing() {
         let mut p = with(&[Some(2)]);
         p.set_auto_playlist(true, &FakeRefiller::new());
+        p.on_loaded(2);
         let t = p.stop();
         assert_eq!(t.effects, vec![Effect::CancelRetry, Effect::Stop]);
         assert_eq!(history(&p), vec![2]);
@@ -1440,7 +1493,7 @@ mod tests {
     #[test]
     fn ended_stops_when_auto_advance_is_off() {
         let mut p = with(&[Some(1), Some(2)]);
-        p.play_index(0, &NoRefill);
+        air(&mut p, 0);
         p.set_auto_advance(false);
         let t = p.on_ended(&NoRefill);
         assert_eq!(t.effects, vec![Effect::CancelRetry, Effect::Stop]);
@@ -1522,8 +1575,182 @@ mod tests {
         let mut p = with(&[Some(1), Some(2)]);
         p.play_now(track(9), &NoRefill);
         p.on_cache_state(vec![2], &NoRefill);
-        p.on_load_failed(&FakeRefiller::new());
+        p.on_load_failed(LoadFailure::GivenUp, &FakeRefiller::new());
         assert_eq!(current_id(&p), Some(2));
+    }
+
+    /// History is what aired, and a load that was given up on aired nothing
+    /// (#547).
+    #[test]
+    fn a_track_whose_load_failed_stays_out_of_history() {
+        let mut p = with(&[Some(1), Some(2)]);
+        p.play_now(track(9), &NoRefill);
+        p.on_cache_state(vec![2], &NoRefill);
+        p.on_load_failed(LoadFailure::GivenUp, &NoRefill);
+        assert_eq!(current_id(&p), Some(2));
+        assert!(history(&p).is_empty());
+    }
+
+    #[test]
+    fn prev_after_a_failed_load_steps_back_to_the_last_track_that_aired() {
+        let mut p = with(&[Some(1), Some(2), Some(3)]);
+        air(&mut p, 0);
+        p.play_index(0, &NoRefill);
+        p.on_cache_state(vec![3], &NoRefill);
+        p.on_load_failed(LoadFailure::GivenUp, &NoRefill);
+        p.on_loaded(3);
+        assert_eq!(history(&p), vec![1]);
+        p.prev(&NoRefill);
+        assert_eq!(current_id(&p), Some(1));
+    }
+
+    #[test]
+    fn stopping_during_a_failed_load_records_nothing() {
+        let mut p = with(&[]);
+        p.play_now(track(9), &NoRefill);
+        p.on_load_failed(LoadFailure::GivenUp, &NoRefill);
+        p.stop();
+        assert!(history(&p).is_empty());
+    }
+
+    /// The airing log and the rotation rules count from `TrackPlayed`, which
+    /// was already right; this pins that the two records agree.
+    #[test]
+    fn a_failed_load_counts_no_airing() {
+        let mut p = with(&[Some(1)]);
+        p.play_now(track(9), &NoRefill);
+        p.on_cache_state(vec![1], &NoRefill);
+        let t = p.on_load_failed(LoadFailure::GivenUp, &NoRefill);
+        assert!(!t
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::TrackPlayed(_))));
+        assert_eq!(p.on_loaded(9), Transition::default());
+        assert_eq!(p.on_loaded(1).effects, vec![Effect::TrackPlayed(1)]);
+    }
+
+    /// A handover marks the incoming track as aired, so the outgoing one's own
+    /// airing has to be read before that.
+    #[test]
+    fn a_handover_records_the_outgoing_track_only_if_it_aired() {
+        let mut p = with(&[Some(1), Some(2)]);
+        air(&mut p, 0);
+        p.on_handover(2, &NoRefill);
+        assert_eq!(history(&p), vec![1]);
+
+        let mut p = with(&[Some(1), Some(2)]);
+        p.play_index(0, &NoRefill);
+        p.on_handover(2, &NoRefill);
+        assert!(history(&p).is_empty());
+    }
+
+    // ----- a load that was given up on (#547) -----
+
+    #[test]
+    fn a_track_given_up_on_returns_to_the_head_of_the_playlist() {
+        let mut p = with(&[Some(1), Some(2), Some(3)]);
+        p.play_now(track(9), &NoRefill);
+        p.on_cache_state(vec![2], &NoRefill);
+        p.on_load_failed(LoadFailure::GivenUp, &NoRefill);
+        assert_eq!(current_id(&p), Some(2));
+        assert_eq!(queued(&p), vec![Some(9), Some(1), Some(3)]);
+    }
+
+    /// The abandoned read is still running, and the cache only keeps bytes for
+    /// a track in the window.
+    #[test]
+    fn a_track_given_up_on_stays_in_the_prefetch_window() {
+        let mut p = with(&[Some(1)]);
+        p.play_now(track(9), &NoRefill);
+        p.on_cache_state(vec![1], &NoRefill);
+        p.on_load_failed(LoadFailure::GivenUp, &NoRefill);
+        assert_eq!(p.prefetch_window(), vec![1, 9]);
+    }
+
+    #[test]
+    fn an_unplayable_track_is_dropped() {
+        let mut p = with(&[Some(1), Some(2)]);
+        p.play_now(track(9), &NoRefill);
+        p.on_cache_state(vec![1], &NoRefill);
+        p.on_load_failed(LoadFailure::Unplayable, &NoRefill);
+        assert_eq!(current_id(&p), Some(1));
+        assert_eq!(queued(&p), vec![Some(2)]);
+    }
+
+    #[test]
+    fn a_track_given_up_on_returns_with_its_override() {
+        let mut p = with(&[Some(1)]);
+        p.add_front(track(9), Some(points(500)));
+        p.play_index(0, &NoRefill);
+        p.on_cache_state(vec![1], &NoRefill);
+        p.on_load_failed(LoadFailure::GivenUp, &NoRefill);
+        assert_eq!(queued(&p), vec![Some(9)]);
+        assert_eq!(item_override(&p, 0), Some(points(500)));
+    }
+
+    #[test]
+    fn a_track_given_up_on_goes_on_once_its_read_lands() {
+        let mut p = with(&[Some(1), Some(2)]);
+        p.play_now(track(9), &NoRefill);
+        p.on_cache_state(vec![1, 2], &NoRefill);
+        p.on_load_failed(LoadFailure::GivenUp, &NoRefill);
+        p.on_loaded(1);
+        p.on_cache_state(vec![1, 2, 9], &NoRefill);
+        let t = p.on_ended(&NoRefill);
+        assert!(t.effects.contains(&play(9)));
+        assert_eq!(queued(&p), vec![Some(2)]);
+        assert_eq!(history(&p), vec![1]);
+    }
+
+    /// While the playlist waits on the share the track is still on the deck, so
+    /// there is nothing to return yet — and when something else lands first, it
+    /// is passed like any other.
+    #[test]
+    fn a_track_given_up_on_returns_when_the_wait_ends_on_another_track() {
+        let mut p = with(&[Some(1)]);
+        p.play_now(track(9), &NoRefill);
+        p.on_cache_state(vec![9], &NoRefill);
+        p.on_load_failed(LoadFailure::GivenUp, &NoRefill);
+        assert_eq!(current_id(&p), Some(9));
+        assert_eq!(queued(&p), vec![Some(1)]);
+
+        p.on_cache_state(vec![1], &NoRefill);
+        assert_eq!(current_id(&p), Some(1));
+        assert_eq!(queued(&p), vec![Some(9)]);
+    }
+
+    #[test]
+    fn a_stop_marker_reached_past_a_track_given_up_on_keeps_the_track() {
+        let mut p = with(&[None, Some(1)]);
+        p.play_now(track(9), &NoRefill);
+        p.on_cache_state(vec![1], &NoRefill);
+        let t = p.on_load_failed(LoadFailure::GivenUp, &NoRefill);
+        assert!(t.effects.contains(&Effect::Stop));
+        assert_eq!(current_id(&p), None);
+        assert_eq!(queued(&p), vec![Some(9), Some(1)]);
+    }
+
+    /// Passing a waiting track by hand is the operator dropping it.
+    #[test]
+    fn an_operator_skipping_a_track_given_up_on_drops_it() {
+        let mut p = with(&[Some(1)]);
+        p.play_now(track(9), &NoRefill);
+        p.on_load_failed(LoadFailure::GivenUp, &NoRefill);
+        p.next(&NoRefill);
+        assert_eq!(current_id(&p), Some(1));
+        assert!(queued(&p).is_empty());
+    }
+
+    /// A reload of the track on air — it aired, so it is history, not next up.
+    #[test]
+    fn a_track_that_aired_is_not_returned_when_a_reload_is_given_up_on() {
+        let mut p = with(&[Some(1), Some(2)]);
+        air(&mut p, 0);
+        p.on_cache_state(vec![2], &NoRefill);
+        p.on_load_failed(LoadFailure::GivenUp, &NoRefill);
+        assert_eq!(current_id(&p), Some(2));
+        assert!(queued(&p).is_empty());
+        assert_eq!(history(&p), vec![1]);
     }
 
     /// The reported outage defect: the share drops while the track on air is
@@ -1534,7 +1761,7 @@ mod tests {
         let mut p = with(&[Some(1)]);
         p.play_now(track(9), &NoRefill);
         p.on_cache_state(vec![9], &NoRefill);
-        let t = p.on_load_failed(&NoRefill);
+        let t = p.on_load_failed(LoadFailure::GivenUp, &NoRefill);
         assert_eq!(t.effects, vec![Effect::ArmRetry(0)]);
         assert!(p.snapshot().awaiting_network);
 
@@ -1545,7 +1772,8 @@ mod tests {
         assert_eq!(current_id(&p), Some(9));
         assert_eq!(queued(&p), vec![Some(1)]);
         assert!(!p.snapshot().awaiting_network);
-        // Retried, not re-aired: the airing was recorded when it first went on.
+        // The retry is a load like the first: its airing is counted when it
+        // lands, not here.
         assert!(!t
             .effects
             .iter()
@@ -1558,7 +1786,7 @@ mod tests {
         let mut p = Playlist::new();
         p.add_front(track(9), Some(points(500)));
         p.play_index(0, &NoRefill);
-        p.on_load_failed(&NoRefill);
+        p.on_load_failed(LoadFailure::GivenUp, &NoRefill);
         let t = p.on_cache_state(vec![9], &NoRefill);
         assert!(t.effects.contains(&Effect::Play {
             id: 9,
@@ -1574,7 +1802,7 @@ mod tests {
         let mut p = with(&[Some(1)]);
         p.play_now(track(9), &NoRefill);
         p.on_cache_state(vec![9], &NoRefill);
-        p.on_load_failed(&NoRefill);
+        p.on_load_failed(LoadFailure::Unplayable, &NoRefill);
 
         let t = p.on_cache_state(vec![1], &FakeRefiller::new());
         assert!(t.effects.contains(&play(1)));
@@ -1588,7 +1816,7 @@ mod tests {
         let mut p = with(&[]);
         p.play_now(track(9), &NoRefill);
         p.on_cache_state(vec![9], &NoRefill);
-        let t = p.on_load_failed(&NoRefill);
+        let t = p.on_load_failed(LoadFailure::GivenUp, &NoRefill);
         assert_eq!(t.effects, vec![Effect::ArmRetry(0)]);
         assert_eq!(current_id(&p), Some(9));
     }
@@ -1601,12 +1829,12 @@ mod tests {
         let mut p = with(&[]);
         p.play_now(track(9), &NoRefill);
         assert_eq!(
-            p.on_load_failed(&NoRefill).effects,
+            p.on_load_failed(LoadFailure::GivenUp, &NoRefill).effects,
             vec![Effect::ArmRetry(0)]
         );
         p.on_cache_state(vec![9], &NoRefill);
         assert_eq!(
-            p.on_load_failed(&NoRefill).effects,
+            p.on_load_failed(LoadFailure::GivenUp, &NoRefill).effects,
             vec![Effect::ArmRetry(1)]
         );
     }
@@ -1617,7 +1845,7 @@ mod tests {
     fn a_track_that_ends_is_never_replayed() {
         let mut p = with(&[Some(1)]);
         p.play_now(track(9), &NoRefill);
-        p.on_load_failed(&NoRefill);
+        p.on_load_failed(LoadFailure::GivenUp, &NoRefill);
         p.on_cache_state(vec![9, 1], &FakeRefiller::new());
         // 9 went back on; when it ends, 1 follows it.
         assert_eq!(current_id(&p), Some(9));
@@ -1628,7 +1856,7 @@ mod tests {
     #[test]
     fn load_failed_with_no_cache_knowledge_waits_instead_of_burning_the_queue() {
         let mut p = with(&[Some(1), Some(2)]);
-        let t = p.on_load_failed(&NoRefill);
+        let t = p.on_load_failed(LoadFailure::GivenUp, &NoRefill);
         assert_eq!(t.effects, vec![Effect::ArmRetry(0)]);
         assert_eq!(queued(&p), vec![Some(1), Some(2)]);
         assert_eq!(current_id(&p), None);
@@ -1645,7 +1873,7 @@ mod tests {
             .iter()
             .any(|e| matches!(e, Effect::TrackPlayed(_))));
         // The read failed, so nothing went on air and nothing is counted.
-        let t = p.on_load_failed(&NoRefill);
+        let t = p.on_load_failed(LoadFailure::GivenUp, &NoRefill);
         assert!(!t
             .effects
             .iter()
@@ -1656,7 +1884,7 @@ mod tests {
     fn a_retried_track_is_counted_once_when_it_finally_lands() {
         let mut p = with(&[]);
         p.play_now(track(9), &NoRefill);
-        p.on_load_failed(&NoRefill);
+        p.on_load_failed(LoadFailure::GivenUp, &NoRefill);
         p.on_cache_state(vec![9], &NoRefill);
         assert_eq!(current_id(&p), Some(9));
         assert_eq!(p.on_loaded(9).effects, vec![Effect::TrackPlayed(9)]);
@@ -1770,17 +1998,23 @@ mod tests {
     fn load_failed_does_nothing_while_auto_advance_is_off() {
         let mut p = with(&[Some(1)]);
         p.set_auto_advance(false);
-        assert_eq!(p.on_load_failed(&NoRefill), Transition::default());
+        assert_eq!(
+            p.on_load_failed(LoadFailure::GivenUp, &NoRefill),
+            Transition::default()
+        );
     }
 
     #[test]
     fn a_retry_already_armed_is_not_re_armed_on_the_next_failure() {
         let mut p = with(&[Some(1)]);
         assert_eq!(
-            p.on_load_failed(&NoRefill).effects,
+            p.on_load_failed(LoadFailure::GivenUp, &NoRefill).effects,
             vec![Effect::ArmRetry(0)]
         );
-        assert_eq!(p.on_load_failed(&NoRefill), Transition::default());
+        assert_eq!(
+            p.on_load_failed(LoadFailure::GivenUp, &NoRefill),
+            Transition::default()
+        );
         // Still waiting — the second failure adds no timer, but it must not
         // drop the banner either.
         assert!(p.snapshot().awaiting_network);
@@ -1802,7 +2036,7 @@ mod tests {
     #[test]
     fn each_retry_tick_that_fails_again_moves_further_down_the_backoff_schedule() {
         let mut p = with(&[Some(1)]);
-        p.on_load_failed(&NoRefill);
+        p.on_load_failed(LoadFailure::GivenUp, &NoRefill);
         assert_eq!(
             p.on_retry_tick(&NoRefill).effects,
             vec![Effect::ArmRetry(1)]
@@ -1837,7 +2071,7 @@ mod tests {
     #[test]
     fn an_explicit_track_change_cancels_the_pending_retry() {
         let mut p = with(&[Some(1)]);
-        p.on_load_failed(&NoRefill);
+        p.on_load_failed(LoadFailure::GivenUp, &NoRefill);
         assert!(p.snapshot().awaiting_network);
 
         let t = p.play_index(0, &NoRefill);
@@ -1847,7 +2081,7 @@ mod tests {
         // rather than resuming mid-backoff.
         p.add(track(2), None);
         assert_eq!(
-            p.on_load_failed(&NoRefill).effects,
+            p.on_load_failed(LoadFailure::GivenUp, &NoRefill).effects,
             vec![Effect::ArmRetry(0)]
         );
     }
@@ -1855,7 +2089,7 @@ mod tests {
     #[test]
     fn an_empty_queue_cancels_the_retry_rather_than_waiting_forever() {
         let mut p = Playlist::new();
-        let t = p.on_load_failed(&NoRefill);
+        let t = p.on_load_failed(LoadFailure::GivenUp, &NoRefill);
         assert_eq!(t.effects, vec![Effect::CancelRetry]);
         assert!(!p.snapshot().awaiting_network);
     }
@@ -1904,7 +2138,7 @@ mod tests {
         let mut p = with(&[Some(1), Some(2), Some(3), Some(4)]);
         p.set_history_cap(2);
         for _ in 0..4 {
-            p.play_index(0, &NoRefill);
+            air(&mut p, 0);
         }
         // 4 is on air, so 1, 2 and 3 aired — the oldest falls off.
         assert_eq!(history(&p), vec![2, 3]);
@@ -1915,7 +2149,7 @@ mod tests {
     fn lowering_the_cap_trims_what_history_already_holds() {
         let mut p = with(&[Some(1), Some(2), Some(3)]);
         for _ in 0..3 {
-            p.play_index(0, &NoRefill);
+            air(&mut p, 0);
         }
         assert_eq!(history(&p), vec![1, 2]);
         p.set_history_cap(1);
@@ -2059,7 +2293,7 @@ mod tests {
 
         // Stepping back is an operator naming a track, like `play_now`.
         let mut b = with(&[Some(1), Some(2)]);
-        b.play_index(0, &NoRefill);
+        air(&mut b, 0);
         b.play_index(0, &NoRefill);
         assert!(b.prev(&NoRefill).effects.contains(&play_by_hand(1)));
     }
@@ -2111,7 +2345,7 @@ mod tests {
         let mut p = Playlist::new();
         p.add_front(track(4), None);
         p.add_front(track(9), Some(points(2_000)));
-        p.play_index(1, &NoRefill); // 4 aired first
+        air(&mut p, 1); // 4 aired first
         p.play_index(0, &NoRefill); // then 9, under its override
         p.prev(&NoRefill);
         assert_eq!(queued(&p), vec![Some(9)]);
@@ -2282,8 +2516,8 @@ mod tests {
     #[test]
     fn saving_a_radio_edit_refreshes_the_history_copies_of_the_track() {
         let mut p = with(&[Some(1), Some(2)]);
-        p.play_index(0, &NoRefill);
-        p.play_index(0, &NoRefill);
+        air(&mut p, 0);
+        air(&mut p, 0);
         p.on_cue_points_saved(1, points(4_000));
         assert_eq!(
             p.snapshot().history.first().map(|t| t.cue_points),
@@ -2529,6 +2763,7 @@ mod tests {
         p.add(track(2), None);
         p.add(track(3), None);
         p.play_index(0, &r);
+        p.on_loaded(1);
         p.reconcile_arm();
 
         let t = p.on_handover(2, &r);

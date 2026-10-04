@@ -48,8 +48,11 @@ hand or anything at all with auto-advance off, and the dead-air limit on a load
 the playlist issued and will act on the failure of — never both.
 Exempting the operator is exempting them from the 3 s, not from the 10 s: their
 track survives a slow share, a dead one still reports. The abandoned read runs
-on either way, so its bytes still reach the cache and a skipped track costs its
-place in the hour, not the file. See [docs/audio.md](docs/audio.md).
+on either way, and `:load-failed` says the load was `abandoned` rather than
+failed: the playlist returns such a track to the head of the queue, which keeps
+it in the prefetch window so its bytes are accepted when they land. A skipped
+track costs its turn, not the file. See [docs/audio.md](docs/audio.md) and
+[docs/playlist.md](docs/playlist.md#outages).
 
 **One file never crosses the share twice at once** — the library is a network
 share, and concurrent reads are how a share that was merely slow becomes a share

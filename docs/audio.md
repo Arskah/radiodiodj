@@ -114,9 +114,11 @@ The read happens on its own thread, with two protections in `audio/player.rs`:
   the dead-air limit is the shorter of the two and so always the one that fires,
   dead mount or not, and "the share is gone" and "the share is too slow to open
   a show with" are different problems. **The read is not cancelled** — it cannot be, and one
-  that is merely slow is worth finishing: its bytes still reach the cache, so
-  the track the playlist just skipped is instant to play afterwards. What it
-  costs is its place in this hour, not the file.
+  that is merely slow is worth finishing. The event says the load was
+  `abandoned`, which is what has the playlist return the track to the head of
+  the queue rather than drop it; back in the window, its bytes are accepted
+  when they land and it is instant to play at the next track change. What it
+  costs is its turn, not the file — see [playlist.md](./playlist.md#outages).
 
 A read that fails or times out emits `{role}:load-failed`, which the playlist
 engine turns into skip-to-cached and a retry timer — see
@@ -359,7 +361,7 @@ the armed one `arm-deck:*`, an outgoing one `tail-deck:*`. The cue deck emits
 | `{role}:pause-state`        | paused / playing                                |
 | `{role}:ended`              | the track reached its cue out or the file's end |
 | `{role}:loaded`             | bytes are in the sink                           |
-| `{role}:load-failed`        | the read or decode failed                       |
+| `{role}:load-failed`        | the read failed, or was `abandoned` to a bound  |
 | `{role}:buffering`          | waiting on a read                               |
 | `{role}:error`              | anything else the worker could not recover from |
 | `{role}:output-unavailable` | the output device could not be opened           |

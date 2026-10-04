@@ -108,7 +108,9 @@ describe("NativeBackend (deckId='main' default)", () => {
     const events: DeckEvent[] = [];
     b.on((e) => events.push(e));
     await b.whenReady();
-    listeners["main-deck:load-failed"]({ payload: 99 });
+    listeners["main-deck:load-failed"]({
+      payload: { id: 99, abandoned: true },
+    });
     expect(events).toEqual([{ type: "load-failed", id: 99 }]);
   });
 });

@@ -193,6 +193,17 @@ pub enum RampDone {
 /// (`main-deck`, `arm-deck`) for decks on the program bus — so the renderer,
 /// the broadcast service, and the now-playing webhook keep addressing `main`
 /// no matter which physical deck is on air.
+/// Payload of `{role}:load-failed`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LoadFailed {
+    /// The track the load was issued for.
+    pub id: i64,
+    /// A time bound gave up on a read that is still running, as opposed to the
+    /// read itself failing: nothing says the file is bad, and its bytes may
+    /// yet arrive.
+    pub abandoned: bool,
+}
+
 pub(super) struct Topics {
     pub time: String,
     pub duration: String,

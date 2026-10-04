@@ -17,14 +17,14 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use tauri::{AppHandle, Emitter, Listener};
 
-use super::engine::{Effect, Playlist, Refiller, Transition};
+use super::engine::{Effect, LoadFailure, Playlist, Refiller, Transition};
 use super::generate;
 use super::model::{PlaylistItem, Snapshot};
 use crate::audio::bus::{ProgramBus, FADED_OUT_EVENT, HANDOVER_EVENT};
 use crate::audio::cache::Cache;
 use crate::audio::cue_points::CuePoints;
 use crate::audio::levelling;
-use crate::audio::player::Cmd;
+use crate::audio::player::{Cmd, LoadFailed};
 use crate::broadcast::BroadcastService;
 use crate::library::db::{Db, Track, TrackLoadInfo};
 use crate::library::health::HEALTH_EVENT;
@@ -283,8 +283,16 @@ impl PlaylistService {
         });
 
         let failed = Arc::clone(&self.inner);
-        app.listen("main-deck:load-failed", move |_| {
-            Inner::apply(&failed, |p, r| p.on_load_failed(r));
+        app.listen("main-deck:load-failed", move |event| {
+            let Ok(load) = serde_json::from_str::<LoadFailed>(event.payload()) else {
+                return;
+            };
+            let why = if load.abandoned {
+                LoadFailure::GivenUp
+            } else {
+                LoadFailure::Unplayable
+            };
+            Inner::apply(&failed, move |p, r| p.on_load_failed(why, r));
         });
 
         let missing = Arc::clone(&self.inner);
@@ -618,7 +626,7 @@ impl Inner {
                 } else {
                     // A purged row can never load; treat it as a failed read
                     // so advancement moves on.
-                    Inner::apply(inner, |p, r| p.on_load_failed(r));
+                    Inner::apply(inner, |p, r| p.on_load_failed(LoadFailure::Unplayable, r));
                 }
             }
             Effect::Resume {
