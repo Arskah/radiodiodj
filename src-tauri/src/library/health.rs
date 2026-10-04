@@ -720,8 +720,9 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let a = insert(&db, "/music/a.mp3", "music", "X", "One", None);
         insert(&db, "/music/b.mp3", "music", "Y", "Two", None);
-        db.set_analysis_failed(a, "fingerprint: probe: unsupported", 7)
-            .unwrap();
+        assert!(db
+            .set_analysis_failed(a, "fingerprint: probe: unsupported", 7, Some(1))
+            .unwrap());
         let report = build(&db, &music_root()).unwrap();
         assert_eq!(report.unhashed, 1);
         assert_eq!(report.unreadable.len(), 1);
