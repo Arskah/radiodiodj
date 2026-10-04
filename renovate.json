@@ -18,16 +18,10 @@
   "semanticCommits": "enabled",
   "packageRules": [
     {
-      "description": "tauri build rejects an npm package and its Rust crate on different minors, so both sides of the boundary move in one PR",
+      "description": "tauri build rejects a plugin's npm package and its Rust crate on different minors, and the plugins have no monorepo preset, so each plugin's two sides move in one PR. Core is left to the tauri monorepo preset",
       "matchManagers": ["npm", "cargo"],
-      "matchPackageNames": [
-        "tauri",
-        "tauri-build",
-        "tauri-plugin-*",
-        "@tauri-apps/**"
-      ],
-      "groupName": "tauri",
-      "groupSlug": "tauri"
+      "matchPackageNames": ["tauri-plugin-*", "@tauri-apps/plugin-*"],
+      "groupName": "{{{replace '^@tauri-apps/plugin-' 'tauri-plugin-' depName}}}"
     }
   ]
 }
