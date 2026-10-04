@@ -54,6 +54,25 @@ describe("saved playlists", () => {
       ),
     );
 
+  // Read through the DOM: under WebKitGTK `getText()` can return "" for an
+  // element Svelte has bound but not yet laid out.
+  const textOf = (selector: string): Promise<string> =>
+    browser.execute(
+      (s) =>
+        (document.querySelector(s)?.textContent ?? "").replace(/\s+/g, " "),
+      selector,
+    );
+
+  async function waitForText(selector: string, text: string): Promise<void> {
+    await browser.waitUntil(
+      async () => (await textOf(selector)).includes(text),
+      {
+        timeout: 5_000,
+        timeoutMsg: `${selector} never read "${text}"`,
+      },
+    );
+  }
+
   async function waitForQueue(length: number): Promise<void> {
     await browser.waitUntil(
       async () => (await queuedTitles()).length === length,
@@ -85,8 +104,8 @@ describe("saved playlists", () => {
     await browser.$(sel.libraryTab("Playlists")).click();
     const saved = browser.$(sel.savedRow);
     await saved.waitForDisplayed({ timeout: 5_000 });
-    await expect(saved).toHaveText(expect.stringContaining("Morning show"));
-    await expect(saved).toHaveText(expect.stringContaining("2 tracks"));
+    await waitForText(sel.savedRow, "Morning show");
+    await waitForText(sel.savedRow, "2 tracks");
 
     await saved.click();
     await browser.waitUntil(async () => (await entryTitles()).length === 2, {
@@ -98,16 +117,20 @@ describe("saved playlists", () => {
     await browser.$(sel.savedAdd).click();
     await waitForQueue(2);
     expect(await queuedTitles()).toEqual(queued);
-    await expect(browser.$(sel.savedNotice)).toHaveText(
-      expect.stringContaining("Added 2 tracks"),
-    );
+    await waitForText(sel.savedNotice, "Added 2 tracks");
   });
 
   it("adds a library track to a saved playlist from its menu", async () => {
     await bootAndScan();
 
     const row = browser.$$(sel.trackRow)[2];
-    const title = await row.$(".track-title").getText();
+    const title = await browser.execute(
+      () =>
+        document
+          .querySelectorAll(".track-row")[2]
+          ?.querySelector(".track-title")
+          ?.textContent?.trim() ?? "",
+    );
     await row.click({ button: "right" });
     const menu = browser.$(sel.contextMenu);
     await menu.waitForDisplayed({ timeout: 5_000 });
@@ -123,7 +146,8 @@ describe("saved playlists", () => {
     await browser.$(sel.libraryTab("Playlists")).click();
     const saved = browser.$(sel.savedRow);
     await saved.waitForDisplayed({ timeout: 5_000 });
-    await expect(saved).toHaveText(expect.stringContaining("1 track"));
+    await waitForText(sel.savedRow, "Picks");
+    await waitForText(sel.savedRow, "1 track");
     await saved.click();
     await browser.waitUntil(async () => (await entryTitles()).length === 1, {
       timeout: 5_000,
