@@ -349,6 +349,7 @@ On each row:
 | action                  | how                                                       |
 | ----------------------- | --------------------------------------------------------- |
 | add to the playlist     | double-click, or the `+` button                           |
+| add at a position       | drag the row onto the playlist; the line shows where      |
 | preview on the cue deck | the headphones button (only with a cue device configured) |
 | edit metadata           | the pencil button                                         |
 | everything else         | right-click, the menu key, Shift+F10 or Ctrl+Enter        |

@@ -207,6 +207,10 @@ export const api = {
   ): Promise<void> {
     return invoke<void>("playlist_add_front", { id, cuePoints });
   },
+  /** Insert ahead of the item at `index`; an index past the end appends. */
+  playlistInsert(id: number, index: number): Promise<void> {
+    return invoke<void>("playlist_insert", { id, index });
+  },
   /** Set (or, with `null`, clear) one queued item's cue-point override. */
   playlistSetItemCuePoints(
     index: number,

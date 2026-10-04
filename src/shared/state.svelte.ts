@@ -133,6 +133,8 @@ export class AppState {
   searchQuery = $state("");
   activeTab = $state<ContentType>("music");
   playlistTab = $state<PlaylistTab>("playlist");
+  /** The library row being dragged, for whichever list it is dropped on. */
+  draggedTrack = $state<Track | null>(null);
   sortBy = $state<SortColumn | null>(null);
   sortDir = $state<SortDir>("asc");
   tracks = $state<Track[]>([]);
@@ -618,6 +620,11 @@ export class AppState {
   /** Queue a track as next-up, ahead of everything already queued. */
   addNextToPlaylist(track: Track): void {
     this.send(api.playlistAddFront(track.id));
+  }
+
+  /** Queue a track ahead of the item at `index` — where a dragged row landed. */
+  insertInPlaylist(track: Track, index: number): void {
+    this.send(api.playlistInsert(track.id, index));
   }
 
   revealTrack(track: Track): void {

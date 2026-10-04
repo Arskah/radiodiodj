@@ -64,6 +64,11 @@ export class MockPlaylistBackend {
     this.emit();
   }
 
+  insert(index: number, track: Track): void {
+    this.playlist.splice(index, 0, trackItem(track, null));
+    this.emit();
+  }
+
   setItemCuePoints(index: number, cueOverride: CuePoints | null): void {
     const item = this.playlist[index];
     if (item && !isStopMarker(item)) {

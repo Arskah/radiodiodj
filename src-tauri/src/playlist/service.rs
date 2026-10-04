@@ -395,6 +395,13 @@ impl PlaylistService {
         });
     }
 
+    /// Queue a track ahead of the item at `index`.
+    pub fn insert(&self, id: i64, index: usize) {
+        self.queue(move |inner| {
+            Inner::with_track(inner, id, move |p, _, track| p.insert(index, track))
+        });
+    }
+
     /// The automatic-cue policy changed, so every copy held here is stale at
     /// once. Re-reads them from the library, which applies the policy, in one
     /// transition rather than one per track.

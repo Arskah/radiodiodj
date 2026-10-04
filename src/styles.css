@@ -1648,6 +1648,10 @@ body {
   box-shadow: inset 0 -2px 0 0 var(--primary);
 }
 
+#playlist.drop-into {
+  box-shadow: inset 0 2px 0 0 var(--primary);
+}
+
 /* Index badge */
 .pl-num {
   display: flex;

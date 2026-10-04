@@ -316,6 +316,16 @@ impl Playlist {
         Transition::default()
     }
 
+    /// Insert ahead of the item at `index` — a library row dropped between two
+    /// queued ones. An index past the end appends: it describes a snapshot the
+    /// queue has since shrunk under, and the operator still named the track.
+    pub fn insert(&mut self, index: usize, track: Track) -> Transition {
+        let index = index.min(self.items.len());
+        self.items
+            .insert(index, PlaylistItem::with_override(track, None));
+        Transition::default()
+    }
+
     /// Set or clear one queued item's override. `None` drops it back to the
     /// track's radio edit; an all-`NULL` `Some` is a deliberate "whole file
     /// this once" and is kept as such.
@@ -1188,6 +1198,28 @@ mod tests {
         let mut p = with(&[Some(1), Some(2)]);
         p.add_front(track(9), None);
         assert_eq!(queued(&p), vec![Some(9), Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn insert_lands_ahead_of_the_item_at_the_index() {
+        let mut p = with(&[Some(1), None, Some(2)]);
+        p.insert(1, track(9));
+        assert_eq!(queued(&p), vec![Some(1), Some(9), None, Some(2)]);
+        assert_eq!(item_override(&p, 1), None);
+    }
+
+    #[test]
+    fn insert_at_the_length_appends() {
+        let mut p = with(&[Some(1), Some(2)]);
+        p.insert(2, track(9));
+        assert_eq!(queued(&p), vec![Some(1), Some(2), Some(9)]);
+    }
+
+    #[test]
+    fn insert_past_the_end_appends() {
+        let mut p = with(&[Some(1)]);
+        p.insert(7, track(9));
+        assert_eq!(queued(&p), vec![Some(1), Some(9)]);
     }
 
     #[test]

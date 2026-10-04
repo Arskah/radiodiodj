@@ -342,6 +342,13 @@ fn playlist_add_front(app: State<'_, AppState>, id: i64, cue_points: Option<CueP
     app.playlist.add_front(id, cue_points);
 }
 
+/// Insert ahead of the item at `index` — a library row dropped on the playlist.
+/// An index past the end appends.
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_insert(app: State<'_, AppState>, id: i64, index: usize) {
+    app.playlist.insert(id, index);
+}
+
 /// Set or clear a queued item's override. `null` drops the item back to the
 /// track's radio edit; an all-`null` object is a deliberate "whole file this
 /// once" and is stored as one.
@@ -1472,6 +1479,7 @@ pub fn run() {
             playlist_sync,
             playlist_add,
             playlist_add_front,
+            playlist_insert,
             playlist_set_item_cue_points,
             playlist_add_stop_marker,
             playlist_add_filler,
