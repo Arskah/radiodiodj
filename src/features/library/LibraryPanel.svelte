@@ -58,6 +58,16 @@
     app.setHover(track, rect);
   }
 
+  function onDragStart(track: Track, e: DragEvent): void {
+    // The tooltip is anchored to the row and would hang over the drag.
+    app.clearHover();
+    app.draggedTrack = track;
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "copy";
+      e.dataTransfer.setData("text/plain", `${track.artist} – ${track.title}`);
+    }
+  }
+
   // ----- Row context menu (#314) -----
 
   let menuTrack = $state<Track | null>(null);
@@ -235,6 +245,9 @@
       {#each app.tracks as track (track.id)}
         <div
           class="track-row"
+          draggable="true"
+          ondragstart={(e) => onDragStart(track, e)}
+          ondragend={() => (app.draggedTrack = null)}
           ondblclick={(e) => {
             e.preventDefault();
             app.addToPlaylist(track);

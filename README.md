@@ -107,8 +107,9 @@ browser audio pipeline, no external transcoder, no subscription.
    The status bar at the bottom shows progress; the analysis pass that follows
    can be stopped from there and picks up where it left off
 3. Use the **library tabs** to browse by content type
-4. Double-click a track or use **+** to add it to the playlist; right-click a
-   row for cueing, cue points, metadata editing and play-now
+4. Double-click a track or use **+** to add it to the playlist, or drag it to
+   the position it should play at; right-click a row for cueing, cue points,
+   metadata editing and play-now
 5. Toggle **Auto Mode** in the toolbar to let the playlist keep filling itself
 6. Switch the deck between **Auto** and **Manual** to choose whether it
    advances on its own

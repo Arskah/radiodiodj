@@ -22,6 +22,7 @@ const { api } = vi.hoisted(() => {
     onTailDuration: vi.fn(),
     playlistAdd: vi.fn(),
     playlistAddFront: vi.fn(),
+    playlistInsert: vi.fn(),
     playlistSetItemCuePoints: vi.fn(),
     playlistAddStopMarker: vi.fn(),
     playlistAddFiller: vi.fn(),
@@ -378,6 +379,9 @@ function wirePlaylist(playlist: MockPlaylistBackend): void {
     (id: number, cuePoints: CuePoints | null = null) =>
       ok(() => playlist.addFront(known(id), cuePoints)),
   );
+  api.playlistInsert.mockImplementation((id: number, index: number) =>
+    ok(() => playlist.insert(index, known(id))),
+  );
   api.playlistSetItemCuePoints.mockImplementation(
     (index: number, cuePoints: CuePoints | null) =>
       ok(() => playlist.setItemCuePoints(index, cuePoints)),
@@ -481,6 +485,14 @@ describe("AppState playlist mutations", () => {
     app.addNextToPlaylist(t(3));
     expect(app.playlist.map(pid)).toEqual([3, 1, 2]);
     expect(api.playlistAddFront).toHaveBeenCalledWith(3);
+  });
+
+  it("insertInPlaylist queues the track ahead of the item at the index", () => {
+    app.addToPlaylist(t(1));
+    app.addToPlaylist(t(2));
+    app.insertInPlaylist(t(3), 1);
+    expect(app.playlist.map(pid)).toEqual([1, 3, 2]);
+    expect(api.playlistInsert).toHaveBeenCalledWith(3, 1);
   });
 
   it("revealTrack forwards the track id", () => {

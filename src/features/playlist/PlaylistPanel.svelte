@@ -35,36 +35,62 @@
     return e.clientY < rect.top + rect.height / 2 ? i : i + 1;
   }
 
+  /** A row of this list or of the library is in the air. */
+  const dragging = $derived(dragFromIndex !== -1 || app.draggedTrack !== null);
+
+  // A drag that ends anywhere else never reaches a handler here.
+  $effect(() => {
+    if (!dragging) dropTarget = -1;
+  });
+
+  function dropEffect(): "move" | "copy" {
+    return app.draggedTrack ? "copy" : "move";
+  }
+
   function onRowDragOver(e: DragEvent, i: number): void {
+    if (!dragging) return;
     e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    // The list would read a row's event as the empty space under the rows.
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = dropEffect();
     dropTarget = rowDropTarget(e, i);
   }
 
   function onRowDrop(e: DragEvent, i: number): void {
     e.preventDefault();
-    const target = rowDropTarget(e, i);
-    const from = dragFromIndex;
-    dropTarget = -1;
-    dragFromIndex = -1;
-    if (from === -1) return;
-    const insertAt = target > from ? target - 1 : target;
-    if (insertAt === from) return;
-    app.movePlaylistItem(from, insertAt);
+    e.stopPropagation();
+    drop(rowDropTarget(e, i));
   }
 
   function onListDragOver(e: DragEvent): void {
+    if (!dragging) return;
     e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-    if (dropTarget === -1) dropTarget = app.playlist.length;
+    if (e.dataTransfer) e.dataTransfer.dropEffect = dropEffect();
+    dropTarget = app.playlist.length;
+  }
+
+  function onListDragLeave(e: DragEvent): void {
+    const list = e.currentTarget as HTMLElement;
+    if (!(e.relatedTarget instanceof Node) || !list.contains(e.relatedTarget)) {
+      dropTarget = -1;
+    }
   }
 
   function onListDrop(e: DragEvent): void {
     e.preventDefault();
+    drop(app.playlist.length);
+  }
+
+  function drop(target: number): void {
     const from = dragFromIndex;
-    const target = dropTarget === -1 ? app.playlist.length : dropTarget;
+    const track = app.draggedTrack;
     dropTarget = -1;
     dragFromIndex = -1;
+    if (track) {
+      app.draggedTrack = null;
+      app.insertInPlaylist(track, target);
+      return;
+    }
     if (from === -1) return;
     const insertAt = target > from ? target - 1 : target;
     if (insertAt === from) return;
@@ -145,7 +171,11 @@
   {#if app.playlistTab === "playlist"}
     <div
       id="playlist"
+      class:drop-into={dragging &&
+        dropTarget === 0 &&
+        app.playlist.length === 0}
       ondragover={onListDragOver}
+      ondragleave={onListDragLeave}
       ondrop={onListDrop}
       role="list"
     >
@@ -166,8 +196,8 @@
             <div
               class="playlist-row stop-row"
               class:dragging={i === dragFromIndex}
-              class:drop-before={dragFromIndex !== -1 && dropTarget === i}
-              class:drop-after={dragFromIndex !== -1 &&
+              class:drop-before={dragging && dropTarget === i}
+              class:drop-after={dragging &&
                 dropTarget === i + 1 &&
                 i === app.playlist.length - 1}
               draggable="true"
@@ -207,8 +237,8 @@
             <div
               class="playlist-row"
               class:dragging={i === dragFromIndex}
-              class:drop-before={dragFromIndex !== -1 && dropTarget === i}
-              class:drop-after={dragFromIndex !== -1 &&
+              class:drop-before={dragging && dropTarget === i}
+              class:drop-after={dragging &&
                 dropTarget === i + 1 &&
                 i === app.playlist.length - 1}
               draggable="true"
