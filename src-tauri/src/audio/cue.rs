@@ -43,6 +43,7 @@ impl CueDeck {
                 roles_topic: None,
                 handover_topic: None,
                 faded_out_topic: None,
+                on_air: false,
             };
             if let Err(e) = run(app.clone(), rx, output, set, cache, tuning) {
                 log::error!("cue deck thread exited: {}", e);

@@ -605,8 +605,12 @@ impl Inner {
 
     fn run(inner: &Arc<Inner>, effect: &Effect) {
         match effect {
-            Effect::Play { id, cue_override } => {
-                if inner.load_deck(*id, *cue_override, 0.0, true) {
+            Effect::Play {
+                id,
+                cue_override,
+                bound_dead_air,
+            } => {
+                if inner.load_deck(*id, *cue_override, 0.0, true, *bound_dead_air) {
                     // Redundant for the audio — the load plays itself once the
                     // bytes are decoded — but it reports "playing" immediately
                     // instead of after a read that may be crossing a network.
@@ -622,7 +626,8 @@ impl Inner {
                 seconds,
                 cue_override,
             } => {
-                inner.load_deck(*id, *cue_override, *seconds, false);
+                // Parked and silent, so nothing is owed air by it.
+                inner.load_deck(*id, *cue_override, *seconds, false, false);
             }
             Effect::Stop => inner.bus.send_main(Cmd::Stop),
             Effect::Arm { id, cue_override } => inner.arm_deck(*id, *cue_override),
@@ -656,7 +661,10 @@ impl Inner {
             return;
         };
         let gain = self.replay_gain(&info);
-        self.bus.send_arm(Self::load_cmd(&info, 0.0, false, gain));
+        // Arming is not air: the outgoing track is still playing, which is
+        // exactly the slack the stall watchdog is there to use.
+        self.bus
+            .send_arm(Self::load_cmd(&info, 0.0, false, false, gain));
     }
 
     /// Resolve a track's row and fold in the markers this airing plays under.
@@ -690,7 +698,13 @@ impl Inner {
     /// a Seek sent straight after a Load arrives before there is anything to
     /// seek in, and a Play would override a restore that is meant to stay
     /// parked.
-    fn load_cmd(info: &TrackLoadInfo, start_at: f64, autoplay: bool, gain: f32) -> Cmd {
+    fn load_cmd(
+        info: &TrackLoadInfo,
+        start_at: f64,
+        autoplay: bool,
+        bound_dead_air: bool,
+        gain: f32,
+    ) -> Cmd {
         Cmd::Load {
             id: info.id,
             path: PathBuf::from(info.path.clone()),
@@ -698,6 +712,7 @@ impl Inner {
             cue_points: info.cue_points,
             start_at,
             autoplay,
+            bound_dead_air,
             gain,
         }
     }
@@ -720,11 +735,18 @@ impl Inner {
         cue_override: Option<CuePoints>,
         start_at: f64,
         autoplay: bool,
+        bound_dead_air: bool,
     ) -> bool {
         let Some(info) = self.load_info(id, cue_override) else {
             return false;
         };
-        let cmd = Self::load_cmd(&info, start_at, autoplay, self.replay_gain(&info));
+        let cmd = Self::load_cmd(
+            &info,
+            start_at,
+            autoplay,
+            bound_dead_air,
+            self.replay_gain(&info),
+        );
         self.broadcast.set_pending_track(info.into());
         self.bus.send_main(cmd);
         true

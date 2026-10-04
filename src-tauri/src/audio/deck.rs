@@ -26,8 +26,8 @@ use super::cache::Cache;
 use super::cue_points::{CuePoints, Resolved};
 use super::output::Output;
 use super::player::{
-    append_span, clamp_start, decode_bytes, fresh_progress, Bytes, Cmd, PlayerTuning, Progress,
-    RampDone, Seen, Topics,
+    append_span, clamp_start, decode_bytes, fresh_cancel, fresh_progress, Bytes, Cancel, Cmd,
+    PlayerTuning, Progress, RampDone, Seen, Topics,
 };
 
 const TICK_INTERVAL: Duration = Duration::from_millis(50);
@@ -158,6 +158,7 @@ struct PendingLoad {
     cue_points: CuePoints,
     start_at: f64,
     autoplay: bool,
+    bound_dead_air: bool,
     replay_gain: f32,
 }
 
@@ -206,10 +207,24 @@ pub(super) struct Deck {
     /// thread. `None` whenever no read of our own is pending — a cache hit
     /// routes resident bytes with nothing to read.
     read_progress: Option<Progress>,
+    /// Tells the in-flight read's thread to stop *waiting* for another reader's
+    /// copy. Set whenever the load it was issued for is given up on, because a
+    /// waiter has no other way to hear about it.
+    read_cancel: Option<Cancel>,
     /// The last progress the worker loop saw of the in-flight read; drives the
     /// watchdog, which fires on a stall rather than on the read's age. `None`
     /// whenever no read is pending.
     load_progress: Option<Seen>,
+    /// When the pending load was issued. The watchdog does not use it — a read
+    /// still delivering is never too old — but the dead-air limit does, because
+    /// what it bounds is how long air has been silent.
+    load_issued: Option<Instant>,
+    /// Whether the pending load puts the dead-air limit on the clock: it asked
+    /// to play *and* the playlist issued it. A load parked silent (a session
+    /// restore) is not dead air however long it takes, and one an operator
+    /// started by hand is their call to make — see
+    /// [`Cmd::Load::bound_dead_air`].
+    load_bounds_air: bool,
     /// Monotonic token identifying the most recent load intent. Bumped on every
     /// `Load` and `Stop`; background reads carry the token they were issued for.
     generation: u64,
@@ -247,7 +262,10 @@ impl Deck {
             active: false,
             loading: false,
             read_progress: None,
+            read_cancel: None,
             load_progress: None,
+            load_issued: None,
+            load_bounds_air: false,
             generation: 0,
             volume: 1.0,
             gain: 1.0,
@@ -353,11 +371,37 @@ impl Deck {
     /// Drop everything about the loaded track. Shared by `Stop` and by every
     /// failure path, which want exactly the same end state: nothing loaded,
     /// nothing in flight, no deferred load waiting on a device.
+    /// Whether this deck is putting sound on the bus *right now*. `active`
+    /// alone is not that question: a deck preloaded for a handover is active
+    /// with its sink paused, and counting it as sound would switch the dead-air
+    /// limit off for the whole steady state.
+    fn audible(&self) -> bool {
+        self.active && self.sink.as_ref().is_some_and(|s| !s.is_paused())
+    }
+
+    /// Give up on the in-flight read, as far as a detached thread can be given
+    /// up on: a waiter stops waiting, while a read of our own runs to the end
+    /// and leaves its bytes in the cache.
+    fn cancel_read(&mut self) {
+        if let Some(cancel) = self.read_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Whether the in-flight read has delivered anything at all — the
+    /// difference between a share that is slow and one that is not answering.
+    fn read_delivered(&self) -> bool {
+        self.load_progress.is_some_and(|seen| seen.bytes > 0)
+    }
+
     fn reset(&mut self) {
+        self.cancel_read();
         self.active = false;
         self.loading = false;
         self.read_progress = None;
         self.load_progress = None;
+        self.load_issued = None;
+        self.load_bounds_air = false;
         self.current_id = None;
         self.current_path = None;
         self.current_duration = None;
@@ -404,6 +448,10 @@ pub(super) struct DeckSet {
     /// playlist can take the track off air. `None` for a worker whose decks
     /// nothing else owns (the cue deck).
     pub faded_out_topic: Option<&'static str>,
+    /// Whether this set is program audio. Only then is a silent deck dead air,
+    /// which is what the dead-air limit is measured against; the cue deck
+    /// monitors and may take as long as the share needs.
+    pub on_air: bool,
 }
 
 /// Emit a pause-state change and record it on the role's `playing` mirror.
@@ -481,6 +529,7 @@ fn start_load(
     cue_points: CuePoints,
     start_at: f64,
     autoplay: bool,
+    bound_dead_air: bool,
     replay_gain: f32,
 ) {
     let Some((mixer, generation)) = ensure_output(output, app, events) else {
@@ -492,8 +541,10 @@ fn start_load(
         // the reset there would drop the load we are about to defer.
         deck.generation = deck.generation.wrapping_add(1);
         deck.loading = false;
+        deck.cancel_read();
         deck.read_progress = None;
         deck.load_progress = None;
+        deck.load_issued = None;
 
         // No device yet: remember the intent and let the idle loop retry the
         // open. `ensure_output` already emitted the error; keep the buffering
@@ -505,6 +556,7 @@ fn start_load(
             cue_points,
             start_at,
             autoplay,
+            bound_dead_air,
             replay_gain,
         });
         output.mark_retry_now();
@@ -520,6 +572,9 @@ fn start_load(
     deck.replace_sink(&mixer, generation);
 
     deck.generation = deck.generation.wrapping_add(1);
+    // Whatever the last read is still waiting for, it is waiting for a track
+    // this deck is no longer going to play.
+    deck.cancel_read();
     deck.current_id = Some(id);
     deck.current_path = Some(path.clone());
     deck.current_duration = duration;
@@ -528,7 +583,10 @@ fn start_load(
     deck.seek_offset = 0.0;
     deck.active = false;
     deck.loading = true;
-    deck.load_progress = Some(Seen::issued(Instant::now()));
+    let issued = Instant::now();
+    deck.load_progress = Some(Seen::issued(issued));
+    deck.load_issued = Some(issued);
+    deck.load_bounds_air = autoplay && bound_dead_air;
     let _ = app.emit(&events.topics.buffering, true);
     report_load_start(app, events, start_at, autoplay);
 
@@ -538,6 +596,7 @@ fn start_load(
         // Nothing reads, so nothing publishes progress — and the watchdog still
         // holds here, on a `Seen` that never moves.
         deck.read_progress = None;
+        deck.read_cancel = None;
         // Cache hit: route the resident bytes through the same
         // completion path as a background read — no filesystem access.
         let _ = tx.send(LoadMsg {
@@ -569,12 +628,14 @@ fn start_load(
         let cache = Arc::clone(cache);
         let progress = fresh_progress();
         deck.read_progress = Some(Arc::clone(&progress));
+        let cancel = fresh_cancel();
+        deck.read_cancel = Some(Arc::clone(&cancel));
         thread::spawn(move || {
             // Retry transient failures with backoff; hangs are the
             // watchdog's job (handled in the worker loop, not here). The
             // budget bounds the wait for another reader's copy, on the same
             // stall rule the watchdog applies here.
-            let bytes = cache.read_for_deck(id, &path, &backoffs, stall_budget, &progress);
+            let bytes = cache.read_for_deck(id, &path, &backoffs, stall_budget, &progress, &cancel);
             let _ = tx.send(LoadMsg {
                 deck: deck_index,
                 generation,
@@ -613,11 +674,26 @@ fn apply(
             cue_points,
             start_at,
             autoplay,
+            bound_dead_air,
             gain,
         } => {
             start_load(
-                app, output, deck, events, load_tx, cache, tuning, deck_index, id, path, duration,
-                cue_points, start_at, autoplay, gain,
+                app,
+                output,
+                deck,
+                events,
+                load_tx,
+                cache,
+                tuning,
+                deck_index,
+                id,
+                path,
+                duration,
+                cue_points,
+                start_at,
+                autoplay,
+                bound_dead_air,
+                gain,
             );
         }
         Cmd::Play => {
@@ -747,6 +823,7 @@ fn apply_load(
     deck.loading = false;
     deck.read_progress = None;
     deck.load_progress = None;
+    deck.load_issued = None;
     let _ = app.emit(&events.topics.buffering, false);
 
     let bytes = match msg.bytes {
@@ -839,33 +916,106 @@ fn apply_load(
     }
 }
 
-/// Handle a watchdog timeout: abandon the detached read, emit the human error
-/// plus a `:load-failed` carrying the track id, and reset load state. The
+/// Why a load was given up on. Every answer is the same to everything
+/// downstream — a `:load-failed` the playlist turns into skip-to-cached — and
+/// they differ only in what the operator is told, which is the difference
+/// between "the share is gone" and "the share is too slow to open a show with".
+///
+/// Which bound expired is not that difference on its own: the dead-air limit is
+/// the shorter of the two, so on a silent on-air deck it is what fires even
+/// when the mount is dead. What the operator is told therefore follows what the
+/// read has *delivered*, which is the question they would ask next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Abandoned {
+    /// Nothing arrived for the watchdog budget: a wedged mount.
+    Stalled,
+    /// Air has been silent for the dead-air limit with a read still pending.
+    /// `delivered` is whether any bytes had arrived by then.
+    DeadAir { delivered: bool },
+}
+
+/// Give up on an in-flight load: abandon the detached read, emit the human
+/// error plus a `:load-failed` carrying the track id, and reset load state. The
 /// generation is bumped so a late `LoadMsg` from the abandoned thread is
 /// discarded rather than played.
-fn handle_load_timeout(app: &AppHandle, deck: &mut Deck, events: &DeckEvents, timeout: Duration) {
+///
+/// The read itself runs on — a blocked `read()` cannot be cancelled, and one
+/// that is merely slow is worth finishing: `Cache::read_for_deck` offers its
+/// bytes to the cache, so the track the playlist just skipped is resident for
+/// whoever plays it next.
+fn abandon_load(
+    app: &AppHandle,
+    deck: &mut Deck,
+    events: &DeckEvents,
+    why: Abandoned,
+    after: Duration,
+) {
     let id = deck.current_id;
     let path = deck
         .current_path
         .as_ref()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
-    log::error!(
-        "player: read {} timed out after {:?}; abandoning read",
-        path,
-        timeout
-    );
+    let message = match why {
+        Abandoned::Stalled => {
+            log::error!(
+                "player: read {} delivered nothing for {:?}; abandoning read",
+                path,
+                after
+            );
+            "network down: read timed out"
+        }
+        Abandoned::DeadAir { delivered: true } => {
+            log::warn!(
+                "player: read {} still arriving after {:?} of silence; skipping ahead",
+                path,
+                after
+            );
+            "network slow: skipped ahead to keep air"
+        }
+        // Three seconds is too early to call the mount dead — the share may
+        // simply be slow to open a file — so the wording stops at what is
+        // known. The watchdog says the rest if the read never starts arriving.
+        Abandoned::DeadAir { delivered: false } => {
+            log::error!(
+                "player: read {} delivered nothing in {:?} of silence; skipping ahead",
+                path,
+                after
+            );
+            "network not responding: skipped ahead to keep air"
+        }
+    };
     deck.generation = deck.generation.wrapping_add(1);
     deck.reset();
     let _ = app.emit(&events.topics.buffering, false);
-    let _ = app.emit(
-        &events.topics.error,
-        "network down: read timed out".to_string(),
-    );
+    let _ = app.emit(&events.topics.error, message.to_string());
     if let Some(id) = id {
         let _ = app.emit(&events.topics.load_failed, id);
     }
     set_pause_state(app, events, true);
+}
+
+/// Decide whether a load has kept air silent past the dead-air limit.
+///
+/// Pure (given the clock via `now`), like [`watchdog_timed_out`], and a
+/// different question from it: this one does not care whether bytes are
+/// arriving, only that nothing is audible while they do. It asks for four
+/// things at once, because each one of them is a reason there is no dead air to
+/// bound — the deck is not program audio, nobody is owed air by this load
+/// (`bounds_air`: it was parked rather than played, or an operator chose the
+/// track themselves), some deck is still audible, or no load is pending at all.
+fn dead_air_expired(
+    on_air: bool,
+    bounds_air: bool,
+    anything_audible: bool,
+    load_issued: Option<Instant>,
+    now: Instant,
+    limit: Duration,
+) -> bool {
+    if !on_air || !bounds_air || anything_audible {
+        return false;
+    }
+    load_issued.is_some_and(|at| now.saturating_duration_since(at) >= limit)
 }
 
 /// Decide whether an in-flight read has **stalled** past the watchdog budget.
@@ -1044,6 +1194,7 @@ pub(super) fn run(
         roles_topic,
         handover_topic,
         faded_out_topic,
+        on_air,
     } = set;
     // Completed background reads arrive here; `load_tx` is cloned per read.
     let (load_tx, load_rx) = channel::<LoadMsg>();
@@ -1136,22 +1287,44 @@ pub(super) fn run(
         // wedged mount. Declare a timeout and abandon the detached read thread
         // — the worker never blocks waiting on it. Note the reader's progress
         // first, so a read that is merely slow keeps its budget refreshed.
+        //
+        // The dead-air limit is the second, much shorter bound, and the reason
+        // the first one can afford to be patient: a read that keeps arriving is
+        // never a wedged mount, but air that keeps being silent is still a show
+        // with nothing on it.
         let now = Instant::now();
+        let anything_audible = decks.iter().any(Deck::audible);
         for deck in decks.iter_mut() {
             deck.note_read_progress(now);
-            if watchdog_timed_out(
+            let abandon = if watchdog_timed_out(
                 deck.loading,
                 deck.load_progress,
                 now,
                 tuning.read_watchdog_timeout,
             ) {
+                Some((Abandoned::Stalled, tuning.read_watchdog_timeout))
+            } else if deck.loading
+                && dead_air_expired(
+                    on_air && deck.role == DeckRole::Main,
+                    deck.load_bounds_air,
+                    anything_audible,
+                    deck.load_issued,
+                    now,
+                    tuning.dead_air_limit,
+                )
+            {
+                Some((
+                    Abandoned::DeadAir {
+                        delivered: deck.read_delivered(),
+                    },
+                    tuning.dead_air_limit,
+                ))
+            } else {
+                None
+            };
+            if let Some((why, after)) = abandon {
                 let role_index = deck.role as usize;
-                handle_load_timeout(
-                    &app,
-                    deck,
-                    &events[role_index],
-                    tuning.read_watchdog_timeout,
-                );
+                abandon_load(&app, deck, &events[role_index], why, after);
             }
         }
 
@@ -1192,6 +1365,7 @@ pub(super) fn run(
                         p.cue_points,
                         p.start_at,
                         p.autoplay,
+                        p.bound_dead_air,
                         p.replay_gain,
                     );
                 }
@@ -1378,6 +1552,143 @@ mod tests {
         ));
     }
 
+    /// The other half of #504: a read that keeps arriving keeps its load, but
+    /// not while that means an empty transmitter. The dead-air limit is the
+    /// short bound, and it does not care about progress at all.
+    #[test]
+    fn dead_air_is_bounded_only_where_there_is_air_to_lose() {
+        let issued = Instant::now();
+        let limit = Duration::from_secs(3);
+        let after = issued.checked_add(limit).unwrap();
+        let before = issued
+            .checked_add(limit - Duration::from_millis(1))
+            .unwrap();
+
+        // On air, asked to play, nothing audible: silence has a bound.
+        assert!(dead_air_expired(
+            true,
+            true,
+            false,
+            Some(issued),
+            after,
+            limit
+        ));
+        assert!(!dead_air_expired(
+            true,
+            true,
+            false,
+            Some(issued),
+            before,
+            limit
+        ));
+        // A deck that is audible, a load nobody is owed air by (parked by a
+        // session restore, or a track an operator chose themselves) and the cue
+        // deck's audition are each a reason there is no dead air.
+        assert!(!dead_air_expired(
+            true,
+            true,
+            true,
+            Some(issued),
+            after,
+            limit
+        ));
+        assert!(!dead_air_expired(
+            true,
+            false,
+            false,
+            Some(issued),
+            after,
+            limit
+        ));
+        assert!(!dead_air_expired(
+            false,
+            true,
+            false,
+            Some(issued),
+            after,
+            limit
+        ));
+        // Nothing pending.
+        assert!(!dead_air_expired(true, true, false, None, after, limit));
+    }
+
+    /// What `anything_audible` is derived from. A deck preloaded for a handover
+    /// is loaded and silent, and counting it as sound would switch the dead-air
+    /// limit off through the whole steady state.
+    #[test]
+    fn a_loaded_deck_is_only_audible_while_its_sink_runs() {
+        let mut deck = Deck::new(DeckSlot::A, DeckRole::Main);
+        assert!(!deck.audible(), "no sink, no sound");
+
+        let (sink, _output) = Sink::new();
+        deck.sink = Some(sink);
+        deck.active = true;
+        assert!(deck.audible());
+
+        deck.sink.as_ref().expect("sink").pause();
+        assert!(!deck.audible(), "a deck preloaded for a handover is silent");
+
+        deck.sink.as_ref().expect("sink").play();
+        deck.active = false;
+        assert!(!deck.audible(), "a running sink with nothing in it");
+    }
+
+    /// Which bound expired does not say what to tell the operator: on a silent
+    /// on-air deck the dead-air limit is always the one that fires, dead mount
+    /// or not. What arrived is the question they would ask next.
+    #[test]
+    fn what_the_operator_is_told_follows_what_arrived() {
+        let mut deck = Deck::new(DeckSlot::A, DeckRole::Main);
+        assert!(!deck.read_delivered(), "no load, nothing delivered");
+
+        let issued = Instant::now();
+        deck.load_progress = Some(Seen::issued(issued));
+        assert!(!deck.read_delivered(), "a share that has sent nothing");
+
+        deck.load_progress = Some(Seen::issued(issued).observe(64 * 1024, issued));
+        assert!(deck.read_delivered(), "a share that is merely slow");
+    }
+
+    /// A waiter cannot see the deck's generation, so this is the only way it
+    /// hears that the load it is waiting for is not wanted any more.
+    #[test]
+    fn giving_up_on_a_load_tells_its_waiter_to_stop() {
+        let mut deck = Deck::new(DeckSlot::A, DeckRole::Main);
+        let cancel = fresh_cancel();
+        deck.read_cancel = Some(Arc::clone(&cancel));
+
+        deck.reset();
+        assert!(cancel.load(Ordering::Relaxed), "the waiter was told");
+        assert!(deck.read_cancel.is_none(), "and the handle was let go");
+        // Idempotent: a deck with nothing in flight has nobody to tell.
+        deck.cancel_read();
+    }
+
+    /// The two bounds answer different questions, and the short one comes
+    /// first: a read still delivering has not stalled, yet air is still empty.
+    #[test]
+    fn a_delivering_read_is_still_dead_air() {
+        let issued = Instant::now();
+        let dead_air = Duration::from_secs(3);
+        let now = issued.checked_add(Duration::from_secs(5)).unwrap();
+        let seen = Seen::issued(issued).observe(512 * 1024, now);
+
+        assert!(!watchdog_timed_out(
+            true,
+            Some(seen),
+            now,
+            READ_WATCHDOG_TIMEOUT
+        ));
+        assert!(dead_air_expired(
+            true,
+            true,
+            false,
+            Some(issued),
+            now,
+            dead_air
+        ));
+    }
+
     /// The bug in #504: a large file on a slow share kept arriving and was
     /// failed anyway, because the budget was measured from the read's start.
     /// Bytes landing at a tenth of the budget carry the read as far as it has
@@ -1489,6 +1800,7 @@ mod tests {
                 cue_points: CuePoints::default(),
                 start_at: 0.0,
                 autoplay: true,
+                bound_dead_air: true,
                 gain: 1.0,
             }),
             Some(TailAction::Cut)
@@ -1567,6 +1879,7 @@ mod tests {
             cue_points: CuePoints::default(),
             start_at: 0.0,
             autoplay: true,
+            bound_dead_air: true,
             gain: 1.0,
         }));
         assert!(!cancels_ramp(&Cmd::SetVolume(0.5)));

@@ -42,7 +42,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
-use super::player::{fresh_progress, read_file_watched, read_with_retry, Bytes, Progress, Seen};
+use super::player::{
+    fresh_progress, read_file_watched, read_with_retry, Bytes, Cancel, Progress, Seen,
+};
 
 /// Default hard cap on total resident bytes, used when no configured value is
 /// supplied (tests, and the config default). The live cap is held per-`Cache`.
@@ -367,12 +369,11 @@ impl Cache {
     /// `stall_budget` bounds the waiting branch on the same rule the watchdog
     /// applies to a read of our own: a holder still delivering bytes is waited
     /// for however long the file takes, one that has delivered nothing for the
-    /// budget is given up on. The branch needs a bound of its own because a
-    /// waiter has no way to learn that its load was abandoned — the deck's
-    /// generation lives on the worker thread — so an outage's retries would
-    /// queue up behind the wedged read and each one would, on waking, perform a
-    /// full read for a load given up on long before, delaying the next real one
-    /// behind it.
+    /// budget is given up on. `cancel` is the other way out, and the one that
+    /// covers a holder who is *slow* rather than wedged: a waiter cannot learn
+    /// from the deck's generation that its load was abandoned (that lives on
+    /// the worker thread), so without it every retry during a long read would
+    /// leave another thread parked until the holder finished.
     ///
     /// The mutex is never held across a read.
     pub(super) fn read_for_deck(
@@ -382,6 +383,7 @@ impl Cache {
         backoffs: &[Duration],
         stall_budget: Duration,
         progress: &Progress,
+        cancel: &Cancel,
     ) -> Result<Bytes> {
         let mut seen = Seen::issued(Instant::now());
         loop {
@@ -403,6 +405,12 @@ impl Cache {
                     return read;
                 }
                 DeckStep::Wait => {
+                    // The deck gave up on this load: the holder will make the
+                    // bytes resident either way, so there is nothing left to
+                    // wait for.
+                    if cancel.load(Relaxed) {
+                        anyhow::bail!("stopped waiting for track {id}: the load was abandoned")
+                    }
                     // Mirror what the holder has delivered. `fetch_max` because
                     // the handle is the deck's own and must only ever climb: a
                     // holder that fails and is replaced by one starting over

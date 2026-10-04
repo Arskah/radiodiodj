@@ -10,7 +10,7 @@ use rodio::{Decoder, Sink, Source};
 use std::fs::File;
 use std::io::{Cursor, ErrorKind, Read};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -37,6 +37,19 @@ pub(super) const READ_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(10);
 /// keeping the syscall count for a 40 MB track in the hundreds.
 const READ_CHUNK: usize = 64 * 1024;
 
+/// How long air may be silent waiting for a read before the load is given up
+/// on and the playlist skips to a track that is already resident.
+///
+/// The watchdog answers "is this mount dead"; this answers "is this dead air",
+/// which is a much shorter question on a radio station. It applies only to a
+/// playlist-issued load on a deck that is on air with nothing audible, so an
+/// arm-deck load preparing a handover, a parked restore, a cue audition and a
+/// track an operator put on air by hand are all left to take as long as the
+/// share needs. See [`Cmd::Load::bound_dead_air`]. The read is not cancelled — its bytes still reach the
+/// cache, so the track is cheap to play once it has landed. See
+/// `docs/audio.md`, *Whole-file reads*.
+pub(super) const DEAD_AIR_LIMIT: Duration = Duration::from_secs(3);
+
 /// Backoff delays applied between failed read attempts. The read thread makes
 /// one initial attempt plus one retry per entry (4 attempts, 3 backoffs) before
 /// giving up. Retries cover *transient* failures (`Err`); hangs are handled by
@@ -60,6 +73,8 @@ pub struct PlayerTuning {
     /// See [`READ_WATCHDOG_TIMEOUT`]. A budget with no progress, not a budget
     /// for the whole read.
     pub read_watchdog_timeout: Duration,
+    /// See [`DEAD_AIR_LIMIT`].
+    pub dead_air_limit: Duration,
     /// See [`OPEN_RETRY_INTERVAL`].
     pub open_retry_interval: Duration,
     /// See [`READ_RETRY_BACKOFFS`]. Must be non-empty (enforced on write).
@@ -70,6 +85,7 @@ impl Default for PlayerTuning {
     fn default() -> Self {
         Self {
             read_watchdog_timeout: READ_WATCHDOG_TIMEOUT,
+            dead_air_limit: DEAD_AIR_LIMIT,
             open_retry_interval: OPEN_RETRY_INTERVAL,
             read_retry_backoffs: READ_RETRY_BACKOFFS.to_vec(),
         }
@@ -103,6 +119,21 @@ pub enum Cmd {
         /// which is what restoring a session needs: a restart must not put
         /// audio on air by itself.
         autoplay: bool,
+        /// Whether air may be taken off this load if the bytes do not arrive.
+        ///
+        /// `true` for a load the playlist issued: the engine has other tracks,
+        /// knows which of them are resident, and dead air is the worse of the
+        /// two outcomes — so the load is given up on at
+        /// [`PlayerTuning::dead_air_limit`] and the playlist skips to a track
+        /// it can start now.
+        ///
+        /// `false` for an operator putting a specific track on air by hand,
+        /// which bypasses the playlist. Substituting some other track for the
+        /// one they chose is not a recovery, it is a different decision, and
+        /// they can skip it themselves in less time than any limit would allow.
+        /// The stall watchdog still covers the load, so a dead mount fails
+        /// either way.
+        bound_dead_air: bool,
         /// Linear factor levelling this track to the ReplayGain reference,
         /// already resolved against the setting and the track's measurement.
         /// `1.0` leaves the track as mastered — the setting is off, or nothing
@@ -330,6 +361,17 @@ where
 /// file over still reads as progress rather than as a rewind — what the
 /// watchdog asks is whether the share is sending anything at all.
 pub(super) type Progress = Arc<AtomicU64>;
+
+/// Set when whoever issued a read stops wanting it. Only a *waiter* obeys it
+/// — a read of our own keeps going, because its bytes are still worth having
+/// in the cache — so this is what keeps abandoned loads from leaving a thread
+/// parked behind every slow read of the same file.
+pub(super) type Cancel = Arc<AtomicBool>;
+
+/// A [`Cancel`] not yet set, for a read about to start.
+pub(super) fn fresh_cancel() -> Cancel {
+    Arc::new(AtomicBool::new(false))
+}
 
 /// A [`Progress`] at zero, for a read about to start. Whoever else watches it
 /// — the deck that issued the read, or a deck mirroring this one's count
@@ -571,9 +613,11 @@ mod tests {
         let reader_path = fifo.clone();
         let reader = std::thread::spawn(move || read_file_watched(&reader_path, &watched));
 
-        // Watch the way the worker loop does, on a budget far shorter than the
-        // whole read takes.
-        let budget = Duration::from_millis(500);
+        // Watch the way the worker loop does. The budget is far longer than the
+        // writer's cadence on purpose: what is under test is that the count
+        // moves at all, and a tighter budget would fail on a loaded machine
+        // that descheduled the writer rather than on anything in the rule.
+        let budget = Duration::from_secs(5);
         let mut seen = Seen::issued(Instant::now());
         let mut samples = 0u32;
         while !reader.is_finished() {

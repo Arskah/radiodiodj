@@ -61,9 +61,16 @@ pub enum Effect {
     /// already been consumed by the time the service runs this: nothing can
     /// look it up again afterwards. `None` means the service reads the track's
     /// radio edit out of the library.
+    ///
+    /// `bound_dead_air` says whether this load is the playlist's own doing, and
+    /// so whether the deck may give up on it to keep air — see
+    /// `Cmd::Load::bound_dead_air`. A track the playlist queued can be
+    /// substituted by one that is already resident; a track an operator put on
+    /// air by hand cannot, because the substitution is not what they asked for.
     Play {
         id: i64,
         cue_override: Option<CuePoints>,
+        bound_dead_air: bool,
     },
     /// Load the track on the main deck, seek, and leave it paused — session
     /// resume, which restores position without putting audio on air.
@@ -353,13 +360,17 @@ impl Playlist {
             PlaylistItem::Track {
                 track,
                 cue_override,
-            } => self.play_track(track, cue_override, r),
+            } => self.play_track(track, cue_override, true, r),
         }
     }
 
     /// Put a track straight on air, bypassing the playlist.
+    ///
+    /// Bypassing it is also why the dead-air limit does not apply: the operator
+    /// named this track, and there is nothing the engine could substitute that
+    /// would be the track they named.
     pub fn play_now(&mut self, track: Track, r: &dyn Refiller) -> Transition {
-        self.play_track(track, None, r)
+        self.play_track(track, None, false, r)
     }
 
     pub fn next(&mut self, r: &dyn Refiller) -> Transition {
@@ -389,7 +400,7 @@ impl Playlist {
         }
         // History stores tracks rather than items, so a custom airing replays
         // under the radio edit.
-        self.set_current(previous, None, r)
+        self.set_current(previous, None, false, r)
     }
 
     pub fn stop(&mut self) -> Transition {
@@ -711,11 +722,12 @@ impl Playlist {
         &mut self,
         track: Track,
         cue_override: Option<CuePoints>,
+        bound_dead_air: bool,
         r: &dyn Refiller,
     ) -> Transition {
         let aired = self.current.take();
         self.push_history(aired);
-        self.set_current(track, cue_override, r)
+        self.set_current(track, cue_override, bound_dead_air, r)
     }
 
     /// Append what just left the deck to history, keeping it within the cap.
@@ -741,6 +753,7 @@ impl Playlist {
         &mut self,
         track: Track,
         cue_override: Option<CuePoints>,
+        bound_dead_air: bool,
         r: &dyn Refiller,
     ) -> Transition {
         self.clear_retry();
@@ -754,7 +767,14 @@ impl Playlist {
         // the deck it was on is free to arm again.
         self.overlapping = false;
         self.refill(r);
-        Transition::effects(vec![Effect::CancelRetry, Effect::Play { id, cue_override }])
+        Transition::effects(vec![
+            Effect::CancelRetry,
+            Effect::Play {
+                id,
+                cue_override,
+                bound_dead_air,
+            },
+        ])
     }
 
     /// Drop missing tracks up to the next stop marker: advancement would pass
@@ -876,6 +896,10 @@ impl Playlist {
             Effect::Play {
                 id,
                 cue_override: self.current_override,
+                // The engine's own doing, and only ever reached with the track
+                // already resident — so the limit is moot here, and saying
+                // `true` keeps "the playlist issued it" the single rule.
+                bound_dead_air: true,
             },
         ])
     }
@@ -1010,6 +1034,17 @@ mod tests {
         Effect::Play {
             id,
             cue_override: None,
+            bound_dead_air: true,
+        }
+    }
+
+    /// What an operator's own choice of track looks like: the same load, with
+    /// the dead-air limit off it.
+    fn play_by_hand(id: i64) -> Effect {
+        Effect::Play {
+            id,
+            cue_override: None,
+            bound_dead_air: false,
         }
     }
 
@@ -1205,7 +1240,7 @@ mod tests {
         let t = p.play_now(track(9), &NoRefill);
         assert_eq!(queued(&p), vec![Some(1)]);
         assert_eq!(current_id(&p), Some(9));
-        assert!(t.effects.contains(&play(9)));
+        assert!(t.effects.contains(&play_by_hand(9)));
     }
 
     #[test]
@@ -1231,7 +1266,7 @@ mod tests {
         let t = p.prev(&NoRefill);
         assert_eq!(current_id(&p), Some(1));
         assert_eq!(queued(&p), vec![Some(2)]);
-        assert!(t.effects.contains(&play(1)));
+        assert!(t.effects.contains(&play_by_hand(1)));
     }
 
     /// Stepping back is not an airing of its own: the entry stays where it is,
@@ -1524,6 +1559,7 @@ mod tests {
         assert!(t.effects.contains(&Effect::Play {
             id: 9,
             cue_override: Some(points(500)),
+            bound_dead_air: true,
         }));
     }
 
@@ -2000,6 +2036,30 @@ mod tests {
         assert_eq!(item_override(&p, 0), Some(points(2_000)));
     }
 
+    /// Dead air is the playlist's problem to solve, and only where the playlist
+    /// chose the track. An operator who put one on air by hand gets it, however
+    /// slow the share is: substituting another track is not what they asked
+    /// for, and they can skip it faster than any limit would.
+    #[test]
+    fn a_track_an_operator_chose_is_not_substituted_for_dead_air() {
+        let mut p = with(&[Some(1)]);
+        assert_eq!(
+            p.play_now(track(9), &NoRefill).effects,
+            vec![Effect::CancelRetry, play_by_hand(9)]
+        );
+
+        // The queue's own tracks are the playlist's doing, whoever pressed it.
+        let mut q = with(&[Some(1), Some(2)]);
+        assert!(q.play_index(1, &NoRefill).effects.contains(&play(2)));
+        assert!(q.next(&NoRefill).effects.contains(&play(1)));
+
+        // Stepping back is an operator naming a track, like `play_now`.
+        let mut b = with(&[Some(1), Some(2)]);
+        b.play_index(0, &NoRefill);
+        b.play_index(0, &NoRefill);
+        assert!(b.prev(&NoRefill).effects.contains(&play_by_hand(1)));
+    }
+
     #[test]
     fn playing_an_item_hands_its_override_to_the_deck() {
         let mut p = Playlist::new();
@@ -2008,6 +2068,7 @@ mod tests {
         assert!(t.effects.contains(&Effect::Play {
             id: 9,
             cue_override: Some(points(2_000)),
+            bound_dead_air: true,
         }));
         assert_eq!(p.snapshot().current_override, Some(points(2_000)));
     }

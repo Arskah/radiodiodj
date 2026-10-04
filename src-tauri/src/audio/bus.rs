@@ -75,6 +75,7 @@ impl ProgramBus {
                 roles_topic: Some(ROLES_EVENT),
                 handover_topic: Some(HANDOVER_EVENT),
                 faded_out_topic: Some(FADED_OUT_EVENT),
+                on_air: true,
             };
             if let Err(e) = run(app.clone(), rx, output, set, cache, tuning) {
                 log::error!("program bus thread exited: {}", e);

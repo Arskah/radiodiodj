@@ -114,6 +114,7 @@ function defaultTuning() {
     cache: { maxCacheBytes: 150 * 1024 * 1024 },
     player: {
       readWatchdogTimeoutMs: 10000,
+      deadAirLimitMs: 3000,
       openRetryIntervalMs: 2000,
       readRetryBackoffsMs: [500, 1000, 2000],
       fadeOutMs: 4000,
