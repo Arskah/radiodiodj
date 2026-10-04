@@ -12,6 +12,7 @@
     "svelte.config.mjs",
     "vite.config.mts",
     "vitest.config.mts",
-    "tools/**/*.ts"
+    "tools/**/*.ts",
+    "tools/**/*.mts"
   ]
 }

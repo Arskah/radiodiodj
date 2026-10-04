@@ -37,6 +37,11 @@ jobs:
         with:
           workspaces: src-tauri
 
+      # Here rather than in lint, because it reads the licence files out of the
+      # crate sources and needs cargo to have fetched them.
+      - name: Third-party notices
+        run: pnpm notices --check
+
       - name: rustfmt
         working-directory: src-tauri
         run: cargo fmt --check

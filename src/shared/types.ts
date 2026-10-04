@@ -480,7 +480,8 @@ export interface UpdateState {
 }
 
 /** A project page the backend will open in the browser. */
-export type ProjectLink = "website" | "changelog" | "source" | "licence";
+export type ProjectLink =
+  "website" | "changelog" | "source" | "licence" | "notices";
 
 export interface DeviceInfo {
   name: string;

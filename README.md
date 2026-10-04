@@ -187,6 +187,10 @@ station, sell it — but if you distribute a modified RadiodioDJ, ship its sourc
 under the same license. Patches back to
 [this repo](https://github.com/Arskah/radiodiodj) are welcome.
 
+The fonts, icons and libraries a bundle carries, and their licenses, are listed
+in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), with the license texts of the
+Rust crates in [THIRD-PARTY-LICENSES.txt](THIRD-PARTY-LICENSES.txt).
+
 ## Sponsoring
 
 RadiodioDJ is free and open source. If it keeps your station on air, you can

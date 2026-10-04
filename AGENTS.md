@@ -13,6 +13,7 @@ cargo test --manifest-path src-tauri/Cargo.toml   # backend tests (db, scanner, 
 pnpm lint                                         # eslint
 pnpm format                                       # prettier --write .
 pnpm format:check                                 # prettier --check .
+pnpm notices                                      # regenerate THIRD-PARTY-NOTICES.md and THIRD-PARTY-LICENSES.txt; CI fails on a stale one
 pnpm -C site install && pnpm -C site dev           # radiodiodj.org locally — a separate package, see docs/website.md
 pnpm -C site build                                # astro check + static build → site/dist/
 ```
