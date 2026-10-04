@@ -171,6 +171,14 @@ loading the next track, which is how an operator parks the show at a fixed point
 without emptying the queue. They contribute nothing to the prefetch window and
 nothing to the Upcoming tab's total duration.
 
+**Nothing in the Upcoming tab reaches air by a double-click.** A queued track
+goes on by its row's play button, and a stop marker only by the show arriving at
+it. A double-click used to do both — it played the track, and on a stop marker
+it stopped what was on air — which is the stray-click hazard the library row's
+_Play now_ was moved behind a menu to remove. What the gesture should mean
+across the lists is
+[#597](https://github.com/Arskah/radiodiodj/issues/597).
+
 ## Outages
 
 The playlist is where a dead network share becomes a survivable event rather

@@ -198,7 +198,6 @@
                 i === app.playlist.length - 1}
               draggable="true"
               data-index={i}
-              ondblclick={() => app.playIndex(i)}
               ondragstart={(e) => onDragStart(e, i)}
               ondragend={onDragEnd}
               role="listitem"
@@ -237,7 +236,6 @@
                 i === app.playlist.length - 1}
               draggable="true"
               data-index={i}
-              ondblclick={() => app.playIndex(i)}
               ondragstart={(e) => onDragStart(e, i)}
               ondragend={onDragEnd}
               role="listitem"
