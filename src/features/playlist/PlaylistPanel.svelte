@@ -21,7 +21,7 @@
   function onDragStart(e: DragEvent, i: number): void {
     dragFromIndex = i;
     // A library row removed mid-drag never fires the `dragend` that clears it.
-    app.draggedTrack = null;
+    app.draggedTrackIds = null;
     if (e.dataTransfer) {
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", String(i));
@@ -34,7 +34,9 @@
   }
 
   /** A row of this list or of the library is in the air. */
-  const dragging = $derived(dragFromIndex !== -1 || app.draggedTrack !== null);
+  const dragging = $derived(
+    dragFromIndex !== -1 || app.draggedTrackIds !== null,
+  );
 
   // A drag that ends anywhere else never reaches a handler here.
   $effect(() => {
@@ -43,7 +45,7 @@
 
   // The same hazard the other way round: a queued row that aired mid-drag.
   $effect(() => {
-    if (app.draggedTrack) dragFromIndex = -1;
+    if (app.draggedTrackIds) dragFromIndex = -1;
   });
 
   /**
@@ -63,7 +65,7 @@
     if (!dragging) return;
     e.preventDefault();
     if (e.dataTransfer) {
-      e.dataTransfer.dropEffect = app.draggedTrack ? "copy" : "move";
+      e.dataTransfer.dropEffect = app.draggedTrackIds ? "copy" : "move";
     }
     dropTarget = gapUnder(e);
   }
@@ -79,12 +81,11 @@
     e.preventDefault();
     const target = gapUnder(e);
     const from = dragFromIndex;
-    const track = app.draggedTrack;
+    const fromLibrary = app.draggedTrackIds !== null;
     dropTarget = -1;
     dragFromIndex = -1;
-    if (track) {
-      app.draggedTrack = null;
-      app.insertInPlaylist(track, target);
+    if (fromLibrary) {
+      app.dropDraggedInPlaylist(target);
       return;
     }
     if (from === -1) return;

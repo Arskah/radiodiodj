@@ -39,6 +39,13 @@ import {
 import type { DeckBackend, DeckTransport } from "../features/deck/backend";
 import { NativeBackend } from "../features/deck/nativeBackend";
 import { throttle, type Throttled } from "./throttle";
+import {
+  allSelected,
+  selectAll,
+  selectRange,
+  toggle,
+  without,
+} from "./selection";
 import { isStrictNever } from "./isStrictNever";
 import { APP_NAME } from "./appName";
 import { savePaintHint } from "./appearance";
@@ -133,8 +140,21 @@ export class AppState {
   searchQuery = $state("");
   activeTab = $state<ContentType>("music");
   playlistTab = $state<PlaylistTab>("playlist");
-  /** The library row being dragged, for whichever list it is dropped on. */
-  draggedTrack = $state<Track | null>(null);
+
+  /**
+   * The library rows being dragged, for whichever list they are dropped on:
+   * one row, or the whole selection when the row under the pointer is in it.
+   */
+  draggedTrackIds = $state<number[] | null>(null);
+
+  /**
+   * The library selection, as track ids in pick order. It outlives a search, a
+   * sort and a tab change, so it may name tracks that are not in
+   * {@link AppState.tracks}. See `docs/library.md`.
+   */
+  selectedIds = $state<number[]>([]);
+  /** The row a range is measured from: the last one picked or dropped. */
+  private selectionAnchor: number | null = null;
   sortBy = $state<SortColumn | null>(null);
   sortDir = $state<SortDir>("asc");
   tracks = $state<Track[]>([]);
@@ -622,9 +642,66 @@ export class AppState {
     this.send(api.playlistAddFront(track.id));
   }
 
-  /** Queue a track ahead of the item at `index` — where a dragged row landed. */
-  insertInPlaylist(track: Track, index: number): void {
-    this.send(api.playlistInsert(track.id, index));
+  private get listedIds(): number[] {
+    return this.tracks.map((track) => track.id);
+  }
+
+  toggleSelected(id: number): void {
+    this.selectedIds = toggle(this.selectedIds, id);
+    this.selectionAnchor = id;
+  }
+
+  /** Pick every row from the last one picked to this one. */
+  selectRangeTo(id: number): void {
+    this.selectedIds = selectRange(
+      this.selectedIds,
+      this.listedIds,
+      this.selectionAnchor,
+      id,
+    );
+    this.selectionAnchor = id;
+  }
+
+  /** Pick every listed row, or drop them all once every one is picked. */
+  toggleSelectAll(): void {
+    const listed = this.listedIds;
+    this.selectedIds = allSelected(this.selectedIds, listed)
+      ? without(this.selectedIds, listed)
+      : selectAll(this.selectedIds, listed);
+  }
+
+  deselect(id: number): void {
+    this.selectedIds = without(this.selectedIds, [id]);
+  }
+
+  clearSelection(): void {
+    this.selectedIds = [];
+    this.selectionAnchor = null;
+  }
+
+  /** Queue the selection in pick order, at the end or as next-up, and clear it. */
+  addSelectionToPlaylist(asNext = false): void {
+    if (this.selectedIds.length === 0) return;
+    this.send(api.playlistAddMany([...this.selectedIds], asNext ? 0 : null));
+    this.clearSelection();
+  }
+
+  /** A drag of a selected row carries the selection; of any other, that row. */
+  startLibraryDrag(track: Track): void {
+    this.draggedTrackIds = this.selectedIds.includes(track.id)
+      ? [...this.selectedIds]
+      : [track.id];
+  }
+
+  /** Queue what is being dragged ahead of the item at `index`. */
+  dropDraggedInPlaylist(index: number): void {
+    const ids = this.draggedTrackIds;
+    this.draggedTrackIds = null;
+    if (!ids || ids.length === 0) return;
+    const selection = this.selectedIds.includes(ids[0]);
+    if (ids.length === 1) this.send(api.playlistInsert(ids[0], index));
+    else this.send(api.playlistAddMany(ids, index));
+    if (selection) this.clearSelection();
   }
 
   revealTrack(track: Track): void {

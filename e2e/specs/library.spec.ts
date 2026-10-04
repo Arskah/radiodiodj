@@ -182,6 +182,43 @@ describe("library", () => {
     );
   });
 
+  it("queues a selection in the order it was picked", async () => {
+    await bootAndScan();
+
+    const titles = await rowTitles();
+    const rows = browser.$$(sel.trackRow);
+    await rows[2].click();
+    await rows[0].click();
+
+    await expect(browser.$(sel.selectionCount)).toHaveText("2 selected");
+    await expect(rows[2]).toHaveAttribute("aria-pressed", "true");
+    await expect(rows[1]).toHaveAttribute("aria-pressed", "false");
+
+    await browser.$(sel.addSelection).click();
+
+    await browser.waitUntil(
+      async () => {
+        const queued = await browser.execute(() =>
+          Array.from(document.querySelectorAll("#playlist .pl-title")).map(
+            (el) => (el.textContent ?? "").trim(),
+          ),
+        );
+        return (
+          queued.length === 2 &&
+          queued[0] === titles[2] &&
+          queued[1] === titles[0]
+        );
+      },
+      {
+        timeout: 5_000,
+        timeoutMsg: "the selection did not reach the playlist in pick order",
+      },
+    );
+    await browser
+      .$(sel.selectionBar)
+      .waitForExist({ timeout: 5_000, reverse: true });
+  });
+
   it("opens the context menu from the keyboard", async () => {
     await bootAndScan();
 

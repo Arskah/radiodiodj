@@ -349,6 +349,14 @@ fn playlist_insert(app: State<'_, AppState>, id: i64, index: usize) {
     app.playlist.insert(id, index);
 }
 
+/// Insert several tracks as one run, in the order given, ahead of the item at
+/// `index` — a library selection. Absent or `null` appends, as does an index
+/// past the end.
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_add_many(app: State<'_, AppState>, ids: Vec<i64>, index: Option<usize>) {
+    app.playlist.add_many(ids, index);
+}
+
 /// Set or clear a queued item's override. `null` drops the item back to the
 /// track's radio edit; an all-`null` object is a deliberate "whole file this
 /// once" and is stored as one.
@@ -1480,6 +1488,7 @@ pub fn run() {
             playlist_add,
             playlist_add_front,
             playlist_insert,
+            playlist_add_many,
             playlist_set_item_cue_points,
             playlist_add_stop_marker,
             playlist_add_filler,

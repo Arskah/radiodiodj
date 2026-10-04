@@ -402,6 +402,32 @@ impl PlaylistService {
         });
     }
 
+    /// Queue several tracks as one run ahead of the item at `index`, or at the
+    /// end without one: one transition and one snapshot, however many there
+    /// are. An id with no row is skipped, as [`Inner::with_track`] skips one.
+    pub fn add_many(&self, ids: Vec<i64>, index: Option<usize>) {
+        self.queue(move |inner| {
+            let tracks = match inner.db.get_tracks_by_ids(&ids) {
+                Ok(tracks) => tracks,
+                Err(e) => {
+                    log::error!("playlist: lookup of {} tracks failed: {}", ids.len(), e);
+                    return;
+                }
+            };
+            if tracks.len() < ids.len() {
+                log::error!(
+                    "playlist: {} of {} tracks are not in the library",
+                    ids.len() - tracks.len(),
+                    ids.len()
+                );
+            }
+            if tracks.is_empty() {
+                return;
+            }
+            Inner::apply(inner, move |p, _| p.insert_many(index, tracks));
+        });
+    }
+
     /// The automatic-cue policy changed, so every copy held here is stale at
     /// once. Re-reads them from the library, which applies the policy, in one
     /// transition rather than one per track.

@@ -4,6 +4,7 @@
   import { airDuration, isTrimmed } from "../../shared/cuePoints";
   import ContextMenu from "../ui/ContextMenu.svelte";
   import type { MenuItem } from "../ui/contextMenu";
+  import { allSelected, hiddenCount } from "../../shared/selection";
 
   const tabs: { type: ContentType; label: string }[] = [
     { type: "music", label: "Music" },
@@ -61,10 +62,47 @@
   function onDragStart(track: Track, e: DragEvent): void {
     // The tooltip is anchored to the row and would hang over the drag.
     app.clearHover();
-    app.draggedTrack = track;
+    app.startLibraryDrag(track);
+    const count = app.draggedTrackIds?.length ?? 1;
     if (e.dataTransfer) {
       e.dataTransfer.effectAllowed = "copy";
-      e.dataTransfer.setData("text/plain", `${track.artist} – ${track.title}`);
+      e.dataTransfer.setData(
+        "text/plain",
+        count > 1 ? `${count} tracks` : `${track.artist} – ${track.title}`,
+      );
+    }
+  }
+
+  // ----- Selection (#576) -----
+
+  const listedIds = $derived(app.tracks.map((track) => track.id));
+  const selectedCount = $derived(app.selectedIds.length);
+  const hidden = $derived(hiddenCount(app.selectedIds, listedIds));
+  const allListed = $derived(allSelected(app.selectedIds, listedIds));
+  /** Each picked track's place in the order it will be queued in, from 1. */
+  const ordinals = $derived(
+    new Map(app.selectedIds.map((id, i) => [id, i + 1])),
+  );
+
+  function pick(track: Track, range: boolean): void {
+    if (range) app.selectRangeTo(track.id);
+    else app.toggleSelected(track.id);
+  }
+
+  // Both clicks of a double-click toggle the row first, so it is dropped here
+  // whichever way they left it.
+  function onRowDblClick(track: Track, e: MouseEvent): void {
+    e.preventDefault();
+    app.addToPlaylist(track);
+    app.deselect(track.id);
+  }
+
+  function onListKeyDown(e: KeyboardEvent): void {
+    if (e.key === "Escape" && selectedCount > 0) {
+      app.clearSelection();
+    } else if (e.key === "a" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      app.toggleSelectAll();
     }
   }
 
@@ -107,6 +145,12 @@
   // macOS keyboards have neither — handle them here and bind Ctrl+Enter too, or
   // the menu is pointer-only there.
   function onRowKeyDown(track: Track, e: KeyboardEvent): void {
+    // A button inside the row has Space of its own.
+    if (e.key === " " && e.target === e.currentTarget) {
+      e.preventDefault();
+      pick(track, e.shiftKey);
+      return;
+    }
     const wants =
       e.key === "ContextMenu" ||
       (e.key === "F10" && e.shiftKey) ||
@@ -128,6 +172,26 @@
   let menuItems = $derived.by<MenuItem[]>(() => {
     const track = menuTrack;
     if (!track) return [];
+    if (selectedCount > 1 && ordinals.has(track.id)) {
+      return [
+        {
+          label: `Add ${selectedCount} to playlist`,
+          icon: "add",
+          onselect: () => app.addSelectionToPlaylist(),
+        },
+        {
+          label: `Add ${selectedCount} as next`,
+          icon: "playlist_play",
+          onselect: () => app.addSelectionToPlaylist(true),
+        },
+        {
+          label: "Clear selection",
+          icon: "close",
+          onselect: () => app.clearSelection(),
+          separated: true,
+        },
+      ];
+    }
     const items: MenuItem[] = [
       {
         label: "Add to playlist",
@@ -229,78 +293,118 @@
     <span class="track-header track-duration">Time</span>
     <span class="track-header-spacer"></span>
   </div>
-  <div id="track-list">
-    {#if app.tracks.length === 0}
-      <div class="empty">
-        <span class="empty-icon"
-          ><span class="material-symbols-outlined">library_music</span></span
+  <div id="track-list-wrap" role="presentation" onkeydown={onListKeyDown}>
+    <div id="track-list" class:selecting={selectedCount > 0}>
+      {#if app.tracks.length === 0}
+        <div class="empty">
+          <span class="empty-icon"
+            ><span class="material-symbols-outlined">library_music</span></span
+          >
+          <span class="empty-title">Your Library is Empty</span>
+          <span class="empty-body"
+            >Add music, jingles, and commercials from Settings → Library, then
+            scan to build your station.</span
+          >
+        </div>
+      {:else}
+        {#each app.tracks as track (track.id)}
+          {@const ordinal = ordinals.get(track.id)}
+          <div
+            class="track-row"
+            class:selected={ordinal !== undefined}
+            draggable="true"
+            ondragstart={(e) => onDragStart(track, e)}
+            ondragend={() => (app.draggedTrackIds = null)}
+            onclick={(e) => pick(track, e.shiftKey)}
+            ondblclick={(e) => onRowDblClick(track, e)}
+            onmouseenter={(e) => onEnter(track, e)}
+            onmouseleave={() => app.clearHover()}
+            oncontextmenu={(e) => openMenu(track, e)}
+            onkeydown={(e) => onRowKeyDown(track, e)}
+            role="button"
+            aria-label={`Track: ${track.title} by ${track.artist}`}
+            aria-haspopup="menu"
+            aria-expanded={menuTrack?.id === track.id}
+            aria-pressed={ordinal !== undefined}
+            data-track-id={track.id}
+            tabindex="0"
+          >
+            <span class="track-no">
+              <span class="track-no-value">{track.track_no ?? ""}</span>
+              <span class="track-check" aria-hidden="true">{ordinal ?? ""}</span
+              >
+            </span>
+            <span class="track-title">{track.title}</span>
+            <span class="track-artist">{track.artist}</span>
+            <span class="track-album">{track.album}</span>
+            <span class="track-plays">{track.play_count || 0}</span>
+            <span class="track-duration" class:trimmed={isTrimmed(track)}
+              >{formatTime(airDuration(track))}</span
+            >
+            {#if app.cueDevice !== null}
+              <button
+                class="btn-cue"
+                title="Preview on cue deck"
+                aria-label="Cue track"
+                onclick={(e) => cue(track, e)}
+              >
+                <span class="material-symbols-outlined">headphones</span>
+              </button>
+            {/if}
+            {#if app.isAdmin}
+              <button
+                class="btn-edit"
+                title="Edit metadata"
+                aria-label="Edit track metadata"
+                onclick={(e) => startEdit(track, e)}
+              >
+                <span class="material-symbols-outlined">edit</span>
+              </button>
+            {/if}
+            <button
+              class="btn-add"
+              title="Add to playlist"
+              aria-label="Add to playlist"
+              onclick={(e) => add(track, e)}
+            >
+              <span class="material-symbols-outlined">add</span>
+            </button>
+          </div>
+        {/each}
+      {/if}
+    </div>
+    {#if selectedCount > 0}
+      <div id="selection-bar" role="toolbar" aria-label="Selection">
+        <span id="selection-count" aria-live="polite">
+          {selectedCount} selected{hidden > 0 ? ` · ${hidden} not shown` : ""}
+        </span>
+        <button
+          class="btn-filler"
+          id="btn-add-selection"
+          onclick={() => app.addSelectionToPlaylist()}
+          >Add {selectedCount} to playlist</button
         >
-        <span class="empty-title">Your Library is Empty</span>
-        <span class="empty-body"
-          >Add music, jingles, and commercials from Settings → Library, then
-          scan to build your station.</span
+        <button
+          class="btn-filler"
+          id="btn-add-selection-next"
+          onclick={() => app.addSelectionToPlaylist(true)}
+          >Add {selectedCount} as next</button
+        >
+        <button
+          class="btn-selection"
+          id="btn-select-all"
+          disabled={app.tracks.length === 0}
+          onclick={() => app.toggleSelectAll()}
+          >{allListed
+            ? "Deselect shown"
+            : `Select all (${app.tracks.length})`}</button
+        >
+        <button
+          class="btn-selection"
+          id="btn-clear-selection"
+          onclick={() => app.clearSelection()}>Clear</button
         >
       </div>
-    {:else}
-      {#each app.tracks as track (track.id)}
-        <div
-          class="track-row"
-          draggable="true"
-          ondragstart={(e) => onDragStart(track, e)}
-          ondragend={() => (app.draggedTrack = null)}
-          ondblclick={(e) => {
-            e.preventDefault();
-            app.addToPlaylist(track);
-          }}
-          onmouseenter={(e) => onEnter(track, e)}
-          onmouseleave={() => app.clearHover()}
-          oncontextmenu={(e) => openMenu(track, e)}
-          onkeydown={(e) => onRowKeyDown(track, e)}
-          role="button"
-          aria-label={`Track: ${track.title} by ${track.artist}`}
-          aria-haspopup="menu"
-          aria-expanded={menuTrack?.id === track.id}
-          data-track-id={track.id}
-          tabindex="0"
-        >
-          <span class="track-no">{track.track_no ?? ""}</span>
-          <span class="track-title">{track.title}</span>
-          <span class="track-artist">{track.artist}</span>
-          <span class="track-album">{track.album}</span>
-          <span class="track-plays">{track.play_count || 0}</span>
-          <span class="track-duration" class:trimmed={isTrimmed(track)}
-            >{formatTime(airDuration(track))}</span
-          >
-          {#if app.cueDevice !== null}
-            <button
-              class="btn-cue"
-              title="Preview on cue deck"
-              aria-label="Cue track"
-              onclick={(e) => cue(track, e)}
-            >
-              <span class="material-symbols-outlined">headphones</span>
-            </button>
-          {/if}
-          {#if app.isAdmin}
-            <button
-              class="btn-edit"
-              title="Edit metadata"
-              aria-label="Edit track metadata"
-              onclick={(e) => startEdit(track, e)}
-            >
-              <span class="material-symbols-outlined">edit</span>
-            </button>
-          {/if}
-          <button
-            class="btn-add"
-            title="Add to playlist"
-            aria-label="Add to playlist"
-            onclick={(e) => add(track, e)}
-          >
-            <span class="material-symbols-outlined">add</span>
-          </button>
-        </div>
-      {/each}
     {/if}
   </div>
   {#if menuTrack}
@@ -308,7 +412,9 @@
       x={menuX}
       y={menuY}
       items={menuItems}
-      label={`Actions for ${menuTrack.title}`}
+      label={selectedCount > 1 && ordinals.has(menuTrack.id)
+        ? `Actions for ${selectedCount} selected tracks`
+        : `Actions for ${menuTrack.title}`}
       onclose={closeMenu}
     />
   {/if}
