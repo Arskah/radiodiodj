@@ -325,6 +325,7 @@ _Commercials_ or _Jingles_.
 - **Search** matches title, artist, album, album artist and genre. Each word is a prefix, so
   `beat abb` finds _Abbey Road_ by _The Beatles_. The search runs a quarter of a
   second after typing stops, and shows at most 200 tracks, best match first.
+  Enter runs it at once and moves focus to the first result.
   It does not match inside a word or forgive a typo — see
   [library-search.md](./library-search.md) for why, and the fuzzy matching
   planned to fix it.
@@ -348,11 +349,79 @@ On each row:
 
 | action                  | how                                                       |
 | ----------------------- | --------------------------------------------------------- |
+| pick it                 | click, or Space — see [below](#selecting-several)         |
 | add to the playlist     | double-click, or the `+` button                           |
 | add at a position       | drag the row onto the playlist; the line shows where      |
 | preview on the cue deck | the headphones button (only with a cue device configured) |
 | edit metadata           | the pencil button                                         |
 | everything else         | right-click, the menu key, Shift+F10 or Ctrl+Enter        |
+
+### Selecting several
+
+Queueing an album, or a run of tracks picked across several searches, is one
+action on a **selection**.
+
+- **Click** a row to pick it, click again to drop it. A checkbox takes the place
+  of the track number on the row under the pointer and on a picked row; every
+  other row keeps its number. There is no column for it.
+- **Shift-click** picks every row from the last one picked to this one.
+- **Space** picks the focused row, **Shift+Space** a range, **Escape** clears.
+- **Select all**, the button at the right of the column headers, picks every
+  row in the list, and drops them again once every one is picked. It is always
+  there, so it needs nothing picked first.
+- **Ctrl+A** (**Cmd+A** on macOS) does the same. It means the library wherever
+  focus is, with two exceptions: in a text field, the search box included, the
+  same keys select the text, and nothing happens while Settings, a dialog or a
+  row menu is open. Escape follows the same rule.
+- **Enter** in the search box moves focus to the first result, so search,
+  Enter, Ctrl/Cmd+A picks an album without the pointer.
+
+A selection is **ordered by pick**: tracks are queued in the order they were
+selected, and the checkbox shows each row's place in that order. A range, and
+_Select all_, contribute their rows top to bottom as listed, whichever end was
+clicked first — so an album sorted by `#` and selected whole is queued as the
+record runs.
+
+It **outlives the list**. Searching, sorting and changing tab leave it alone, so
+it can hold tracks that are not on screen and tracks of different content
+types. Those are counted, not listed: the bar reads `8 selected · 5 not shown`.
+The playlist is where the result is looked over. It does not outlive the app: a
+restart starts with nothing picked.
+
+The **selection bar** floats over the bottom of the list while anything is
+picked. It never takes space in the flow: a bar that pushed the rows down would
+move them under the second click of a double-click.
+
+| action              | how                                                            |
+| ------------------- | -------------------------------------------------------------- |
+| add to the playlist | _Add N to playlist_ on the bar, or in a picked row's menu      |
+| add as next         | _Add N as next_: the block goes to the head, first pick first  |
+| add at a position   | drag any picked row; the whole selection lands where dropped   |
+| pick every row      | Ctrl/Cmd+A, or _Select all_ at the right of the column headers |
+| drop the rows shown | either again once all are picked                               |
+| drop everything     | _Clear_, or Escape                                             |
+
+An action that succeeds **clears the selection**; a drag dropped nowhere keeps
+it. Kept, the next add would queue the same tracks again, some of them out of
+sight.
+
+A row's own buttons and a double-click always act on that one row, picked or
+not, and a double-click drops the row from the selection. Dragging a row that is
+not picked carries only that row. The menu on a picked row is the selection's
+when more than one track is picked, and offers the two adds and nothing else:
+_Play now_ is never offered for several, and clearing is the bar's, where the
+count of tracks not shown sits beside it.
+
+_Select all_ takes the rows in the list, which is at most 200. A large add is
+not confirmed — the button carries the number. A picked track that has left the
+library by the time it is added is skipped and logged; one whose file has gone
+missing is queued with the missing badge, as a single add would queue it.
+
+Several tracks are queued by one command, `playlist_add_many`: one transition
+and one snapshot rather than one per track. See
+[playlist.md](./playlist.md#commands).
+
+### The row menu
 
 The row menu offers _Add to playlist_, _Add as next_, _Preview on cue deck_,
 _Edit metadata…_, _Cue points…_, _Show in folder_ and, set apart and marked as
@@ -526,6 +595,7 @@ baseline resets are in [database.md](./database.md).
 | search design                      | [library-search.md](./library-search.md)                       |
 | auto-playlist selection            | `playlist/generate.rs`                                         |
 | library panel                      | `src/features/library/LibraryPanel.svelte`                     |
+| selection                          | `src/shared/selection.ts`                                      |
 | hover card                         | `src/features/track/TrackTooltip.svelte`                       |
 | metadata editor                    | `src/features/track/MetadataOverlay.svelte`                    |
 | tag write-back                     | `library/tag_write.rs`                                         |

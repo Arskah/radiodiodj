@@ -326,6 +326,21 @@ impl Playlist {
         Transition::default()
     }
 
+    /// Insert a run of tracks, in the order given, ahead of the item at `index`
+    /// — a library selection queued in one go. `None` appends, and so does an
+    /// index past the end, for the reason [`Playlist::insert`] gives.
+    pub fn insert_many(&mut self, index: Option<usize>, tracks: Vec<Track>) -> Transition {
+        let len = self.items.len();
+        let at = index.map_or(len, |i| i.min(len));
+        self.items.splice(
+            at..at,
+            tracks
+                .into_iter()
+                .map(|track| PlaylistItem::with_override(track, None)),
+        );
+        Transition::default()
+    }
+
     /// Set or clear one queued item's override. `None` drops it back to the
     /// track's radio edit; an all-`NULL` `Some` is a deliberate "whole file
     /// this once" and is kept as such.
@@ -1220,6 +1235,37 @@ mod tests {
         let mut p = with(&[Some(1)]);
         p.insert(7, track(9));
         assert_eq!(queued(&p), vec![Some(1), Some(9)]);
+    }
+
+    #[test]
+    fn insert_many_lands_as_one_run_in_the_order_given() {
+        let mut p = with(&[Some(1), None, Some(2)]);
+        p.insert_many(Some(1), vec![track(9), track(8), track(7)]);
+        assert_eq!(
+            queued(&p),
+            vec![Some(1), Some(9), Some(8), Some(7), None, Some(2)]
+        );
+    }
+
+    #[test]
+    fn insert_many_without_an_index_appends() {
+        let mut p = with(&[Some(1)]);
+        p.insert_many(None, vec![track(9), track(8)]);
+        assert_eq!(queued(&p), vec![Some(1), Some(9), Some(8)]);
+    }
+
+    #[test]
+    fn insert_many_past_the_end_appends() {
+        let mut p = with(&[Some(1)]);
+        p.insert_many(Some(7), vec![track(9), track(8)]);
+        assert_eq!(queued(&p), vec![Some(1), Some(9), Some(8)]);
+    }
+
+    #[test]
+    fn insert_many_keeps_a_track_queued_twice() {
+        let mut p = with(&[Some(1)]);
+        p.insert_many(Some(0), vec![track(1), track(1)]);
+        assert_eq!(queued(&p), vec![Some(1), Some(1), Some(1)]);
     }
 
     #[test]

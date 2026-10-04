@@ -23,6 +23,7 @@ const { api } = vi.hoisted(() => {
     playlistAdd: vi.fn(),
     playlistAddFront: vi.fn(),
     playlistInsert: vi.fn(),
+    playlistAddMany: vi.fn(),
     playlistSetItemCuePoints: vi.fn(),
     playlistAddStopMarker: vi.fn(),
     playlistAddFiller: vi.fn(),
@@ -382,6 +383,10 @@ function wirePlaylist(playlist: MockPlaylistBackend): void {
   api.playlistInsert.mockImplementation((id: number, index: number) =>
     ok(() => playlist.insert(index, known(id))),
   );
+  api.playlistAddMany.mockImplementation(
+    (ids: number[], index: number | null) =>
+      ok(() => playlist.insertMany(index, ids.map(known))),
+  );
   api.playlistSetItemCuePoints.mockImplementation(
     (index: number, cuePoints: CuePoints | null) =>
       ok(() => playlist.setItemCuePoints(index, cuePoints)),
@@ -487,12 +492,136 @@ describe("AppState playlist mutations", () => {
     expect(api.playlistAddFront).toHaveBeenCalledWith(3);
   });
 
-  it("insertInPlaylist queues the track ahead of the item at the index", () => {
+  it("a dragged row is queued ahead of the item at the index it is dropped on", () => {
     app.addToPlaylist(t(1));
     app.addToPlaylist(t(2));
-    app.insertInPlaylist(t(3), 1);
+    app.startLibraryDrag(t(3));
+    app.dropDraggedInPlaylist(1);
     expect(app.playlist.map(pid)).toEqual([1, 3, 2]);
     expect(api.playlistInsert).toHaveBeenCalledWith(3, 1);
+    expect(app.draggedTrackIds).toBeNull();
+  });
+});
+
+describe("AppState library selection", () => {
+  let app: AppState;
+  beforeEach(() => {
+    resetApi();
+    app = makeApp().app;
+    app.tracks = [t(1), t(2), t(3), t(4)];
+  });
+
+  it("picks rows in the order they are toggled", () => {
+    app.toggleSelected(3);
+    app.toggleSelected(1);
+    app.toggleSelected(3);
+    app.toggleSelected(2);
+    expect(app.selectedIds).toEqual([1, 2]);
+  });
+
+  it("a range runs from the last row picked, in list order", () => {
+    app.toggleSelected(3);
+    app.selectRangeTo(1);
+    expect(app.selectedIds).toEqual([1, 2, 3]);
+  });
+
+  it("a range with nothing picked yet picks the one row", () => {
+    app.selectRangeTo(2);
+    expect(app.selectedIds).toEqual([2]);
+  });
+
+  it("survives the list changing under it", () => {
+    app.toggleSelected(4);
+    app.tracks = [t(1), t(2)];
+    app.toggleSelected(1);
+    expect(app.selectedIds).toEqual([4, 1]);
+  });
+
+  it("a range whose anchor left the list toggles the row", () => {
+    app.toggleSelected(4);
+    app.tracks = [t(1), t(2)];
+    app.selectRangeTo(2);
+    expect(app.selectedIds).toEqual([4, 2]);
+  });
+
+  it("select all appends the listed rows and, once all are picked, drops only them", () => {
+    app.toggleSelected(9);
+    app.toggleSelected(2);
+    app.toggleSelectAll();
+    expect(app.selectedIds).toEqual([9, 2, 1, 3, 4]);
+    app.toggleSelectAll();
+    expect(app.selectedIds).toEqual([9]);
+  });
+
+  it("adds the selection in pick order as one command and clears it", () => {
+    app.addToPlaylist(t(7));
+    app.toggleSelected(3);
+    app.toggleSelected(1);
+    app.addSelectionToPlaylist();
+    expect(api.playlistAddMany).toHaveBeenCalledExactlyOnceWith([3, 1], null);
+    expect(app.playlist.map(pid)).toEqual([7, 3, 1]);
+    expect(app.selectedIds).toEqual([]);
+  });
+
+  it("adds the selection as next ahead of the queue, first pick first", () => {
+    app.addToPlaylist(t(7));
+    app.toggleSelected(3);
+    app.toggleSelected(1);
+    app.addSelectionToPlaylist(true);
+    expect(api.playlistAddMany).toHaveBeenCalledExactlyOnceWith([3, 1], 0);
+    expect(app.playlist.map(pid)).toEqual([3, 1, 7]);
+    expect(app.selectedIds).toEqual([]);
+  });
+
+  it("an empty selection sends nothing", () => {
+    app.addSelectionToPlaylist();
+    expect(api.playlistAddMany).not.toHaveBeenCalled();
+  });
+
+  it("a range after clearing does not reach back to the old anchor", () => {
+    app.toggleSelected(1);
+    app.clearSelection();
+    app.selectRangeTo(3);
+    expect(app.selectedIds).toEqual([3]);
+  });
+
+  it("dragging a selected row carries the selection and the drop clears it", () => {
+    app.addToPlaylist(t(7));
+    app.addToPlaylist(t(8));
+    app.toggleSelected(3);
+    app.toggleSelected(1);
+    app.startLibraryDrag(t(1));
+    expect(app.draggedTrackIds).toEqual([3, 1]);
+    app.dropDraggedInPlaylist(1);
+    expect(api.playlistAddMany).toHaveBeenCalledExactlyOnceWith([3, 1], 1);
+    expect(app.playlist.map(pid)).toEqual([7, 3, 1, 8]);
+    expect(app.selectedIds).toEqual([]);
+  });
+
+  it("dragging an unselected row carries only that row and keeps the selection", () => {
+    app.toggleSelected(3);
+    app.toggleSelected(1);
+    app.startLibraryDrag(t(2));
+    expect(app.draggedTrackIds).toEqual([2]);
+    app.dropDraggedInPlaylist(0);
+    expect(api.playlistInsert).toHaveBeenCalledWith(2, 0);
+    expect(app.selectedIds).toEqual([3, 1]);
+  });
+
+  it("a drag that is dropped nowhere keeps the selection", () => {
+    app.toggleSelected(3);
+    app.toggleSelected(1);
+    app.startLibraryDrag(t(3));
+    app.draggedTrackIds = null;
+    expect(app.selectedIds).toEqual([3, 1]);
+  });
+
+  it("deselect drops one row and leaves the order of the rest", () => {
+    app.toggleSelected(3);
+    app.toggleSelected(1);
+    app.toggleSelected(2);
+    app.deselect(1);
+    expect(app.selectedIds).toEqual([3, 2]);
   });
 
   it("revealTrack forwards the track id", () => {

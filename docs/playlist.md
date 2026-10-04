@@ -59,10 +59,10 @@ snapshot is displayable without a second round-trip to resolve titles.
 
 ```
 playlist_add             playlist_add_front        playlist_insert
-playlist_add_filler      playlist_add_stop_marker  playlist_remove
-playlist_move            playlist_clear            playlist_play_index
-playlist_play_now        playlist_next             playlist_prev
-playlist_stop
+playlist_add_many        playlist_add_filler       playlist_add_stop_marker
+playlist_remove          playlist_move             playlist_clear
+playlist_play_index      playlist_play_now         playlist_next
+playlist_prev            playlist_stop
 playlist_set_auto_advance                          playlist_set_auto_playlist
 playlist_set_item_cue_points                       playlist_sync
 ```
@@ -79,7 +79,7 @@ track playing before the deck redrew.
 
 The queue is one thread, not the async runtime's pool, because the order
 commands are applied in is part of what they mean: `playlist_remove`,
-`playlist_move` and `playlist_insert` carry queue indices, and a pool would let
+`playlist_move`, `playlist_insert` and `playlist_add_many` carry queue indices, and a pool would let
 the second of two clicks overtake the first and act on positions that no longer
 exist.
 

@@ -211,6 +211,14 @@ export const api = {
   playlistInsert(id: number, index: number): Promise<void> {
     return invoke<void>("playlist_insert", { id, index });
   },
+
+  /**
+   * Insert several tracks as one run, in the order given, ahead of the item at
+   * `index`. `null` appends, as does an index past the end.
+   */
+  playlistAddMany(ids: number[], index: number | null): Promise<void> {
+    return invoke<void>("playlist_add_many", { ids, index });
+  },
   /** Set (or, with `null`, clear) one queued item's cue-point override. */
   playlistSetItemCuePoints(
     index: number,

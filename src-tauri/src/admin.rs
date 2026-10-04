@@ -169,6 +169,7 @@ mod tests {
     const OPEN_COMMANDS: &[&str] = &[
         "playlist_add",
         "playlist_insert",
+        "playlist_add_many",
         "playlist_set_item_cue_points",
         "cue_load",
         "get_waveform_detail",

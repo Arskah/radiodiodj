@@ -1404,6 +1404,35 @@ body {
 .track-header-spacer {
   width: 110px;
   flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Sits over the rows' add buttons, and is sized like one. */
+#btn-select-all {
+  width: 26px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: var(--r-lg);
+  color: var(--outline);
+  cursor: pointer;
+}
+
+#btn-select-all .material-symbols-outlined {
+  font-size: 18px;
+}
+
+#btn-select-all:hover:not(:disabled) {
+  color: var(--primary);
+}
+
+#btn-select-all:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* No cue device: the headphones button is absent, so the strip is two buttons. */
@@ -1429,6 +1458,70 @@ body {
   padding: var(--sp-sm);
 }
 
+/* The selection bar floats over the list's bottom edge instead of sitting in
+   the flow: a bar that pushed the rows down would move them under the second
+   click of a double-click. The padding lets the last row scroll clear of it. */
+#track-list-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#track-list.selecting {
+  padding-bottom: 56px;
+}
+
+#selection-bar {
+  position: absolute;
+  left: var(--sp-md);
+  right: var(--sp-md);
+  bottom: var(--sp-sm);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-sm);
+  padding: var(--sp-sm) var(--sp-md);
+  background: var(--surface-container-highest);
+  border: 1px solid color-mix(in srgb, var(--primary) 40%, transparent);
+  border-radius: var(--r-xl);
+  box-shadow: 0 4px 12px
+    color-mix(in srgb, var(--shadow-color) 40%, transparent);
+}
+
+#selection-count {
+  margin-right: auto;
+  color: var(--on-surface);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.btn-selection {
+  padding: 4px 8px;
+  border-radius: var(--r-lg);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: none;
+  border: 1px solid color-mix(in srgb, var(--outline-variant) 60%, transparent);
+  color: var(--on-surface-variant);
+}
+
+.btn-selection:hover:not(:disabled) {
+  color: var(--on-surface);
+  border-color: var(--outline);
+}
+
+.btn-selection:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .track-row {
   display: flex;
   align-items: center;
@@ -1436,6 +1529,8 @@ body {
   gap: var(--sp-md);
   cursor: default;
   font-size: 13px;
+  /* A shift-click would otherwise paint a text selection down the list. */
+  user-select: none;
 }
 
 .track-row:nth-child(even) {
@@ -1448,6 +1543,14 @@ body {
 
 .track-row:hover {
   background: color-mix(in srgb, var(--surface-variant) 25%, transparent);
+}
+
+.track-row.selected {
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+}
+
+.track-row.selected:hover {
+  background: color-mix(in srgb, var(--primary) 20%, transparent);
 }
 
 .track-title,
@@ -1495,6 +1598,41 @@ body {
 
 #track-headers .track-no {
   justify-content: flex-end;
+}
+
+/* The checkbox takes the track number's place rather than a column of its own,
+   and only where it says something: on the row under the pointer, and on a
+   picked row, where it shows the row's place in the order it will be queued
+   in. Every other row keeps its number, which is what an album is picked by. */
+.track-check {
+  display: none;
+  box-sizing: border-box;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 2px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--outline);
+  border-radius: var(--r-lg);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.track-row:hover .track-check,
+.track-row.selected .track-check {
+  display: inline-flex;
+}
+
+.track-row:hover .track-no-value,
+.track-row.selected .track-no-value {
+  display: none;
+}
+
+.track-row.selected .track-check {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary);
+  font-weight: 700;
 }
 
 .track-plays {

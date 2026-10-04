@@ -30,6 +30,10 @@ _Avoid_: Ads, spots
 A user-configured filesystem root the scanner recurses into. Feeds tracks into one or more typed libraries.
 _Avoid_: Folder, source, watch dir
 
+**Selection**:
+The Tracks picked in the library panel to be added to the Playlist together, held in **pick order** — the order they were selected in, which is the order they are queued in. Outlives a search, a sort and a tab change, so it may hold Tracks that are not on screen; cleared when it is used.
+_Avoid_: Basket, multi-select, checked rows
+
 **Tag metadata**:
 The fields a Track carries from its file's tags: title, artist, album, album artist, genre, year, track number and total, disc number and total, initial key, ISRC and comment. Read by a **Scan**, or by **Tag backfill** for a row that predates a field.
 _Avoid_: ID3, tags, properties
