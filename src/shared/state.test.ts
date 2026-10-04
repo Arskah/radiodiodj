@@ -39,6 +39,8 @@ const { api } = vi.hoisted(() => {
     savedPlaylistAddEntries: vi.fn(),
     savedPlaylistRemoveEntry: vi.fn(),
     savedPlaylistMoveEntry: vi.fn(),
+    savedPlaylistRemoveEntries: vi.fn(),
+    savedPlaylistMoveEntries: vi.fn(),
     savedPlaylistRename: vi.fn(),
     savedPlaylistDelete: vi.fn(),
     playlistAddStopMarker: vi.fn(),
@@ -287,6 +289,8 @@ function resetApi(): void {
   api.savedPlaylistGet.mockResolvedValue(null);
   api.savedPlaylistRemoveEntry.mockResolvedValue(undefined);
   api.savedPlaylistMoveEntry.mockResolvedValue(undefined);
+  api.savedPlaylistRemoveEntries.mockResolvedValue(undefined);
+  api.savedPlaylistMoveEntries.mockResolvedValue(undefined);
   api.savedPlaylistDelete.mockResolvedValue(undefined);
   api.scanLibraries.mockResolvedValue({ alreadyRunning: false });
   api.cancelScan.mockResolvedValue(undefined);
@@ -3249,6 +3253,46 @@ describe("AppState saved playlists", () => {
     await app.openSavedPlaylist(5);
     app.moveSavedEntry(0, 1);
     expect(api.savedPlaylistMoveEntry).toHaveBeenCalledWith(5, 0, 1);
+  });
+
+  it("removes and moves several entries of the open saved playlist as one change", async () => {
+    api.savedPlaylistGet.mockResolvedValue(show(["A", "B", "C"]));
+    await app.openSavedPlaylist(5);
+    app.removeSavedEntries([3, 1]);
+    expect(api.savedPlaylistRemoveEntries).toHaveBeenCalledWith(5, [3, 1]);
+    app.moveSavedEntries([2, 1], 3);
+    expect(api.savedPlaylistMoveEntries).toHaveBeenCalledWith(5, [2, 1], 3);
+  });
+
+  it("does nothing with no entries, or with no saved playlist open", async () => {
+    app.removeSavedEntries([1]);
+    app.moveSavedEntries([1], 0);
+    api.savedPlaylistGet.mockResolvedValue(show(["A"]));
+    await app.openSavedPlaylist(5);
+    app.removeSavedEntries([]);
+    expect(api.savedPlaylistRemoveEntries).not.toHaveBeenCalled();
+    expect(api.savedPlaylistMoveEntries).not.toHaveBeenCalled();
+  });
+
+  it("a drag of entries leaves the library selection alone when it is dropped", () => {
+    app.toggleSelected(1);
+    app.toggleSelected(2);
+    // Track 1 is in the library selection too, but this drag is not that.
+    t(9);
+    app.startTrackDrag([1, 9]);
+    app.dropDraggedInPlaylist(0);
+    expect(api.playlistAddMany).toHaveBeenCalledWith([1, 9], 0);
+    expect(app.selectedIds).toEqual([1, 2]);
+  });
+
+  it("queues tracks in the order given, at the end or as next", () => {
+    t(4);
+    app.queueTracks([4, 2]);
+    expect(api.playlistAddMany).toHaveBeenLastCalledWith([4, 2], null);
+    app.queueTracks([4, 2], true);
+    expect(api.playlistAddMany).toHaveBeenLastCalledWith([4, 2], 0);
+    app.queueTracks([]);
+    expect(api.playlistAddMany).toHaveBeenCalledTimes(2);
   });
 
   it("deleting the open saved playlist closes it", async () => {

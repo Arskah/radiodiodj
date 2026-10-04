@@ -533,6 +533,44 @@ async fn saved_playlist_remove_entry(
     .await
 }
 
+/// Remove several entries of a saved playlist as one change.
+#[tauri::command(rename_all = "camelCase")]
+async fn saved_playlist_remove_entries(
+    handle: AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+    entry_ids: Vec<i64>,
+) -> Result<(), String> {
+    let db = Arc::clone(&state.db);
+    blocking(move || {
+        db.remove_saved_entries(id, &entry_ids, now_ms())
+            .map_err(err)?;
+        saved_playlists::emit(&handle, &db);
+        Ok(())
+    })
+    .await
+}
+
+/// Move several entries as one block, in the order given, into the gap at
+/// `index` of the saved playlist as it stands.
+#[tauri::command(rename_all = "camelCase")]
+async fn saved_playlist_move_entries(
+    handle: AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+    entry_ids: Vec<i64>,
+    index: usize,
+) -> Result<(), String> {
+    let db = Arc::clone(&state.db);
+    blocking(move || {
+        db.move_saved_entries(id, &entry_ids, index, now_ms())
+            .map_err(err)?;
+        saved_playlists::emit(&handle, &db);
+        Ok(())
+    })
+    .await
+}
+
 #[tauri::command(rename_all = "camelCase")]
 async fn saved_playlist_move_entry(
     handle: AppHandle,
@@ -1748,6 +1786,8 @@ pub fn run() {
             saved_playlist_add_entries,
             saved_playlist_remove_entry,
             saved_playlist_move_entry,
+            saved_playlist_remove_entries,
+            saved_playlist_move_entries,
             saved_playlist_rename,
             saved_playlist_delete,
             playlist_set_item_cue_points,

@@ -10,6 +10,14 @@
   } from "../../shared/savedPlaylists";
   import MissingBadge from "../track/MissingBadge.svelte";
   import { gapAt, moveTarget } from "../playlist/playlistDrop";
+  import {
+    allSelected,
+    hiddenCount,
+    selectAll,
+    selectRange,
+    toggle,
+    without,
+  } from "../../shared/selection";
   import ContextMenu from "../ui/ContextMenu.svelte";
   import type { MenuItem } from "../ui/contextMenu";
 
@@ -30,11 +38,13 @@
     app.searchQuery = "";
     sortBy = "position";
     sortDir = "asc";
+    clearPicked();
     void app.openSavedPlaylist(id);
   }
 
   function back(): void {
     app.searchQuery = "";
+    clearPicked();
     app.closeSavedPlaylist();
   }
   const openSummary = $derived(
@@ -62,7 +72,9 @@
 
   type MenuTarget =
     | { kind: "saved"; saved: SavedPlaylistSummary }
-    | { kind: "entry"; entry: SavedEntry };
+    | { kind: "entry"; entry: SavedEntry }
+    /** A picked entry's menu, once several are picked: it is the selection's. */
+    | { kind: "picked" };
 
   let menu = $state<{ target: MenuTarget; x: number; y: number } | null>(null);
   // The row the menu was opened from, so focus goes back where it came from.
@@ -218,17 +230,62 @@
     return items;
   }
 
-  const itemsFor = (target: MenuTarget): MenuItem[] =>
-    target.kind === "saved"
-      ? savedItems(target.saved)
-      : entryItems(target.entry);
+  function pickedItems(): MenuItem[] {
+    const tracks = pickedTrackIds.length;
+    const items: MenuItem[] = [];
+    if (tracks > 0) {
+      items.push(
+        {
+          label: `Add ${tracks} to playlist`,
+          icon: "add",
+          onselect: () => queuePicked(),
+        },
+        {
+          label: `Add ${tracks} as next`,
+          icon: "playlist_play",
+          onselect: () => queuePicked(true),
+        },
+      );
+    }
+    if (app.isAdmin) {
+      items.push({
+        label: `Remove ${pickedCount} from saved playlist`,
+        icon: "close",
+        onselect: removePicked,
+        separated: tracks > 0,
+      });
+    }
+    return items;
+  }
+
+  function itemsFor(target: MenuTarget): MenuItem[] {
+    switch (target.kind) {
+      case "saved":
+        return savedItems(target.saved);
+      case "entry":
+        return entryItems(target.entry);
+      case "picked":
+        return pickedItems();
+    }
+  }
+
+  /** The menu a row opens: the selection's, on a picked row of several. */
+  const entryMenu = (entry: SavedEntry): MenuTarget =>
+    pickedCount > 1 && ordinals.has(entry.id)
+      ? { kind: "picked" }
+      : { kind: "entry", entry };
 
   const menuItems = $derived(menu ? itemsFor(menu.target) : []);
   const menuLabel = $derived.by(() => {
     if (!menu) return "";
-    return menu.target.kind === "saved"
-      ? `Actions for ${menu.target.saved.name}`
-      : `Actions for ${title(menu.target.entry)}`;
+    switch (menu.target.kind) {
+      case "saved":
+        return `Actions for ${menu.target.saved.name}`;
+      case "entry":
+        return `Actions for ${title(menu.target.entry)}`;
+      case "picked":
+        return `Actions for ${pickedCount} selected entries`;
+    }
   });
 
   function append(id: number, weave: boolean, e?: MouseEvent): void {
@@ -269,17 +326,24 @@
     if (e.target instanceof Element && e.target.closest("button")) return;
     e.preventDefault();
     app.addToPlaylist(entry.track);
+    // Both clicks of the double-click toggled the row first.
+    picked = without(picked, [entry.id]);
   }
 
   function onEntryKeyDown(entry: SavedEntry, e: KeyboardEvent): void {
     if (e.target !== e.currentTarget) return;
+    if (e.key === " ") {
+      e.preventDefault();
+      pick(entry, e.shiftKey);
+      return;
+    }
     const wantsMenu =
       e.key === "ContextMenu" ||
       (e.key === "F10" && e.shiftKey) ||
       (e.key === "Enter" && e.ctrlKey);
     if (!wantsMenu) return;
     e.preventDefault();
-    showMenu({ kind: "entry", entry }, e.currentTarget as HTMLElement, null);
+    showMenu(entryMenu(entry), e.currentTarget as HTMLElement, null);
   }
 
   // ----- Sorting -----
@@ -347,6 +411,106 @@
     app.searchQuery.trim() === "" && sortBy === "position" && sortDir === "asc",
   );
 
+  // ----- Selection -----
+  //
+  // The entries of the open saved playlist have a selection of their own, in
+  // pick order like the library's, over entry ids: an entry is not a track.
+  // It belongs to the one open saved playlist. See `docs/saved-playlists.md`.
+
+  let picked = $state<number[]>([]);
+  /** The row a range is measured from: the last one picked or dropped. */
+  let anchor: number | null = null;
+
+  const shownIds = $derived(listed.map((row) => row.entry.id));
+  const pickedCount = $derived(picked.length);
+  const hiddenPicked = $derived(hiddenCount(picked, shownIds));
+  const allShown = $derived(allSelected(picked, shownIds));
+  /** Each picked entry's place in the order it will be queued in, from 1. */
+  const ordinals = $derived(new Map(picked.map((id, i) => [id, i + 1])));
+  /** The picked entries that have a track, as track ids in pick order. */
+  const pickedTrackIds = $derived.by(() => {
+    const tracks = new Map(
+      (open?.entries ?? []).map((entry) => [entry.id, entry.track?.id]),
+    );
+    return picked.flatMap((id) => tracks.get(id) ?? []);
+  });
+  const selectAllLabel = $derived(
+    allShown ? "Deselect shown" : `Select all (${shownIds.length})`,
+  );
+
+  function clearPicked(): void {
+    picked = [];
+    anchor = null;
+  }
+
+  // The selection is of this saved playlist's entries as they are: one that has
+  // been removed, here or by someone else, is no longer picked, and nothing is
+  // once the saved playlist is closed.
+  $effect(() => {
+    const present = new Set((open?.entries ?? []).map((entry) => entry.id));
+    if (picked.some((id) => !present.has(id))) {
+      picked = picked.filter((id) => present.has(id));
+    }
+  });
+
+  function pick(entry: SavedEntry, range: boolean): void {
+    picked = range
+      ? selectRange(picked, shownIds, anchor, entry.id)
+      : toggle(picked, entry.id);
+    anchor = entry.id;
+  }
+
+  function onEntryClick(entry: SavedEntry, e: MouseEvent): void {
+    // A row button is pressed for what it does, not to pick its row.
+    if (e.target instanceof Element && e.target.closest("button")) return;
+    pick(entry, e.shiftKey);
+  }
+
+  function toggleSelectAll(): void {
+    picked = allShown ? without(picked, shownIds) : selectAll(picked, shownIds);
+  }
+
+  function queuePicked(asNext = false): void {
+    app.queueTracks(pickedTrackIds, asNext);
+    clearPicked();
+  }
+
+  function removePicked(): void {
+    app.removeSavedEntries([...picked]);
+    clearPicked();
+  }
+
+  /** A field that takes the keys itself, where Ctrl/Cmd+A selects its text. */
+  function typing(target: EventTarget | null): boolean {
+    return (
+      target instanceof HTMLElement &&
+      (target.isContentEditable ||
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement)
+    );
+  }
+
+  // On the document for the reason the library's is: select-all means the list
+  // on screen wherever focus happens to be.
+  function onDocumentKeyDown(e: KeyboardEvent): void {
+    if (!open || typing(e.target) || menu) return;
+    if (app.settingsOpen || document.querySelector('[aria-modal="true"]')) {
+      return;
+    }
+    if (e.key === "Escape" && pickedCount > 0) {
+      clearPicked();
+    } else if (e.key === "a" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      toggleSelectAll();
+    }
+  }
+
+  $effect(() => {
+    document.addEventListener("keydown", onDocumentKeyDown);
+    return () => document.removeEventListener("keydown", onDocumentKeyDown);
+  });
+
   // ----- Dragging -----
   //
   // An entry drags the way a library row does: a bound one can be dropped at a
@@ -355,6 +519,12 @@
 
   let dragFrom = $state(-1);
   let dropTarget = $state(-1);
+  /** The picked entries being dragged together, when the drag is of several. */
+  let dragBlock = $state<number[] | null>(null);
+  /** The drag in the air is of the picked entries, wherever it may land. */
+  let draggingPicked = false;
+  /** This drag can reorder: a row, or a block, of the list in its own order. */
+  const reordering = $derived(dragFrom !== -1 || dragBlock !== null);
 
   const draggable = (entry: SavedEntry): boolean =>
     entry.track !== null || app.isAdmin;
@@ -370,19 +540,34 @@
   function onDragStart(e: DragEvent, entry: SavedEntry, i: number): void {
     // The tooltip is anchored to the row and would hang over the drag.
     app.clearHover();
-    dragFrom = app.isAdmin && inOwnOrder ? i : -1;
-    app.draggedTrackIds = entry.track ? [entry.track.id] : null;
+    const canReorder = app.isAdmin && inOwnOrder;
+    // A drag of a picked row carries the selection; of any other, that row.
+    const block = pickedCount > 1 && ordinals.has(entry.id);
+    draggingPicked = block;
+    dragBlock = block && canReorder ? [...picked] : null;
+    dragFrom = !block && canReorder ? i : -1;
+    app.startTrackDrag(
+      block ? pickedTrackIds : entry.track ? [entry.track.id] : [],
+    );
     if (e.dataTransfer) {
       e.dataTransfer.effectAllowed = "copyMove";
       e.dataTransfer.setData(
         "text/plain",
-        `${artist(entry)} – ${title(entry)}`,
+        block ? `${pickedCount} entries` : `${artist(entry)} – ${title(entry)}`,
       );
     }
   }
 
-  function onDragEnd(): void {
+  function onDragEnd(e?: DragEvent): void {
+    // Dropped in the playlist, the picked entries have been used, as a
+    // selection is by any add. A drag dropped nowhere keeps them.
+    const queued = e?.dataTransfer?.dropEffect === "copy";
+    if (queued && draggingPicked && app.draggedTrackIds === null) {
+      clearPicked();
+    }
+    draggingPicked = false;
     dragFrom = -1;
+    dragBlock = null;
     dropTarget = -1;
     app.draggedTrackIds = null;
   }
@@ -395,18 +580,25 @@
   }
 
   function onDragOver(e: DragEvent): void {
-    if (dragFrom === -1) return;
+    if (!reordering) return;
     e.preventDefault();
     if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
     dropTarget = gapUnder(e);
   }
 
   function onDrop(e: DragEvent): void {
-    if (dragFrom === -1) return;
+    if (!reordering) return;
     e.preventDefault();
-    const to = moveTarget(dragFrom, gapUnder(e));
+    const gap = gapUnder(e);
     const from = dragFrom;
+    const block = dragBlock;
     onDragEnd();
+    if (block) {
+      app.moveSavedEntries(block, gap);
+      clearPicked();
+      return;
+    }
+    const to = moveTarget(from, gap);
     if (to !== null) app.moveSavedEntry(from, to);
   }
 </script>
@@ -497,11 +689,25 @@
     {/each}
     {#if app.cueDevice !== null}<span class="saved-action-space"></span>{/if}
     {#if app.isAdmin}<span class="saved-action-space"></span>{/if}
-    <span class="saved-action-space"></span>
+    <span class="saved-action-space">
+      <button
+        id="btn-select-all-entries"
+        class="saved-select-all"
+        title={selectAllLabel}
+        aria-label={selectAllLabel}
+        disabled={shownIds.length === 0}
+        onclick={toggleSelectAll}
+      >
+        <span class="material-symbols-outlined" aria-hidden="true"
+          >{allShown ? "deselect" : "select_all"}</span
+        >
+      </button>
+    </span>
     {#if app.isAdmin}<span class="saved-action-space"></span>{/if}
   </div>
   <div
     id="saved-entries"
+    class:selecting={pickedCount > 0}
     ondragover={onDragOver}
     ondragleave={onDragLeave}
     ondrop={onDrop}
@@ -526,18 +732,22 @@
       </div>
     {:else}
       {#each listed as { entry, position: i } (entry.id)}
+        {@const ordinal = ordinals.get(entry.id)}
         <div
           class="track-row saved-entry"
           class:unmatched={entry.track === null}
-          class:dragging={i === dragFrom}
-          class:drop-before={dragFrom !== -1 && dropTarget === i}
-          class:drop-after={dragFrom !== -1 &&
+          class:selected={ordinal !== undefined}
+          class:dragging={i === dragFrom ||
+            (dragBlock !== null && ordinal !== undefined)}
+          class:drop-before={reordering && dropTarget === i}
+          class:drop-after={reordering &&
             dropTarget === i + 1 &&
             i === open.entries.length - 1}
           draggable={draggable(entry)}
           ondragstart={(e) => onDragStart(e, entry, i)}
-          ondragend={onDragEnd}
-          oncontextmenu={(e) => openMenu({ kind: "entry", entry }, e)}
+          ondragend={(e) => onDragEnd(e)}
+          oncontextmenu={(e) => openMenu(entryMenu(entry), e)}
+          onclick={(e) => onEntryClick(entry, e)}
           ondblclick={(e) => onEntryDblClick(entry, e)}
           onmouseenter={(e) => onEnter(entry, e)}
           onmouseleave={() => app.clearHover()}
@@ -545,10 +755,14 @@
           role="button"
           aria-label={`Entry ${i + 1}: ${title(entry)} by ${artist(entry)}`}
           aria-haspopup="menu"
+          aria-pressed={ordinal !== undefined}
           tabindex="0"
           data-entry-id={entry.id}
         >
-          <span class="track-no">{i + 1}</span>
+          <span class="track-no">
+            <span class="track-no-value">{i + 1}</span>
+            <span class="track-check" aria-hidden="true">{ordinal ?? ""}</span>
+          </span>
           <span class="track-title saved-entry-title">
             {#if entry.track}
               <MissingBadge trackId={entry.track.id} />
@@ -702,6 +916,39 @@
     {/if}
   </div>
 {/if}
+{#if open && pickedCount > 0}
+  <div id="selection-bar" role="toolbar" aria-label="Selection">
+    <span id="selection-count" aria-live="polite">
+      {pickedCount} selected{hiddenPicked > 0
+        ? ` · ${hiddenPicked} not shown`
+        : ""}
+    </span>
+    <button
+      class="btn-filler"
+      id="btn-add-selection"
+      disabled={pickedTrackIds.length === 0}
+      onclick={() => queuePicked()}
+      >Add {pickedTrackIds.length} to playlist</button
+    >
+    <button
+      class="btn-filler"
+      id="btn-add-selection-next"
+      disabled={pickedTrackIds.length === 0}
+      onclick={() => queuePicked(true)}
+      >Add {pickedTrackIds.length} as next</button
+    >
+    {#if app.isAdmin}
+      <button
+        class="btn-filler btn-filler-stop"
+        id="btn-remove-selection"
+        onclick={removePicked}>Remove {pickedCount}</button
+      >
+    {/if}
+    <button class="btn-selection" id="btn-clear-selection" onclick={clearPicked}
+      >Clear</button
+    >
+  </div>
+{/if}
 {#if menu}
   <ContextMenu
     x={menu.x}
@@ -778,6 +1025,37 @@
     color: var(--outline);
     font-style: italic;
     font-weight: 400;
+  }
+
+  /* Room for the selection bar, which floats over the list's bottom edge. */
+  #saved-entries.selecting {
+    padding-bottom: 56px;
+  }
+
+  .saved-select-all {
+    width: 26px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+  }
+
+  .saved-select-all .material-symbols-outlined {
+    font-size: 16px;
+  }
+
+  .saved-select-all:hover:not(:disabled) {
+    color: var(--on-surface);
+  }
+
+  .saved-select-all:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
   }
 
   /* Holds a row button's place, so columns line up down the list whether or
