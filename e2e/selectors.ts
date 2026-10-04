@@ -8,7 +8,7 @@ export const sel = {
   selectionCount: "#selection-count",
   addSelection: "#btn-add-selection",
   searchInput: "#search-input",
-  libraryTab: (label: string) => `[role="tab"][aria-selected]*=${label}`,
+  libraryTab: (label: string) => `button.lib-tab*=${label}`,
   sortHeader: (label: string) => `button[role="columnheader"]*=${label}`,
   settingsButton: "#btn-settings",
   scanButton: "#btn-scan-now",
