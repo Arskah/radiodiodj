@@ -13,7 +13,7 @@
       case "saveAs":
         return "Save playlist as";
       case "addTo":
-        return "Add to saved playlist";
+        return app.isAdmin ? "Add to saved playlist" : "New saved playlist";
       case "rename":
         return "Rename saved playlist";
       case "delete":
@@ -72,7 +72,9 @@
         case "saveAs":
           return app.savePlaylistAs(name);
         case "addTo":
-          return app.createSavedPlaylist(name, current.trackIds);
+          return app
+            .createSavedPlaylist(name, current.trackIds)
+            .then(() => used(current));
         case "rename":
           return app.renameSavedPlaylist(current.id, name);
         case "delete":
@@ -81,10 +83,18 @@
     });
   }
 
+  /** A selection that has been put somewhere is used up, as any add uses it. */
+  function used(current: { fromSelection?: boolean }): void {
+    if (current.fromSelection) app.clearSelection();
+  }
+
   function addTo(id: number): void {
     const current = dialog;
     if (current?.kind !== "addTo") return;
-    void run(() => app.addToSavedPlaylist(id, current.trackIds));
+    void run(async () => {
+      await app.addToSavedPlaylist(id, current.trackIds);
+      used(current);
+    });
   }
 
   function onKeyDown(e: KeyboardEvent): void {
@@ -119,7 +129,13 @@
             Delete “{dialog.name}”? Its tracks stay in the library.
           </p>
         {:else}
-          {#if dialog.kind === "addTo" && app.savedPlaylists.length > 0}
+          {#if dialog.kind === "addTo"}
+            <p class="saved-desc">
+              {dialog.trackIds.length}
+              {dialog.trackIds.length === 1 ? "track" : "tracks"}
+            </p>
+          {/if}
+          {#if dialog.kind === "addTo" && app.isAdmin && app.savedPlaylists.length > 0}
             <div class="saved-choices" role="list">
               {#each app.savedPlaylists as saved (saved.id)}
                 <button

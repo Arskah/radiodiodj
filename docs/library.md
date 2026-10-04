@@ -393,14 +393,15 @@ The **selection bar** floats over the bottom of the list while anything is
 picked. It never takes space in the flow: a bar that pushed the rows down would
 move them under the second click of a double-click.
 
-| action              | how                                                            |
-| ------------------- | -------------------------------------------------------------- |
-| add to the playlist | _Add N to playlist_ on the bar, or in a picked row's menu      |
-| add as next         | _Add N as next_: the block goes to the head, first pick first  |
-| add at a position   | drag any picked row; the whole selection lands where dropped   |
-| pick every row      | Ctrl/Cmd+A, or _Select all_ at the right of the column headers |
-| drop the rows shown | either again once all are picked                               |
-| drop everything     | _Clear_, or Escape                                             |
+| action                   | how                                                                                                      |
+| ------------------------ | -------------------------------------------------------------------------------------------------------- |
+| add to the playlist      | _Add N to playlist_ on the bar, or in a picked row's menu                                                |
+| add as next              | _Add N as next_: the block goes to the head, first pick first                                            |
+| add at a position        | drag any picked row; the whole selection lands where dropped                                             |
+| pick every row           | Ctrl/Cmd+A, or _Select all_ at the right of the column headers                                           |
+| drop the rows shown      | either again once all are picked                                                                         |
+| keep as a saved playlist | _Save…_ on the bar, or in a picked row's menu — see [saved-playlists.md](./saved-playlists.md#authoring) |
+| drop everything          | _Clear_, or Escape                                                                                       |
 
 An action that succeeds **clears the selection**; a drag dropped nowhere keeps
 it. Kept, the next add would queue the same tracks again, some of them out of
@@ -409,7 +410,8 @@ sight.
 A row's own buttons and a double-click always act on that one row, picked or
 not, and a double-click drops the row from the selection. Dragging a row that is
 not picked carries only that row. The menu on a picked row is the selection's
-when more than one track is picked, and offers the two adds and nothing else:
+when more than one track is picked, and offers the two adds and the saved
+playlist dialog and nothing else:
 _Play now_ is never offered for several, and clearing is the bar's, where the
 count of tracks not shown sits beside it.
 

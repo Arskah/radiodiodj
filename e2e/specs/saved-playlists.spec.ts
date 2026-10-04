@@ -157,6 +157,45 @@ describe("saved playlists", () => {
     await line.waitForExist({ timeout: 5_000, reverse: true });
   });
 
+  it("makes a saved playlist of a selection and queues it from its row menu", async () => {
+    await bootAndScan();
+
+    const rows = browser.$$(sel.trackRow);
+    await rows[2].click();
+    await rows[0].click();
+    const picked = await browser.execute(() =>
+      Array.from(
+        document.querySelectorAll(".track-row.selected .track-title"),
+      ).map((el) => (el.textContent ?? "").trim()),
+    );
+    await browser.$(sel.saveSelection).click();
+    await browser.$(sel.savedDialog).waitForDisplayed({ timeout: 5_000 });
+    await browser.$(sel.savedName).setValue("from selection");
+    await browser.$(sel.savedConfirm).click();
+    await browser
+      .$(sel.savedDialog)
+      .waitForExist({ timeout: 5_000, reverse: true });
+    // Used, so cleared — as any add of a selection clears it.
+    await browser
+      .$(sel.selectionBar)
+      .waitForExist({ timeout: 5_000, reverse: true });
+
+    await browser.$(sel.libraryTab("Playlists")).click();
+    const saved = browser.$(sel.savedRow);
+    await saved.waitForDisplayed({ timeout: 5_000 });
+    await waitForText(sel.savedRow, "from selection");
+    await waitForText(sel.savedRow, "2 tracks");
+
+    await saved.click({ button: "right" });
+    const menu = browser.$(sel.contextMenu);
+    await menu.waitForDisplayed({ timeout: 5_000 });
+    await menu.$(sel.contextMenuItem("Add to playlist")).click();
+    await waitForQueue(2);
+    // Two rows were picked, so both are queued; which was first is the
+    // selection spec's to assert.
+    expect((await queuedTitles()).sort()).toEqual([...picked].sort());
+  });
+
   it("adds a library track to a saved playlist from its menu", async () => {
     await bootAndScan();
 

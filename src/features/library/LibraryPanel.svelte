@@ -233,6 +233,14 @@
           icon: "playlist_play",
           onselect: () => app.addSelectionToPlaylist(true),
         },
+        {
+          label: app.isAdmin
+            ? `Add ${selectedCount} to saved playlist…`
+            : `New saved playlist from ${selectedCount}…`,
+          icon: "playlist_add",
+          onselect: () => app.saveSelection(),
+          separated: true,
+        },
       ];
     }
     const items: MenuItem[] = [
@@ -254,13 +262,13 @@
         onselect: () => app.cueLoad(track),
       });
     }
+    items.push({
+      label: app.isAdmin ? "Add to saved playlist…" : "New saved playlist…",
+      icon: "playlist_add",
+      onselect: () =>
+        (app.savedDialog = { kind: "addTo", trackIds: [track.id] }),
+    });
     if (app.isAdmin) {
-      items.push({
-        label: "Add to saved playlist…",
-        icon: "playlist_add",
-        onselect: () =>
-          (app.savedDialog = { kind: "addTo", trackIds: [track.id] }),
-      });
       items.push({
         label: "Edit metadata…",
         icon: "edit",
@@ -462,6 +470,14 @@
           id="btn-add-selection-next"
           onclick={() => app.addSelectionToPlaylist(true)}
           >Add {selectedCount} as next</button
+        >
+        <button
+          class="btn-filler"
+          id="btn-save-selection"
+          title={app.isAdmin
+            ? "Add the selection to a saved playlist, or make a new one of it"
+            : "Make a new saved playlist of the selection"}
+          onclick={() => app.saveSelection()}>Save…</button
         >
         <button
           class="btn-selection"

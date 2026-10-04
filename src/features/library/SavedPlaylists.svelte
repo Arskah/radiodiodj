@@ -5,6 +5,8 @@
   import { sizeLabel } from "../../shared/savedPlaylists";
   import MissingBadge from "../track/MissingBadge.svelte";
   import { gapAt, moveTarget } from "../playlist/playlistDrop";
+  import ContextMenu from "../ui/ContextMenu.svelte";
+  import type { MenuItem } from "../ui/contextMenu";
 
   const shown = $derived.by<SavedPlaylistSummary[]>(() => {
     const query = app.searchQuery.trim().toLowerCase();
@@ -21,10 +23,184 @@
 
   function onRowKeyDown(saved: SavedPlaylistSummary, e: KeyboardEvent): void {
     if (e.target !== e.currentTarget) return;
+    // The bindings the library rows use; macOS keyboards have no menu key.
+    const wantsMenu =
+      e.key === "ContextMenu" ||
+      (e.key === "F10" && e.shiftKey) ||
+      (e.key === "Enter" && e.ctrlKey);
+    if (wantsMenu) {
+      e.preventDefault();
+      showMenu({ kind: "saved", saved }, e.currentTarget as HTMLElement, null);
+      return;
+    }
     if (e.key !== "Enter" && e.key !== " ") return;
     e.preventDefault();
     void app.openSavedPlaylist(saved.id);
   }
+
+  // ----- Row menus -----
+
+  type MenuTarget =
+    | { kind: "saved"; saved: SavedPlaylistSummary }
+    | { kind: "entry"; entry: SavedEntry };
+
+  let menu = $state<{ target: MenuTarget; x: number; y: number } | null>(null);
+  // The row the menu was opened from, so focus goes back where it came from.
+  let menuRow: HTMLElement | null = null;
+
+  /** `at` is the cursor point; without one the menu hangs off the row itself. */
+  function showMenu(
+    target: MenuTarget,
+    row: HTMLElement,
+    at: { x: number; y: number } | null,
+  ): void {
+    if (itemsFor(target).length === 0) return;
+    const rect = row.getBoundingClientRect();
+    menuRow = row;
+    menu = {
+      target,
+      x: at ? at.x : rect.left,
+      y: at ? at.y : rect.bottom,
+    };
+  }
+
+  function openMenu(target: MenuTarget, e: MouseEvent): void {
+    e.preventDefault();
+    const keyboard = e.clientX === 0 && e.clientY === 0;
+    showMenu(
+      target,
+      e.currentTarget as HTMLElement,
+      keyboard ? null : { x: e.clientX, y: e.clientY },
+    );
+  }
+
+  function closeMenu(restoreFocus: boolean): void {
+    menu = null;
+    if (restoreFocus) menuRow?.focus();
+    menuRow = null;
+  }
+
+  function savedItems(saved: SavedPlaylistSummary): MenuItem[] {
+    const isSource = app.autoSource?.id === saved.id;
+    const items: MenuItem[] = [
+      {
+        label: "Open",
+        icon: "folder_open",
+        onselect: () => void app.openSavedPlaylist(saved.id),
+      },
+    ];
+    if (saved.entries > 0) {
+      items.push(
+        {
+          label: "Add to playlist",
+          icon: "add",
+          onselect: () => append(saved.id, false),
+        },
+        {
+          label: "Add with jingles and commercials",
+          icon: "playlist_add",
+          onselect: () => append(saved.id, true),
+        },
+      );
+    }
+    items.push(
+      {
+        label: isSource ? "Stop using as Auto source" : "Use as Auto source",
+        icon: "auto_awesome",
+        onselect: () => void app.setAutoSource(isSource ? null : saved.id),
+        separated: true,
+      },
+      {
+        label: "Export…",
+        icon: "file_export",
+        onselect: () => void app.exportSavedPlaylist(saved.id, saved.name),
+      },
+    );
+    if (app.isAdmin) {
+      items.push(
+        {
+          label: "Rename…",
+          icon: "edit",
+          onselect: () => rename(saved),
+          separated: true,
+        },
+        { label: "Delete…", icon: "delete", onselect: () => remove(saved) },
+      );
+    }
+    return items;
+  }
+
+  // Play-now sits last, behind a divider, as it does on a library row: it is
+  // never the item under the cursor when the menu opens.
+  function entryItems(entry: SavedEntry): MenuItem[] {
+    const track = entry.track;
+    const items: MenuItem[] = [];
+    if (track) {
+      items.push(
+        {
+          label: "Add to playlist",
+          icon: "add",
+          onselect: () => app.addToPlaylist(track),
+        },
+        {
+          label: "Add as next",
+          icon: "playlist_play",
+          onselect: () => app.addNextToPlaylist(track),
+        },
+      );
+      if (app.cueDevice !== null) {
+        items.push({
+          label: "Preview on cue deck",
+          icon: "headphones",
+          onselect: () => app.cueLoad(track),
+        });
+      }
+      items.push(
+        {
+          label: "Cue points…",
+          icon: "line_start_diamond",
+          onselect: () => (app.editingCuePoints = track),
+        },
+        {
+          label: "Show in folder",
+          icon: "folder_open",
+          onselect: () => app.revealTrack(track),
+          separated: true,
+        },
+      );
+    }
+    if (app.isAdmin) {
+      items.push({
+        label: "Remove from saved playlist",
+        icon: "close",
+        onselect: () => app.removeSavedEntry(entry.id),
+        separated: track !== null,
+      });
+    }
+    if (track) {
+      items.push({
+        label: "Play now (on air)",
+        icon: "play_arrow",
+        onselect: () => app.playNow(track),
+        separated: true,
+        danger: true,
+      });
+    }
+    return items;
+  }
+
+  const itemsFor = (target: MenuTarget): MenuItem[] =>
+    target.kind === "saved"
+      ? savedItems(target.saved)
+      : entryItems(target.entry);
+
+  const menuItems = $derived(menu ? itemsFor(menu.target) : []);
+  const menuLabel = $derived.by(() => {
+    if (!menu) return "";
+    return menu.target.kind === "saved"
+      ? `Actions for ${menu.target.saved.name}`
+      : `Actions for ${title(menu.target.entry)}`;
+  });
 
   function append(id: number, weave: boolean, e?: MouseEvent): void {
     e?.stopPropagation();
@@ -220,6 +396,7 @@
           draggable={draggable(entry)}
           ondragstart={(e) => onDragStart(e, entry, i)}
           ondragend={onDragEnd}
+          oncontextmenu={(e) => openMenu({ kind: "entry", entry }, e)}
           role="listitem"
           data-entry-id={entry.id}
         >
@@ -294,7 +471,9 @@
           class="track-row saved-row"
           onclick={() => void app.openSavedPlaylist(saved.id)}
           onkeydown={(e) => onRowKeyDown(saved, e)}
+          oncontextmenu={(e) => openMenu({ kind: "saved", saved }, e)}
           role="button"
+          aria-haspopup="menu"
           tabindex="0"
           aria-label={`Saved playlist: ${saved.name}`}
           data-saved-id={saved.id}
@@ -346,6 +525,15 @@
       {/each}
     {/if}
   </div>
+{/if}
+{#if menu}
+  <ContextMenu
+    x={menu.x}
+    y={menu.y}
+    items={menuItems}
+    label={menuLabel}
+    onclose={closeMenu}
+  />
 {/if}
 {#if app.savedNotice}
   <div id="saved-notice" role="status">

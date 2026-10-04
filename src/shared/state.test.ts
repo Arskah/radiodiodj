@@ -3259,6 +3259,35 @@ describe("AppState saved playlists", () => {
     expect(app.openSaved).toBeNull();
   });
 
+  it("offers the selection to a saved playlist in pick order and keeps it until used", () => {
+    app.toggleSelected(2);
+    app.toggleSelected(1);
+    app.saveSelection();
+    expect(app.savedDialog).toEqual({
+      kind: "addTo",
+      trackIds: [2, 1],
+      fromSelection: true,
+    });
+    expect(app.selectedIds).toEqual([2, 1]);
+  });
+
+  it("has no dialog to open for an empty selection", () => {
+    app.saveSelection();
+    expect(app.savedDialog).toBeNull();
+  });
+
+  it("says what a new saved playlist was called, since a taken name is changed", async () => {
+    api.savedPlaylistCreate.mockResolvedValue({
+      id: 7,
+      name: "Show (2)",
+      entries: 2,
+      missing: 0,
+    });
+    await app.createSavedPlaylist("Show", [2, 1]);
+    expect(api.savedPlaylistCreate).toHaveBeenCalledWith("Show", [2, 1]);
+    expect(app.savedNotice).toBe("Saved “Show (2)”: 2 tracks");
+  });
+
   it("mirrors the auto-playlist source and a revert from the snapshot", () => {
     playlist.restore({
       source: { id: 5, name: "Show", tracks: 15 },
