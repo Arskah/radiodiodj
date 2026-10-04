@@ -4,9 +4,12 @@ import { Image } from "astro:assets";
 
 /** Alt text per file name; a file not listed here is not shown. */
 const CAPTIONS: Record<string, string> = {
-  "on-air": "The main window with a track on air and the playlist queued",
-  library: "The music library with search and the track list",
-  "cue-editor": "The cue editor with five markers on a two-strip waveform",
+  "on-air":
+    "The main window: a track on air with its waveform, the music library, and the upcoming playlist",
+  library:
+    "The library filtered by a search, with one track's tags, measured tempo and key shown in a popover",
+  "cue-points":
+    "The cue point editor: five markers on a two-strip waveform, with nudge and audition controls",
 };
 
 const files = import.meta.glob<{ default: ImageMetadata }>(
@@ -26,7 +29,12 @@ const shots = Object.keys(CAPTIONS).flatMap((name) => {
   shots.length > 0 && (
     <section class="section screenshots">
       {shots.map(({ image, alt }) => (
-        <Image src={image} alt={alt} widths={[640, 1280, image.width]} />
+        <Image
+          src={image}
+          alt={alt}
+          widths={[640, 1280, 2176]}
+          sizes="(max-width: 48rem) 100vw, 68rem"
+        />
       ))}
     </section>
   )

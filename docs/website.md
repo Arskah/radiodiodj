@@ -60,7 +60,7 @@ composed from. The favicon is `src-tauri/icons/128x128.png`.
 ### Screenshots
 
 `site/src/assets/screenshots/` holds hand-made captures, shown in this order
-when present: `on-air`, `library`, `cue-editor` (`.png`, `.jpg` or `.webp`). A
+when present: `on-air`, `library`, `cue-points` (`.png`, `.jpg` or `.webp`). A
 missing file is skipped and the section disappears when there are none, so the
 site builds without them.
 
