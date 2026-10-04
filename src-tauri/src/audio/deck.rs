@@ -368,9 +368,6 @@ impl Deck {
         }
     }
 
-    /// Drop everything about the loaded track. Shared by `Stop` and by every
-    /// failure path, which want exactly the same end state: nothing loaded,
-    /// nothing in flight, no deferred load waiting on a device.
     /// Whether this deck is putting sound on the bus *right now*. `active`
     /// alone is not that question: a deck preloaded for a handover is active
     /// with its sink paused, and counting it as sound would switch the dead-air
@@ -394,6 +391,9 @@ impl Deck {
         self.load_progress.is_some_and(|seen| seen.bytes > 0)
     }
 
+    /// Drop everything about the loaded track. Shared by `Stop` and by every
+    /// failure path, which want exactly the same end state: nothing loaded,
+    /// nothing in flight, no deferred load waiting on a device.
     fn reset(&mut self) {
         self.cancel_read();
         self.active = false;
@@ -971,7 +971,7 @@ fn abandon_load(
                 path,
                 after
             );
-            "network slow: skipped ahead to keep air"
+            "network slow: gave up the load to keep air"
         }
         // Three seconds is too early to call the mount dead — the share may
         // simply be slow to open a file — so the wording stops at what is
@@ -982,7 +982,7 @@ fn abandon_load(
                 path,
                 after
             );
-            "network not responding: skipped ahead to keep air"
+            "network not responding: gave up the load to keep air"
         }
     };
     deck.generation = deck.generation.wrapping_add(1);

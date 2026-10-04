@@ -95,11 +95,14 @@ The read happens on its own thread, with two protections in `audio/player.rs`:
   monitoring — none of them are bounded by it. `DeckSet::on_air` is what the cue
   worker says no with.
 
-  Nor is a track an operator put on air by hand (`Cmd::Load`'s
-  `bound_dead_air`, set from `Effect::Play`). Giving up on a playlist load is a
-  recovery — the engine has a queue and knows which of it is resident — but
-  giving up on the track someone chose is just a different track, which is not
-  theirs to choose. They can skip it themselves in less time than any limit
+  Nor is a track an operator put on air by hand, nor anything at all while
+  auto-advance is off (`Cmd::Load`'s `bound_dead_air`, set from `Effect::Play`
+  as `playlist_issued && auto_advance`). Both come off the same premise:
+  **giving up is only a recovery if something else goes on instead.** The
+  engine has a queue and knows which of it is resident — but it acts on
+  `{role}:load-failed` only while it is the one advancing (`on_load_failed`
+  returns immediately otherwise), and giving up on the track someone chose is
+  just a different track, which is not theirs to choose. They can skip it themselves in less time than any limit
   would allow, and in practice this is the load that reaches the share at all:
   playlist tracks are prefetched, so a miss on air is usually a library track
   started by hand. The stall watchdog still covers it, so a dead mount fails the

@@ -386,6 +386,7 @@ impl Cache {
         cancel: &Cancel,
     ) -> Result<Bytes> {
         let mut seen = Seen::issued(Instant::now());
+        let mut held: Option<Progress> = None;
         loop {
             match self.shared.deck_step(id, progress) {
                 DeckStep::Take(bytes) => return Ok(bytes),
@@ -415,9 +416,17 @@ impl Cache {
                     // the handle is the deck's own and must only ever climb: a
                     // holder that fails and is replaced by one starting over
                     // would otherwise read as a rewind.
-                    let holder = self.shared.progress_of(id).map_or(0, |p| p.load(Relaxed));
-                    progress.fetch_max(holder, Relaxed);
                     let now = Instant::now();
+                    let holder = self.shared.progress_of(id);
+                    // That same replacement would otherwise read as a *stall*
+                    // until it passed whatever the old holder reached, so the
+                    // stall rule starts over with it. The deck's handle still
+                    // only climbs; it is this wait's own baseline that moves.
+                    if !Self::same_holder(held.as_ref(), holder.as_ref()) {
+                        held = holder.clone();
+                        seen = Seen::issued(now);
+                    }
+                    progress.fetch_max(holder.map_or(0, |p| p.load(Relaxed)), Relaxed);
                     seen = seen.observe(progress.load(Relaxed), now);
                     if seen.stalled(now, stall_budget) {
                         anyhow::bail!(
@@ -427,6 +436,17 @@ impl Cache {
                     self.shared.wait_for_read();
                 }
             }
+        }
+    }
+
+    /// Whether two polls of an id's in-flight claim found the same reader. The
+    /// claim *is* the handle, so identity is the handle's; `None` on both sides
+    /// is the same nobody.
+    fn same_holder(a: Option<&Progress>, b: Option<&Progress>) -> bool {
+        match (a, b) {
+            (None, None) => true,
+            (Some(x), Some(y)) => Arc::ptr_eq(x, y),
+            _ => false,
         }
     }
 

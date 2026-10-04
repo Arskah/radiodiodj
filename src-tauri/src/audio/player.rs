@@ -433,13 +433,37 @@ pub(super) fn read_file_watched(path: &Path, progress: &Progress) -> Result<Byte
         .unwrap_or(0);
     // Read into the destination, never through a staging chunk: a whole-file
     // copy per track load is a real cost, and the chunking is only here so the
-    // count gets published on the way.
-    let mut buf: Vec<u8> = vec![0u8; hint.max(READ_CHUNK)];
+    // count gets published on the way. Sized to the file exactly, so the common
+    // case ends with `len == capacity` and `into_boxed_slice` hands the bytes
+    // on without copying them either. `try_reserve_exact` rather than
+    // `vec![0; n]` because the length came off a network share: a bogus one has
+    // to fail this load, not abort the process out from under the show.
+    let mut buf: Vec<u8> = Vec::new();
+    let want = hint.max(READ_CHUNK);
+    buf.try_reserve_exact(want)
+        .with_context(|| format!("allocate {want} bytes to read {}", path.display()))?;
+    buf.resize(want, 0);
     let mut filled = 0usize;
     loop {
         if filled == buf.len() {
-            // The file grew past its metadata, or there was none.
-            buf.resize(filled + READ_CHUNK, 0);
+            // The length said the file ends here. One byte settles whether it
+            // does, where growing the buffer to ask would reallocate (and copy)
+            // the whole file only to find out it was right.
+            let mut probe = [0u8; 1];
+            match file.read(&mut probe) {
+                Ok(0) => break,
+                Ok(_) => {
+                    // It outgrew its own metadata, so now the buffer does have
+                    // to grow — with the byte already in hand going in first.
+                    buf.resize(filled + READ_CHUNK, 0);
+                    buf[filled] = probe[0];
+                    filled += 1;
+                    progress.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e).with_context(ctx),
+            }
+            continue;
         }
         let end = (filled + READ_CHUNK).min(buf.len());
         match file.read(&mut buf[filled..end]) {

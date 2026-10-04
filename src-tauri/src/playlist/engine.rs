@@ -62,11 +62,13 @@ pub enum Effect {
     /// look it up again afterwards. `None` means the service reads the track's
     /// radio edit out of the library.
     ///
-    /// `bound_dead_air` says whether this load is the playlist's own doing, and
-    /// so whether the deck may give up on it to keep air — see
-    /// `Cmd::Load::bound_dead_air`. A track the playlist queued can be
-    /// substituted by one that is already resident; a track an operator put on
-    /// air by hand cannot, because the substitution is not what they asked for.
+    /// `bound_dead_air` says whether the deck may give up on this load to keep
+    /// air — see `Cmd::Load::bound_dead_air`. Two things have to hold: the
+    /// playlist chose the track (a track an operator named is not substituted
+    /// for another, because the substitution is not what they asked for), and
+    /// the playlist is advancing itself, since with auto-advance off
+    /// [`Playlist::on_load_failed`] does nothing at all and giving up would
+    /// trade a slow track for permanent silence.
     Play {
         id: i64,
         cue_override: Option<CuePoints>,
@@ -722,12 +724,12 @@ impl Playlist {
         &mut self,
         track: Track,
         cue_override: Option<CuePoints>,
-        bound_dead_air: bool,
+        playlist_issued: bool,
         r: &dyn Refiller,
     ) -> Transition {
         let aired = self.current.take();
         self.push_history(aired);
-        self.set_current(track, cue_override, bound_dead_air, r)
+        self.set_current(track, cue_override, playlist_issued, r)
     }
 
     /// Append what just left the deck to history, keeping it within the cap.
@@ -753,7 +755,7 @@ impl Playlist {
         &mut self,
         track: Track,
         cue_override: Option<CuePoints>,
-        bound_dead_air: bool,
+        playlist_issued: bool,
         r: &dyn Refiller,
     ) -> Transition {
         self.clear_retry();
@@ -772,7 +774,9 @@ impl Playlist {
             Effect::Play {
                 id,
                 cue_override,
-                bound_dead_air,
+                // Only the playlist's own loads, and only while it is the one
+                // advancing: see [`Effect::Play`].
+                bound_dead_air: playlist_issued && self.auto_advance,
             },
         ])
     }
@@ -897,9 +901,9 @@ impl Playlist {
                 id,
                 cue_override: self.current_override,
                 // The engine's own doing, and only ever reached with the track
-                // already resident — so the limit is moot here, and saying
-                // `true` keeps "the playlist issued it" the single rule.
-                bound_dead_air: true,
+                // already resident, so the limit is moot here — but it costs
+                // nothing to answer it by the same rule as everywhere else.
+                bound_dead_air: self.auto_advance,
             },
         ])
     }
@@ -2058,6 +2062,24 @@ mod tests {
         b.play_index(0, &NoRefill);
         b.play_index(0, &NoRefill);
         assert!(b.prev(&NoRefill).effects.contains(&play_by_hand(1)));
+    }
+
+    /// The other half of the bound's premise: that the playlist will *act* on
+    /// the failure. With auto-advance off `on_load_failed` returns without
+    /// doing anything, so giving up on a slow read would trade a late track for
+    /// silence nobody recovers from — worse than the bug #504 reported.
+    #[test]
+    fn a_hand_driven_show_bounds_nothing() {
+        let mut p = with(&[Some(1), Some(2)]);
+        p.set_auto_advance(false);
+        assert!(p
+            .play_index(0, &NoRefill)
+            .effects
+            .contains(&play_by_hand(1)));
+
+        // Back on, and the playlist's own loads are bounded again.
+        p.set_auto_advance(true);
+        assert!(p.play_index(0, &NoRefill).effects.contains(&play(2)));
     }
 
     #[test]

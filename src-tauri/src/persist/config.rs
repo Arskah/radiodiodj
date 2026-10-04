@@ -286,10 +286,11 @@ pub struct PlayerConfig {
     /// How long air may be silent waiting for a read before the load is given
     /// up on and the playlist skips to something resident. Far shorter than the
     /// watchdog, because it is measured against dead air rather than against a
-    /// dying mount. It applies only to a load the playlist issued, on a deck
-    /// that is on air with nothing audible: giving up on a queued track is a
-    /// recovery, while giving up on one an operator put on air by hand would
-    /// just be a different track (#504).
+    /// dying mount. It applies only to a load the playlist issued *and* will
+    /// act on the failure of, on a deck that is on air with nothing audible:
+    /// giving up is a recovery only if something else goes on instead, which
+    /// rules out a track an operator put on air by hand and anything at all
+    /// with auto-advance off (#504).
     #[serde(default = "default_dead_air_limit_ms")]
     pub dead_air_limit_ms: u64,
     #[serde(default = "default_open_retry_interval_ms")]

@@ -420,9 +420,9 @@
     <div class="hint">
       How long air may be silent waiting for a track the playlist started before
       it skips to one already in RAM. The slow read finishes in the background,
-      so the skipped track is instant to play afterwards. A track you put on air
-      yourself is never skipped for you, and neither is one loading ahead of a
-      handover or in the cue deck.
+      so the skipped track is instant to play afterwards. Nothing is skipped for
+      you with auto-advance off, or when you put the track on air yourself;
+      neither is a track loading ahead of a handover or one in the cue deck.
     </div>
   </div>
   <div class="device-row">

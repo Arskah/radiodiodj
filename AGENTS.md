@@ -41,8 +41,9 @@ read publishes a byte count the worker loop notes each tick, so only a count
 that stops moving is a wedged mount), while a 3 s **dead-air limit** asks
 whether the playlist should put something else on instead, which is only a
 question for a silent on-air deck. So the one that fires is the watchdog on an
-arm preload, a parked restore, a cue audition or a track an operator put on air
-by hand, and the dead-air limit on a load the playlist issued — never both.
+arm preload, a parked restore, a cue audition, a track an operator put on air by
+hand or anything at all with auto-advance off, and the dead-air limit on a load
+the playlist issued and will act on the failure of — never both.
 Exempting the operator is exempting them from the 3 s, not from the 10 s: their
 track survives a slow share, a dead one still reports. The abandoned read runs
 on either way, so its bytes still reach the cache and a skipped track costs its
