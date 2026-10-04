@@ -183,6 +183,7 @@
          the app icon) when the track has no embedded artwork. -->
     <div
       class="vinyl-disc"
+      class:spin={app.spinVinyl}
       class:spinning={app.isPlaying && app.spinVinyl}
       aria-hidden="true"
     >

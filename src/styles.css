@@ -917,9 +917,15 @@ body {
 
 /* Spin the center label while the deck plays. The grooves are radially
    symmetric, so rotating the whole disc would show no motion — only the label
-   art carries the visible spin. */
+   art carries the visible spin. The animation is attached for as long as the
+   vinyl is set to spin (`.spin`) and only paused while the deck is not playing:
+   removing it would snap the art back to upright. */
+.vinyl-disc.spin .vinyl-art {
+  animation: vinyl-spin 4s linear infinite paused;
+}
+
 .vinyl-disc.spinning .vinyl-art {
-  animation: vinyl-spin 4s linear infinite;
+  animation-play-state: running;
 }
 
 @keyframes vinyl-spin {
@@ -929,7 +935,7 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .vinyl-disc.spinning .vinyl-art {
+  .vinyl-disc.spin .vinyl-art {
     animation: none;
   }
 }

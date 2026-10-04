@@ -548,10 +548,13 @@ the worst failure mode for a drop-in-a-folder feature; listed and disabled with
 the reason turns it into a fixable message.
 
 **_Spin the vinyl_ is neither palette nor identity; it lives here because it is
-how the decks look.** `spinVinyl` gates the `.spinning` class on both the main
-and the cue deck, so off leaves the art with no transform at all — still and
-upright, not frozen mid-turn. It is on by default, and `prefers-reduced-motion`
-still stops the spin whatever the setting says. The word is _spin_ because
+how the decks look.** `spinVinyl` gates the `.spin` class on both the main
+and the cue deck, which is what attaches the animation, so off leaves the art
+with no transform at all — still and upright, not frozen mid-turn. While it is
+on, a deck that stops only pauses the animation (`.spinning` is the play
+state), so the art holds the angle it stopped at and turns on from there, like a
+platter. It is on by default, and `prefers-reduced-motion` still stops the spin
+whatever the setting says. The word is _spin_ because
 "rotation" is a **Rotation rule** and nothing else — see
 [CONTEXT.md](../CONTEXT.md).
 
