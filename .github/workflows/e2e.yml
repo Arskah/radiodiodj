@@ -74,6 +74,40 @@ jobs:
           cp build-artifact/radiodiodj src-tauri/target/release/radiodiodj
           chmod +x src-tauri/target/release/radiodiodj
 
+      # TEMP: localise the 30 s session start. Remove before merge.
+      - name: Diagnose session start
+        continue-on-error: true
+        env:
+          E2E_BINARY: release
+          RUST_LOG: debug
+          E2E_WORKERS: "1"
+        run: |
+          WebKitWebDriver --version || true
+          echo "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unset} XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-unset}"
+          command -v dbus-run-session dbus-launch || true
+          run_variant() {
+            name="$1"; shift
+            echo "::group::variant $name"
+            rm -rf /tmp/radiodiodj-e2e-xdg-*
+            ( sleep 15; echo "--- ps at +15s"; ps -eo pid,ppid,etimes,stat,args --forest | grep -iE "radiodiodj|WebKit|tauri-driver|dbus|at-spi|portal" | grep -v grep | cut -c1-200 ) &
+            start=$(date +%s)
+            "$@" pnpm e2e --spec e2e/specs/smoke.spec.ts > /tmp/diag.out 2>&1 || tail -30 /tmp/diag.out
+            echo "variant $name took $(( $(date +%s) - start ))s"
+            wait
+            echo "--- wdio"
+            grep -hE "POST\] .*/session$|getWindowHandle\(\)|DELETE\]|Run worker|ERROR" e2e-results/*.log | cut -c1-200 || true
+            echo "--- app log"
+            for f in /tmp/radiodiodj-e2e-xdg-*/com.radiodiodj/logs/*.log; do echo "## $f"; head -12 "$f" | cut -c1-220; done || true
+            echo "--- driver log"
+            tail -20 e2e-results/tauri-driver-*.log | cut -c1-220 || true
+            echo "::endgroup::"
+          }
+          run_variant baseline xvfb-run -a
+          run_variant classic env E2E_CLASSIC=1 xvfb-run -a
+          run_variant no-a11y env GTK_A11Y=none NO_AT_BRIDGE=1 xvfb-run -a
+          run_variant dbus-session dbus-run-session -- xvfb-run -a
+          run_variant no-compositing env WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 xvfb-run -a
+
       - name: Run e2e
         env:
           E2E_BINARY: release
@@ -82,7 +116,7 @@ jobs:
         run: xvfb-run -a pnpm e2e
 
       - name: Upload failure artifacts
-        if: failure()
+        if: always() # TEMP: was failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-results
