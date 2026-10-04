@@ -20,6 +20,8 @@
 
   function onDragStart(e: DragEvent, i: number): void {
     dragFromIndex = i;
+    // A library row removed mid-drag never fires the `dragend` that clears it.
+    app.draggedTrack = null;
     if (e.dataTransfer) {
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", String(i));
@@ -31,11 +33,6 @@
     dropTarget = -1;
   }
 
-  function rowDropTarget(e: DragEvent, i: number): number {
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    return gapAt(e.clientY, rect, i);
-  }
-
   /** A row of this list or of the library is in the air. */
   const dragging = $derived(dragFromIndex !== -1 || app.draggedTrack !== null);
 
@@ -44,45 +41,43 @@
     if (!dragging) dropTarget = -1;
   });
 
-  function dropEffect(): "move" | "copy" {
-    return app.draggedTrack ? "copy" : "move";
+  // The same hazard the other way round: a queued row that aired mid-drag.
+  $effect(() => {
+    if (app.draggedTrack) dragFromIndex = -1;
+  });
+
+  /**
+   * Resolved on the list, never on a row: the padding around the rows and the
+   * space between them belong to the list, and a drop there is still a drop
+   * at a position.
+   */
+  function gapUnder(e: DragEvent): number {
+    const list = e.currentTarget as HTMLElement;
+    const rows = Array.from(list.querySelectorAll(".playlist-row"), (row) =>
+      row.getBoundingClientRect(),
+    );
+    return gapAt(e.clientY, rows);
   }
 
-  function onRowDragOver(e: DragEvent, i: number): void {
+  function onDragOver(e: DragEvent): void {
     if (!dragging) return;
     e.preventDefault();
-    // The list would read a row's event as the empty space under the rows.
-    e.stopPropagation();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = dropEffect();
-    dropTarget = rowDropTarget(e, i);
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = app.draggedTrack ? "copy" : "move";
+    }
+    dropTarget = gapUnder(e);
   }
 
-  function onRowDrop(e: DragEvent, i: number): void {
-    e.preventDefault();
-    e.stopPropagation();
-    drop(rowDropTarget(e, i));
-  }
-
-  function onListDragOver(e: DragEvent): void {
-    if (!dragging) return;
-    e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = dropEffect();
-    dropTarget = app.playlist.length;
-  }
-
-  function onListDragLeave(e: DragEvent): void {
+  function onDragLeave(e: DragEvent): void {
     const list = e.currentTarget as HTMLElement;
     if (!(e.relatedTarget instanceof Node) || !list.contains(e.relatedTarget)) {
       dropTarget = -1;
     }
   }
 
-  function onListDrop(e: DragEvent): void {
+  function onDrop(e: DragEvent): void {
     e.preventDefault();
-    drop(app.playlist.length);
-  }
-
-  function drop(target: number): void {
+    const target = gapUnder(e);
     const from = dragFromIndex;
     const track = app.draggedTrack;
     dropTarget = -1;
@@ -174,9 +169,9 @@
       class:drop-into={dragging &&
         dropTarget === 0 &&
         app.playlist.length === 0}
-      ondragover={onListDragOver}
-      ondragleave={onListDragLeave}
-      ondrop={onListDrop}
+      ondragover={onDragOver}
+      ondragleave={onDragLeave}
+      ondrop={onDrop}
       role="list"
     >
       {#if app.playlist.length === 0}
@@ -205,8 +200,6 @@
               ondblclick={() => app.playIndex(i)}
               ondragstart={(e) => onDragStart(e, i)}
               ondragend={onDragEnd}
-              ondragover={(e) => onRowDragOver(e, i)}
-              ondrop={(e) => onRowDrop(e, i)}
               role="listitem"
             >
               <span class="pl-drag"
@@ -246,8 +239,6 @@
               ondblclick={() => app.playIndex(i)}
               ondragstart={(e) => onDragStart(e, i)}
               ondragend={onDragEnd}
-              ondragover={(e) => onRowDragOver(e, i)}
-              ondrop={(e) => onRowDrop(e, i)}
               role="listitem"
             >
               <div

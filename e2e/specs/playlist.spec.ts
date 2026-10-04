@@ -146,9 +146,11 @@ describe("playlist", () => {
       index,
       at,
     });
-    const list: Hop = { selector: sel.playlist };
+    // The list's own padding, above the first row and under the last.
+    const listTop: Hop = { selector: sel.playlist, at: 0 };
+    const listEnd: Hop = { selector: sel.playlist, at: 0.99 };
 
-    await drag(libraryRow(0), [list]);
+    await drag(libraryRow(0), [listEnd]);
     await waitForQueue([a], "drop into an empty playlist");
 
     await drag(libraryRow(1), [queuedRow(0, 0.25)]);
@@ -158,10 +160,13 @@ describe("playlist", () => {
     await waitForQueue([b, c, a], "drop on the lower half of a row");
 
     // Passing over a row on the way must not leave the drop pointing at it.
-    await drag(libraryRow(0), [queuedRow(0, 0.25), list]);
+    await drag(libraryRow(0), [queuedRow(0, 0.25), listEnd]);
     await waitForQueue([b, c, a, a], "drop under the last row");
 
+    await drag(libraryRow(2), [listTop]);
+    await waitForQueue([c, b, c, a, a], "drop above the first row");
+
     await drag(queuedRow(0, 0.5), [queuedRow(1, 0.75)]);
-    await waitForQueue([c, b, a, a], "reorder by dragging a queued row");
+    await waitForQueue([b, c, c, a, a], "reorder by dragging a queued row");
   });
 });

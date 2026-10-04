@@ -1,17 +1,40 @@
 import { describe, expect, it } from "vitest";
 import { gapAt, moveTarget } from "./playlistDrop";
 
-const row = { top: 100, height: 40 };
+// Three 40px rows, 4px apart, the first starting at 100.
+const rows = [
+  { top: 100, height: 40 },
+  { top: 144, height: 40 },
+  { top: 188, height: 40 },
+];
 
 describe("gapAt", () => {
   it("the upper half of a row points at the gap above it", () => {
-    expect(gapAt(100, row, 3)).toBe(3);
-    expect(gapAt(119, row, 3)).toBe(3);
+    expect(gapAt(100, rows)).toBe(0);
+    expect(gapAt(163, rows)).toBe(1);
   });
 
   it("the lower half points at the gap below it", () => {
-    expect(gapAt(120, row, 3)).toBe(4);
-    expect(gapAt(139, row, 3)).toBe(4);
+    expect(gapAt(120, rows)).toBe(1);
+    expect(gapAt(183, rows)).toBe(2);
+  });
+
+  it("the padding above the first row is the head", () => {
+    expect(gapAt(92, rows)).toBe(0);
+  });
+
+  it("the space between two rows is the gap between them", () => {
+    expect(gapAt(141, rows)).toBe(1);
+    expect(gapAt(186, rows)).toBe(2);
+  });
+
+  it("anything under the middle of the last row is the end", () => {
+    expect(gapAt(208, rows)).toBe(3);
+    expect(gapAt(900, rows)).toBe(3);
+  });
+
+  it("an empty list has one gap", () => {
+    expect(gapAt(50, [])).toBe(0);
   });
 });
 
