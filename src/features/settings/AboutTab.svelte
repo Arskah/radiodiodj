@@ -181,5 +181,8 @@
     <button class="about-link" onclick={() => open("licence")}
       >Licence · GPL-3.0-or-later</button
     >
+    <button class="about-link" onclick={() => open("notices")}
+      >Third-party notices</button
+    >
   </nav>
 </div>

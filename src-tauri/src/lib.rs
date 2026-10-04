@@ -1254,6 +1254,7 @@ enum Link {
     Changelog,
     Source,
     Licence,
+    Notices,
 }
 
 impl Link {
@@ -1263,6 +1264,9 @@ impl Link {
             Self::Changelog => "https://github.com/Arskah/radiodiodj/blob/main/CHANGELOG.md",
             Self::Source => "https://github.com/Arskah/radiodiodj",
             Self::Licence => "https://github.com/Arskah/radiodiodj/blob/main/LICENSE",
+            Self::Notices => {
+                "https://github.com/Arskah/radiodiodj/blob/main/THIRD-PARTY-NOTICES.md"
+            }
         }
     }
 }
