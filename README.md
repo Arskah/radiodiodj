@@ -4,6 +4,8 @@ Desktop playout software for radio stations. Keep music, commercials and
 jingles in separate libraries, cue them like a real rig, and let the station run
 itself — or drive every transition by hand.
 
+**[radiodiodj.org](https://radiodiodj.org)** — downloads for macOS, Windows and Linux.
+
 Built with Tauri 2 and Svelte 5, with an in-process Rust audio engine. No
 browser audio pipeline, no external transcoder, no subscription.
 

@@ -25,6 +25,9 @@ jobs:
   rust:
     uses: ./.github/workflows/rust.yml
 
+  site:
+    uses: ./.github/workflows/site.yml
+
   build:
     uses: ./.github/workflows/build.yml
     with:

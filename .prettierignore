@@ -3,3 +3,5 @@ CHANGELOG.md
 .husky/
 .nvmrc
 pnpm-lock.yaml
+site/.astro/
+site/dist/

@@ -1,0 +1,71 @@
+---
+import { latestRelease, RELEASES_URL } from "../lib/release";
+
+const release = await latestRelease();
+---
+
+<section id="download" class="section">
+  <p class="eyebrow">Download</p>
+  {
+    release ? (
+      <>
+        <h2>RadiodioDJ {release.version}</h2>
+        <div class="platforms">
+          {release.platforms.map((platform) => (
+            <div class="platform" data-platform={platform.id}>
+              <h3>{platform.name}</h3>
+              <ul>
+                {platform.downloads.map((download) => (
+                  <li>
+                    <a class="button" href={download.href}>
+                      {download.label}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+              <p class="note">{platform.note}</p>
+            </div>
+          ))}
+        </div>
+        <p class="note">
+          <a href={RELEASES_URL}>Release notes and all files</a>
+          {release.signingKey && (
+            <>
+              {" · "}
+              <a href={release.signingKey}>GPG signing key</a>
+            </>
+          )}
+        </p>
+      </>
+    ) : (
+      <>
+        <h2>Get RadiodioDJ</h2>
+        <p>
+          <a class="button primary" href={RELEASES_URL}>
+            Latest release on GitHub
+          </a>
+        </p>
+      </>
+    )
+  }
+</section>
+
+<script is:inline>
+  // Puts the visitor's own platform first. Architecture is not detectable
+  // reliably, so both macOS builds stay listed.
+  (() => {
+    const hint = (
+      navigator.userAgentData?.platform ?? navigator.platform
+    ).toLowerCase();
+    const os = hint.startsWith("mac")
+      ? "macos"
+      : hint.startsWith("win")
+        ? "windows"
+        : hint.includes("linux")
+          ? "linux"
+          : undefined;
+    document
+      .querySelector(`.platform[data-platform="${os}"]`)
+      ?.classList.add("current");
+  })();
+</script>

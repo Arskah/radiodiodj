@@ -1,0 +1,85 @@
+---
+import disc from "../../../src/assets/radiodiodi_disc.svg?url";
+import label from "../../../src/assets/radiodiodi_label.svg?url";
+import Downloads from "../components/Downloads.astro";
+import Screenshots from "../components/Screenshots.astro";
+import { featureGroups } from "../data/features";
+import Layout from "../layouts/Layout.astro";
+
+const REPO_URL = "https://github.com/Arskah/radiodiodj";
+---
+
+<Layout
+  title="RadiodioDJ — playout software for radio stations"
+  description="Desktop playout software for radio stations. Separate libraries for music, commercials and jingles, real cue points, and a station that runs itself or follows your hand."
+>
+  <header class="hero">
+    <div class="hero-copy">
+      <p class="eyebrow">RadiodioDJ</p>
+      <h1>Playout software for radio stations.</h1>
+      <p class="lede">
+        Keep music, commercials and jingles in separate libraries, cue them
+        like a real rig, and let the station run itself — or drive every
+        transition by hand.
+      </p>
+      <p class="actions">
+        <a class="button primary" href="#download">Download</a>
+        <a class="button" href={REPO_URL}>Source on GitHub</a>
+      </p>
+      <p class="note">
+        Free and open source (GPL-3.0). macOS, Windows and Linux. No
+        subscription.
+      </p>
+    </div>
+    <div class="vinyl" aria-hidden="true">
+      <img class="disc" src={disc} alt="" width="1024" height="1024" />
+      <img class="label" src={label} alt="" width="512" height="512" />
+    </div>
+  </header>
+
+  <main>
+    <Screenshots />
+
+    <section class="section">
+      <p class="eyebrow">Features</p>
+      <h2>Built for a station, not a party.</h2>
+      {
+        featureGroups.map((group) => (
+          <div class="group">
+            <h3>{group.title}</h3>
+            <ul class="features">
+              {group.features.map((feature) => (
+                <li>
+                  <h4>{feature.title}</h4>
+                  <p>{feature.body}</p>
+                  {feature.doc && (
+                    <a
+                      href={feature.doc}
+                      aria-label={`How ${feature.title} works`}
+                    >
+                      How it works
+                    </a>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))
+      }
+    </section>
+
+    <Downloads />
+  </main>
+
+  <footer class="footer">
+    <p>
+      <a href={REPO_URL}>GitHub</a>
+      <a href={`${REPO_URL}/tree/main/docs`}>Design docs</a>
+      <a href={`${REPO_URL}/issues`}>Issues</a>
+      <a href={`${REPO_URL}/blob/main/CHANGELOG.md`}>Changelog</a>
+    </p>
+    <p class="note">
+      Built with Tauri 2 and Svelte 5, with an in-process Rust audio engine.
+    </p>
+  </footer>
+</Layout>
