@@ -192,6 +192,14 @@ wholesale by every search and a metadata write — which goes through
   while admin mode is locked. See [admin-mode.md](./admin-mode.md).
 - **Colours live only in `:root`.** A themeable UI has no hardcoded colour
   literals; see [theming.md](./theming.md#the-token-contract).
+- **The webview runs under a content security policy** (`app.security.csp` in
+  `tauri.conf.json`): bundled scripts and styles only, images and fonts from the
+  bundle or a `data:` URL, and no connection but Tauri's IPC. It does not allow
+  inline styles, so a dynamic style is a `style:` directive, which Svelte sets
+  through the CSSOM, never a `style="…"` attribute. Anything the renderer needs
+  from the network or the disk goes through a command. A violation is logged as
+  `content security policy blocked …`, and only a built app enforces the policy
+  — `pnpm dev` is served by Vite and never sees it.
 
 ## Build shape
 
