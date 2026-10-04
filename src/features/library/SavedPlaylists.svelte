@@ -48,10 +48,19 @@
   const duration = (entry: SavedEntry): number =>
     entry.track ? airDuration(entry.track) : entry.duration;
 
-  // ----- Reordering, admin only -----
+  const album = (entry: SavedEntry): string => entry.track?.album ?? "";
+
+  // ----- Dragging -----
+  //
+  // An entry drags the way a library row does: a bound one can be dropped at a
+  // position in the playlist. For an admin the same drag reorders the saved
+  // playlist when it is dropped back on it.
 
   let dragFrom = $state(-1);
   let dropTarget = $state(-1);
+
+  const draggable = (entry: SavedEntry): boolean =>
+    entry.track !== null || app.isAdmin;
 
   function gapUnder(e: DragEvent): number {
     const list = e.currentTarget as HTMLElement;
@@ -61,19 +70,29 @@
     return gapAt(e.clientY, rows);
   }
 
-  function onDragStart(e: DragEvent, i: number): void {
-    dragFrom = i;
-    // A library row removed mid-drag never fires the `dragend` that clears it.
-    app.draggedTrackIds = null;
+  function onDragStart(e: DragEvent, entry: SavedEntry, i: number): void {
+    dragFrom = app.isAdmin ? i : -1;
+    app.draggedTrackIds = entry.track ? [entry.track.id] : null;
     if (e.dataTransfer) {
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", String(i));
+      e.dataTransfer.effectAllowed = "copyMove";
+      e.dataTransfer.setData(
+        "text/plain",
+        `${artist(entry)} – ${title(entry)}`,
+      );
     }
   }
 
   function onDragEnd(): void {
     dragFrom = -1;
     dropTarget = -1;
+    app.draggedTrackIds = null;
+  }
+
+  function onDragLeave(e: DragEvent): void {
+    const list = e.currentTarget as HTMLElement;
+    if (!(e.relatedTarget instanceof Node) || !list.contains(e.relatedTarget)) {
+      dropTarget = -1;
+    }
   }
 
   function onDragOver(e: DragEvent): void {
@@ -141,7 +160,22 @@
       </button>
     {/if}
   </div>
-  <div id="saved-entries" ondragover={onDragOver} ondrop={onDrop} role="list">
+  <div class="saved-headers">
+    <span class="track-header track-no">#</span>
+    <span class="track-header track-title">Title</span>
+    <span class="track-header track-artist">Artist</span>
+    <span class="track-header track-album">Album</span>
+    <span class="track-header track-duration">Time</span>
+    <span class="saved-action-space"></span>
+    {#if app.isAdmin}<span class="saved-action-space"></span>{/if}
+  </div>
+  <div
+    id="saved-entries"
+    ondragover={onDragOver}
+    ondragleave={onDragLeave}
+    ondrop={onDrop}
+    role="list"
+  >
     {#if open.entries.length === 0}
       <div class="empty">
         <span class="empty-icon"
@@ -155,32 +189,35 @@
     {:else}
       {#each open.entries as entry, i (entry.id)}
         <div
-          class="saved-entry"
+          class="track-row saved-entry"
           class:unmatched={entry.track === null}
           class:dragging={i === dragFrom}
           class:drop-before={dragFrom !== -1 && dropTarget === i}
           class:drop-after={dragFrom !== -1 &&
             dropTarget === i + 1 &&
             i === open.entries.length - 1}
-          draggable={app.isAdmin}
-          ondragstart={(e) => onDragStart(e, i)}
+          draggable={draggable(entry)}
+          ondragstart={(e) => onDragStart(e, entry, i)}
           ondragend={onDragEnd}
           role="listitem"
           data-entry-id={entry.id}
         >
-          <span class="saved-entry-no">{i + 1}</span>
-          <span class="saved-entry-title">{title(entry)}</span>
-          <span class="saved-entry-artist">{artist(entry)}</span>
-          {#if entry.track}
-            <MissingBadge trackId={entry.track.id} />
-          {:else}
-            <span
-              class="missing-badge"
-              title="No track in this library matches this entry"
-              aria-label="Unmatched entry"
-              ><span class="material-symbols-outlined">link_off</span></span
-            >
-          {/if}
+          <span class="track-no">{i + 1}</span>
+          <span class="track-title saved-entry-title">
+            {#if entry.track}
+              <MissingBadge trackId={entry.track.id} />
+            {:else}
+              <span
+                class="missing-badge"
+                title="No track in this library matches this entry"
+                aria-label="Unmatched entry"
+                ><span class="material-symbols-outlined">link_off</span></span
+              >
+            {/if}
+            {title(entry)}
+          </span>
+          <span class="track-artist">{artist(entry)}</span>
+          <span class="track-album">{album(entry)}</span>
           <span class="track-duration">{formatTime(duration(entry))}</span>
           {#if entry.track}
             {@const track = entry.track}
@@ -192,6 +229,8 @@
             >
               <span class="material-symbols-outlined">add</span>
             </button>
+          {:else}
+            <span class="saved-action-space"></span>
           {/if}
           {#if app.isAdmin}
             <button
@@ -223,7 +262,7 @@
     {:else}
       {#each shown as saved (saved.id)}
         <div
-          class="saved-row"
+          class="track-row saved-row"
           onclick={() => void app.openSavedPlaylist(saved.id)}
           onkeydown={(e) => onRowKeyDown(saved, e)}
           role="button"
@@ -231,11 +270,12 @@
           aria-label={`Saved playlist: ${saved.name}`}
           data-saved-id={saved.id}
         >
-          <span
-            class="material-symbols-outlined saved-row-icon"
-            aria-hidden="true">queue_music</span
+          <span class="track-no" aria-hidden="true"
+            ><span class="material-symbols-outlined saved-row-icon"
+              >queue_music</span
+            ></span
           >
-          <span class="saved-row-name">{saved.name}</span>
+          <span class="track-title saved-row-name">{saved.name}</span>
           <span class="saved-row-size" class:has-missing={saved.missing > 0}
             >{sizeLabel(saved.entries, saved.missing)}</span
           >
@@ -294,58 +334,19 @@
     padding: var(--sp-xs) 0;
   }
 
-  .saved-row,
-  .saved-entry {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-md);
-    padding: 7px var(--sp-md);
-    font-size: 13px;
-    cursor: default;
-    user-select: none;
-  }
-
-  .saved-row:nth-child(even),
-  .saved-entry:nth-child(even) {
-    background: color-mix(
-      in srgb,
-      var(--surface-container-lowest) 30%,
-      transparent
-    );
-  }
-
-  .saved-row:hover,
-  .saved-entry:hover {
-    background: color-mix(in srgb, var(--surface-variant) 25%, transparent);
+  /* Rows are the library's `.track-row`, so a saved playlist reads as the same
+     list. What is here is only what a saved playlist adds to one. */
+  .saved-row {
+    cursor: pointer;
   }
 
   .saved-row-icon {
-    font-size: 18px;
-    color: var(--outline);
-  }
-
-  .saved-row-name,
-  .saved-entry-title {
-    flex: 2;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--on-surface);
-  }
-
-  .saved-entry-artist {
-    flex: 1.5;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--on-surface-variant);
+    font-size: 16px;
+    vertical-align: middle;
   }
 
   .saved-row-size,
-  #saved-open-size,
-  .saved-entry-no {
+  #saved-open-size {
     color: var(--on-surface-variant);
     font-family: var(--font-mono);
     font-size: 11px;
@@ -357,15 +358,23 @@
     color: var(--error);
   }
 
-  .saved-entry-no {
-    width: 24px;
-    text-align: right;
+  .saved-entry-title :global(.missing-badge) {
+    vertical-align: middle;
+    margin-right: 2px;
   }
 
-  .saved-entry.unmatched .saved-entry-title,
-  .saved-entry.unmatched .saved-entry-artist {
+  .saved-entry.unmatched .track-title,
+  .saved-entry.unmatched .track-artist {
     color: var(--outline);
     font-style: italic;
+    font-weight: 400;
+  }
+
+  /* Holds a row button's place, so columns line up down the list whether or
+     not a row has that button. */
+  .saved-action-space {
+    width: 26px;
+    flex-shrink: 0;
   }
 
   .saved-entry.dragging {
