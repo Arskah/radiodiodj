@@ -380,7 +380,10 @@ runs `cargo doc` next to clippy because the rustdoc group only fires there.
   `package.json`, `src-tauri/tauri.conf.json` (jsonpath `$.version`),
   `src-tauri/Cargo.toml` (jsonpath `$.package.version`) and
   `src-tauri/Cargo.lock` (jsonpath on the `radiodiodj` package entry). Keep all
-  four in sync.
+  four in sync. Its JSON updater re-serialises the whole of
+  `tauri.conf.json`, so that file is in `.prettierignore` and kept in
+  `JSON.stringify(…, null, 2)` layout — a short array on one line would be
+  expanded in every release PR and fail the format check there.
 - `tauri-plugin-log` is initialized first in the builder chain so panics before
   later plugin setup still reach the file sink. Renderer `console.*` is
   intercepted by `attachConsole()` in `main.ts`; vitest must not import
