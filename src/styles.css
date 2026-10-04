@@ -1404,6 +1404,35 @@ body {
 .track-header-spacer {
   width: 110px;
   flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Sits over the rows' add buttons, and is sized like one. */
+#btn-select-all {
+  width: 26px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: var(--r-lg);
+  color: var(--outline);
+  cursor: pointer;
+}
+
+#btn-select-all .material-symbols-outlined {
+  font-size: 18px;
+}
+
+#btn-select-all:hover:not(:disabled) {
+  color: var(--primary);
+}
+
+#btn-select-all:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* No cue device: the headphones button is absent, so the strip is two buttons. */

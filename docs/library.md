@@ -364,12 +364,15 @@ action on a **selection**.
   other row keeps its number. There is no column for it.
 - **Shift-click** picks every row from the last one picked to this one.
 - **Space** picks the focused row, **Shift+Space** a range, **Escape** clears.
-- **Ctrl+A** (**Cmd+A** on macOS) picks every row in the list, and drops them
-  again once every one is picked. It needs nothing picked first, which the bar's
-  _Select all_ does: the bar is only there while something is. It means the
-  library wherever focus is, with two exceptions: in a text field, the search
-  box included, the same keys select the text, and nothing happens while
-  Settings or a dialog is open. Escape follows the same rule.
+- **Select all**, the button at the right of the column headers, picks every
+  row in the list, and drops them again once every one is picked. It is always
+  there, so it needs nothing picked first.
+- **Ctrl+A** (**Cmd+A** on macOS) does the same. It means the library wherever
+  focus is, with two exceptions: in a text field, the search box included, the
+  same keys select the text, and nothing happens while Settings or a dialog is
+  open. Escape follows the same rule.
+- **Enter** in the search box moves focus to the first result, so search,
+  Enter, Ctrl/Cmd+A picks an album without the pointer.
 
 A selection is **ordered by pick**: tracks are queued in the order they were
 selected, and the checkbox shows each row's place in that order. A range, and
@@ -386,14 +389,14 @@ The **selection bar** floats over the bottom of the list while anything is
 picked. It never takes space in the flow: a bar that pushed the rows down would
 move them under the second click of a double-click.
 
-| action              | how                                                              |
-| ------------------- | ---------------------------------------------------------------- |
-| add to the playlist | _Add N to playlist_ on the bar, or in a picked row's menu        |
-| add as next         | _Add N as next_: the block goes to the head, first pick first    |
-| add at a position   | drag any picked row; the whole selection lands where dropped     |
-| pick every row      | Ctrl/Cmd+A, or _Select all (N)_ on the bar                       |
-| drop the rows shown | either again once all are picked; the bar reads _Deselect shown_ |
-| drop everything     | _Clear_, or Escape                                               |
+| action              | how                                                            |
+| ------------------- | -------------------------------------------------------------- |
+| add to the playlist | _Add N to playlist_ on the bar, or in a picked row's menu      |
+| add as next         | _Add N as next_: the block goes to the head, first pick first  |
+| add at a position   | drag any picked row; the whole selection lands where dropped   |
+| pick every row      | Ctrl/Cmd+A, or _Select all_ at the right of the column headers |
+| drop the rows shown | either again once all are picked                               |
+| drop everything     | _Clear_, or Escape                                             |
 
 An action that succeeds **clears the selection**; a drag dropped nowhere keeps
 it. Kept, the next add would queue the same tracks again, some of them out of

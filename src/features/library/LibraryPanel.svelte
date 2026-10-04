@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { app, formatTime, type Track } from "../../shared/state.svelte";
   import type { ContentType, SortColumn } from "../../shared/types";
   import { airDuration, isTrimmed } from "../../shared/cuePoints";
@@ -37,6 +38,24 @@
   function onSearchInput(): void {
     clearTimeout(searchTimeout);
     searchTimeout = window.setTimeout(() => app.search(), 250);
+  }
+
+  /**
+   * Enter leaves the search box for the first result, so the list can be
+   * worked from the keyboard. The pending search is run first: the rows on
+   * screen may still answer the query as it stood a keystroke ago.
+   */
+  async function focusResults(): Promise<void> {
+    clearTimeout(searchTimeout);
+    await app.search();
+    await tick();
+    document.querySelector<HTMLElement>("#track-list .track-row")?.focus();
+  }
+
+  function onSearchKeyDown(e: KeyboardEvent): void {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    void focusResults();
   }
 
   function add(track: Track, e: MouseEvent): void {
@@ -79,6 +98,9 @@
   const selectedCount = $derived(app.selectedIds.length);
   const hidden = $derived(hiddenCount(app.selectedIds, listedIds));
   const allListed = $derived(allSelected(app.selectedIds, listedIds));
+  const selectAllLabel = $derived(
+    allListed ? "Deselect shown" : `Select all (${app.tracks.length})`,
+  );
   /** Each picked track's place in the order it will be queued in, from 1. */
   const ordinals = $derived(
     new Map(app.selectedIds.map((id, i) => [id, i + 1])),
@@ -274,6 +296,7 @@
         aria-label="Search tracks"
         bind:value={app.searchQuery}
         oninput={onSearchInput}
+        onkeydown={onSearchKeyDown}
       />
     </div>
   </div>
@@ -307,7 +330,19 @@
       </button>
     {/each}
     <span class="track-header track-duration">Time</span>
-    <span class="track-header-spacer"></span>
+    <span class="track-header-spacer">
+      <button
+        id="btn-select-all"
+        title={selectAllLabel}
+        aria-label={selectAllLabel}
+        disabled={app.tracks.length === 0}
+        onclick={() => app.toggleSelectAll()}
+      >
+        <span class="material-symbols-outlined" aria-hidden="true"
+          >{allListed ? "deselect" : "select_all"}</span
+        >
+      </button>
+    </span>
   </div>
   <div id="track-list-wrap">
     <div id="track-list" class:selecting={selectedCount > 0}>
@@ -405,15 +440,6 @@
           id="btn-add-selection-next"
           onclick={() => app.addSelectionToPlaylist(true)}
           >Add {selectedCount} as next</button
-        >
-        <button
-          class="btn-selection"
-          id="btn-select-all"
-          disabled={app.tracks.length === 0}
-          onclick={() => app.toggleSelectAll()}
-          >{allListed
-            ? "Deselect shown"
-            : `Select all (${app.tracks.length})`}</button
         >
         <button
           class="btn-selection"
