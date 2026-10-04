@@ -91,7 +91,7 @@ Vite root, following the Tauri Svelte template convention.
   folder picker via `@tauri-apps/plugin-dialog`), `state.svelte.ts` (the Svelte 5
   `$state` store: deck transport through `DeckTransport`, playlist state mirrored
   from backend snapshots), `cuePoints.ts` / `cueEditor.ts`, `appearance.ts`,
-  `health.ts`, plus the colocated `state.test.ts`, `mockBackend.ts` and
+  `health.ts`, `selection.ts` (the library selection's rules), plus the colocated `state.test.ts`, `mockBackend.ts` and
   `mockPlaylist.ts`.
 - **`features/<feature>/`** — one folder per UI feature: `library/`, `playlist/`,
   `deck/` (NowPlaying, CueDeck, Waveform, and the `backend.ts` /

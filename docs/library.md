@@ -325,6 +325,7 @@ _Commercials_ or _Jingles_.
 - **Search** matches title, artist, album, album artist and genre. Each word is a prefix, so
   `beat abb` finds _Abbey Road_ by _The Beatles_. The search runs a quarter of a
   second after typing stops, and shows at most 200 tracks, best match first.
+  Enter runs it at once and moves focus to the first result.
   It does not match inside a word or forgive a typo — see
   [library-search.md](./library-search.md) for why, and the fuzzy matching
   planned to fix it.
@@ -348,6 +349,7 @@ On each row:
 
 | action                  | how                                                       |
 | ----------------------- | --------------------------------------------------------- |
+| pick it                 | click, or Space — see [below](#selecting-several)         |
 | add to the playlist     | double-click, or the `+` button                           |
 | add at a position       | drag the row onto the playlist; the line shows where      |
 | preview on the cue deck | the headphones button (only with a cue device configured) |
@@ -369,8 +371,8 @@ action on a **selection**.
   there, so it needs nothing picked first.
 - **Ctrl+A** (**Cmd+A** on macOS) does the same. It means the library wherever
   focus is, with two exceptions: in a text field, the search box included, the
-  same keys select the text, and nothing happens while Settings or a dialog is
-  open. Escape follows the same rule.
+  same keys select the text, and nothing happens while Settings, a dialog or a
+  row menu is open. Escape follows the same rule.
 - **Enter** in the search box moves focus to the first result, so search,
   Enter, Ctrl/Cmd+A picks an album without the pointer.
 
@@ -383,7 +385,8 @@ record runs.
 It **outlives the list**. Searching, sorting and changing tab leave it alone, so
 it can hold tracks that are not on screen and tracks of different content
 types. Those are counted, not listed: the bar reads `8 selected · 5 not shown`.
-The playlist is where the result is looked over.
+The playlist is where the result is looked over. It does not outlive the app: a
+restart starts with nothing picked.
 
 The **selection bar** floats over the bottom of the list while anything is
 picked. It never takes space in the flow: a bar that pushed the rows down would
@@ -410,7 +413,9 @@ _Play now_ is never offered for several, and clearing is the bar's, where the
 count of tracks not shown sits beside it.
 
 _Select all_ takes the rows in the list, which is at most 200. A large add is
-not confirmed — the button carries the number.
+not confirmed — the button carries the number. A picked track that has left the
+library by the time it is added is skipped and logged; one whose file has gone
+missing is queued with the missing badge, as a single add would queue it.
 
 Several tracks are queued by one command, `playlist_add_many`: one transition
 and one snapshot rather than one per track. See
