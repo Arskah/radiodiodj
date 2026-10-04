@@ -419,6 +419,10 @@ runs `cargo doc` next to clippy because the rustdoc group only fires there.
   `.github/actions/rust`, so bumping that one line moves every workflow.
   `rust-version` in `src-tauri/Cargo.toml` is a different number — the minimum
   a consumer needs, not the one we build with.
+- CI saves the Rust build caches only from `main` (`save-if` on every
+  `rust-cache` step), because a cache saved on a pull request is scoped to that
+  pull request. A pull request restores main's and saves nothing, so a new
+  cargo job needs a run on `main` before it is ever warm.
 - symphonia's `id3v2` feature is load-bearing, not metadata decoration: it is
   what registers the reader the probe uses to step over a leading ID3v2 tag.
   The probe searches about a megabyte for a format marker, so without it a

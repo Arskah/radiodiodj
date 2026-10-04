@@ -3,11 +3,16 @@ name: CI
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  # The run on main is the one that saves the Rust caches every pull request
+  # restores from.
+  push:
+    branches: [main]
   workflow_call:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # A cancelled run saves no cache, so a run on main is left to finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

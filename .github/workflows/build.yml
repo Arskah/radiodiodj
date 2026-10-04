@@ -64,19 +64,14 @@ jobs:
 
       - name: Install Linux deps
         if: startsWith(inputs.platform, 'ubuntu')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libasound2-dev
+        uses: ./.github/actions/linux-deps
 
+      # Saved from main only: a cache saved on a pull request is one no other
+      # pull request can read.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Linux AppImage GPG signing. No-op unless GPG_PRIVATE_KEY secret is set.
       - name: Import GPG signing key (Linux AppImage)
