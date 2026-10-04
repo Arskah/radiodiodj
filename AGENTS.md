@@ -383,6 +383,11 @@ runs `cargo doc` next to clippy because the rustdoc group only fires there.
 - pnpm `minimumReleaseAge` constraint blocks plugin versions younger than
   ~3 days; pin to a slightly older stable version when adding `tauri-plugin-*`
   deps.
+- The content security policy in `tauri.conf.json` is enforced in a built app
+  only, never under `pnpm dev`. It allows no inline style and no network, so a
+  `style="…"` attribute, a CDN font or a `fetch` works in dev and is blocked in
+  a release — use a `style:` directive, bundle the asset, or add a command. See
+  [docs/architecture.md](docs/architecture.md#conventions).
 - A new admin-only command must be added to `admin::ADMIN_COMMANDS`, or it runs
   while admin mode is locked. See [docs/admin-mode.md](docs/admin-mode.md).
 - Tauri command argument name `state` collides with the `State<AppState>`

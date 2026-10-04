@@ -1,6 +1,6 @@
 import { mount } from "svelte";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { attachConsole } from "@tauri-apps/plugin-log";
+import { attachConsole, error } from "@tauri-apps/plugin-log";
 import App from "./App.svelte";
 import { api } from "./shared/api";
 import { app } from "./shared/state.svelte";
@@ -17,6 +17,14 @@ import "material-symbols/outlined.css";
 import "./styles.css";
 
 void attachConsole();
+
+// A load the policy blocks fails without a trace on screen, and only in a
+// built app: `pnpm dev` is served by Vite, which the policy never reaches.
+document.addEventListener("securitypolicyviolation", (event) => {
+  void error(
+    `content security policy blocked ${event.effectiveDirective}: ${event.blockedURI}`,
+  );
+});
 
 // Paint the last known background before anything else, so a light theme does
 // not flash dark. A hint only — the real palette lands a moment later.

@@ -418,7 +418,7 @@ As a **base64 data URL over IPC**, exactly as `get_cover_art` →
 encode, `format!("data:{mime};base64,{encoded}")`.
 
 `asset://` is not available and is deliberately not being enabled:
-`tauri.conf.json` sets `"csp": null` and declares no `assetProtocol`, the `tauri`
+`tauri.conf.json` declares no `assetProtocol` and its policy allows no `asset:` source, the `tauri`
 dependency enables no features (so no `protocol-asset`), and
 `capabilities/default.json` grants `core:default`, `core:window:allow-destroy`,
 `dialog:default` and `log:default` and nothing else. The data URLs ride along
