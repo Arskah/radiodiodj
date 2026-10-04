@@ -8,6 +8,7 @@
   import { isStopMarker, type PlaylistItem } from "../../shared/types";
   import { airDuration, airedTrack, isTrimmed } from "../../shared/cuePoints";
   import MissingBadge from "../track/MissingBadge.svelte";
+  import { gapAt, moveTarget } from "./playlistDrop";
 
   let dragFromIndex = $state(-1);
   let dropTarget = $state(-1);
@@ -32,7 +33,7 @@
 
   function rowDropTarget(e: DragEvent, i: number): number {
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    return e.clientY < rect.top + rect.height / 2 ? i : i + 1;
+    return gapAt(e.clientY, rect, i);
   }
 
   /** A row of this list or of the library is in the air. */
@@ -92,9 +93,8 @@
       return;
     }
     if (from === -1) return;
-    const insertAt = target > from ? target - 1 : target;
-    if (insertAt === from) return;
-    app.movePlaylistItem(from, insertAt);
+    const to = moveTarget(from, target);
+    if (to !== null) app.movePlaylistItem(from, to);
   }
 
   const stopped = $derived(app.playlist.some(isStopMarker));
