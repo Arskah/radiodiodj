@@ -92,9 +92,12 @@ Two different states, one badge.
   `missing_since`. The file is gone; the track, its cue points and its play
   count are not. See [track-identity.md](./track-identity.md#missing-not-deleted).
 
-Both are shown with the missing badge, both are kept, and neither can be
-appended or picked. The second heals itself: a scan that reattaches the track
-clears `missing_since` and the entry is playable again with no work here.
+Both are shown with the missing badge and both are kept. Neither is ever picked
+by the auto-playlist. They part ways on an append: an unmatched entry has no
+track to queue and is skipped, while one bound to a missing track is queued with
+its badge, as any other add of a missing track is. The second also heals itself:
+a scan that reattaches the track clears `missing_since` and the entry is
+playable again with no work here.
 
 ### Binding
 
@@ -153,9 +156,10 @@ No track ids and no paths. An id belongs to one install's database, and a path
 to one machine's mount; the fingerprint is the only identity that travels.
 
 Import **never drops an entry and never overwrites a saved playlist**. What does
-not bind arrives unmatched and stays in its place in the order. A name already
-in use gets a suffix. Replacing an existing saved playlist is an edit, and a
-file dropped on the window by a guest must not be able to make one.
+not bind arrives unmatched and stays in its place in the order. Replacing an
+existing saved playlist is an edit, and a file dropped on the window by a guest
+must not be able to make one, so a name already in use is not a collision to
+resolve but a new list to name — see [Names](#names).
 
 A `version` this build does not know is refused whole, with the reason — the
 rule themes already follow.
@@ -182,32 +186,44 @@ affordable. M3U is not read: its identity is a path.
 Two actions on a saved playlist, because which one was pressed should be visible
 in what happened:
 
-- **Add to playlist** — every playable entry, in order, exactly as written.
-- **Add with jingles and commercials** — the same list with the station's
-  [interleave](./playlist.md#modes) woven through it: `interleave_evenly`, with
-  jingle and commercial counts derived from the list's music entries and drawn
-  from the full jingle and commercial libraries.
+- **Add to playlist** — every bound entry, in order, exactly as written.
+- **Add with jingles and commercials** — the same list brought up to the
+  station's [interleave](./playlist.md#modes) cadence.
 
 Both **append**. Nothing replaces the operator's playlist.
+
+The woven variant **tops up; it does not stack**. For a list with _M_ music
+entries the cadence asks for `M / jingleEvery` jingles and `M / commercialEvery`
+commercials. What the list already holds of each type counts against that, and
+only the shortfall is drawn — jingles at random, commercials by
+`pick_random_from_bottom`, from the full libraries. A show with its ident at the
+top and twenty songs gets four jingles, not five; a list that already meets the
+cadence gets nothing. The list's own entries stay exactly where the author put
+them, and the drawn ones are spread evenly through it by `interleave_evenly`.
+
+The append is its own block, as every refill is. Interleave keeps no counter
+between blocks, so nothing queued before it shifts what is woven into it.
 
 Either one is a single transition and a single snapshot, through
 `Playlist::insert_many` — the bulk add the library selection already queues with
 as `playlist_add_many`. The engine needs nothing new: the woven variant
 interleaves in the service and inserts the result as one run.
 
-Unplayable entries are skipped, and the panel reports "added 31, skipped 2
-missing" instead of leaving the operator to count. A playlist command queues its
-transition and returns nothing ([playlist.md](./playlist.md#commands)), so the
-count cannot come back from the transition. `playlist_add_saved` therefore does
-its reading first: it is an `async` command that resolves the saved playlist to
-its playable track ids, returns how many it took and how many it skipped, and
-hands the ids to the same queue `playlist_add_many` uses. A track purged between
-that read and the transition is logged there, as it is for a selection.
+Unmatched entries are skipped, and the panel reports "added 31, skipped 2
+unmatched" instead of leaving the operator to count. A playlist command queues
+its transition and returns nothing ([playlist.md](./playlist.md#commands)), so
+the count cannot come back from the transition. `playlist_add_saved` therefore
+does its reading first: it is an `async` command that resolves the saved
+playlist to its bound track ids, returns how many it took and how many it
+skipped, and hands the ids to the same queue `playlist_add_many` uses. It is the
+one `playlist_*` command besides `playlist_sync` with a result. A track purged
+between that read and the transition is logged there, as it is for a selection.
 
-This is stricter than the selection, which queues a missing track with its badge
-because the operator picked that track. A saved playlist was written at another
-time, often on another machine, and what it cannot play is reported rather than
-queued to be dropped on its way to air.
+An entry bound to a missing track is **queued, with its badge**. That is what a
+single add and a selection already do, and it keeps the show's shape in the
+Upcoming tab: the hole is visible where it falls, and a scan that reattaches the
+file before its turn puts it on air. Advancement drops it otherwise —
+[playlist.md](./playlist.md#outages).
 
 This is also how a saved playlist airs **in order**. There is no in-order mode
 of the auto-playlist: appending the whole show puts it in the Upcoming tab,
@@ -242,13 +258,22 @@ The rules around it:
   fifteen-track pool holds at most fourteen queued and settles into a loop, and
   the ladder logs every refill. That is what a small curated pool means, and
   topping up from the library would air tracks the operator left out on
-  purpose. The panel says the pool is smaller than the rotation windows.
+  purpose. The panel shows the source with its count of playable music —
+  _Friday Rock · 15 tracks_ — and leaves the judgement to the operator: there is
+  no warning and no threshold. A relaxed rule is a `warn` in the log, as it is
+  for the whole library.
 - **An empty pool reverts.** A source with no playable music — deleted, or every
   music entry missing or unmatched — would leave the auto-playlist switched on
-  and adding nothing. The service checks before it builds the refiller; an empty
-  source is cleared back to the music library and the snapshot carries a notice.
-  Choosing an already-empty one is refused. Deleting the active source is
-  allowed and ends the same way.
+  and adding nothing. The service counts before it builds the refiller, which is
+  also where the number above comes from; an empty source is cleared back to the
+  music library. Choosing an already-empty one is refused. Deleting the active
+  source is allowed and ends the same way.
+- **A revert is a state, not a message.** The snapshot carries `revertedFrom`,
+  the name of the source that was dropped, and the panel says so until the
+  operator chooses a source again. Dismissing it is choosing the music library:
+  any `playlist_set_source` clears it, so there is no command for the notice
+  alone. It is held in memory and not in `session.json` — after a restart the
+  source simply is the music library, and the log has the reason.
 - **Choosing a source is not starting a show.** It sets the source and nothing
   else. `set_auto_playlist(true)` starts playback on an idle deck, and a row in
   the library panel must not put audio on air. `stop` turns the auto-playlist
@@ -282,9 +307,12 @@ already have their source half:
   bar and the selection's menu _Add to saved playlist ▸_ and _New saved playlist
   from selection_, in pick order, and makes the entries of an open saved
   playlist selectable. The library selection is keyed by track id and an entry
-  is not a track — the same track can be in a saved playlist twice — so entries
-  take a selection of their own over entry ids, with the same pure rules in
-  `shared/selection.ts`.
+  is not a track — the same track can be in a saved playlist twice, and an
+  unmatched entry has no track at all — so entries take a selection of their own
+  over entry ids, with the same pure rules in `shared/selection.ts`. It belongs
+  to the one open saved playlist and is cleared when that is closed. The library
+  selection is kept underneath, untouched; one bar shows at a time, and no
+  action takes from both.
 - [#584](https://github.com/Arskah/radiodiodj/issues/584) makes an open saved
   playlist a second drop target for `app.draggedTrackIds`. A drag of a picked
   row carries the whole selection, so the drop is `saved_playlist_add_entries`
@@ -293,6 +321,16 @@ already have their source half:
 Until #587 the two do not meet. The selection outlives a tab change, so on the
 _Playlists_ tab it is still held and its bar still queues to the playlist;
 _Select all_ and Ctrl/Cmd+A have no track rows to act on there.
+
+### Names
+
+A name is unique among saved playlists, compared trimmed and without regard to
+case: two lists that read the same in _Add to saved playlist ▸_ cannot be told
+apart.
+
+Making one never fails on a name. Import, _Save playlist as…_ and _New saved
+playlist from selection_ take the next free one — _Friday Rock (2)_. Renaming to
+a name in use is refused with the reason; whoever is typing it can type another.
 
 ## Admin mode
 
@@ -306,6 +344,10 @@ playlist and **use** any of them, and cannot change one that exists.
 | export                                          | rename, delete                  |
 | both append actions                             | _Find in library_               |
 | choosing the auto-playlist source               |                                 |
+
+Choosing the source is open for the reason the auto-playlist switch is: it is
+how a show is run, and a guest who can switch the auto-playlist off altogether
+is not made safer by being unable to narrow it.
 
 So for a guest, creation is atomic — a whole list in one action. There is no
 "the person who made it may keep editing it": the app has no idea who made
@@ -341,7 +383,8 @@ drop are one command. `playlist_add_saved` returns its two counts; see
 The list of saved playlists — id, name, entry count, missing count — is emitted
 whole as `saved-playlists` on every change to it, and after anything that can
 change a missing count: a bind, a scan, a purge. Entries are read on opening
-one. `program:playlist-state` gains the source.
+one. `program:playlist-state` gains the source — its id, its name and its count
+of playable music — and `revertedFrom`.
 
 In the renderer `activeTab` is a `ContentType` today and drives the search
 query. The _Playlists_ tab is not a content type, so that type widens, and the
@@ -365,14 +408,14 @@ settled when #505's transport is designed.
 
 Each is one pull request.
 
-| #   | increment               | delivers                                                                                                                | needs | issue      |
-| --- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------- | ----- | ---------- |
-| 1   | Saved playlists exist   | tables, commands and their gating, the _Playlists_ tab, the four authoring actions, the missing badge, both appends     | —     | #577       |
-| 2   | Export and import       | the file, binding at import, after a scan and after the analysis pass                                                   | 1     | #501       |
-| 3   | Auto-playlist source    | the source in session and `DbRefiller`, the pool predicate, the small-pool note, the empty-pool revert, the switch line | 1     | #503       |
-| 4   | Find in library         | binding an unmatched entry by hand                                                                                      | 2     | #580       |
-| 5   | Selection and drag-drop | the selection's two saved-playlist actions, selecting entries of a saved playlist, dragging library rows onto one       | 1     | #587, #584 |
-| 6   | The web authoring page  | a show built away from the studio                                                                                       | #505  | #581       |
+| #   | increment               | delivers                                                                                                                           | needs | issue      |
+| --- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ----- | ---------- |
+| 1   | Saved playlists exist   | tables, commands and their gating, the _Playlists_ tab, the four authoring actions, the missing badge, both appends                | —     | #577       |
+| 2   | Export and import       | the file, binding at import, after a scan and after the analysis pass                                                              | 1     | #501       |
+| 3   | Auto-playlist source    | the source in session and `DbRefiller`, the pool predicate, the track count, the empty-pool revert and its notice, the switch line | 1     | #503       |
+| 4   | Find in library         | binding an unmatched entry by hand                                                                                                 | 2     | #580       |
+| 5   | Selection and drag-drop | the selection's two saved-playlist actions, selecting entries of a saved playlist, dragging library rows onto one                  | 1     | #587, #584 |
+| 6   | The web authoring page  | a show built away from the studio                                                                                                  | #505  | #581       |
 
 Increment 1 is usable alone: a show built in the app and appended at its hour.
 Increment 2 is what #501 asked for, increment 3 what #503 asked for, and
