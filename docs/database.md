@@ -9,7 +9,7 @@ The library lives in SQLite (`radiodiodj.db`, WAL mode) and is opened by
 
 1. **Legacy reset.** If the file has a schema (`user_version > 0`) and its
    `PRAGMA application_id` is a known older epoch, it is moved aside and a
-   fresh database is created. See [Pre-1.0 resets](#pre-10-resets).
+   fresh database is created. See [Baseline resets](#baseline-resets).
 2. **Refusal.** If the schema is newer than this build knows, or the epoch is
    one it does not recognise, `OpenError::TooNew` is returned **before anything
    is written**. The app hides its window, shows a dialog, and quits. An older
@@ -88,14 +88,15 @@ The library lives in SQLite (`radiodiodj.db`, WAL mode) and is opened by
   `every_step_preserves_seeded_rows` migrates a row written at every version to
   the latest one and checks that the operator work on it survives.
 
-## Pre-1.0 resets
+## Baseline resets
 
-Before 1.0, the schema may be squashed into a new baseline instead of carrying
-every step forever. The current baseline is epoch 1 (`application_id`
+A reset is a pre-1.0 tool: until 1.0 the schema could be squashed into a new
+baseline instead of carrying every step forever. From 1.0 on a released library
+is migrated, never reset. The current baseline is epoch 1 (`application_id`
 `0x52444a31`, "RDJ1"). It replaced the four hand-rolled steps shipped up to
-0.17.0.
+0.17.0, and the code that recognises those older databases stays.
 
-To squash again:
+How a squash is done:
 
 1. Replace `MIGRATION_STEPS` with a single new baseline, and have it stamp a new
    `application_id`.

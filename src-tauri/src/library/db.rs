@@ -2774,14 +2774,13 @@ fn row_to_cue_points(row: &Row) -> rusqlite::Result<CuePoints> {
     })
 }
 
-/// Identifies a database created by the current schema baseline, stored in
-/// `PRAGMA application_id` ("RDJ1"). Pre-1.0 the schema may be squashed into a
-/// new baseline: bump this, move the old value into [`LEGACY_EPOCHS`], and every
-/// older database is reset on its next open.
 /// How many ids go into one `IN (...)` statement. SQLite's default parameter
 /// ceiling is 999, and a scan or a purge can carry far more than that.
 const ID_CHUNK: usize = 500;
 
+/// Identifies a database created by the current schema baseline, stored in
+/// `PRAGMA application_id` ("RDJ1"). A database from an epoch in
+/// [`LEGACY_EPOCHS`] is reset on its next open. See `docs/database.md`.
 const DB_EPOCH: i32 = 0x5244_4a31;
 
 /// Epochs this build knows to be older than [`DB_EPOCH`]. `0` is every

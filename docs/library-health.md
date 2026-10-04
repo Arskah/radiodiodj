@@ -132,7 +132,7 @@ Each count expands into its paths. The first 200 of each are drawn.
 ### When it runs
 
 - **At launch,** five seconds in, unless a scan is already running (as after a
-  [pre-1.0 reset](./database.md#pre-10-resets)). That scan answers the same
+  [baseline reset](./database.md#baseline-resets)). That scan answers the same
   question.
 - **On a timer:** _Settings → Library → Library check interval (minutes)_,
   stored as `tuning.library.checkIntervalMin`. The default is 15, and `0` turns
@@ -534,5 +534,5 @@ back on its own.
 **Shared rules, not copied ones.** The check calls the scan's listing and prune
 rules, so the scanner's tests for the unreachable-share guard cover it too.
 
-**Dismissals in the database.** They name track ids. A pre-1.0 reset replaces
+**Dismissals in the database.** They name track ids. A baseline reset replaces
 the database and its ids together, whereas `session.json` would need scrubbing.
