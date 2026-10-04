@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.26.1](https://github.com/Arskah/radiodiodj/compare/v0.26.0...v0.26.1) (2026-10-04)
+
+
+### Bug Fixes
+
+* **library:** refuse an analysis failure for a file that has since changed ([#561](https://github.com/Arskah/radiodiodj/issues/561)) ([3f63cf1](https://github.com/Arskah/radiodiodj/commit/3f63cf139bdd87501ab29561052bb5cbc8ed14df)), closes [#522](https://github.com/Arskah/radiodiodj/issues/522)
+
 ## [0.26.0](https://github.com/Arskah/radiodiodj/compare/v0.25.2...v0.26.0) (2026-10-04)
 
 
