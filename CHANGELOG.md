@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.26.0](https://github.com/Arskah/radiodiodj/compare/v0.25.2...v0.26.0) (2026-10-04)
+
+
+### Features
+
+* in-app updates and an About tab ([#557](https://github.com/Arskah/radiodiodj/issues/557)) ([3394ffb](https://github.com/Arskah/radiodiodj/commit/3394ffb60d9b2d2c5c082f02c17fb8e2ea584ef1))
+
 ## [0.25.2](https://github.com/Arskah/radiodiodj/compare/v0.25.1...v0.25.2) (2026-10-04)
 
 
