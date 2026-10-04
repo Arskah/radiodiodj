@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.25.1](https://github.com/Arskah/radiodiodj/compare/v0.25.0...v0.25.1) (2026-10-04)
+
+
+### Bug Fixes
+
+* **audio:** time a read's stall, and bound dead air where the playlist can recover ([#546](https://github.com/Arskah/radiodiodj/issues/546)) ([62056a7](https://github.com/Arskah/radiodiodj/commit/62056a7e948b6d711d4a06a1e194b6f919b0207b)), closes [#504](https://github.com/Arskah/radiodiodj/issues/504)
+* **deps:** update tauri ([#544](https://github.com/Arskah/radiodiodj/issues/544)) ([1299a3f](https://github.com/Arskah/radiodiodj/commit/1299a3f2aef5026cdcec8ed1b5bbf4d7c3adbc5a))
+* **deps:** update tauri monorepo ([#514](https://github.com/Arskah/radiodiodj/issues/514)) ([440fa4c](https://github.com/Arskah/radiodiodj/commit/440fa4c07cc4ec6273221bcffdad869623b5cacb))
+* **deps:** update tauri to v2.8.1 ([#548](https://github.com/Arskah/radiodiodj/issues/548)) ([1662300](https://github.com/Arskah/radiodiodj/commit/1662300b8595c22bcc5ba5e6d7acc1f2e8a09479))
+* **library:** let a background pass survive a panicking file ([#521](https://github.com/Arskah/radiodiodj/issues/521)) ([f20f24e](https://github.com/Arskah/radiodiodj/commit/f20f24efce05de52f54a0d1e42dd83cb30bab26e)), closes [#508](https://github.com/Arskah/radiodiodj/issues/508)
+* **library:** let a file whose tags cannot be read into the library ([#511](https://github.com/Arskah/radiodiodj/issues/511)) ([b94d3de](https://github.com/Arskah/radiodiodj/commit/b94d3de1067c8fd69838bf896c888fe5b7d768a1)), closes [#510](https://github.com/Arskah/radiodiodj/issues/510)
+* **library:** measure a track's duration instead of trusting its tag ([#541](https://github.com/Arskah/radiodiodj/issues/541)) ([91c977b](https://github.com/Arskah/radiodiodj/commit/91c977bfd2a0af943527ddb72d8b5548d7df3ce4))
+* **library:** never write a tag type the container cannot carry ([#516](https://github.com/Arskah/radiodiodj/issues/516)) ([d16e165](https://github.com/Arskah/radiodiodj/commit/d16e16574050bcfd14ca672d818fc67b378bef1f)), closes [#510](https://github.com/Arskah/radiodiodj/issues/510)
+* **library:** read every metadata revision, not the newest ([#520](https://github.com/Arskah/radiodiodj/issues/520)) ([e0ace9c](https://github.com/Arskah/radiodiodj/commit/e0ace9c26d752cc37c0fce54a63566c76f53f86e))
+* **library:** read tags with symphonia where lofty refuses the file ([#519](https://github.com/Arskah/radiodiodj/issues/519)) ([996768a](https://github.com/Arskah/radiodiodj/commit/996768af49e62dbbbfe197823d72f6dccddaaa5d)), closes [#510](https://github.com/Arskah/radiodiodj/issues/510)
+* **library:** scan only what a deck can play ([#517](https://github.com/Arskah/radiodiodj/issues/517)) ([7891a97](https://github.com/Arskah/radiodiodj/commit/7891a97c01028dcc9bbe5c74327097c71b2241a5))
+* **persist:** keep the config lock off the disk, emit health in store order ([#529](https://github.com/Arskah/radiodiodj/issues/529)) ([225d4de](https://github.com/Arskah/radiodiodj/commit/225d4de37e1502edfcde63ee43d528fde6390422)), closes [#509](https://github.com/Arskah/radiodiodj/issues/509)
+* **playlist:** append cue deck tracks ([#539](https://github.com/Arskah/radiodiodj/issues/539)) ([735b4d0](https://github.com/Arskah/radiodiodj/commit/735b4d0cbff77a06981be18f988549c484f9a386))
+* **ui:** correct cue editor envelope, order and seeking ([#538](https://github.com/Arskah/radiodiodj/issues/538)) ([7f57c5c](https://github.com/Arskah/radiodiodj/commit/7f57c5cd534c4ec05d59f2de17e1543da90d89a2))
+
+
+### Miscellaneous Chores
+
+* **deps:** lock file maintenance ([#494](https://github.com/Arskah/radiodiodj/issues/494)) ([f110dfb](https://github.com/Arskah/radiodiodj/commit/f110dfb009b6b8ba7146e5caf34275acbec4bd14))
+* **deps:** update dependency eslint-plugin-jsdoc to v65 ([#533](https://github.com/Arskah/radiodiodj/issues/533)) ([d7ecdb6](https://github.com/Arskah/radiodiodj/commit/d7ecdb61684c090e76862cb0c1cc6b391a03ae07))
+* **deps:** update dependency lint-staged to v17.6.0 ([#512](https://github.com/Arskah/radiodiodj/issues/512)) ([56035e6](https://github.com/Arskah/radiodiodj/commit/56035e6a08257bfda6c18e0ec5b9a82013692687))
+* **deps:** update dependency rust to v1.99.0 ([#545](https://github.com/Arskah/radiodiodj/issues/545)) ([e768510](https://github.com/Arskah/radiodiodj/commit/e7685103f9f74e078924a360a46aae1782b1eff1))
+* **deps:** update dependency typescript-eslint to v8.71.0 ([#531](https://github.com/Arskah/radiodiodj/issues/531)) ([fe8a763](https://github.com/Arskah/radiodiodj/commit/fe8a76361d91657080aa0d0c3cd268c2a2bb6599))
+* **deps:** update pnpm to v12.7.0 ([#513](https://github.com/Arskah/radiodiodj/issues/513)) ([9a5bc46](https://github.com/Arskah/radiodiodj/commit/9a5bc461ac1c055fc08ccb74fe9ec924c3dce38e))
+* **deps:** update pnpm to v12.8.2 ([#532](https://github.com/Arskah/radiodiodj/issues/532)) ([b1dbf5c](https://github.com/Arskah/radiodiodj/commit/b1dbf5ce34350099341f3e773fefbb940c4d765b))
+* **deps:** update serialize-javascript version override to 7.1.2 ([90ea64b](https://github.com/Arskah/radiodiodj/commit/90ea64bc7e250fe9932b4855369260bda70c353c))
+* **deps:** update vitest monorepo to v5.0.3 ([#537](https://github.com/Arskah/radiodiodj/issues/537)) ([d569ff0](https://github.com/Arskah/radiodiodj/commit/d569ff0c6719789f853d7595636b72320d4cbff8))
+* **renovate:** group tauri deps across npm and cargo ([#543](https://github.com/Arskah/radiodiodj/issues/543)) ([19e2e92](https://github.com/Arskah/radiodiodj/commit/19e2e921be00365872f6820daa0ecef1df5f355e))
+* **renovate:** group tauri plugins per plugin, not all of tauri ([#549](https://github.com/Arskah/radiodiodj/issues/549)) ([4977d54](https://github.com/Arskah/radiodiodj/commit/4977d545075c1f04570e404d50f2330b6c24834e))
+
 ## [0.25.0](https://github.com/Arskah/radiodiodj/compare/v0.24.0...v0.25.0) (2026-09-29)
 
 
