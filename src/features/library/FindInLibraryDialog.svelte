@@ -106,29 +106,46 @@
       tabindex="-1"
       onkeydown={onKeyDown}
     >
-      <h2 class="find-title">Find in library</h2>
-      <p class="find-desc">
-        Pick the track this entry stands for:
-        <span class="find-sought"
-          >{sought.artist} – {sought.title} · {formatTime(
-            sought.duration,
-          )}</span
+      <div class="dialog-header">
+        <h2>Find in Library</h2>
+        <button
+          id="btn-find-close"
+          class="btn-close"
+          onclick={close}
+          title="Close (Escape)"
         >
-      </p>
-      <input
-        id="find-search"
-        type="text"
-        autocomplete="off"
-        aria-label="Search the library"
-        placeholder="Search the library…"
-        bind:this={input}
-        bind:value={query}
-      />
-      <div class="find-types" role="tablist" aria-label="Type">
+          <span class="material-symbols-outlined">close</span>
+        </button>
+      </div>
+      <div class="find-body">
+        <p class="find-desc">
+          Pick the track this entry stands for
+          <span class="find-sought"
+            >{sought.artist} – {sought.title}
+            <span class="find-sought-time">{formatTime(sought.duration)}</span
+            ></span
+          >
+        </p>
+        <div class="find-search">
+          <span class="material-symbols-outlined" aria-hidden="true"
+            >search</span
+          >
+          <input
+            id="find-search"
+            type="text"
+            autocomplete="off"
+            aria-label="Search the library"
+            placeholder="Search tracks, artists, albums…"
+            bind:this={input}
+            bind:value={query}
+          />
+        </div>
+      </div>
+      <div class="find-tabs" role="tablist" aria-label="Type">
         {#each types as t (t.type)}
           <button
             type="button"
-            class="find-type"
+            class="find-tab"
             class:active={type === t.type}
             role="tab"
             aria-selected={type === t.type}
@@ -136,24 +153,39 @@
           >
         {/each}
       </div>
+      <div class="saved-headers">
+        <span class="track-header track-title">Title</span>
+        <span class="track-header track-artist">Artist</span>
+        <span class="track-header track-album">Album</span>
+        <span class="track-header track-duration">Time</span>
+      </div>
       <div id="find-results" class="find-results">
         {#if results === null}
-          <p class="find-empty">Searching…</p>
+          <div class="empty">
+            <span class="empty-title">Searching…</span>
+          </div>
         {:else if results.length === 0}
-          <p class="find-empty">No track matches. Try fewer words.</p>
+          <div class="empty">
+            <span class="empty-icon"
+              ><span class="material-symbols-outlined">search_off</span></span
+            >
+            <span class="empty-title">No Track Matches</span>
+            <span class="empty-body">Try fewer words, or another type.</span>
+          </div>
         {:else}
           {#each results as track (track.id)}
             <button
               type="button"
-              class="find-row"
+              class="track-row find-row"
               disabled={busy}
               data-track-id={track.id}
               onclick={() => bind(track)}
             >
-              <span class="find-row-title">{track.title}</span>
-              <span class="find-row-artist">{track.artist}</span>
-              <span class="find-row-album">{track.album}</span>
-              <span class="find-row-time">{formatTime(airDuration(track))}</span
+              <span class="track-title">{track.title}</span>
+              <span class="track-artist">{track.artist}</span>
+              <span class="track-album">{track.album}</span>
+              <span class="track-duration"
+                >{formatTime(airDuration(track))}</span
               >
             </button>
           {/each}
@@ -170,70 +202,119 @@
 {/if}
 
 <style>
+  /* Chrome is .dialog-scrim / .dialog-card in styles.css, and the list is the
+     library's: .saved-headers over .track-row, with its column classes. */
   .find-overlay {
-    --dialog-width: 640px;
+    --dialog-width: 680px;
   }
 
   .find-content {
-    padding: 20px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .find-body {
+    padding: 16px 20px;
     display: flex;
     flex-direction: column;
     gap: 12px;
   }
 
-  .find-title {
-    margin: 0;
-    font-size: 18px;
-    font-weight: 600;
-    color: var(--on-surface);
-  }
-
   .find-desc {
     margin: 0;
-    font-size: 13px;
+    font-size: 12px;
     color: var(--on-surface-variant);
   }
 
   .find-sought {
     display: block;
     margin-top: 2px;
+    font-size: 14px;
     color: var(--on-surface);
   }
 
-  input {
-    background: transparent;
-    border: 1px solid var(--outline-variant);
-    border-radius: var(--r-lg);
-    padding: 8px 10px;
+  .find-sought-time {
+    margin-left: var(--sp-sm);
+    color: var(--on-surface-variant);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* The library's search box. */
+  .find-search {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .find-search .material-symbols-outlined {
+    position: absolute;
+    left: var(--sp-md);
+    font-size: 18px;
+    color: var(--outline);
+    pointer-events: none;
+  }
+
+  .find-search input {
+    flex: 1;
+    min-width: 0;
+    height: 30px;
+    padding: 6px 14px 6px 40px;
+    background: var(--surface-container-lowest);
+    border: 1px solid
+      color-mix(in srgb, var(--outline-variant) 30%, transparent);
+    border-radius: var(--r-pill);
     color: var(--on-surface);
-    font-size: 14px;
+    font-size: 12px;
+    font-family: inherit;
     outline: none;
   }
 
-  input:focus {
+  .find-search input:focus {
     border-color: var(--primary);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 15%, transparent);
+    box-shadow: 0 0 0 1px var(--primary);
   }
 
-  .find-types {
+  .find-search input::placeholder {
+    color: var(--outline);
+  }
+
+  /* The library's tab row. */
+  .find-tabs {
     display: flex;
-    gap: 4px;
+    padding: 0 var(--sp-md);
+    background: var(--surface-container-low);
+    border-top: 1px solid
+      color-mix(in srgb, var(--outline-variant) 30%, transparent);
+    border-bottom: 1px solid
+      color-mix(in srgb, var(--outline-variant) 30%, transparent);
   }
 
-  .find-type {
-    background: transparent;
-    border: 1px solid var(--outline-variant);
-    border-radius: var(--r-lg);
-    padding: 4px 10px;
+  .find-tab {
+    padding: 8px 12px;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
     color: var(--on-surface-variant);
-    font-size: 12px;
     cursor: pointer;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
   }
 
-  .find-type.active {
-    background: var(--primary-container);
-    border-color: var(--primary-container);
-    color: var(--on-primary-container);
+  .find-tab:hover {
+    color: var(--on-surface);
+  }
+
+  .find-tab.active {
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+  }
+
+  .saved-headers .track-header {
+    cursor: default;
   }
 
   .find-results {
@@ -241,60 +322,37 @@
     flex-direction: column;
     height: 320px;
     overflow-y: auto;
-    border: 1px solid var(--outline-variant);
-    border-radius: var(--r-lg);
+    padding: var(--sp-xs) 0;
+    background: var(--surface-container-low);
   }
 
-  .find-empty {
+  .find-results .empty {
     margin: auto;
-    font-size: 13px;
-    color: var(--on-surface-variant);
   }
 
+  /* A row is a button here, where the library's is a div. */
   .find-row {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-md);
     flex-shrink: 0;
-    padding: 7px 10px;
-    background: transparent;
+    width: 100%;
     border: 0;
-    color: var(--on-surface);
-    font-size: 13px;
+    background: none;
+    font-family: inherit;
     text-align: left;
     cursor: pointer;
   }
 
-  .find-row:hover:not(:disabled),
   .find-row:focus-visible {
-    background: color-mix(in srgb, var(--on-surface) 8%, transparent);
     outline: none;
+    background: color-mix(in srgb, var(--primary) 14%, transparent);
   }
 
-  .find-row span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .find-row-title {
-    flex: 3;
-  }
-
-  .find-row-artist,
-  .find-row-album {
-    flex: 2;
-    color: var(--on-surface-variant);
-  }
-
-  .find-row-time {
-    width: 48px;
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-    color: var(--on-surface-variant);
+  .find-row:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
 
   .find-error {
+    margin: 12px 20px 0;
     color: var(--error);
     font-size: 13px;
     padding: 8px 10px;
@@ -305,6 +363,8 @@
   .find-footer {
     display: flex;
     justify-content: flex-end;
+    padding: 16px 20px;
+    border-top: 1px solid var(--outline-variant);
   }
 
   .btn {
