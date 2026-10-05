@@ -1658,8 +1658,14 @@ body {
   display: none;
 }
 
-/* The cell is what a click picks by while nothing is picked yet. */
+/* The cell is what a click picks by while nothing is picked yet, so it is as
+   tall as its row whatever it holds: centred like the other cells, a track
+   with no number would leave nothing to press until the pointer is on it. */
 .track-row .track-no {
+  display: flex;
+  align-self: stretch;
+  align-items: center;
+  justify-content: flex-end;
   cursor: pointer;
 }
 
