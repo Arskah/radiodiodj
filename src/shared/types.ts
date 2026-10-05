@@ -1,5 +1,8 @@
 export type ContentType = "music" | "commercial" | "jingle";
 
+/** A tab of the library panel: a typed library, or the saved playlists. */
+export type LibraryTab = ContentType | "playlists";
+
 export type SortColumn =
   | "title"
   | "artist"
@@ -150,6 +153,40 @@ export const isTrackItem = (i: PlaylistItem): i is PlaylistTrackItem =>
   i.kind === "track";
 export const isStopMarker = (i: PlaylistItem): i is StopMarker =>
   i.kind === "stop";
+
+/** One row of the saved playlists list. See `docs/saved-playlists.md`. */
+export interface SavedPlaylistSummary {
+  id: number;
+  name: string;
+  entries: number;
+  /** Entries that cannot air: unmatched, or bound to a missing track. */
+  missing: number;
+}
+
+/**
+ * One entry of a saved playlist. `track` is the live track it is bound to, and
+ * `null` marks an unmatched entry, which shows what it was written with.
+ */
+export interface SavedEntry {
+  id: number;
+  track: Track | null;
+  artist: string;
+  title: string;
+  duration: number;
+  contentType: string | null;
+}
+
+export interface SavedPlaylist {
+  id: number;
+  name: string;
+  entries: SavedEntry[];
+}
+
+/** What appending a saved playlist to the playlist did. */
+export interface SavedAppend {
+  added: number;
+  skipped: number;
+}
 
 export interface LibraryStats {
   totalTracks: number;

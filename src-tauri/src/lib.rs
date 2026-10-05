@@ -37,9 +37,14 @@ use audio::cue_points::CuePoints;
 use audio::player::{Cmd, PlayerTuning, RampDone};
 use broadcast::{service::default_now_playing_dir, BroadcastService};
 use library::check::LibraryCheck;
-use library::db::{Db, LibraryStats, OpenError, Recalculated, Track, TrackMetadataUpdate};
+use library::db::{
+    Db, LibraryStats, OpenError, Recalculated, SavedPlaylist, SavedPlaylistSummary, Track,
+    TrackMetadataUpdate,
+};
 use library::health::{FindingKind, Health, HealthReport};
+use library::saved_playlists;
 use library::scan_state::{ScanState, ScanStatus, StartResult};
+use library::scanner::now_ms;
 use library::tag_backfill::TagBackfillJob;
 use library::tag_write::TagWriter;
 use library::waveform_scan::{WaveformJob, WaveformStatus};
@@ -355,6 +360,187 @@ fn playlist_insert(app: State<'_, AppState>, id: i64, index: usize) {
 #[tauri::command(rename_all = "camelCase")]
 fn playlist_add_many(app: State<'_, AppState>, ids: Vec<i64>, index: Option<usize>) {
     app.playlist.add_many(ids, index);
+}
+
+/// What an append of a saved playlist did: how many tracks it queued, and how
+/// many entries it had to leave out for want of a track.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct SavedAppend {
+    added: usize,
+    skipped: usize,
+}
+
+/// Append a saved playlist's tracks, in order; with `weave`, brought up to the
+/// interleave cadence. Reads before it queues, which is why it alone among the
+/// `playlist_*` commands has a result. See `docs/saved-playlists.md`.
+#[tauri::command(rename_all = "camelCase")]
+async fn playlist_add_saved(
+    state: State<'_, AppState>,
+    id: i64,
+    weave: bool,
+) -> Result<SavedAppend, String> {
+    let db = Arc::clone(&state.db);
+    let playlist = Arc::clone(&state.playlist);
+    blocking(move || {
+        let offered = db
+            .saved_playlist_tracks(id)
+            .map_err(err)?
+            .ok_or_else(|| format!("no saved playlist {id}"))?;
+        let added = offered.tracks.len();
+        playlist.add_saved(offered.tracks, weave);
+        Ok(SavedAppend {
+            added,
+            skipped: offered.unmatched,
+        })
+    })
+    .await
+}
+
+/// Keep the upcoming tracks as a new saved playlist. Stop markers and item
+/// overrides are not carried.
+#[tauri::command(rename_all = "camelCase")]
+async fn playlist_save_as(
+    handle: AppHandle,
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<SavedPlaylistSummary, String> {
+    let db = Arc::clone(&state.db);
+    let ids: Vec<i64> = state
+        .playlist
+        .snapshot()
+        .playlist
+        .iter()
+        .filter_map(|item| item.as_track().map(|t| t.id))
+        .collect();
+    blocking(move || {
+        let made = db
+            .create_saved_playlist(&name, &ids, now_ms())
+            .map_err(err)?;
+        saved_playlists::emit(&handle, &db);
+        Ok(made)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn saved_playlist_list(
+    state: State<'_, AppState>,
+) -> Result<Vec<SavedPlaylistSummary>, String> {
+    let db = Arc::clone(&state.db);
+    blocking(move || db.saved_playlists().map_err(err)).await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn saved_playlist_get(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<Option<SavedPlaylist>, String> {
+    let db = Arc::clone(&state.db);
+    blocking(move || db.saved_playlist(id).map_err(err)).await
+}
+
+/// Create a saved playlist with its entries. One call, so a guest who may not
+/// edit an existing list can still make a whole one.
+#[tauri::command(rename_all = "camelCase")]
+async fn saved_playlist_create(
+    handle: AppHandle,
+    state: State<'_, AppState>,
+    name: String,
+    track_ids: Vec<i64>,
+) -> Result<SavedPlaylistSummary, String> {
+    let db = Arc::clone(&state.db);
+    blocking(move || {
+        let made = db
+            .create_saved_playlist(&name, &track_ids, now_ms())
+            .map_err(err)?;
+        saved_playlists::emit(&handle, &db);
+        Ok(made)
+    })
+    .await
+}
+
+/// Add entries for `track_ids`, in order, ahead of the entry at `index`. Absent
+/// or `null` appends, as does an index past the end.
+#[tauri::command(rename_all = "camelCase")]
+async fn saved_playlist_add_entries(
+    handle: AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+    track_ids: Vec<i64>,
+    index: Option<usize>,
+) -> Result<(), String> {
+    let db = Arc::clone(&state.db);
+    blocking(move || {
+        db.add_saved_entries(id, &track_ids, index, now_ms())
+            .map_err(err)?;
+        saved_playlists::emit(&handle, &db);
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn saved_playlist_remove_entry(
+    handle: AppHandle,
+    state: State<'_, AppState>,
+    entry_id: i64,
+) -> Result<(), String> {
+    let db = Arc::clone(&state.db);
+    blocking(move || {
+        db.remove_saved_entry(entry_id, now_ms()).map_err(err)?;
+        saved_playlists::emit(&handle, &db);
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn saved_playlist_move_entry(
+    handle: AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+    from: usize,
+    to: usize,
+) -> Result<(), String> {
+    let db = Arc::clone(&state.db);
+    blocking(move || {
+        db.move_saved_entry(id, from, to, now_ms()).map_err(err)?;
+        saved_playlists::emit(&handle, &db);
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn saved_playlist_rename(
+    handle: AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+    name: String,
+) -> Result<(), String> {
+    let db = Arc::clone(&state.db);
+    blocking(move || {
+        db.rename_saved_playlist(id, &name, now_ms()).map_err(err)?;
+        saved_playlists::emit(&handle, &db);
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn saved_playlist_delete(
+    handle: AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<(), String> {
+    let db = Arc::clone(&state.db);
+    blocking(move || {
+        db.delete_saved_playlist(id).map_err(err)?;
+        saved_playlists::emit(&handle, &db);
+        Ok(())
+    })
+    .await
 }
 
 /// Set or clear a queued item's override. `null` drops the item back to the
@@ -1489,6 +1675,16 @@ pub fn run() {
             playlist_add_front,
             playlist_insert,
             playlist_add_many,
+            playlist_add_saved,
+            playlist_save_as,
+            saved_playlist_list,
+            saved_playlist_get,
+            saved_playlist_create,
+            saved_playlist_add_entries,
+            saved_playlist_remove_entry,
+            saved_playlist_move_entry,
+            saved_playlist_rename,
+            saved_playlist_delete,
             playlist_set_item_cue_points,
             playlist_add_stop_marker,
             playlist_add_filler,

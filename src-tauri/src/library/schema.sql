@@ -1,5 +1,8 @@
 CREATE INDEX play_log_aired ON play_log(aired_at);
 
+CREATE INDEX saved_playlist_entries_list
+  ON saved_playlist_entries(playlist_id, position);
+
 CREATE INDEX tracks_fingerprint ON tracks(fingerprint) WHERE fingerprint IS NOT NULL;
 
 CREATE UNIQUE INDEX tracks_path_present ON tracks(path) WHERE missing_since IS NULL;
@@ -18,6 +21,25 @@ CREATE TABLE play_log (
   artist   TEXT,
   title    TEXT,
   duration REAL
+);
+
+CREATE TABLE saved_playlist_entries (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  playlist_id  INTEGER NOT NULL,
+  position     INTEGER NOT NULL,
+  track_id     INTEGER,
+  fingerprint  TEXT,
+  artist       TEXT,
+  title        TEXT,
+  duration     REAL,
+  content_type TEXT
+);
+
+CREATE TABLE saved_playlists (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  name       TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
 );
 
 CREATE TABLE tracks (

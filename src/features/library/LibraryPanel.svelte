@@ -1,17 +1,21 @@
 <script lang="ts">
   import { tick } from "svelte";
   import { app, formatTime, type Track } from "../../shared/state.svelte";
-  import type { ContentType, SortColumn } from "../../shared/types";
+  import type { LibraryTab, SortColumn } from "../../shared/types";
   import { airDuration, isTrimmed } from "../../shared/cuePoints";
   import ContextMenu from "../ui/ContextMenu.svelte";
   import type { MenuItem } from "../ui/contextMenu";
   import { allSelected, hiddenCount } from "../../shared/selection";
+  import SavedPlaylists from "./SavedPlaylists.svelte";
 
-  const tabs: { type: ContentType; label: string }[] = [
+  const tabs: { type: LibraryTab; label: string }[] = [
     { type: "music", label: "Music" },
     { type: "commercial", label: "Commercials" },
     { type: "jingle", label: "Jingles" },
+    { type: "playlists", label: "Playlists" },
   ];
+
+  const onPlaylists = $derived(app.activeTab === "playlists");
 
   const sortableCols: { column: SortColumn; label: string; cls: string }[] = [
     // Album order rather than a bare number sort, so searching an album and
@@ -46,6 +50,7 @@
    * screen may still answer the query as it stood a keystroke ago.
    */
   async function focusResults(): Promise<void> {
+    if (onPlaylists) return;
     clearTimeout(searchTimeout);
     await app.search();
     await tick();
@@ -94,12 +99,12 @@
 
   // ----- Selection (#576) -----
 
-  const listedIds = $derived(app.tracks.map((track) => track.id));
+  const listedIds = $derived(app.listedIds);
   const selectedCount = $derived(app.selectedIds.length);
   const hidden = $derived(hiddenCount(app.selectedIds, listedIds));
   const allListed = $derived(allSelected(app.selectedIds, listedIds));
   const selectAllLabel = $derived(
-    allListed ? "Deselect shown" : `Select all (${app.tracks.length})`,
+    allListed ? "Deselect shown" : `Select all (${listedIds.length})`,
   );
   /** Each picked track's place in the order it will be queued in, from 1. */
   const ordinals = $derived(
@@ -251,6 +256,12 @@
     }
     if (app.isAdmin) {
       items.push({
+        label: "Add to saved playlist…",
+        icon: "playlist_add",
+        onselect: () =>
+          (app.savedDialog = { kind: "addTo", trackIds: [track.id] }),
+      });
+      items.push({
         label: "Edit metadata…",
         icon: "edit",
         onselect: () => (app.editingMetadata = track),
@@ -291,9 +302,12 @@
       <input
         type="text"
         id="search-input"
-        placeholder="Search tracks, artists, albums…"
+        placeholder={onPlaylists
+          ? "Search saved playlists…"
+          : "Search tracks, artists, albums…"}
         autocomplete="off"
-        aria-label="Search tracks"
+        aria-label={onPlaylists ? "Search saved playlists" : "Search tracks"}
+        disabled={onPlaylists && app.openSaved !== null}
         bind:value={app.searchQuery}
         oninput={onSearchInput}
         onkeydown={onSearchKeyDown}
@@ -314,116 +328,124 @@
       </button>
     {/each}
   </div>
-  <div id="track-headers">
-    {#each sortableCols as col (col.column)}
-      <button
-        class="track-header {col.cls}"
-        class:active={app.sortBy === col.column}
-        role="columnheader"
-        aria-sort={ariaSort(col.column)}
-        onclick={() => app.toggleSort(col.column)}
-      >
-        {col.label}
-        <span class="material-symbols-outlined" aria-hidden="true"
-          >{sortIcon(col.column)}</span
+  {#if !onPlaylists}
+    <div id="track-headers">
+      {#each sortableCols as col (col.column)}
+        <button
+          class="track-header {col.cls}"
+          class:active={app.sortBy === col.column}
+          role="columnheader"
+          aria-sort={ariaSort(col.column)}
+          onclick={() => app.toggleSort(col.column)}
         >
-      </button>
-    {/each}
-    <span class="track-header track-duration">Time</span>
-    <span class="track-header-spacer">
-      <button
-        id="btn-select-all"
-        title={selectAllLabel}
-        aria-label={selectAllLabel}
-        disabled={app.tracks.length === 0}
-        onclick={() => app.toggleSelectAll()}
-      >
-        <span class="material-symbols-outlined" aria-hidden="true"
-          >{allListed ? "deselect" : "select_all"}</span
+          {col.label}
+          <span class="material-symbols-outlined" aria-hidden="true"
+            >{sortIcon(col.column)}</span
+          >
+        </button>
+      {/each}
+      <span class="track-header track-duration">Time</span>
+      <span class="track-header-spacer">
+        <button
+          id="btn-select-all"
+          title={selectAllLabel}
+          aria-label={selectAllLabel}
+          disabled={app.tracks.length === 0}
+          onclick={() => app.toggleSelectAll()}
         >
-      </button>
-    </span>
-  </div>
-  <div id="track-list-wrap">
-    <div id="track-list" class:selecting={selectedCount > 0}>
-      {#if app.tracks.length === 0}
-        <div class="empty">
-          <span class="empty-icon"
-            ><span class="material-symbols-outlined">library_music</span></span
+          <span class="material-symbols-outlined" aria-hidden="true"
+            >{allListed ? "deselect" : "select_all"}</span
           >
-          <span class="empty-title">Your Library is Empty</span>
-          <span class="empty-body"
-            >Add music, jingles, and commercials from Settings → Library, then
-            scan to build your station.</span
-          >
-        </div>
-      {:else}
-        {#each app.tracks as track (track.id)}
-          {@const ordinal = ordinals.get(track.id)}
-          <div
-            class="track-row"
-            class:selected={ordinal !== undefined}
-            draggable="true"
-            ondragstart={(e) => onDragStart(track, e)}
-            ondragend={() => (app.draggedTrackIds = null)}
-            onclick={(e) => pick(track, e.shiftKey)}
-            ondblclick={(e) => onRowDblClick(track, e)}
-            onmouseenter={(e) => onEnter(track, e)}
-            onmouseleave={() => app.clearHover()}
-            oncontextmenu={(e) => openMenu(track, e)}
-            onkeydown={(e) => onRowKeyDown(track, e)}
-            role="button"
-            aria-label={`Track: ${track.title} by ${track.artist}`}
-            aria-haspopup="menu"
-            aria-expanded={menuTrack?.id === track.id}
-            aria-pressed={ordinal !== undefined}
-            data-track-id={track.id}
-            tabindex="0"
-          >
-            <span class="track-no">
-              <span class="track-no-value">{track.track_no ?? ""}</span>
-              <span class="track-check" aria-hidden="true">{ordinal ?? ""}</span
-              >
-            </span>
-            <span class="track-title">{track.title}</span>
-            <span class="track-artist">{track.artist}</span>
-            <span class="track-album">{track.album}</span>
-            <span class="track-plays">{track.play_count || 0}</span>
-            <span class="track-duration" class:trimmed={isTrimmed(track)}
-              >{formatTime(airDuration(track))}</span
-            >
-            {#if app.cueDevice !== null}
-              <button
-                class="btn-cue"
-                title="Preview on cue deck"
-                aria-label="Cue track"
-                onclick={(e) => cue(track, e)}
-              >
-                <span class="material-symbols-outlined">headphones</span>
-              </button>
-            {/if}
-            {#if app.isAdmin}
-              <button
-                class="btn-edit"
-                title="Edit metadata"
-                aria-label="Edit track metadata"
-                onclick={(e) => startEdit(track, e)}
-              >
-                <span class="material-symbols-outlined">edit</span>
-              </button>
-            {/if}
-            <button
-              class="btn-add"
-              title="Add to playlist"
-              aria-label="Add to playlist"
-              onclick={(e) => add(track, e)}
-            >
-              <span class="material-symbols-outlined">add</span>
-            </button>
-          </div>
-        {/each}
-      {/if}
+        </button>
+      </span>
     </div>
+  {/if}
+  <div id="track-list-wrap">
+    {#if onPlaylists}
+      <SavedPlaylists />
+    {:else}
+      <div id="track-list" class:selecting={selectedCount > 0}>
+        {#if app.tracks.length === 0}
+          <div class="empty">
+            <span class="empty-icon"
+              ><span class="material-symbols-outlined">library_music</span
+              ></span
+            >
+            <span class="empty-title">Your Library is Empty</span>
+            <span class="empty-body"
+              >Add music, jingles, and commercials from Settings → Library, then
+              scan to build your station.</span
+            >
+          </div>
+        {:else}
+          {#each app.tracks as track (track.id)}
+            {@const ordinal = ordinals.get(track.id)}
+            <div
+              class="track-row"
+              class:selected={ordinal !== undefined}
+              draggable="true"
+              ondragstart={(e) => onDragStart(track, e)}
+              ondragend={() => (app.draggedTrackIds = null)}
+              onclick={(e) => pick(track, e.shiftKey)}
+              ondblclick={(e) => onRowDblClick(track, e)}
+              onmouseenter={(e) => onEnter(track, e)}
+              onmouseleave={() => app.clearHover()}
+              oncontextmenu={(e) => openMenu(track, e)}
+              onkeydown={(e) => onRowKeyDown(track, e)}
+              role="button"
+              aria-label={`Track: ${track.title} by ${track.artist}`}
+              aria-haspopup="menu"
+              aria-expanded={menuTrack?.id === track.id}
+              aria-pressed={ordinal !== undefined}
+              data-track-id={track.id}
+              tabindex="0"
+            >
+              <span class="track-no">
+                <span class="track-no-value">{track.track_no ?? ""}</span>
+                <span class="track-check" aria-hidden="true"
+                  >{ordinal ?? ""}</span
+                >
+              </span>
+              <span class="track-title">{track.title}</span>
+              <span class="track-artist">{track.artist}</span>
+              <span class="track-album">{track.album}</span>
+              <span class="track-plays">{track.play_count || 0}</span>
+              <span class="track-duration" class:trimmed={isTrimmed(track)}
+                >{formatTime(airDuration(track))}</span
+              >
+              {#if app.cueDevice !== null}
+                <button
+                  class="btn-cue"
+                  title="Preview on cue deck"
+                  aria-label="Cue track"
+                  onclick={(e) => cue(track, e)}
+                >
+                  <span class="material-symbols-outlined">headphones</span>
+                </button>
+              {/if}
+              {#if app.isAdmin}
+                <button
+                  class="btn-edit"
+                  title="Edit metadata"
+                  aria-label="Edit track metadata"
+                  onclick={(e) => startEdit(track, e)}
+                >
+                  <span class="material-symbols-outlined">edit</span>
+                </button>
+              {/if}
+              <button
+                class="btn-add"
+                title="Add to playlist"
+                aria-label="Add to playlist"
+                onclick={(e) => add(track, e)}
+              >
+                <span class="material-symbols-outlined">add</span>
+              </button>
+            </div>
+          {/each}
+        {/if}
+      </div>
+    {/if}
     {#if selectedCount > 0}
       <div id="selection-bar" role="toolbar" aria-label="Selection">
         <span id="selection-count" aria-live="polite">

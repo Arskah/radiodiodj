@@ -9,7 +9,7 @@ deck, plus the rules that move one item onto air and the next into place. The
 | which tracks the auto-playlist may pick | [rotation.md](./rotation.md)               |
 | how a queued item reaches air           | [program-bus.md](./program-bus.md)         |
 | the markers an item can carry           | [cue-points.md](./cue-points.md)           |
-| stored, named lists (planned)           | [saved-playlists.md](./saved-playlists.md) |
+| stored, named lists                     | [saved-playlists.md](./saved-playlists.md) |
 
 ## Backend ownership
 
@@ -60,16 +60,21 @@ snapshot is displayable without a second round-trip to resolve titles.
 
 ```
 playlist_add             playlist_add_front        playlist_insert
-playlist_add_many        playlist_add_filler       playlist_add_stop_marker
-playlist_remove          playlist_move             playlist_clear
-playlist_play_index      playlist_play_now         playlist_next
-playlist_prev            playlist_stop
+playlist_add_many        playlist_add_saved        playlist_add_filler
+playlist_add_stop_marker playlist_remove           playlist_move
+playlist_clear           playlist_play_index       playlist_play_now
+playlist_next            playlist_prev             playlist_stop
 playlist_set_auto_advance                          playlist_set_auto_playlist
 playlist_set_item_cue_points                       playlist_sync
 ```
 
+`playlist_save_as` is not in that list: it reads the playlist and writes a saved
+playlist, and changes nothing here.
+
 Every one of them but `playlist_sync` **queues** its transition and returns at
-once. A Tauri command handler declared without `async` runs on the process main
+once. `playlist_add_saved` does too, but reads the saved playlist first and
+answers with what it found — see
+[saved-playlists.md](./saved-playlists.md#appending-to-the-playlist). A Tauri command handler declared without `async` runs on the process main
 thread, which is the thread the window is drawn from, and a transition is not
 cheap: a refill under the queue's threshold is tens of milliseconds of SQL on a
 large library, and it waits on the same database lock the analysis pass holds, so

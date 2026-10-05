@@ -4,7 +4,9 @@ A named, stored list of tracks: built before a show or kept as a curated pool,
 moved between machines as a file, appended to the on-air playlist, or used as
 what the auto-playlist draws from.
 
-**Planned — nothing here is built.** Designed 2026-10-04 against
+**Partly built.** Increment 1 of the [table below](#increments) is in: the
+tables, the _Playlists_ tab, authoring and both appends. Import, export and the
+auto-playlist source are not. Designed 2026-10-04 against
 [#501](https://github.com/Arskah/radiodiodj/issues/501),
 [#503](https://github.com/Arskah/radiodiodj/issues/503) and
 [#577](https://github.com/Arskah/radiodiodj/issues/577). Two things it stands
@@ -289,16 +291,22 @@ The rules around it:
 
 In the first increment, with a saved playlist open in the _Playlists_ tab:
 
-- **Add to saved playlist ▸** in a single track row's menu, from any library
-  tab, the playlist and history. Appends at the end. The menu on a picked row is
-  the selection's once more than one track is picked, and that one is left alone
-  here.
+- **Add to saved playlist…** in a single library row's menu, admin only. It
+  opens a dialog rather than a submenu: the saved playlists to pick from, and a
+  name field that makes a new one holding the track. Appends at the end. The
+  menu on a picked row is the selection's once more than one track is picked,
+  and that one is left alone here. Playlist and history rows have no menu to
+  put it in.
 - **Remove** an entry.
 - **Drag** to reorder. The drop position is the playlist's: `gapAt` and
   `moveTarget` in `features/playlist/playlistDrop.ts` are pure and take any list
   of rows.
-- **Save playlist as…** on the playlist panel: the upcoming tracks become a new
-  saved playlist. Stop markers and item overrides are not carried.
+- **Save as** on the playlist panel: the upcoming tracks become a new saved
+  playlist. Stop markers and item overrides are not carried.
+
+An open saved playlist also queues one of its tracks by that row's own **+**, as
+a library row does. On the list of saved playlists the search box filters by
+name; with one open it is disabled, since there is nothing it would search.
 
 The selection and the library drag meet saved playlists afterwards, and both
 already have their source half:
@@ -361,9 +369,9 @@ Commands are flat and do I/O, so each is an `async fn` over one `blocking(…)`
 call ([architecture.md](./architecture.md#commands)):
 
 ```
-saved_playlist_get          saved_playlist_create       saved_playlist_import
-saved_playlist_export       playlist_add_saved          playlist_save_as
-playlist_set_source
+saved_playlist_list         saved_playlist_get          saved_playlist_create
+saved_playlist_import       saved_playlist_export       playlist_add_saved
+playlist_save_as            playlist_set_source
 ```
 
 and, listed in `admin::ADMIN_COMMANDS`:
@@ -382,8 +390,10 @@ drop are one command. `playlist_add_saved` returns its two counts; see
 
 The list of saved playlists — id, name, entry count, missing count — is emitted
 whole as `saved-playlists` on every change to it, and after anything that can
-change a missing count: a bind, a scan, a purge. Entries are read on opening
-one. `program:playlist-state` gains the source — its id, its name and its count
+change a missing count: a bind, a scan, a purge. Those all end in
+`Health::refresh`, so that is where the second emit is. `saved_playlist_list` is
+the read for a renderer that missed one. Entries are read on opening a saved
+playlist, and again whenever the list arrives while one is open. `program:playlist-state` gains the source — its id, its name and its count
 of playable music — and `revertedFrom`.
 
 In the renderer `activeTab` is a `ContentType` today and drives the search

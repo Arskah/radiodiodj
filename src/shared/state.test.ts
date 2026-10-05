@@ -25,6 +25,17 @@ const { api } = vi.hoisted(() => {
     playlistInsert: vi.fn(),
     playlistAddMany: vi.fn(),
     playlistSetItemCuePoints: vi.fn(),
+    playlistAddSaved: vi.fn(),
+    playlistSaveAs: vi.fn(),
+    savedPlaylistList: vi.fn(),
+    onSavedPlaylists: vi.fn(),
+    savedPlaylistGet: vi.fn(),
+    savedPlaylistCreate: vi.fn(),
+    savedPlaylistAddEntries: vi.fn(),
+    savedPlaylistRemoveEntry: vi.fn(),
+    savedPlaylistMoveEntry: vi.fn(),
+    savedPlaylistRename: vi.fn(),
+    savedPlaylistDelete: vi.fn(),
     playlistAddStopMarker: vi.fn(),
     playlistAddFiller: vi.fn(),
     playlistRemove: vi.fn(),
@@ -267,6 +278,11 @@ function resetApi(): void {
   api.removePath.mockResolvedValue(true);
   api.purgeTracks.mockResolvedValue(0);
   api.libraryHealth.mockResolvedValue(structuredClone(EMPTY_HEALTH));
+  api.savedPlaylistList.mockResolvedValue([]);
+  api.savedPlaylistGet.mockResolvedValue(null);
+  api.savedPlaylistRemoveEntry.mockResolvedValue(undefined);
+  api.savedPlaylistMoveEntry.mockResolvedValue(undefined);
+  api.savedPlaylistDelete.mockResolvedValue(undefined);
   api.scanLibraries.mockResolvedValue({ alreadyRunning: false });
   api.cancelScan.mockResolvedValue(undefined);
   api.cancelAnalysis.mockResolvedValue(undefined);
@@ -3135,6 +3151,110 @@ describe("updates", () => {
   it("keeps a failed install from escaping as a rejection", async () => {
     api.updateInstall.mockRejectedValue("signature mismatch");
     await expect(app.installUpdate()).resolves.toBeUndefined();
+  });
+});
+
+describe("AppState saved playlists", () => {
+  let app: AppState;
+
+  const summary = { id: 5, name: "Show", entries: 2, missing: 0 };
+  const show = (titles: string[]) => ({
+    id: 5,
+    name: "Show",
+    entries: titles.map((title, i) => ({
+      id: i + 1,
+      track: null,
+      artist: "a",
+      title,
+      duration: 100,
+      contentType: "music",
+    })),
+  });
+
+  beforeEach(() => {
+    resetApi();
+    app = makeApp().app;
+    app.tracks = [t(1), t(2)];
+  });
+
+  it("loads the list", async () => {
+    api.savedPlaylistList.mockResolvedValue([summary]);
+    await app.loadSavedPlaylists();
+    expect(app.savedPlaylists).toEqual([summary]);
+  });
+
+  it("does not search the library from the Playlists tab", async () => {
+    app.setTab("playlists");
+    await app.search();
+    expect(api.search).not.toHaveBeenCalled();
+  });
+
+  it("lists no rows for the selection on the Playlists tab", () => {
+    app.setTab("playlists");
+    app.toggleSelectAll();
+    expect(app.selectedIds).toEqual([]);
+    app.toggleSelected(2);
+    expect(app.selectedIds).toEqual([2]);
+  });
+
+  it("refreshes the open saved playlist when the list changes", async () => {
+    api.savedPlaylistGet.mockResolvedValue(show(["A"]));
+    await app.openSavedPlaylist(5);
+    expect(app.openSaved?.entries).toHaveLength(1);
+
+    api.savedPlaylistGet.mockResolvedValue(show(["A", "B"]));
+    const changed = api.onSavedPlaylists.mock.calls[0][0];
+    changed([summary]);
+    await vi.waitFor(() => expect(app.openSaved?.entries).toHaveLength(2));
+    expect(app.savedPlaylists).toEqual([summary]);
+  });
+
+  it("closes the open saved playlist once it is gone", async () => {
+    api.savedPlaylistGet.mockResolvedValue(show(["A"]));
+    await app.openSavedPlaylist(5);
+
+    api.savedPlaylistGet.mockResolvedValue(null);
+    api.onSavedPlaylists.mock.calls[0][0]([]);
+    await vi.waitFor(() => expect(app.openSaved).toBeNull());
+  });
+
+  it("an answer that lands after closing is dropped", async () => {
+    let answer: (saved: unknown) => void = () => {};
+    api.savedPlaylistGet.mockReturnValue(
+      new Promise((resolve) => (answer = resolve)),
+    );
+    const opening = app.openSavedPlaylist(5);
+    app.closeSavedPlaylist();
+    answer(show(["A"]));
+    await opening;
+    expect(app.openSaved).toBeNull();
+  });
+
+  it("says what an append did", async () => {
+    api.playlistAddSaved.mockResolvedValue({ added: 31, skipped: 2 });
+    await app.addSavedToPlaylist(5, true);
+    expect(api.playlistAddSaved).toHaveBeenCalledWith(5, true);
+    expect(app.savedNotice).toBe("Added 31 tracks, skipped 2 unmatched");
+  });
+
+  it("moves an entry of the open saved playlist", async () => {
+    api.savedPlaylistGet.mockResolvedValue(show(["A", "B"]));
+    await app.openSavedPlaylist(5);
+    app.moveSavedEntry(0, 1);
+    expect(api.savedPlaylistMoveEntry).toHaveBeenCalledWith(5, 0, 1);
+  });
+
+  it("deleting the open saved playlist closes it", async () => {
+    api.savedPlaylistGet.mockResolvedValue(show(["A"]));
+    await app.openSavedPlaylist(5);
+    await app.deleteSavedPlaylist(5);
+    expect(api.savedPlaylistDelete).toHaveBeenCalledWith(5);
+    expect(app.openSaved).toBeNull();
+  });
+
+  it("hands a refused rename to the caller", async () => {
+    api.savedPlaylistRename.mockRejectedValue(new Error("taken"));
+    await expect(app.renameSavedPlaylist(5, "Other")).rejects.toThrow("taken");
   });
 });
 

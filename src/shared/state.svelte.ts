@@ -4,6 +4,9 @@ import type {
   ImageSlot,
   ThemeListing,
   ContentType,
+  LibraryTab,
+  SavedPlaylist,
+  SavedPlaylistSummary,
   CuePoints,
   DeviceInfo,
   DeviceRef,
@@ -50,6 +53,7 @@ import { isStrictNever } from "./isStrictNever";
 import { APP_NAME } from "./appName";
 import { savePaintHint } from "./appearance";
 import { healthAttention as attentionOf } from "./health";
+import { appendMessage } from "./savedPlaylists";
 
 const logger = {
   error: (...args: unknown[]) => console.error(...args),
@@ -136,9 +140,26 @@ export interface CueSnapshot {
   previewing: boolean;
 }
 
+/** Which saved-playlist dialog is up, and what it acts on. */
+export type SavedDialog =
+  | { kind: "saveAs" }
+  | { kind: "addTo"; trackIds: number[] }
+  | { kind: "rename"; id: number; name: string }
+  | { kind: "delete"; id: number; name: string };
+
 export class AppState {
   searchQuery = $state("");
-  activeTab = $state<ContentType>("music");
+  activeTab = $state<LibraryTab>("music");
+
+  /** The saved playlists, as the backend last listed them. */
+  savedPlaylists = $state<SavedPlaylistSummary[]>([]);
+  /** The saved playlist open in the Playlists tab. See `docs/saved-playlists.md`. */
+  openSaved = $state<SavedPlaylist | null>(null);
+  private openSavedRequest = 0;
+  /** What the last append of a saved playlist did. */
+  savedNotice = $state<string | null>(null);
+  /** The saved-playlist dialog that is up, if one is. */
+  savedDialog = $state<SavedDialog | null>(null);
   playlistTab = $state<PlaylistTab>("playlist");
 
   /**
@@ -489,6 +510,7 @@ export class AppState {
         (this.tailRemaining = Math.max(0, this.tailDuration - seconds)),
     );
     void api.onLibraryHealth((report) => (this.health = report));
+    void api.onSavedPlaylists((list) => void this.applySavedPlaylists(list));
     void api.onAdminStateChanged((status) => this.applyAdmin(status));
     void api.onUpdateState((state) => (this.update = state));
 
@@ -604,11 +626,13 @@ export class AppState {
    * them there.
    */
   async search(): Promise<void> {
+    const tab = this.activeTab;
+    if (tab === "playlists") return;
     const request = ++this.searchRequest;
     try {
       const tracks = await api.search(
         this.searchQuery,
-        this.activeTab,
+        tab,
         this.sortBy ?? undefined,
         this.sortDir,
       );
@@ -618,9 +642,89 @@ export class AppState {
     }
   }
 
-  setTab(tab: ContentType): void {
+  setTab(tab: LibraryTab): void {
     this.activeTab = tab;
     void this.search();
+  }
+
+  // ----- Saved playlists -----
+
+  async loadSavedPlaylists(): Promise<void> {
+    try {
+      this.savedPlaylists = await api.savedPlaylistList();
+    } catch (err) {
+      logger.error("Saved playlists lookup failed:", err);
+    }
+  }
+
+  /** A new list also refreshes the open one: its entries may be what changed. */
+  private async applySavedPlaylists(
+    list: SavedPlaylistSummary[],
+  ): Promise<void> {
+    this.savedPlaylists = list;
+    if (this.openSaved) await this.openSavedPlaylist(this.openSaved.id);
+  }
+
+  /** Open a saved playlist, or close it when it is no longer there. */
+  async openSavedPlaylist(id: number): Promise<void> {
+    const request = ++this.openSavedRequest;
+    try {
+      const saved = await api.savedPlaylistGet(id);
+      if (request === this.openSavedRequest) this.openSaved = saved;
+    } catch (err) {
+      logger.error("Saved playlist lookup failed:", err);
+    }
+  }
+
+  closeSavedPlaylist(): void {
+    this.openSavedRequest++;
+    this.openSaved = null;
+  }
+
+  /** Append a saved playlist to the playlist and say what that did. */
+  async addSavedToPlaylist(id: number, weave: boolean): Promise<void> {
+    try {
+      const { added, skipped } = await api.playlistAddSaved(id, weave);
+      this.savedNotice = appendMessage(added, skipped);
+    } catch (err) {
+      logger.error("Adding a saved playlist failed:", err);
+    }
+  }
+
+  /** Rejects with the backend's reason, for the dialog to show. */
+  async savePlaylistAs(name: string): Promise<void> {
+    await api.playlistSaveAs(name);
+  }
+
+  /** Rejects with the backend's reason, for the dialog to show. */
+  async createSavedPlaylist(name: string, trackIds: number[]): Promise<void> {
+    await api.savedPlaylistCreate(name, trackIds);
+  }
+
+  /** Rejects with the backend's reason, for the dialog to show. */
+  async addToSavedPlaylist(id: number, trackIds: number[]): Promise<void> {
+    await api.savedPlaylistAddEntries(id, trackIds, null);
+  }
+
+  /** Rejects with the backend's reason, for the dialog to show. */
+  async renameSavedPlaylist(id: number, name: string): Promise<void> {
+    await api.savedPlaylistRename(id, name);
+  }
+
+  /** Rejects with the backend's reason, for the dialog to show. */
+  async deleteSavedPlaylist(id: number): Promise<void> {
+    await api.savedPlaylistDelete(id);
+    if (this.openSaved?.id === id) this.closeSavedPlaylist();
+  }
+
+  removeSavedEntry(entryId: number): void {
+    this.send(api.savedPlaylistRemoveEntry(entryId));
+  }
+
+  moveSavedEntry(from: number, to: number): void {
+    const saved = this.openSaved;
+    if (!saved) return;
+    this.send(api.savedPlaylistMoveEntry(saved.id, from, to));
   }
 
   toggleSort(column: SortColumn): void {
@@ -642,7 +746,9 @@ export class AppState {
     this.send(api.playlistAddFront(track.id));
   }
 
-  private get listedIds(): number[] {
+  /** The rows a selection gesture can reach: none on the Playlists tab. */
+  get listedIds(): number[] {
+    if (this.activeTab === "playlists") return [];
     return this.tracks.map((track) => track.id);
   }
 

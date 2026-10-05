@@ -83,6 +83,9 @@ browser audio pipeline, no external transcoder, no subscription.
   configurable window, backed by a persistent airing log
   ([docs](docs/rotation.md))
 - **History** — what actually aired, surviving restarts
+- **Saved playlists** — keep a queued show under a name and add it back later,
+  as written or with jingles and commercials woven in
+  ([docs](docs/saved-playlists.md))
 
 ### Station
 
@@ -111,8 +114,10 @@ browser audio pipeline, no external transcoder, no subscription.
    the position it should play at; right-click a row for cueing, cue points,
    metadata editing and play-now. Click rows to select several — an album, or
    tracks from different searches — and add them together, in the order picked
-5. Toggle **Auto Mode** in the toolbar to let the playlist keep filling itself
-6. Switch the deck between **Auto** and **Manual** to choose whether it
+5. **Save as** in the playlist panel keeps the queue as a saved playlist; the
+   **Playlists** tab lists them, and adds one back to the playlist
+6. Toggle **Auto Mode** in the toolbar to let the playlist keep filling itself
+7. Switch the deck between **Auto** and **Manual** to choose whether it
    advances on its own
 
 ## Prerequisites
