@@ -196,6 +196,48 @@ describe("saved playlists", () => {
     expect((await queuedTitles()).sort()).toEqual([...picked].sort());
   });
 
+  it("picks entries of a saved playlist and removes them together", async () => {
+    await bootAndScan();
+
+    const rows = browser.$$(sel.trackRow);
+    await rows[0].click();
+    await rows[1].click();
+    await rows[2].click();
+    await browser.$(sel.saveSelection).click();
+    await browser.$(sel.savedDialog).waitForDisplayed({ timeout: 5_000 });
+    await browser.$(sel.savedName).setValue("three");
+    await browser.$(sel.savedConfirm).click();
+    await browser
+      .$(sel.savedDialog)
+      .waitForExist({ timeout: 5_000, reverse: true });
+
+    await browser.$(sel.libraryTab("Playlists")).click();
+    await browser.$(sel.savedRow).waitForDisplayed({ timeout: 5_000 });
+    await browser.$(sel.savedRow).click();
+    await browser.waitUntil(async () => (await entryTitles()).length === 3, {
+      timeout: 5_000,
+      timeoutMsg: "the saved playlist did not open with its three entries",
+    });
+    const before = await entryTitles();
+
+    const entries = browser.$$(sel.savedEntry);
+    await entries[0].click();
+    await entries[2].click();
+    await waitForText(sel.selectionCount, "2 selected");
+    await expect(entries[0]).toHaveAttribute("aria-pressed", "true");
+    await expect(entries[1]).toHaveAttribute("aria-pressed", "false");
+
+    await browser.$(sel.removeSelection).click();
+    await browser.waitUntil(async () => (await entryTitles()).length === 1, {
+      timeout: 5_000,
+      timeoutMsg: "the picked entries were not removed",
+    });
+    expect(await entryTitles()).toEqual([before[1]]);
+    await browser
+      .$(sel.selectionBar)
+      .waitForExist({ timeout: 5_000, reverse: true });
+  });
+
   it("adds a library track to a saved playlist from its menu", async () => {
     await bootAndScan();
 

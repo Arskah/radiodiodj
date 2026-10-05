@@ -172,6 +172,8 @@ export class AppState {
    * one row, or the whole selection when the row under the pointer is in it.
    */
   draggedTrackIds = $state<number[] | null>(null);
+  /** What is being dragged is the library selection, which a drop then uses up. */
+  private draggedLibrarySelection = false;
 
   /**
    * The library selection, as track ids in pick order. It outlives a search, a
@@ -786,6 +788,25 @@ export class AppState {
     if (this.openSaved?.id === id) this.closeSavedPlaylist();
   }
 
+  /** Queue tracks in the order given, at the end or as next-up. */
+  queueTracks(ids: number[], asNext = false): void {
+    if (ids.length === 0) return;
+    this.send(api.playlistAddMany(ids, asNext ? 0 : null));
+  }
+
+  removeSavedEntries(entryIds: number[]): void {
+    const saved = this.openSaved;
+    if (!saved || entryIds.length === 0) return;
+    this.send(api.savedPlaylistRemoveEntries(saved.id, entryIds));
+  }
+
+  /** Move entries of the open saved playlist as one block into the gap at `index`. */
+  moveSavedEntries(entryIds: number[], index: number): void {
+    const saved = this.openSaved;
+    if (!saved || entryIds.length === 0) return;
+    this.send(api.savedPlaylistMoveEntries(saved.id, entryIds, index));
+  }
+
   removeSavedEntry(entryId: number): void {
     this.send(api.savedPlaylistRemoveEntry(entryId));
   }
@@ -863,9 +884,19 @@ export class AppState {
 
   /** A drag of a selected row carries the selection; of any other, that row. */
   startLibraryDrag(track: Track): void {
-    this.draggedTrackIds = this.selectedIds.includes(track.id)
+    this.draggedLibrarySelection = this.selectedIds.includes(track.id);
+    this.draggedTrackIds = this.draggedLibrarySelection
       ? [...this.selectedIds]
       : [track.id];
+  }
+
+  /**
+   * Start a drag of tracks that are not the library selection's — the entries
+   * of a saved playlist. An empty list is a drag that carries no track.
+   */
+  startTrackDrag(ids: number[]): void {
+    this.draggedLibrarySelection = false;
+    this.draggedTrackIds = ids.length > 0 ? ids : null;
   }
 
   /** Queue what is being dragged ahead of the item at `index`. */
@@ -873,7 +904,7 @@ export class AppState {
     const ids = this.draggedTrackIds;
     this.draggedTrackIds = null;
     if (!ids || ids.length === 0) return;
-    const selection = this.selectedIds.includes(ids[0]);
+    const selection = this.draggedLibrarySelection;
     if (ids.length === 1) this.send(api.playlistInsert(ids[0], index));
     else this.send(api.playlistAddMany(ids, index));
     if (selection) this.clearSelection();

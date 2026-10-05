@@ -307,6 +307,22 @@ export const api = {
   savedPlaylistRemoveEntry(entryId: number): Promise<void> {
     return invoke<void>("saved_playlist_remove_entry", { entryId });
   },
+  /** Admin only. Removes several entries as one change. */
+  savedPlaylistRemoveEntries(id: number, entryIds: number[]): Promise<void> {
+    return invoke<void>("saved_playlist_remove_entries", { id, entryIds });
+  },
+
+  /**
+   * Admin only. Moves several entries as one block, in the order given, into
+   * the gap at `index` of the saved playlist as it stands.
+   */
+  savedPlaylistMoveEntries(
+    id: number,
+    entryIds: number[],
+    index: number,
+  ): Promise<void> {
+    return invoke<void>("saved_playlist_move_entries", { id, entryIds, index });
+  },
   /** Admin only. */
   savedPlaylistMoveEntry(id: number, from: number, to: number): Promise<void> {
     return invoke<void>("saved_playlist_move_entry", { id, from, to });

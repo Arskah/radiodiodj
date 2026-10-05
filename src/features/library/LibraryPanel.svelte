@@ -16,6 +16,8 @@
   ];
 
   const onPlaylists = $derived(app.activeTab === "playlists");
+  /** A saved playlist is open: its entries, not the library, are on screen. */
+  const entriesOpen = $derived(onPlaylists && app.openSaved !== null);
 
   const sortableCols: { column: SortColumn; label: string; cls: string }[] = [
     // Album order rather than a bare number sort, so searching an album and
@@ -138,6 +140,8 @@
   // On the document, not the list: select-all means the library wherever
   // focus happens to be, and nothing has focus after a click on empty space.
   function onDocumentKeyDown(e: KeyboardEvent): void {
+    // An open saved playlist has a selection of its own, and answers for it.
+    if (entriesOpen) return;
     if (typing(e.target) || menuTrack) return;
     if (app.settingsOpen || document.querySelector('[aria-modal="true"]')) {
       return;
@@ -459,7 +463,7 @@
         {/if}
       </div>
     {/if}
-    {#if selectedCount > 0}
+    {#if selectedCount > 0 && !entriesOpen}
       <div id="selection-bar" role="toolbar" aria-label="Selection">
         <span id="selection-count" aria-live="polite">
           {selectedCount} selected{hidden > 0 ? ` · ${hidden} not shown` : ""}

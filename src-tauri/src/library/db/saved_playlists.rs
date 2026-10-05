@@ -1,6 +1,8 @@
 //! Saved playlists: named, stored, ordered lists of entries. See
 //! `docs/saved-playlists.md`.
 
+use std::collections::HashSet;
+
 use anyhow::{anyhow, bail, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -348,6 +350,69 @@ impl Db {
         Ok(())
     }
 
+    /// Remove several entries of one saved playlist at once. Ids that are not
+    /// its entries are ignored.
+    pub fn remove_saved_entries(
+        &self,
+        playlist_id: i64,
+        entry_ids_to_remove: &[i64],
+        now_ms: i64,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        touch(&tx, playlist_id, now_ms)?;
+        for chunk in entry_ids_to_remove.chunks(ID_CHUNK) {
+            let sql = format!(
+                "DELETE FROM saved_playlist_entries WHERE playlist_id = ?1 AND id IN ({})",
+                super::placeholders_from(chunk.len(), 2)
+            );
+            let params = std::iter::once(playlist_id).chain(chunk.iter().copied());
+            tx.execute(&sql, rusqlite::params_from_iter(params))?;
+        }
+        let order = entry_ids(&tx, playlist_id)?;
+        write_order(&tx, &order)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Move several entries as one block, in the order given, into the gap at
+    /// `gap` — a position counted in the list as it stands, the moved entries
+    /// included. A gap past the end is the end. Ids that are not entries of
+    /// this saved playlist are ignored.
+    pub fn move_saved_entries(
+        &self,
+        playlist_id: i64,
+        moved: &[i64],
+        gap: usize,
+        now_ms: i64,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        touch(&tx, playlist_id, now_ms)?;
+        let order = entry_ids(&tx, playlist_id)?;
+        let present: HashSet<i64> = order.iter().copied().collect();
+        let block: Vec<i64> = moved
+            .iter()
+            .copied()
+            .filter(|id| present.contains(id))
+            .collect();
+        let lifted: HashSet<i64> = block.iter().copied().collect();
+        // Where the gap falls once the block has been lifted out.
+        let at = order
+            .iter()
+            .take(gap.min(order.len()))
+            .filter(|id| !lifted.contains(id))
+            .count();
+        let mut order: Vec<i64> = order
+            .into_iter()
+            .filter(|id| !lifted.contains(id))
+            .collect();
+        order.splice(at..at, block);
+        write_order(&tx, &order)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Move the entry at `from` so that it ends up at `to`. Indices past the
     /// end are clamped: they describe a list that has since shrunk.
     pub fn move_saved_entry(
@@ -669,6 +734,59 @@ mod tests {
         let first = db.saved_playlist(p).unwrap().unwrap().entries[0].id;
         db.remove_saved_entry(first, 3).unwrap();
         assert_eq!(titles(&db, p), ["C", "A"]);
+    }
+
+    fn entry_ids_of(db: &Db, id: i64) -> Vec<i64> {
+        db.saved_playlist(id)
+            .unwrap()
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|e| e.id)
+            .collect()
+    }
+
+    #[test]
+    fn several_entries_are_removed_at_once_and_only_from_their_own_list() {
+        let (db, ids) = db_with_tracks(&["A", "B", "C", "D"]);
+        let p = db.create_saved_playlist("Show", &ids, 1).unwrap().id;
+        let other = db.create_saved_playlist("Other", &ids[..1], 1).unwrap().id;
+        let e = entry_ids_of(&db, p);
+        let foreign = entry_ids_of(&db, other)[0];
+
+        db.remove_saved_entries(p, &[e[3], e[1], foreign, 999], 2)
+            .unwrap();
+
+        assert_eq!(titles(&db, p), ["A", "C"]);
+        assert_eq!(titles(&db, other), ["A"]);
+    }
+
+    #[test]
+    fn a_block_moves_in_the_order_given_to_a_gap_of_the_list_as_it_stands() {
+        let (db, ids) = db_with_tracks(&["A", "B", "C", "D", "E"]);
+        let p = db.create_saved_playlist("Show", &ids, 1).unwrap().id;
+        let e = entry_ids_of(&db, p);
+
+        // D then B, dropped above E.
+        db.move_saved_entries(p, &[e[3], e[1]], 4, 2).unwrap();
+        assert_eq!(titles(&db, p), ["A", "C", "D", "B", "E"]);
+
+        // To the top, and a gap past the end is the end.
+        let e = entry_ids_of(&db, p);
+        db.move_saved_entries(p, &[e[4], e[2]], 0, 3).unwrap();
+        assert_eq!(titles(&db, p), ["E", "D", "A", "C", "B"]);
+        let e = entry_ids_of(&db, p);
+        db.move_saved_entries(p, &[e[0]], 99, 4).unwrap();
+        assert_eq!(titles(&db, p), ["D", "A", "C", "B", "E"]);
+    }
+
+    #[test]
+    fn a_block_dropped_inside_itself_closes_up_where_it_was_dropped() {
+        let (db, ids) = db_with_tracks(&["A", "B", "C", "D"]);
+        let p = db.create_saved_playlist("Show", &ids, 1).unwrap().id;
+        let e = entry_ids_of(&db, p);
+        db.move_saved_entries(p, &[e[1], e[2]], 2, 2).unwrap();
+        assert_eq!(titles(&db, p), ["A", "B", "C", "D"]);
     }
 
     #[test]

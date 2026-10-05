@@ -326,10 +326,42 @@ An entry row is a library row wherever it has a track to be one for. It shows
 the same columns, play count and air time included, with a trimmed track's time
 marked. Hovering it shows the track's card. A double-click or its **+** queues
 the track; it has the cue-deck button when a cue device is set and the
-edit-metadata button for an admin; it takes the keyboard's menu bindings. What
-it does not do yet is get picked: a click selects nothing until
-[#587](https://github.com/Arskah/radiodiodj/issues/587)'s other half. An
+edit-metadata button for an admin; it takes the keyboard's menu bindings. An
 unmatched entry has none of this, being text and not a track.
+
+### Selecting entries
+
+Entries are picked by the library's gestures — click, shift-click for a range,
+Space, _Select all_ and Ctrl/Cmd+A over the rows shown, Escape to clear — and
+held in pick order, the checkbox showing each one's place in it. See
+[library.md](./library.md#selecting-several) for the gestures themselves.
+
+It is a selection of its own, not the library's. The library's is of track ids,
+and an entry is not a track: the same track can be in a saved playlist twice,
+and an unmatched entry has no track at all. So this one is of entry ids, with
+the same pure rules in `shared/selection.ts`. It belongs to the one open saved
+playlist and is dropped when that is closed; an entry removed underneath it
+leaves it. The library selection is kept, untouched, while a saved playlist is
+open: one bar shows at a time, and no action takes from both.
+
+| action              | who   | how                                                             |
+| ------------------- | ----- | --------------------------------------------------------------- |
+| add to the playlist | all   | _Add N to playlist_ / _Add N as next_, bar or picked row's menu |
+| add at a position   | all   | drag a picked row into the playlist                             |
+| remove              | admin | _Remove N_ on the bar, or in the menu                           |
+| move as one block   | admin | drag a picked row within the saved playlist                     |
+
+Adding takes the picked entries that have a track, in pick order; the count on
+the button is of those. An unmatched entry can be picked and removed, and is
+passed over by an add. One bound to a missing track is queued with its badge.
+
+A block lands in pick order, in the gap the drop line shows, counted in the
+list as it stands: `saved_playlist_move_entries`. Removing is
+`saved_playlist_remove_entries`. Each is one change and one re-send of the
+list, however many entries it takes. Like a single reorder, a block moves only
+while the list is unsearched and in its own order.
+
+Used, the selection is cleared; a drag dropped nowhere keeps it.
 
 The search box follows what is on screen. On the list of saved playlists it
 filters by name. With one open it searches that playlist's entries — title,
@@ -361,15 +393,6 @@ nothing. Both kinds of row take the library's keyboard bindings for the menu.
 
 What is still to come:
 
-- [#587](https://github.com/Arskah/radiodiodj/issues/587), the rest of it,
-  makes the entries of an open saved
-  playlist selectable. The library selection is keyed by track id and an entry
-  is not a track — the same track can be in a saved playlist twice, and an
-  unmatched entry has no track at all — so entries take a selection of their own
-  over entry ids, with the same pure rules in `shared/selection.ts`. It belongs
-  to the one open saved playlist and is cleared when that is closed. The library
-  selection is kept underneath, untouched; one bar shows at a time, and no
-  action takes from both.
 - [#584](https://github.com/Arskah/radiodiodj/issues/584) makes an open saved
   playlist a second drop target for `app.draggedTrackIds`. A drag of a picked
   row carries the whole selection, so the drop is `saved_playlist_add_entries`
@@ -427,6 +450,7 @@ and, listed in `admin::ADMIN_COMMANDS`:
 
 ```
 saved_playlist_add_entries  saved_playlist_remove_entry saved_playlist_move_entry
+saved_playlist_remove_entries                           saved_playlist_move_entries
 saved_playlist_rename       saved_playlist_delete       saved_playlist_bind_entry
 ```
 
@@ -473,7 +497,7 @@ Each is one pull request.
 | 2   | Export and import       | the file, binding at import, after a scan and after the analysis pass                                                              | 1     | #501       |
 | 3   | Auto-playlist source    | the source in session and `DbRefiller`, the pool predicate, the track count, the empty-pool revert and its notice, the switch line | 1     | #503       |
 | 4   | Find in library         | binding an unmatched entry by hand                                                                                                 | 2     | #580       |
-| 5   | Selection and drag-drop | selecting entries of a saved playlist, dragging library rows onto one; the selection's own saved-playlist actions are built        | 1     | #587, #584 |
+| 5   | Selection and drag-drop | dragging library rows onto a saved playlist; the selection's saved-playlist actions and the selecting of entries are built         | 1     | #587, #584 |
 | 6   | The web authoring page  | a show built away from the studio                                                                                                  | #505  | #581       |
 
 Increment 1 is usable alone: a show built in the app and appended at its hour.
