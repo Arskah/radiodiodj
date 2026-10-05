@@ -187,7 +187,7 @@ describe("library", () => {
 
     const titles = await rowTitles();
     const rows = browser.$$(sel.trackRow);
-    await rows[2].click();
+    await rows[2].$(sel.trackRowCheck).click();
     await rows[0].click();
 
     await expect(browser.$(sel.selectionCount)).toHaveText("2 selected");
@@ -217,6 +217,39 @@ describe("library", () => {
     await browser
       .$(sel.selectionBar)
       .waitForExist({ timeout: 5_000, reverse: true });
+  });
+
+  it("double-click queues a row, and only while nothing is picked", async () => {
+    await bootAndScan();
+
+    const titles = await rowTitles();
+    const rows = browser.$$(sel.trackRow);
+    const queued = (): Promise<string[]> =>
+      browser.execute(() =>
+        Array.from(document.querySelectorAll("#playlist .pl-title")).map((el) =>
+          (el.textContent ?? "").trim(),
+        ),
+      );
+
+    await rows[1].click();
+    await expect(rows[1]).toHaveAttribute("aria-pressed", "false");
+
+    await rows[1].doubleClick();
+    await browser.waitUntil(
+      async () => {
+        const now = await queued();
+        return now.length === 1 && now[0] === titles[1];
+      },
+      { timeout: 5_000, timeoutMsg: "the double-click did not queue the row" },
+    );
+    await expect(rows[1]).toHaveAttribute("aria-pressed", "false");
+    await expect(browser.$(sel.selectionBar)).not.toExist();
+
+    await rows[0].$(sel.trackRowCheck).click();
+    await rows[2].doubleClick();
+    await expect(rows[2]).toHaveAttribute("aria-pressed", "false");
+    await expect(rows[0]).toHaveAttribute("aria-pressed", "true");
+    expect(await queued()).toHaveLength(1);
   });
 
   it("opens the context menu from the keyboard", async () => {

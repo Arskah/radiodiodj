@@ -4,6 +4,26 @@
  * top to bottom; a selection may hold ids that are not among them.
  */
 
+/** Where a click on a row landed, and what was held and picked at the time. */
+export interface RowClick {
+  /** On the row's `#` cell, where its checkbox shows. */
+  onCheck: boolean;
+  /** Cmd or Ctrl was held. */
+  modifier: boolean;
+  shift: boolean;
+  /** Something is picked already, in this list or out of sight. */
+  anyPicked: boolean;
+}
+
+/**
+ * Whether a click on a row picks it. A plain click on the body of a row does
+ * so only once something is picked; before that it is left alone, so that the
+ * two clicks of a double-click change nothing.
+ */
+export function clickPicks(click: RowClick): boolean {
+  return click.onCheck || click.modifier || click.shift || click.anyPicked;
+}
+
 /** Pick `id` last, or drop it if it is already picked. */
 export function toggle(selected: readonly number[], id: number): number[] {
   return selected.includes(id)

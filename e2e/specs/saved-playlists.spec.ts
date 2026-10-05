@@ -84,7 +84,7 @@ describe("saved playlists", () => {
     await bootAndScan();
 
     const rows = browser.$$(sel.trackRow);
-    await rows[1].click();
+    await rows[1].$(sel.trackRowCheck).click();
     await rows[0].click();
     await browser.$(sel.addSelection).click();
     await waitForQueue(2);
@@ -124,7 +124,7 @@ describe("saved playlists", () => {
     await bootAndScan();
 
     const rows = browser.$$(sel.trackRow);
-    await rows[0].click();
+    await rows[0].$(sel.trackRowCheck).click();
     await rows[1].click();
     await browser.$(sel.addSelection).click();
     await waitForQueue(2);
@@ -161,7 +161,7 @@ describe("saved playlists", () => {
     await bootAndScan();
 
     const rows = browser.$$(sel.trackRow);
-    await rows[2].click();
+    await rows[2].$(sel.trackRowCheck).click();
     await rows[0].click();
     const picked = await browser.execute(() =>
       Array.from(
@@ -200,7 +200,7 @@ describe("saved playlists", () => {
     await bootAndScan();
 
     const rows = browser.$$(sel.trackRow);
-    await rows[0].click();
+    await rows[0].$(sel.trackRowCheck).click();
     await rows[1].click();
     await rows[2].click();
     await browser.$(sel.saveSelection).click();
@@ -221,7 +221,7 @@ describe("saved playlists", () => {
     const before = await entryTitles();
 
     const entries = browser.$$(sel.savedEntry);
-    await entries[0].click();
+    await entries[0].$(sel.trackRowCheck).click();
     await entries[2].click();
     await waitForText(sel.selectionCount, "2 selected");
     await expect(entries[0]).toHaveAttribute("aria-pressed", "true");

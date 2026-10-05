@@ -1658,6 +1658,15 @@ body {
   display: none;
 }
 
+/* The cell is what a click picks by while nothing is picked yet. */
+.track-row .track-no {
+  cursor: pointer;
+}
+
+.track-row .track-no:hover .track-check {
+  border-color: var(--primary);
+}
+
 .track-row.selected .track-check {
   background: var(--primary);
   border-color: var(--primary);

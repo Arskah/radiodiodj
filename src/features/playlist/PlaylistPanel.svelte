@@ -385,12 +385,7 @@
         </div>
       {:else}
         {#each app.historyDisplay as track, i (i + "-" + track.id)}
-          <div
-            class="playlist-row history-row"
-            data-index={i}
-            ondblclick={() => app.requeueFromHistory(i)}
-            role="listitem"
-          >
+          <div class="playlist-row history-row" data-index={i} role="listitem">
             <div
               class="pl-hover-area"
               role="presentation"

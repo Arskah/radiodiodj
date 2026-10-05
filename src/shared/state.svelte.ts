@@ -882,10 +882,6 @@ export class AppState {
       : selectAll(this.selectedIds, listed);
   }
 
-  deselect(id: number): void {
-    this.selectedIds = without(this.selectedIds, [id]);
-  }
-
   clearSelection(): void {
     this.selectedIds = [];
     this.selectionAnchor = null;
@@ -977,13 +973,6 @@ export class AppState {
 
   get historyDisplay(): Track[] {
     return this.history.slice().reverse();
-  }
-
-  requeueFromHistory(displayIndex: number): void {
-    const i = this.history.length - 1 - displayIndex;
-    const track = this.history[i];
-    if (!track) return;
-    this.send(api.playlistAdd(track.id));
   }
 
   /**

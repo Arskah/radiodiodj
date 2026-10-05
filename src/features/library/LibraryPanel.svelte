@@ -5,7 +5,7 @@
   import { airDuration, isTrimmed } from "../../shared/cuePoints";
   import ContextMenu from "../ui/ContextMenu.svelte";
   import type { MenuItem } from "../ui/contextMenu";
-  import { allSelected, hiddenCount } from "../../shared/selection";
+  import { allSelected, clickPicks, hiddenCount } from "../../shared/selection";
   import SavedPlaylists from "./SavedPlaylists.svelte";
 
   const tabs: { type: LibraryTab; label: string }[] = [
@@ -118,12 +118,28 @@
     else app.toggleSelected(track.id);
   }
 
-  // Both clicks of a double-click toggle the row first, so it is dropped here
-  // whichever way they left it.
+  // Decided on the first click of a gesture and kept for the second, which
+  // would otherwise read a selection the first one had just emptied.
+  let gesturePicks = false;
+
+  function onRowClick(track: Track, e: MouseEvent): void {
+    if (e.detail <= 1) {
+      gesturePicks = clickPicks({
+        onCheck: e.target instanceof Element && !!e.target.closest(".track-no"),
+        modifier: e.metaKey || e.ctrlKey,
+        shift: e.shiftKey,
+        anyPicked: selectedCount > 0,
+      });
+    }
+    if (gesturePicks) pick(track, e.shiftKey);
+  }
+
   function onRowDblClick(track: Track, e: MouseEvent): void {
+    // Two quick presses of a row button are two presses of that button.
+    if (e.target instanceof Element && e.target.closest("button")) return;
     e.preventDefault();
+    if (gesturePicks) return;
     app.addToPlaylist(track);
-    app.deselect(track.id);
   }
 
   /** A field that takes the keys itself, where Ctrl/Cmd+A selects its text. */
@@ -403,7 +419,7 @@
               draggable="true"
               ondragstart={(e) => onDragStart(track, e)}
               ondragend={() => (app.draggedTrackIds = null)}
-              onclick={(e) => pick(track, e.shiftKey)}
+              onclick={(e) => onRowClick(track, e)}
               ondblclick={(e) => onRowDblClick(track, e)}
               onmouseenter={(e) => onEnter(track, e)}
               onmouseleave={() => app.clearHover()}
