@@ -38,6 +38,7 @@ const { api } = vi.hoisted(() => {
     pickSavedPlaylistTarget: vi.fn(),
     savedPlaylistAddEntries: vi.fn(),
     savedPlaylistRemoveEntry: vi.fn(),
+    savedPlaylistBindEntry: vi.fn(),
     savedPlaylistMoveEntry: vi.fn(),
     savedPlaylistRemoveEntries: vi.fn(),
     savedPlaylistMoveEntries: vi.fn(),
@@ -288,6 +289,7 @@ function resetApi(): void {
   api.savedPlaylistList.mockResolvedValue([]);
   api.savedPlaylistGet.mockResolvedValue(null);
   api.savedPlaylistRemoveEntry.mockResolvedValue(undefined);
+  api.savedPlaylistBindEntry.mockResolvedValue(undefined);
   api.savedPlaylistMoveEntry.mockResolvedValue(undefined);
   api.savedPlaylistRemoveEntries.mockResolvedValue(undefined);
   api.savedPlaylistMoveEntries.mockResolvedValue(undefined);
@@ -3405,6 +3407,22 @@ describe("AppState saved playlists", () => {
   it("hands a refused rename to the caller", async () => {
     api.savedPlaylistRename.mockRejectedValue(new Error("taken"));
     await expect(app.renameSavedPlaylist(5, "Other")).rejects.toThrow("taken");
+  });
+
+  it("binds an entry to a picked track, and hands a refusal to the caller", async () => {
+    await app.bindSavedEntry(3, 9);
+    expect(api.savedPlaylistBindEntry).toHaveBeenCalledWith(3, 9);
+
+    api.savedPlaylistBindEntry.mockRejectedValue(new Error("no present track"));
+    await expect(app.bindSavedEntry(3, 9)).rejects.toThrow("no present track");
+  });
+
+  it("finds tracks of one type without touching the library's rows", async () => {
+    api.search.mockResolvedValue([t(7)]);
+    const found = await app.findTracks("kate bush", "jingle");
+    expect(api.search).toHaveBeenCalledWith("kate bush", "jingle");
+    expect(found.map((track) => track.id)).toEqual([7]);
+    expect(app.tracks.map((track) => track.id)).toEqual([1, 2]);
   });
 });
 

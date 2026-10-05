@@ -307,6 +307,10 @@ export const api = {
   savedPlaylistRemoveEntry(entryId: number): Promise<void> {
     return invoke<void>("saved_playlist_remove_entry", { entryId });
   },
+  /** Admin only. The entry takes the track, and its snapshot with it. */
+  savedPlaylistBindEntry(entryId: number, trackId: number): Promise<void> {
+    return invoke<void>("saved_playlist_bind_entry", { entryId, trackId });
+  },
   /** Admin only. Removes several entries as one change. */
   savedPlaylistRemoveEntries(id: number, entryIds: number[]): Promise<void> {
     return invoke<void>("saved_playlist_remove_entries", { id, entryIds });

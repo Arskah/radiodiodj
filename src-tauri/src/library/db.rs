@@ -1986,6 +1986,7 @@ impl Db {
     pub fn purge_tracks(&self, ids: &[i64]) -> Result<Vec<i64>> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
+        saved_playlists::unbind_purged(&tx, ids)?;
         let mut deleted = Vec::new();
         for chunk in ids.chunks(ID_CHUNK) {
             let sql = format!(
@@ -2005,7 +2006,6 @@ impl Db {
             );
             tx.execute(&sql, params_from_iter(chunk))?;
         }
-        saved_playlists::unbind_purged(&tx, &deleted)?;
         tx.commit()?;
         Ok(deleted)
     }

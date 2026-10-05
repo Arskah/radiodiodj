@@ -11,6 +11,7 @@
   import CuePointOverlay from "./features/track/CuePointOverlay.svelte";
   import UnlockDialog from "./features/admin/UnlockDialog.svelte";
   import SavedPlaylistDialog from "./features/library/SavedPlaylistDialog.svelte";
+  import FindInLibraryDialog from "./features/library/FindInLibraryDialog.svelte";
   import { idleLock } from "./features/admin/idleLock";
   import { app } from "./shared/state.svelte";
 
@@ -44,3 +45,4 @@
 <CuePointOverlay />
 <UnlockDialog />
 <SavedPlaylistDialog />
+<FindInLibraryDialog />

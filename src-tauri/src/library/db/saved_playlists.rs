@@ -350,6 +350,27 @@ impl Db {
         Ok(())
     }
 
+    /// Bind an entry to the track the operator chose for it. The entry's
+    /// snapshot is rewritten from that track, so it reads from then on as one
+    /// added from the library. A missing track is refused.
+    pub fn bind_saved_entry(&self, entry_id: i64, track_id: i64, now_ms: i64) -> Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let playlist_id: i64 = tx
+            .query_row(
+                "UPDATE saved_playlist_entries                  SET track_id = t.id,                      fingerprint = COALESCE(t.fingerprint, saved_playlist_entries.fingerprint),                      artist = t.artist, title = t.title, duration = t.duration,                      content_type = t.content_type                  FROM tracks t                  WHERE saved_playlist_entries.id = ?1 AND t.id = ?2 AND t.missing_since IS NULL                  RETURNING playlist_id",
+                params![entry_id, track_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                anyhow!("no saved playlist entry {entry_id}, or no present track {track_id}")
+            })?;
+        touch(&tx, playlist_id, now_ms)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Remove several entries of one saved playlist at once. Ids that are not
     /// its entries are ignored.
     pub fn remove_saved_entries(
@@ -614,12 +635,14 @@ impl Db {
     }
 }
 
-/// Unbind every entry of the purged tracks. Called inside the purge's own
-/// transaction; the entries stay, as unmatched ones.
+/// Unbind every entry of the missing tracks among `ids`, which are about to be
+/// purged. Each entry first takes the track as it reads now for its snapshot,
+/// so what stays behind as an unmatched entry is the track as last known.
+/// Called inside the purge's own transaction, ahead of the delete.
 pub(super) fn unbind_purged(conn: &Connection, ids: &[i64]) -> Result<()> {
     for chunk in ids.chunks(ID_CHUNK) {
         let sql = format!(
-            "UPDATE saved_playlist_entries SET track_id = NULL WHERE track_id IN ({})",
+            "UPDATE saved_playlist_entries              SET (fingerprint, artist, title, duration, content_type) = (                    SELECT COALESCE(t.fingerprint, saved_playlist_entries.fingerprint),                           t.artist, t.title, t.duration, t.content_type                    FROM tracks t WHERE t.id = saved_playlist_entries.track_id),                  track_id = NULL              WHERE track_id IN (                    SELECT id FROM tracks WHERE missing_since IS NOT NULL AND id IN ({}))",
             placeholders(chunk.len())
         );
         conn.execute(&sql, rusqlite::params_from_iter(chunk))?;
@@ -804,6 +827,72 @@ mod tests {
         assert_eq!(list.entries[0].title, "A");
         assert!(list.entries[1].track.is_some());
         assert_eq!(db.saved_playlists().unwrap()[0].missing, 1);
+    }
+
+    fn retitle(db: &Db, id: i64, title: &str, fingerprint: &str) {
+        db.conn
+            .lock()
+            .execute(
+                "UPDATE tracks SET title = ?, fingerprint = ? WHERE id = ?",
+                params![title, fingerprint, id],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_purge_leaves_the_track_as_last_known_not_as_first_added() {
+        let (db, ids) = db_with_tracks(&["A", "B"]);
+        let p = db.create_saved_playlist("Show", &ids, 1).unwrap().id;
+        retitle(&db, ids[0], "A (remaster)", "v3:0");
+        mark_missing(&db, ids[0]);
+
+        db.purge_tracks(&ids).unwrap();
+
+        let list = db.saved_playlist(p).unwrap().unwrap();
+        assert!(list.entries[0].track.is_none());
+        assert_eq!(list.entries[0].title, "A (remaster)");
+        assert!(list.entries[1].track.is_some(), "a present track is kept");
+        let out = db.export_saved_playlist(p).unwrap().unwrap();
+        assert_eq!(out.entries[0].fingerprint.as_deref(), Some("v3:0"));
+    }
+
+    #[test]
+    fn binding_by_hand_rewrites_the_entry_from_the_chosen_track() {
+        let (db, ids) = db_with_tracks(&["Studio cut"]);
+        let made = db
+            .import_saved_playlist(&file("Show", &["v2:elsewhere", "v2:0"]), 1)
+            .unwrap();
+        let e = entry_ids_of(&db, made.id);
+        assert_eq!(db.saved_playlists().unwrap()[0].missing, 1);
+
+        db.bind_saved_entry(e[0], ids[0], 2).unwrap();
+
+        let list = db.saved_playlist(made.id).unwrap().unwrap();
+        assert_eq!(entry_ids_of(&db, made.id), e, "the entry keeps its place");
+        assert_eq!(list.entries[0].track.as_ref().map(|t| t.id), Some(ids[0]));
+        assert_eq!(list.entries[0].title, "Studio cut");
+        assert_eq!(db.saved_playlists().unwrap()[0].missing, 0);
+
+        // Purged, the entry is the chosen track's, not the file's stranger.
+        mark_missing(&db, ids[0]);
+        db.purge_tracks(&ids).unwrap();
+        let out = db.export_saved_playlist(made.id).unwrap().unwrap();
+        assert_eq!(out.entries[0].fingerprint.as_deref(), Some("v2:0"));
+        assert_eq!(out.entries[0].title.as_deref(), Some("Studio cut"));
+    }
+
+    #[test]
+    fn binding_by_hand_refuses_a_missing_track_and_an_unknown_entry() {
+        let (db, ids) = db_with_tracks(&["A", "B"]);
+        let p = db.create_saved_playlist("Show", &ids[..1], 1).unwrap().id;
+        let e = entry_ids_of(&db, p);
+        mark_missing(&db, ids[1]);
+
+        assert!(db.bind_saved_entry(e[0], ids[1], 2).is_err());
+        assert!(db.bind_saved_entry(e[0], 999, 2).is_err());
+        assert!(db.bind_saved_entry(999, ids[0], 2).is_err());
+        let list = db.saved_playlist(p).unwrap().unwrap();
+        assert_eq!(list.entries[0].track.as_ref().map(|t| t.id), Some(ids[0]));
     }
 
     #[test]
