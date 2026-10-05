@@ -180,6 +180,8 @@ mod tests {
         "saved_playlist_list",
         "saved_playlist_get",
         "saved_playlist_create",
+        "saved_playlist_export",
+        "saved_playlist_import",
         "playlist_set_item_cue_points",
         "cue_load",
         "get_waveform_detail",

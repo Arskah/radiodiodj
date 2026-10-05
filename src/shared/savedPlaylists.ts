@@ -9,6 +9,15 @@ export function appendMessage(added: number, skipped: number): string {
   return `Added ${tracks}, skipped ${skipped} unmatched`;
 }
 
+/** What the panel says once a file has become a saved playlist. */
+export function importMessage(
+  name: string,
+  entries: number,
+  missing: number,
+): string {
+  return `Imported “${name}”: ${sizeLabel(entries, missing)}`;
+}
+
 /** How a saved playlist's size reads in the list: `12 tracks · 2 missing`. */
 export function sizeLabel(entries: number, missing: number): string {
   const tracks = `${entries} ${entries === 1 ? "track" : "tracks"}`;

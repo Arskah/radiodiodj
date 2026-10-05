@@ -53,7 +53,7 @@ import { isStrictNever } from "./isStrictNever";
 import { APP_NAME } from "./appName";
 import { savePaintHint } from "./appearance";
 import { healthAttention as attentionOf } from "./health";
-import { appendMessage } from "./savedPlaylists";
+import { appendMessage, importMessage } from "./savedPlaylists";
 
 const logger = {
   error: (...args: unknown[]) => console.error(...args),
@@ -139,6 +139,9 @@ export interface CueSnapshot {
   track: Track | null;
   previewing: boolean;
 }
+
+const messageOf = (err: unknown): string =>
+  err instanceof Error ? err.message : String(err);
 
 /** Which saved-playlist dialog is up, and what it acts on. */
 export type SavedDialog =
@@ -688,6 +691,30 @@ export class AppState {
       this.savedNotice = appendMessage(added, skipped);
     } catch (err) {
       logger.error("Adding a saved playlist failed:", err);
+    }
+  }
+
+  /** Pick a file and make a saved playlist of it. The notice says how it went. */
+  async importSavedPlaylist(): Promise<void> {
+    try {
+      const path = await api.pickSavedPlaylistFile();
+      if (path === null) return;
+      const made = await api.savedPlaylistImport(path);
+      this.savedNotice = importMessage(made.name, made.entries, made.missing);
+    } catch (err) {
+      this.savedNotice = `Import failed: ${messageOf(err)}`;
+    }
+  }
+
+  /** Ask where, and write the saved playlist there as a file. */
+  async exportSavedPlaylist(id: number, name: string): Promise<void> {
+    try {
+      const path = await api.pickSavedPlaylistTarget(name);
+      if (path === null) return;
+      await api.savedPlaylistExport(id, path);
+      this.savedNotice = `Exported “${name}”`;
+    } catch (err) {
+      this.savedNotice = `Export failed: ${messageOf(err)}`;
     }
   }
 

@@ -16,7 +16,7 @@ use crate::library::auto_cue::{self, Analysed, Thresholds};
 use crate::library::scanner;
 
 mod saved_playlists;
-pub use saved_playlists::{SavedPlaylist, SavedPlaylistSummary};
+pub use saved_playlists::{SavedPlaylist, SavedPlaylistFile, SavedPlaylistSummary};
 
 /// `Default` exists for test fixtures, which would otherwise have to name every
 /// column each time one is added. Nothing in the app builds a `Track` that way —
