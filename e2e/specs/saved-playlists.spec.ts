@@ -120,6 +120,43 @@ describe("saved playlists", () => {
     await waitForText(sel.savedNotice, "Added 2 tracks");
   });
 
+  it("chooses a saved playlist as the auto-playlist source and drops it again", async () => {
+    await bootAndScan();
+
+    const rows = browser.$$(sel.trackRow);
+    await rows[0].click();
+    await rows[1].click();
+    await browser.$(sel.addSelection).click();
+    await waitForQueue(2);
+    await browser.$(sel.savePlaylistAs).click();
+    await browser.$(sel.savedDialog).waitForDisplayed({ timeout: 5_000 });
+    await browser.$(sel.savedName).setValue("Pool");
+    await browser.$(sel.savedConfirm).click();
+    await browser
+      .$(sel.savedDialog)
+      .waitForExist({ timeout: 5_000, reverse: true });
+
+    await browser.$(sel.libraryTab("Playlists")).click();
+    const saved = browser.$(sel.savedRow);
+    await saved.waitForDisplayed({ timeout: 5_000 });
+    await saved.click();
+    await browser.$(sel.savedSource).waitForClickable({ timeout: 5_000 });
+    await browser.$(sel.savedSource).click();
+
+    const line = browser.$(sel.autoSource);
+    await line.waitForDisplayed({ timeout: 5_000 });
+    await waitForText(sel.autoSource, "Pool");
+    await waitForText(sel.autoSource, "2 tracks");
+    await waitForText(sel.autoSource, "2 queued air first");
+    await expect(browser.$(sel.savedSource)).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    await browser.$(sel.autoSourceOff).click();
+    await line.waitForExist({ timeout: 5_000, reverse: true });
+  });
+
   it("adds a library track to a saved playlist from its menu", async () => {
     await bootAndScan();
 

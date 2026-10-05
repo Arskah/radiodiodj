@@ -76,7 +76,8 @@ browser audio pipeline, no external transcoder, no subscription.
 ### Programming
 
 - **Auto playlist** — continuous playback that keeps a lookahead buffer queued
-  and refills itself from the music library ([docs](docs/playlist.md))
+  and refills itself from the music library, or from one saved playlist chosen
+  as its source ([docs](docs/playlist.md))
 - **Interleave** — a jingle every 4 music tracks and a commercial every 8, both
   configurable
 - **Rotation rules** — never reselect a track, or an artist, that aired inside a

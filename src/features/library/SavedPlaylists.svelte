@@ -142,6 +142,18 @@
       onclick={() => append(open.id, true)}>+ Jingles &amp; comm</button
     >
     <button
+      id="btn-saved-source"
+      class="btn-filler"
+      class:active={app.autoSource?.id === open.id}
+      title={app.autoSource?.id === open.id
+        ? "Auto Mode draws its music from this saved playlist. Click to go back to the music library."
+        : "Have Auto Mode draw its music from this saved playlist"}
+      aria-pressed={app.autoSource?.id === open.id}
+      onclick={() =>
+        void app.setAutoSource(app.autoSource?.id === open.id ? null : open.id)}
+      >Auto source</button
+    >
+    <button
       id="btn-saved-export"
       class="btn-edit"
       title="Export as a file"
@@ -293,6 +305,13 @@
             ></span
           >
           <span class="track-title saved-row-name">{saved.name}</span>
+          {#if app.autoSource?.id === saved.id}
+            <span
+              class="material-symbols-outlined saved-row-source"
+              title="Auto Mode draws its music from this saved playlist"
+              aria-label="Auto-playlist source">auto_awesome</span
+            >
+          {/if}
           <span class="saved-row-size" class:has-missing={saved.missing > 0}
             >{sizeLabel(saved.entries, saved.missing)}</span
           >
@@ -360,6 +379,16 @@
   .saved-row-icon {
     font-size: 16px;
     vertical-align: middle;
+  }
+
+  .saved-row-source {
+    font-size: 16px;
+    color: var(--primary);
+  }
+
+  .btn-filler.active {
+    background: var(--primary);
+    color: var(--on-primary);
   }
 
   .saved-row-size,

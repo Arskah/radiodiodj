@@ -7,6 +7,7 @@ import type {
   LibraryTab,
   SavedPlaylist,
   SavedPlaylistSummary,
+  SourceInfo,
   CuePoints,
   DeviceInfo,
   DeviceRef,
@@ -233,6 +234,17 @@ export class AppState {
   fading = $state<"out" | "next" | null>(null);
   fadeMs = $state(0);
   autoPlaylistActive = $state(false);
+  /** The saved playlist the auto-playlist draws from; `null` is the music library. */
+  autoSource = $state<SourceInfo | null>(null);
+  /** A source the backend dropped for want of playable music. */
+  revertedFrom = $state<string | null>(null);
+
+  /**
+   * The source was changed over a playlist that already held tracks, which air
+   * before anything the new source picks. Said once, until the queue is empty
+   * or the operator dismisses it.
+   */
+  sourceSwitchQueued = $state(false);
   autoAdvance = $state(true);
   /** What has aired, oldest first: the airing log's tail, from the snapshot. */
   history = $state<Track[]>([]);
@@ -694,6 +706,20 @@ export class AppState {
     }
   }
 
+  /**
+   * Choose the auto-playlist source: a saved playlist, or `null` for the music
+   * library. Sets the source and nothing else; the snapshot that follows is
+   * what shows it. A refusal is said in the notice.
+   */
+  async setAutoSource(id: number | null): Promise<void> {
+    try {
+      await api.playlistSetSource(id);
+      this.sourceSwitchQueued = this.playlist.length > 0;
+    } catch (err) {
+      this.savedNotice = messageOf(err);
+    }
+  }
+
   /** Pick a file and make a saved playlist of it. The notice says how it went. */
   async importSavedPlaylist(): Promise<void> {
     try {
@@ -905,6 +931,9 @@ export class AppState {
     this.playlist = snapshot.playlist;
     this.currentCueOverride = snapshot.currentOverride ?? null;
     this.autoPlaylistActive = snapshot.autoPlaylistActive;
+    this.autoSource = snapshot.source ?? null;
+    this.revertedFrom = snapshot.revertedFrom ?? null;
+    if (snapshot.playlist.length === 0) this.sourceSwitchQueued = false;
     this.autoAdvance = snapshot.autoAdvance;
     this.awaitingNetwork = snapshot.awaitingNetwork;
     this.history = snapshot.history;
@@ -1692,6 +1721,7 @@ export class AppState {
         currentTime: this.currentTime,
         currentCueOverride: this.currentCueOverride,
         autoPlaylistActive: this.autoPlaylistActive,
+        autoPlaylistSource: this.autoSource?.id ?? null,
         autoAdvance: this.autoAdvance,
         volume: 1,
         cueVolume: this.cueVolume,

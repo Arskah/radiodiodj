@@ -405,6 +405,24 @@ impl Db {
         Ok(())
     }
 
+    /// A saved playlist as an auto-playlist source: its name, and how many
+    /// distinct music tracks it can put on air.
+    pub fn saved_playlist_pool(&self, id: i64) -> Result<Option<(String, i64)>> {
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT p.name, ( \
+               SELECT COUNT(DISTINCT t.id) \
+               FROM saved_playlist_entries e JOIN tracks t ON t.id = e.track_id \
+               WHERE e.playlist_id = p.id AND t.missing_since IS NULL \
+                 AND t.content_type = 'music') \
+             FROM saved_playlists p WHERE p.id = ?",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
     /// Bind unmatched entries whose file has arrived. Idempotent, and cheap
     /// enough to run whenever a fingerprint may have been written. Returns how
     /// many entries it bound.
@@ -833,6 +851,23 @@ mod tests {
         assert!(SavedPlaylistFile::parse(other).is_err());
         assert!(SavedPlaylistFile::parse("#EXTM3U").is_err());
         assert!(SavedPlaylistFile::parse(r#"{"version":1}"#).is_err());
+    }
+
+    #[test]
+    fn a_pool_counts_each_playable_music_track_once() {
+        let (db, ids) = db_with_tracks(&["A", "B", "C", "J"]);
+        db.conn
+            .lock()
+            .execute(
+                "UPDATE tracks SET content_type = 'jingle' WHERE id = ?",
+                [ids[3]],
+            )
+            .unwrap();
+        mark_missing(&db, ids[2]);
+        let listed = [ids[0], ids[0], ids[1], ids[2], ids[3]];
+        let p = db.create_saved_playlist("Show", &listed, 1).unwrap().id;
+        assert_eq!(db.saved_playlist_pool(p).unwrap(), Some(("Show".into(), 2)));
+        assert_eq!(db.saved_playlist_pool(999).unwrap(), None);
     }
 
     #[test]

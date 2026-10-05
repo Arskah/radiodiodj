@@ -182,6 +182,14 @@ export interface SavedPlaylist {
   entries: SavedEntry[];
 }
 
+/** The saved playlist the auto-playlist draws its music from. */
+export interface SourceInfo {
+  id: number;
+  name: string;
+  /** Distinct music tracks it can put on air. */
+  tracks: number;
+}
+
 /** What appending a saved playlist to the playlist did. */
 export interface SavedAppend {
   added: number;

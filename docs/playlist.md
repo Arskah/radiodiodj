@@ -65,6 +65,7 @@ playlist_add_stop_marker playlist_remove           playlist_move
 playlist_clear           playlist_play_index       playlist_play_now
 playlist_next            playlist_prev             playlist_stop
 playlist_set_auto_advance                          playlist_set_auto_playlist
+playlist_set_source
 playlist_set_item_cue_points                       playlist_sync
 ```
 
@@ -163,6 +164,11 @@ buffer of `tuning.autoPlaylist.autoPlaylistBuffer` (20) items and refills when
 fewer than `autoPlaylistThreshold` (5) remain. The refill runs inside
 `engine`, so a refill and the track change that triggered it are one transition
 — there is no window in which the queue is observably empty.
+
+Music comes from the whole music library unless a saved playlist is chosen as
+the **source**, which narrows the music pick to that list and changes nothing
+else: `playlist_set_source`, and
+[saved-playlists.md](./saved-playlists.md#as-the-auto-playlists-source).
 
 Which tracks may be picked is [rotation.md](./rotation.md): a title window, an
 artist window, and one track per artist within a generated block.

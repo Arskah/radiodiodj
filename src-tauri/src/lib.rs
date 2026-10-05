@@ -649,6 +649,31 @@ fn playlist_set_auto_playlist(app: State<'_, AppState>, active: bool) {
     app.playlist.set_auto_playlist(active);
 }
 
+/// Choose the auto-playlist source: a saved playlist, or `null` for the music
+/// library. Refused for one with no playable music, which could only add
+/// nothing. See `docs/saved-playlists.md`.
+#[tauri::command(rename_all = "camelCase")]
+async fn playlist_set_source(state: State<'_, AppState>, id: Option<i64>) -> Result<(), String> {
+    let db = Arc::clone(&state.db);
+    let playlist = Arc::clone(&state.playlist);
+    blocking(move || {
+        let Some(id) = id else {
+            playlist.set_source(None);
+            return Ok(());
+        };
+        let (name, tracks) = db
+            .saved_playlist_pool(id)
+            .map_err(err)?
+            .ok_or_else(|| format!("no saved playlist {id}"))?;
+        if tracks == 0 {
+            return Err(format!("\u{201c}{name}\u{201d} has no playable music"));
+        }
+        playlist.set_source(Some((id, name)));
+        Ok(())
+    })
+    .await
+}
+
 #[tauri::command(rename_all = "camelCase")]
 fn playlist_set_auto_advance(app: State<'_, AppState>, active: bool) {
     app.playlist.set_auto_advance(active);
@@ -1737,6 +1762,7 @@ pub fn run() {
             playlist_prev,
             playlist_stop,
             playlist_set_auto_playlist,
+            playlist_set_source,
             playlist_set_auto_advance,
             get_stats,
             get_paths,

@@ -131,6 +131,10 @@ const NO_ARTISTS: &[String] = &[];
 
 /// An interleaved block of `count` tracks.
 ///
+/// `pool` is the auto-playlist source: a saved playlist the music is drawn
+/// from, in place of the whole music library. Jingles and commercials are never
+/// narrowed by it. See `docs/saved-playlists.md`.
+///
 /// `queued` is everything already in the playlist. Its ids are excluded from
 /// every content type, and — because a queued track has not aired yet and so
 /// has no log row — its artists constrain music selection exactly as aired ones
@@ -141,6 +145,7 @@ pub fn generate(
     queued: &[&Track],
     il: &Interleave,
     rot: &Rotation,
+    pool: Option<i64>,
     now_ms: i64,
 ) -> Result<Vec<Track>> {
     if count <= 0 {
@@ -155,7 +160,7 @@ pub fn generate(
 
     // Exclusion happens in SQL (`NOT IN`), so each query returns exactly the
     // requested count of not-yet-queued tracks — no over-fetch or post-filter.
-    let music = pick_music(db, music_count, queued, rot, now_ms)?;
+    let music = pick_music(db, music_count, queued, rot, pool, now_ms)?;
     let jingles = db.get_random_tracks(
         ContentType::Jingle.as_ref(),
         jingle_count,
@@ -185,6 +190,7 @@ fn pick_music(
     count: i64,
     queued: &[&Track],
     rot: &Rotation,
+    pool: Option<i64>,
     now_ms: i64,
 ) -> Result<Vec<Track>> {
     if count <= 0 {
@@ -225,6 +231,7 @@ fn pick_music(
                 NO_ARTISTS
             },
             spread_artists: rung.artist,
+            pool,
         };
         let got = db.get_random_tracks(ContentType::Music.as_ref(), deficit, &filter)?;
         exclude_ids.extend(got.iter().map(|t| t.id));
@@ -448,6 +455,58 @@ mod tests {
     }
 
     #[test]
+    fn a_pool_is_the_only_music_a_block_draws_from() {
+        let db = mixed_library(8, 4, 4);
+        let pool = db.create_saved_playlist("Pool", &[2, 4, 6], 1).unwrap().id;
+        for _ in 0..10 {
+            let picked = generate(
+                &db,
+                3,
+                &[],
+                &MUSIC_ONLY,
+                &Rotation::default(),
+                Some(pool),
+                NOW,
+            )
+            .unwrap();
+            let mut ids: Vec<i64> = picked.iter().map(|t| t.id).collect();
+            ids.sort_unstable();
+            assert_eq!(ids, [2, 4, 6]);
+        }
+    }
+
+    #[test]
+    fn a_small_pool_gives_what_it_has_and_never_leaks_into_the_library() {
+        let db = mixed_library(8, 4, 4);
+        let pool = db.create_saved_playlist("Pool", &[2, 4], 1).unwrap().id;
+        let queued = db.get_tracks_by_ids(&[2]).unwrap();
+        let queued: Vec<&Track> = queued.iter().collect();
+        let picked = generate(
+            &db,
+            5,
+            &queued,
+            &MUSIC_ONLY,
+            &Rotation::default(),
+            Some(pool),
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(picked.iter().map(|t| t.id).collect::<Vec<_>>(), [4]);
+    }
+
+    #[test]
+    fn a_pool_narrows_music_and_leaves_jingles_and_commercials_alone() {
+        let db = mixed_library(8, 4, 4);
+        // A jingle in the pool is not what restricts jingles.
+        let pool = db.create_saved_playlist("Pool", &[1, 2, 9], 1).unwrap().id;
+        let il = Interleave::default();
+        let picked = generate(&db, 8, &[], &il, &Rotation::default(), Some(pool), NOW).unwrap();
+        let (music, jingles, commercials) = kinds_of(&picked);
+        assert_eq!((music, jingles, commercials), (2, 2, 1));
+        assert!(picked.iter().all(|t| t.id > 8 || t.id <= 2));
+    }
+
+    #[test]
     fn weaving_brings_a_music_list_up_to_the_cadence() {
         let db = mixed_library(8, 4, 4);
         let list = listed(&db, &[1, 2, 3, 4, 5, 6, 7, 8]);
@@ -480,7 +539,7 @@ mod tests {
     }
 
     fn block(db: &Db, count: i64, queued: &[&Track], rot: &Rotation) -> Vec<Track> {
-        generate(db, count, queued, &MUSIC_ONLY, rot, NOW).unwrap()
+        generate(db, count, queued, &MUSIC_ONLY, rot, None, NOW).unwrap()
     }
 
     fn ids(tracks: &[Track]) -> Vec<i64> {
@@ -579,7 +638,7 @@ mod tests {
             commercial_every: 2,
             ..Interleave::default()
         };
-        let picked = generate(&db, 2, &[], &il, &Rotation::default(), NOW).unwrap();
+        let picked = generate(&db, 2, &[], &il, &Rotation::default(), None, NOW).unwrap();
         assert_eq!(picked.len(), 2, "both just aired and both came back");
     }
 

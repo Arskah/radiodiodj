@@ -121,6 +121,24 @@ pub struct Snapshot {
     /// Playback is blocked waiting for the media share to come back. Drives the
     /// reconnecting indicator.
     pub awaiting_network: bool,
+    /// The saved playlist the auto-playlist draws its music from. `None` is the
+    /// music library. See `docs/saved-playlists.md`.
+    #[serde(default)]
+    pub source: Option<SourceInfo>,
+    /// A source that ran out of playable music and was dropped for the music
+    /// library, by name, until the operator chooses a source again.
+    #[serde(default)]
+    pub reverted_from: Option<String>,
+}
+
+/// An auto-playlist source as the panel shows it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceInfo {
+    pub id: i64,
+    pub name: String,
+    /// Distinct music tracks it can put on air.
+    pub tracks: i64,
 }
 
 #[cfg(test)]

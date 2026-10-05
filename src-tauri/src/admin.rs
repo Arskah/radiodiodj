@@ -177,6 +177,7 @@ mod tests {
         "playlist_add_many",
         "playlist_add_saved",
         "playlist_save_as",
+        "playlist_set_source",
         "saved_playlist_list",
         "saved_playlist_get",
         "saved_playlist_create",

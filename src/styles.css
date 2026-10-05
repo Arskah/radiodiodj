@@ -1442,6 +1442,32 @@ body {
 }
 
 /* ---- Lists ---- */
+/* Where Auto Mode draws its music from, when that is not the music library. */
+#auto-source {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  padding: var(--sp-xs) var(--sp-md);
+  border-bottom: 1px solid var(--outline-variant);
+  font-size: 12px;
+  color: var(--on-surface-variant);
+}
+
+#auto-source > .material-symbols-outlined {
+  font-size: 16px;
+  color: var(--primary);
+}
+
+#auto-source .auto-source-text {
+  flex: 1;
+  min-width: 0;
+}
+
+#auto-source strong {
+  color: var(--on-surface);
+  font-weight: 600;
+}
+
 #track-list,
 #playlist,
 #history {

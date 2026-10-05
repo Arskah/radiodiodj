@@ -13,6 +13,7 @@
   import { airDuration, airedTrack, isTrimmed } from "../../shared/cuePoints";
   import MissingBadge from "../track/MissingBadge.svelte";
   import { gapAt, moveTarget } from "./playlistDrop";
+  import { sizeLabel } from "../../shared/savedPlaylists";
 
   let dragFromIndex = $state(-1);
   let dropTarget = $state(-1);
@@ -98,6 +99,7 @@
   }
 
   const stopped = $derived(app.playlist.some(isStopMarker));
+  const queuedTracks = $derived(app.playlist.filter(isTrackItem).length);
 
   function rowKey(item: PlaylistItem): string {
     return isStopMarker(item) ? "stop" : String(item.track.id);
@@ -174,6 +176,57 @@
       History <span class="pl-tab-count">({app.history.length})</span>
     </button>
   </div>
+
+  {#if app.autoSource || app.revertedFrom}
+    <div id="auto-source" role="status">
+      <span class="material-symbols-outlined" aria-hidden="true"
+        >auto_awesome</span
+      >
+      {#if app.autoSource}
+        <span class="auto-source-text">
+          Auto Mode draws from <strong>{app.autoSource.name}</strong> · {sizeLabel(
+            app.autoSource.tracks,
+            0,
+          )}{#if app.sourceSwitchQueued && queuedTracks > 0}
+            <span class="auto-source-queued">
+              · {queuedTracks} queued air first</span
+            >
+          {/if}
+        </span>
+        {#if app.sourceSwitchQueued && queuedTracks > 0}
+          <button
+            id="btn-source-clear"
+            class="btn-filler"
+            title="Clear the playlist, so the source's tracks air next"
+            onclick={() => app.clearPlaylist()}>Clear</button
+          >
+        {/if}
+        <button
+          id="btn-source-off"
+          class="btn-edit"
+          title="Back to the music library"
+          aria-label="Draw from the music library again"
+          onclick={() => void app.setAutoSource(null)}
+        >
+          <span class="material-symbols-outlined">close</span>
+        </button>
+      {:else}
+        <span class="auto-source-text">
+          <strong>{app.revertedFrom}</strong> has no playable music. Auto Mode is
+          back on the music library.
+        </span>
+        <button
+          id="btn-source-dismiss"
+          class="btn-edit"
+          title="Dismiss"
+          aria-label="Dismiss"
+          onclick={() => void app.setAutoSource(null)}
+        >
+          <span class="material-symbols-outlined">close</span>
+        </button>
+      {/if}
+    </div>
+  {/if}
 
   {#if app.playlistTab === "playlist"}
     <div
