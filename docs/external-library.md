@@ -1,25 +1,25 @@
-# External library and scanning from another computer
+# External library
 
-**Partly built.** Option A1 below ships as _Scan when files change_, described
-for the operator in
-[library-health.md](./library-health.md#scanning-by-itself); everything else here
-is a design, not a description. The page answers whether the library can live
-somewhere other than the studio machine, and whether a scan can be started — or
-run — from another computer. Tracked as
-[#495](https://github.com/Arskah/radiodiodj/issues/495). The library as it exists
+**Planned.** Nothing on this page is built. It answers two questions: can the
+library be shared between machines, so that the scan runs somewhere other than
+the studio machine — and what does a web page search when a show is built
+outside the studio? Tracked as
+[#505](https://github.com/Arskah/radiodiodj/issues/505). The library as it exists
 today is [library.md](./library.md); its schema is [database.md](./database.md).
 
-The ask behind the issue is one thing: **get library scans off the studio
-machine.** That splits into two answers with an order of magnitude between them.
-A _remote trigger_ leaves the scan where it is and lets something elsewhere start
-it — and the cheapest version of that turns out to need no trigger at all, because
-the app already watches the disk. An _external library_ shares the library
-between machines, makes one of them its owner, and moves the scan there
-altogether.
+Two requirements, and every option below is held to both:
 
-A second requirement has since joined the first, and every option below is held
-to it: **a web page has to be able to search the library.** It is stated in full
-under [The web page](#the-web-page).
+- **Get the scan off the studio machine.** Not the button — the work. The decode
+  is what an operator wants gone from the on-air box.
+- **A web page has to be able to search the library.** Stated in full under
+  [The web page](#the-web-page).
+
+**Background: starting a scan from elsewhere is already answered.** _Settings →
+Library → Scan when files change_ lets the studio machine scan by itself when
+music is copied onto a library path from another computer
+([library-health.md](./library-health.md#scanning-by-itself)). That moved the
+button and left the work where it was, and it gives a web page nothing to
+search. This page starts from there.
 
 ## Today
 
@@ -74,15 +74,6 @@ analysis pass then **decodes every file** on `cores - 2` workers, capped at six
 at a time, because the share cannot take the fan-out the CPU can. That decode is
 the expensive part, and it is what an operator wants off the studio machine.
 
-**The disk is already polled.** The library check
-(`src-tauri/src/library/check.rs`) lists every root on a timer — fifteen minutes
-by default — and reports what the next scan would change: `new`, `changed`,
-`gone`, `unrooted`, plus the roots it could not read. It never writes to the
-library. The worker already holds `ScanState`, already has an on-demand
-`request()`, and each report already carries a `signature()` that identifies
-_what_ was found rather than when. See
-[library-health.md](./library-health.md#disk-changes).
-
 Two more facts shape the options. There is **no inbound network surface**
 anywhere in the app — `reqwest` is a client, for the outbound now-playing webhook
 ([now-playing-broadcast.md](./now-playing-broadcast.md)), and no server crate is
@@ -120,129 +111,17 @@ the on-air path.
 
 Each option below ends with what it gives the page.
 
-## Option A — let the machine start its own scan
+## Option A — a catalogue file
 
-The studio machine is already looking. Every fifteen minutes it lists the share
-and works out exactly which files are new, changed or gone, and then does nothing
-with the answer until an operator presses a button. Two variants follow from
-that, and the first one needs no trigger, no protocol and no rendezvous.
-
-### A1 — scan when the check finds changes (built)
-
-`library.scanOnChanges` in `tuning`, **off by default**, shown as _Settings →
-Library → Scan when files change_. With it on, a check whose report has changes
-starts a scan through the same `ScanState::start` path the `scan_libraries`
-command uses. The rules below are `LibraryCheck::may_scan` and
-`settled_with_changes` in `src-tauri/src/library/check.rs`; what an operator sees
-is [library-health.md](./library-health.md#scanning-by-itself).
-
-Then "triggering a scan from another computer" is: copy music onto the share from
-wherever you are. Within an interval the studio machine notices and brings itself
-up to date. Nothing to install on the other computer, nothing to authenticate, no
-control directory, no port.
-
-The design is mostly guards, because a scan is the thing that writes to the
-library.
-
-- **It reverses a documented decision.** _"The check never starts a scan"_, under
-  the rule that nothing in library health changes the library by itself. The
-  setting is the operator's opt-out of that rule, which is why it is off by
-  default and why both pages say so.
-- **It adds and updates; it does not retire.** Marking tracks missing on the
-  strength of a listing nobody watched is the one thing here that could empty a
-  library — a stale mount that came back as an empty directory lists perfectly
-  happily. A gone row is retired only when the same audio arrives elsewhere in
-  the same scan, which is a move, and which has to be retired in the same
-  transaction or the scan mints a duplicate. Everything else waits for the
-  operator's button.
-- **Wait for the disk to settle.** A copy in progress reports the same _paths_
-  every time it is looked at, so a path list cannot tell a finished file from a
-  growing one — and an in-place overwrite would read identically for the whole
-  write. The settle key hashes each new or changed file's path, mtime and size,
-  and two consecutive checks must agree on it. Cost: one extra interval of
-  latency, so roughly half an hour on the default fifteen.
-- **Never on a bad listing.** Any root `unreachable`, or any listing `partial`,
-  and the check reports as before and starts nothing. A flapping share must not
-  drive a scan loop.
-- **Never twice on the same evidence.** A file no tag reader can parse writes no
-  row, so it is reported as new forever; without this the share would be
-  rescanned every two intervals for good.
-- **Never over the operator.** A dismissed report and a cancelled scan both hold
-  an automatic scan back.
-- **The analysis pass, not the tag backfill.** An automatic scan owes the library
-  the same waveforms and cue points the button does, but a cancelled backfill was
-  cancelled on purpose and nothing the operator stopped should restart because a
-  file appeared.
-
-What A1 cannot do is force a scan on demand — it reacts to the disk, and reacts
-one interval late. For that, A2.
-
-### A2 — a scan request file on the share
-
-The station already has one thing every machine can reach and write: the share.
-Use it as the rendezvous.
-
-A new `library.scanRequestPath` in `tuning`, **empty by default** so the feature
-is off until an operator names a directory. Not a library root — the app never
-writes into the music tree, and a root may be read-only.
-
-The library check's worker already wakes at least once a minute, whatever the
-check interval is set to:
-
-```rust
-/// How often a disabled timer looks at its setting again.
-const IDLE_POLL: Duration = Duration::from_secs(60);
-```
-
-On each wake it stats one file in that directory. A request file whose mtime is
-newer than the last honoured one starts a scan through the same
-`ScanState::start` path the `scan_libraries` command uses. No new thread, no new
-timer, no new dependency: a `touch` from another computer reaches the studio
-machine within about a minute.
-
-The honoured mtime is remembered in `config.json` rather than the file being
-deleted. A relaunch must not re-fire a stale request, and the app then needs no
-write permission on the request itself.
-
-Feedback goes back the same way. On every `scan-state-changed` transition the app
-writes a status file in that directory, carrying the `ScanStatus` the renderer
-already receives (`src-tauri/src/library/scan_state.rs`) — so the remote side
-polls a file instead of the app needing a reply channel.
-
-Two things to say plainly:
-
-- **This bypasses admin mode.** `scan_libraries` is in `ADMIN_COMMANDS`
-  (`src-tauri/src/admin.rs`), so in the UI a scan needs the password. A file
-  trigger's authority is write access to that directory, and nothing else. Put
-  it where only trusted machines can write. See
-  [admin-mode.md](./admin-mode.md).
-- **A request mid-show is honoured.** Someone asked for it, at a moment they
-  chose. The scan's four workers and the analysis pass's reserved cores are
-  already sized to run under playback, the decks read whole files into RAM rather
-  than streaming, and _Cancel_ stays in reach in the studio.
-
-A1 and A2 share their machinery and stack cleanly: A1 covers "new music arrived",
-A2 covers "scan now, I am not waiting for the interval". A1 is the smaller change
-and the one that answers the issue's actual need; A2 is worth building only if
-waiting an interval turns out to be the complaint.
-
-What neither fixes: the decode still burns the studio machine's cores and its
-share bandwidth. They move the button, not the work. That ceiling is what
-makes option B worth pricing rather than dismissing.
-
-**The web page:** neither gives it anything. The library still exists in one
-SQLite file on one machine, and a page has nothing to search.
-
-### A3 — a catalogue file for the web page
-
-The least that meets the requirement, and it needs no database and no server.
+The least that meets the web page's requirement, and it needs no database and no
+server.
 After every scan the app writes a **catalogue file** into a directory the
 operator names: one entry per present track with a fingerprint, carrying what
 the page searches and what a saved playlist file needs, and nothing else — no
 path, no cue points, no waveform. The page loads it, searches it in the browser,
 and offers the saved playlist file as a download, which the app already imports.
 
-| requirement    | A3                                                                 |
+| requirement    | A                                                                  |
 | -------------- | ------------------------------------------------------------------ |
 | Search         | yes, in the browser; as fresh as the last scan and the last upload |
 | A playlist out | yes — the file, carried by hand                                    |
@@ -250,8 +129,12 @@ and offers the saved playlist file as a download, which the app already imports.
 
 Getting the file from the studio network to where the page is served is the
 operator's problem — a sync job, an upload — and the app does not grow a network
-surface for it. It stands entirely apart from option B and can ship first; what
-it cannot do is become drafts later, because nothing travels back.
+surface for it.
+
+**The scan:** untouched. Option A answers the web page and nothing else — the
+studio machine still decodes its own library. It stands entirely apart from
+option B and can ship first; what it cannot do is become drafts later, because
+nothing travels back.
 
 ## Option B — external library mode
 
@@ -569,8 +452,9 @@ shows are outside the studio, so under B2 the owner has to be exposed to them �
 a reverse proxy or a tunnel, TLS, and logins — where under B3 the app and the
 page both connect outwards to a database that is already meant to be reached.
 **The smallest station:** one studio machine and a web page is the likeliest
-first user of any of this, and B2 cannot serve it without the listener on the
-on-air machine this page has refused from the start. B3 serves it with no second
+first user of any of this, and B2 cannot serve it without a listener on the
+on-air machine, which was already refused as a way to trigger a scan
+([library-health.md](./library-health.md#not-built)). B3 serves it with no second
 install at all. What B2 keeps is the search: one implementation, and a page that
 finds exactly what the studio finds.
 
@@ -627,42 +511,27 @@ longer a step on the way, only a way to run the owner.
 
 ## Rejected
 
-| option                                              | why not                                                                                                                                                                                                  |
-| --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The SQLite file itself on the share                 | WAL needs shared memory and network locking is unreliable. Not a tuning question — it does not work.                                                                                                     |
-| B1 — querying an external Postgres                  | A second SQL dialect across the whole library for good, and the network on the on-air path. Priced [above](#b1--the-app-queries-an-external-postgres).                                                   |
-| Postgres only, installed by the station             | One dialect, but a one-laptop station has to install, secure and back up a database server before the app starts.                                                                                        |
-| Postgres only, bundled and supervised by the app    | One dialect and nothing to install, but a child database process on the on-air machine with its own start-up, port, shutdown and crash recovery, and its binaries in every installer.                    |
-| Refusing operator work while the owner is away      | Nothing diverges and no conflict rule is needed, but a studio cannot save a cue point because of a network it does not otherwise depend on.                                                              |
-| The web page reading a copy of the SQLite file      | It meets search, but the file carries every path, cue point and play count to wherever the page is hosted, and it is the whole library on every scan. A3 is the same idea with only what the page needs. |
-| The web page writing saved playlists directly       | It would make the page a party to the replication rules, with conflicts to lose, and put a list in the studio no admin had seen. A draft and a _Promote_ costs one click and avoids both.                |
-| An HTTP listener in the studio app, just to trigger | An inbound port on the on-air machine, a token to manage, firewall and NAT, and a new dependency, to save a minute over option A. Worth it only if a status page or sub-minute triggering is wanted.     |
-| Scheduled nightly scans                             | A scan at a fixed hour, changes or not. A1 is the same idea with a better condition: scan because the disk moved, not because the clock did. Worth adding only as a quiet-hours window _around_ A1.      |
-| A filesystem watcher                                | Already refused in [library-health.md](./library-health.md#not-built): the timer covers every share, and a watcher would only make local paths report sooner. A1 changes nothing about that.             |
+| option                                           | why not                                                                                                                                                                                                        |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The SQLite file itself on the share              | WAL needs shared memory and network locking is unreliable. Not a tuning question — it does not work.                                                                                                           |
+| B1 — querying an external Postgres               | A second SQL dialect across the whole library for good, and the network on the on-air path. Priced [above](#b1--the-app-queries-an-external-postgres).                                                         |
+| Postgres only, installed by the station          | One dialect, but a one-laptop station has to install, secure and back up a database server before the app starts.                                                                                              |
+| Postgres only, bundled and supervised by the app | One dialect and nothing to install, but a child database process on the on-air machine with its own start-up, port, shutdown and crash recovery, and its binaries in every installer.                          |
+| Refusing operator work while the owner is away   | Nothing diverges and no conflict rule is needed, but a studio cannot save a cue point because of a network it does not otherwise depend on.                                                                    |
+| The web page reading a copy of the SQLite file   | It meets search, but the file carries every path, cue point and play count to wherever the page is hosted, and it is the whole library on every scan. Option A is the same idea with only what the page needs. |
+| The web page writing saved playlists directly    | It would make the page a party to the replication rules, with conflicts to lose, and put a list in the studio no admin had seen. A draft and a _Promote_ costs one click and avoids both.                      |
 
 ## Verdict
 
-**A1 is built. A2 if waiting an interval turns out to be the complaint. A3 is the
-cheapest thing that lets a web page search. Option B held — B1 out, and of B2
-and B3 the web page favours B3.**
+**Option A is the cheapest thing that lets a web page search. Option B is what
+moves the scan — B1 out, and of B2 and B3 the web page favours B3.**
 
-A1 was one setting and a handful of guards on a timer that already ticked and
-already knew the answer. No schema change, no dependency, no second process, and
-nothing to install on the other computer — the operator copies music onto the
-share, and the studio machine catches up by itself. Its price is the reversal it
-makes explicit: library health stops being a thing that only reports. Its limit
-is latency, two intervals in the worst case.
+Option A meets the web requirement with a file and nothing else: search and a
+playlist out, no drafts, and the scan stays where it is. It is the right first
+step if the page is wanted before any of option B exists, and it is not thrown
+away afterwards — W1's catalogue is the same fields in a table.
 
-A2 buys immediacy for a control directory, a status file, an mtime remembered in
-`config.json` and a plain statement that the admin lock does not cover it. That
-is a fair trade, but only against a complaint nobody has made yet.
-
-A3 meets the web requirement with a file and nothing else: search and a playlist
-out, no drafts. It is the right first step if the page is wanted before any of
-option B exists, and it is not thrown away afterwards — W1's catalogue is the
-same fields in a table.
-
-Option B is the answer if that limit starts to hurt — if the library grows past
+Option B is the answer to the other requirement — if the library grows past
 what the studio machine should be decoding between shows, or if a second studio
 appears. Whatever sits in the middle, the app keeps SQLite and every machine
 keeps its own copy: that is the only shape that does not put the network on the
