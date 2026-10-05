@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.28.0](https://github.com/Arskah/radiodiodj/compare/v0.27.0...v0.28.0) (2026-10-05)
+
+
+### Features
+
+* **library:** export a saved playlist as a file, and import one ([#592](https://github.com/Arskah/radiodiodj/issues/592)) ([9e5692e](https://github.com/Arskah/radiodiodj/commit/9e5692e51d44be74a1eff84f6d2227cebd49de8d)), closes [#501](https://github.com/Arskah/radiodiodj/issues/501)
+* **library:** find an unmatched saved playlist entry in the library ([#604](https://github.com/Arskah/radiodiodj/issues/604)) ([7a8578e](https://github.com/Arskah/radiodiodj/commit/7a8578ec923dcf1d1246c3f42ec3c350f346ba3c))
+* **library:** make a saved playlist of a selection, and row menus in Playlists ([#595](https://github.com/Arskah/radiodiodj/issues/595)) ([7f35fdc](https://github.com/Arskah/radiodiodj/commit/7f35fdc7144aaac9c8925f6e68c7a3738a92fe4c))
+* **library:** saved playlists, kept under a name and added back to the playlist ([#590](https://github.com/Arskah/radiodiodj/issues/590)) ([b61d261](https://github.com/Arskah/radiodiodj/commit/b61d2618a644429b247cbaf93f67de62a7b4cd61))
+* **library:** select the entries of a saved playlist, and act on several ([#596](https://github.com/Arskah/radiodiodj/issues/596)) ([d1e88a2](https://github.com/Arskah/radiodiodj/commit/d1e88a2f1d250d36c308d0c3e06b9f161eeb6df5))
+* **playlist:** draw the auto-playlist's music from a saved playlist ([#593](https://github.com/Arskah/radiodiodj/issues/593)) ([81e3884](https://github.com/Arskah/radiodiodj/commit/81e388472d401d3f63edeb106d76793b1ee72bc1)), closes [#503](https://github.com/Arskah/radiodiodj/issues/503)
+
+
+### Bug Fixes
+
+* **deps:** update dependency @types/node to v25.9.9 ([#601](https://github.com/Arskah/radiodiodj/issues/601)) ([8ea5a24](https://github.com/Arskah/radiodiodj/commit/8ea5a24fb0cf01379ce943a7ccee7b241d1921e4))
+* **deps:** update dependency material-symbols to v0.47.6 ([#602](https://github.com/Arskah/radiodiodj/issues/602)) ([d882563](https://github.com/Arskah/radiodiodj/commit/d8825631411f4f95adc4361983b4e62d92a97559))
+* **playlist:** a double-click in the playlist no longer puts a track on air ([#598](https://github.com/Arskah/radiodiodj/issues/598)) ([f153471](https://github.com/Arskah/radiodiodj/commit/f1534717b32e23b9c44c857d2c245e9caa8267af)), closes [#597](https://github.com/Arskah/radiodiodj/issues/597)
+
 ## [0.27.0](https://github.com/Arskah/radiodiodj/compare/v0.26.1...v0.27.0) (2026-10-04)
 
 
