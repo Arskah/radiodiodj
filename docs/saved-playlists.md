@@ -6,16 +6,15 @@ what the auto-playlist draws from.
 
 **Partly built.** Increments 1 to 3 of the [table below](#increments) are in:
 the tables, the _Playlists_ tab, authoring, both appends, the file with its
-import, export and binding, and the auto-playlist source. _Find in library_ and
-what the selection and dragging gain here are not. Designed 2026-10-04 against
+import, export and binding, the auto-playlist source, and what the selection
+gains here. _Find in library_ is not. Designed 2026-10-04 against
 [#501](https://github.com/Arskah/radiodiodj/issues/501),
 [#503](https://github.com/Arskah/radiodiodj/issues/503) and
 [#577](https://github.com/Arskah/radiodiodj/issues/577). Two things it stands
 on are built and know nothing of saved playlists: the library **selection** and
 dragging library rows into the playlist, both in
-[library.md](./library.md#selecting-several). What they gain here
-([#587](https://github.com/Arskah/radiodiodj/issues/587),
-[#584](https://github.com/Arskah/radiodiodj/issues/584)) comes after
+[library.md](./library.md#selecting-several). What the selection gains here
+([#587](https://github.com/Arskah/radiodiodj/issues/587)) came after
 increment 1.
 
 ## The problem
@@ -391,12 +390,11 @@ saved playlist the track is in. A save ends in `Health::refresh`, which re-sends
 the list, which is what redraws the open saved playlist. An unmatched entry has no track, so its menu is that last item or
 nothing. Both kinds of row take the library's keyboard bindings for the menu.
 
-What is still to come:
-
-- [#584](https://github.com/Arskah/radiodiodj/issues/584) makes an open saved
-  playlist a second drop target for `app.draggedTrackIds`. A drag of a picked
-  row carries the whole selection, so the drop is `saved_playlist_add_entries`
-  with a position, for one track or for many.
+Library rows are not dragged onto a saved playlist. The library and an open
+saved playlist share the one panel, so the two are never on screen together and
+a drag has nowhere to land; _Add to saved playlist…_ appends, and the entries
+are reordered where they are listed
+([#584](https://github.com/Arskah/radiodiodj/issues/584), dropped).
 
 The selection outlives a tab change, so on the _Playlists_ tab it is still held
 and its bar still acts on it; _Select all_ and Ctrl/Cmd+A have no track rows to
@@ -491,14 +489,14 @@ settled when #505's transport is designed.
 
 Each is one pull request.
 
-| #   | increment               | delivers                                                                                                                           | needs | issue      |
-| --- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ----- | ---------- |
-| 1   | Saved playlists exist   | tables, commands and their gating, the _Playlists_ tab, the four authoring actions, the missing badge, both appends                | —     | #577       |
-| 2   | Export and import       | the file, binding at import, after a scan and after the analysis pass                                                              | 1     | #501       |
-| 3   | Auto-playlist source    | the source in session and `DbRefiller`, the pool predicate, the track count, the empty-pool revert and its notice, the switch line | 1     | #503       |
-| 4   | Find in library         | binding an unmatched entry by hand                                                                                                 | 2     | #580       |
-| 5   | Selection and drag-drop | dragging library rows onto a saved playlist; the selection's saved-playlist actions and the selecting of entries are built         | 1     | #587, #584 |
-| 6   | The web authoring page  | a show built away from the studio                                                                                                  | #505  | #581       |
+| #   | increment              | delivers                                                                                                                           | needs | issue |
+| --- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ----- | ----- |
+| 1   | Saved playlists exist  | tables, commands and their gating, the _Playlists_ tab, the four authoring actions, the missing badge, both appends                | —     | #577  |
+| 2   | Export and import      | the file, binding at import, after a scan and after the analysis pass                                                              | 1     | #501  |
+| 3   | Auto-playlist source   | the source in session and `DbRefiller`, the pool predicate, the track count, the empty-pool revert and its notice, the switch line | 1     | #503  |
+| 4   | Find in library        | binding an unmatched entry by hand                                                                                                 | 2     | #580  |
+| 5   | Selection              | the selection's saved-playlist actions, and the selecting of entries                                                               | 1     | #587  |
+| 6   | The web authoring page | a show built away from the studio                                                                                                  | #505  | #581  |
 
 Increment 1 is usable alone: a show built in the app and appended at its hour.
 Increment 2 is what #501 asked for, increment 3 what #503 asked for, and
@@ -524,4 +522,6 @@ add the track they meant.
   show with its own idents asks for it.
 - **Ownership, or a protected flag.** The admin split covers the case they would
   serve.
+- **Dragging library rows onto a saved playlist.** See
+  [Selecting entries](#selecting-entries); it would take the two lists side by side.
 - **Sync between installs.** That is the open question above.
