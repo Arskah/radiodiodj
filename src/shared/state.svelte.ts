@@ -882,10 +882,6 @@ export class AppState {
       : selectAll(this.selectedIds, listed);
   }
 
-  deselect(id: number): void {
-    this.selectedIds = without(this.selectedIds, [id]);
-  }
-
   clearSelection(): void {
     this.selectedIds = [];
     this.selectionAnchor = null;

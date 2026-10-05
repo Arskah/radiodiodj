@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   allSelected,
+  clickPicks,
   hiddenCount,
   selectAll,
   selectRange,
@@ -9,6 +10,29 @@ import {
 } from "./selection";
 
 const listed = [10, 20, 30, 40, 50];
+
+describe("clickPicks", () => {
+  const plain = {
+    onCheck: false,
+    modifier: false,
+    shift: false,
+    anyPicked: false,
+  };
+
+  it("leaves a plain click on a row alone while nothing is picked", () => {
+    expect(clickPicks(plain)).toBe(false);
+  });
+
+  it("picks from the check, with Cmd or Ctrl, and with Shift", () => {
+    expect(clickPicks({ ...plain, onCheck: true })).toBe(true);
+    expect(clickPicks({ ...plain, modifier: true })).toBe(true);
+    expect(clickPicks({ ...plain, shift: true })).toBe(true);
+  });
+
+  it("picks on a plain click once anything is picked", () => {
+    expect(clickPicks({ ...plain, anyPicked: true })).toBe(true);
+  });
+});
 
 describe("toggle", () => {
   it("picks a row last", () => {

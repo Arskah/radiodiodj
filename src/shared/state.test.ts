@@ -643,14 +643,6 @@ describe("AppState library selection", () => {
     expect(app.selectedIds).toEqual([3, 1]);
   });
 
-  it("deselect drops one row and leaves the order of the rest", () => {
-    app.toggleSelected(3);
-    app.toggleSelected(1);
-    app.toggleSelected(2);
-    app.deselect(1);
-    expect(app.selectedIds).toEqual([3, 2]);
-  });
-
   it("revealTrack forwards the track id", () => {
     api.revealTrack.mockResolvedValue(undefined);
     app.revealTrack(t(7));

@@ -4,6 +4,8 @@ export const sel = {
   trackRowById: (id: number) => `[data-track-id="${id}"]`,
   trackRowCue: ".btn-cue",
   trackRowAdd: ".btn-add",
+  /** The `#` cell: what picks a row while nothing is picked yet. */
+  trackRowCheck: ".track-no",
   selectionBar: "#selection-bar",
   selectionCount: "#selection-count",
   addSelection: "#btn-add-selection",

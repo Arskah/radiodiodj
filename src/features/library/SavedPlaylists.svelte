@@ -12,6 +12,7 @@
   import { gapAt, moveTarget } from "../playlist/playlistDrop";
   import {
     allSelected,
+    clickPicks,
     hiddenCount,
     selectAll,
     selectRange,
@@ -334,9 +335,8 @@
     // Two quick presses of a row button are two presses of that button.
     if (e.target instanceof Element && e.target.closest("button")) return;
     e.preventDefault();
+    if (gesturePicks) return;
     app.addToPlaylist(entry.track);
-    // Both clicks of the double-click toggled the row first.
-    picked = without(picked, [entry.id]);
   }
 
   function onEntryKeyDown(entry: SavedEntry, e: KeyboardEvent): void {
@@ -427,6 +427,9 @@
   // It belongs to the one open saved playlist. See `docs/saved-playlists.md`.
 
   let picked = $state<number[]>([]);
+  // Decided on the first click of a gesture and kept for the second, which
+  // would otherwise read a selection the first one had just emptied.
+  let gesturePicks = false;
   /** The row a range is measured from: the last one picked or dropped. */
   let anchor: number | null = null;
 
@@ -472,7 +475,15 @@
   function onEntryClick(entry: SavedEntry, e: MouseEvent): void {
     // A row button is pressed for what it does, not to pick its row.
     if (e.target instanceof Element && e.target.closest("button")) return;
-    pick(entry, e.shiftKey);
+    if (e.detail <= 1) {
+      gesturePicks = clickPicks({
+        onCheck: e.target instanceof Element && !!e.target.closest(".track-no"),
+        modifier: e.metaKey || e.ctrlKey,
+        shift: e.shiftKey,
+        anyPicked: picked.length > 0,
+      });
+    }
+    if (gesturePicks) pick(entry, e.shiftKey);
   }
 
   function toggleSelectAll(): void {

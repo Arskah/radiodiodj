@@ -187,9 +187,8 @@ nothing to the Upcoming tab's total duration.
 goes on by its row's play button, and a stop marker only by the show arriving at
 it. A double-click used to do both — it played the track, and on a stop marker
 it stopped what was on air — which is the stray-click hazard the library row's
-_Play now_ was moved behind a menu to remove. What the gesture should mean
-across the lists is
-[#597](https://github.com/Arskah/radiodiodj/issues/597).
+_Play now_ was moved behind a menu to remove. A double-click on a History row
+queues that track again, at the end: it adds, and never reaches air.
 
 ## Outages
 

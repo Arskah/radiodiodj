@@ -344,14 +344,14 @@ With a saved playlist open in the _Playlists_ tab:
 An entry row is a library row wherever it has a track to be one for. It shows
 the same columns, play count and air time included, with a trimmed track's time
 marked. Hovering it shows the track's card. A double-click or its **+** queues
-the track; it has the cue-deck button when a cue device is set and the
+the track, the double-click only while no entry is picked; it has the cue-deck button when a cue device is set and the
 edit-metadata button for an admin; it takes the keyboard's menu bindings. An
 unmatched entry has none of this, being text and not a track.
 
 ### Selecting entries
 
-Entries are picked by the library's gestures — click, shift-click for a range,
-Space, _Select all_ and Ctrl/Cmd+A over the rows shown, Escape to clear — and
+Entries are picked by the library's gestures — a click on the `#`, a Ctrl/Cmd-
+click, a plain click once anything is picked, shift-click for a range, Space, _Select all_ and Ctrl/Cmd+A over the rows shown, Escape to clear — and
 held in pick order, the checkbox showing each one's place in it. See
 [library.md](./library.md#selecting-several) for the gestures themselves.
 

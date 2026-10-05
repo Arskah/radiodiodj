@@ -350,7 +350,7 @@ On each row:
 
 | action                  | how                                                       |
 | ----------------------- | --------------------------------------------------------- |
-| pick it                 | click, or Space — see [below](#selecting-several)         |
+| pick it                 | click its `#`, or Space — see [below](#selecting-several) |
 | add to the playlist     | double-click, or the `+` button                           |
 | add at a position       | drag the row onto the playlist; the line shows where      |
 | preview on the cue deck | the headphones button (only with a cue device configured) |
@@ -362,9 +362,13 @@ On each row:
 Queueing an album, or a run of tracks picked across several searches, is one
 action on a **selection**.
 
-- **Click** a row to pick it, click again to drop it. A checkbox takes the place
-  of the track number on the row under the pointer and on a picked row; every
-  other row keeps its number. There is no column for it.
+- **Click a row's `#`** to pick it, click again to drop it. A checkbox takes the
+  place of the track number on the row under the pointer and on a picked row;
+  every other row keeps its number. There is no column for it.
+- **Ctrl-click** (**Cmd-click** on macOS) anywhere on a row does the same.
+- **Once anything is picked, a plain click anywhere on a row** picks or drops
+  it. Before that it does nothing: a click that always picked would toggle the
+  row twice under every double-click.
 - **Shift-click** picks every row from the last one picked to this one.
 - **Space** picks the focused row, **Shift+Space** a range, **Escape** clears.
 - **Select all**, the button at the right of the column headers, picks every
@@ -407,9 +411,11 @@ An action that succeeds **clears the selection**; a drag dropped nowhere keeps
 it. Kept, the next add would queue the same tracks again, some of them out of
 sight.
 
-A row's own buttons and a double-click always act on that one row, picked or
-not, and a double-click drops the row from the selection. Dragging a row that is
-not picked carries only that row. The menu on a picked row is the selection's
+A row's own buttons always act on that one row, picked or not. A **double-click
+adds the row only while nothing is picked**: with a selection its two clicks are
+two picks, which cancel out, and nothing is queued — the same for a double-click
+on a `#` or with Ctrl/Cmd held. Dragging a row that is not picked carries only
+that row. The menu on a picked row is the selection's
 when more than one track is picked, and offers the two adds and the saved
 playlist dialog and nothing else:
 _Play now_ is never offered for several, and clearing is the bar's, where the
