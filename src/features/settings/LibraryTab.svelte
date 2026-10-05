@@ -83,6 +83,7 @@
                 onclick={() => app.locatePath(p.id)}
               >
                 <span class="material-symbols-outlined">folder_open</span>
+                Locate
               </button>
               <button
                 class="btn-remove"

@@ -2534,24 +2534,29 @@ body {
 }
 
 .btn-locate {
-  width: 26px;
-  height: 26px;
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
+  gap: 4px;
+  padding: 2px 6px;
   background: none;
   border: none;
   border-radius: var(--r-lg);
+  color: var(--primary);
   cursor: pointer;
   flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .btn-locate .material-symbols-outlined {
   font-size: 16px;
+  color: inherit;
 }
 
-.btn-locate:hover .material-symbols-outlined {
-  color: var(--primary);
+.btn-locate:hover {
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
 }
 
 .path-empty {
