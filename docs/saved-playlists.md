@@ -4,18 +4,10 @@ A named, stored list of tracks: built before a show or kept as a curated pool,
 moved between machines as a file, appended to the on-air playlist, or used as
 what the auto-playlist draws from.
 
-**Built, but for the web authoring page.** Increments 1 to 5 of the
-[table below](#increments) are in: the tables, the _Playlists_ tab, authoring,
-both appends, the file with its import, export and binding, the auto-playlist
-source, _Find in library_, and what the selection gains here. Designed 2026-10-04 against
-[#501](https://github.com/Arskah/radiodiodj/issues/501),
-[#503](https://github.com/Arskah/radiodiodj/issues/503) and
-[#577](https://github.com/Arskah/radiodiodj/issues/577). Two things it stands
-on are built and know nothing of saved playlists: the library **selection** and
-dragging library rows into the playlist, both in
-[library.md](./library.md#selecting-several). What the selection gains here
-([#587](https://github.com/Arskah/radiodiodj/issues/587)) came after
-increment 1.
+The web page that would author one away from the studio is the one part not
+built; see [Where a file comes from](#where-a-file-comes-from). The library
+**selection** and dragging library rows into the playlist, which this stands
+on, are in [library.md](./library.md#selecting-several).
 
 ## The problem
 
@@ -331,7 +323,7 @@ The rules around it:
 
 ## Authoring
 
-In the first increment, with a saved playlist open in the _Playlists_ tab:
+With a saved playlist open in the _Playlists_ tab:
 
 - **Add to saved playlist…** in a library row's menu, and for a selection on
   the selection bar (_Save…_) and in the selection's menu. It opens a dialog
@@ -423,8 +415,7 @@ nothing. Both kinds of row take the library's keyboard bindings for the menu.
 Library rows are not dragged onto a saved playlist. The library and an open
 saved playlist share the one panel, so the two are never on screen together and
 a drag has nowhere to land; _Add to saved playlist…_ appends, and the entries
-are reordered where they are listed
-([#584](https://github.com/Arskah/radiodiodj/issues/584), dropped).
+are reordered where they are listed.
 
 The selection outlives a tab change, so on the _Playlists_ tab it is still held
 and its bar still acts on it; _Select all_ and Ctrl/Cmd+A have no track rows to
@@ -514,28 +505,6 @@ the web page, find it in the studio" need no file at all, at the cost of no
 edits while the owner is unreachable — or they are kept out of the replica and
 each studio has its own. Using one reads the local copy either way. To be
 settled when #505's transport is designed.
-
-## Increments
-
-Each is one pull request.
-
-| #   | increment              | delivers                                                                                                                           | needs | issue |
-| --- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ----- | ----- |
-| 1   | Saved playlists exist  | tables, commands and their gating, the _Playlists_ tab, the four authoring actions, the missing badge, both appends                | —     | #577  |
-| 2   | Export and import      | the file, binding at import, after a scan and after the analysis pass                                                              | 1     | #501  |
-| 3   | Auto-playlist source   | the source in session and `DbRefiller`, the pool predicate, the track count, the empty-pool revert and its notice, the switch line | 1     | #503  |
-| 4   | Find in library        | binding an unmatched entry by hand                                                                                                 | 2     | #580  |
-| 5   | Selection              | the selection's saved-playlist actions, and the selecting of entries                                                               | 1     | #587  |
-| 6   | The web authoring page | a show built away from the studio                                                                                                  | #505  | #581  |
-
-Increment 1 is usable alone: a show built in the app and appended at its hour.
-Increment 2 is what #501 asked for, increment 3 what #503 asked for, and
-increment 2 completes #577, whose last criterion is an entry becoming playable
-when its file arrives.
-
-There is no refactor to land first. In-order play is an append, the source is a
-field on a struct the service already builds, and the bulk add the appends need
-is already in the engine.
 
 ## Not in scope
 
