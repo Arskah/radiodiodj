@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.29.0](https://github.com/Arskah/radiodiodj/compare/v0.28.0...v0.29.0) (2026-10-05)
+
+
+### Features
+
+* **library:** a click picks a row only from its # or once something is picked ([#607](https://github.com/Arskah/radiodiodj/issues/607)) ([b668ba9](https://github.com/Arskah/radiodiodj/commit/b668ba94b06ea2857f7df6e5a8f079aa1e8a1b47)), closes [#597](https://github.com/Arskah/radiodiodj/issues/597)
+* **library:** store track paths relative to their library path ([#612](https://github.com/Arskah/radiodiodj/issues/612)) ([bb5208f](https://github.com/Arskah/radiodiodj/commit/bb5208fb0e9fb79ad633c81075c82f31ded8b1f0))
+
 ## [0.28.0](https://github.com/Arskah/radiodiodj/compare/v0.27.0...v0.28.0) (2026-10-05)
 
 
