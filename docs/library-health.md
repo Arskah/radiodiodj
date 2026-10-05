@@ -160,8 +160,9 @@ By default the check never starts a scan: _Scan Library Now_, below the
 settings, is the operator's button. _Settings → Library → **Scan when files
 change**_ (`tuning.library.scanOnChanges`) hands it that button, so music copied
 onto a library path from another computer is picked up without anyone walking to
-the studio machine. This is the whole of the app's answer to scanning from
-elsewhere; see [external-library.md](./external-library.md).
+the studio machine. This starts the scan from elsewhere; it does not move the
+work. Running the scan on another machine is
+[external-library.md](./external-library.md).
 
 **An automatic scan only ever adds and updates.** It never marks a track missing
 on the strength of a listing nobody watched — a share that came back as an empty
@@ -488,6 +489,26 @@ purge the old track and keep the new one.
 A **filesystem watcher** is not built either. The timer covers every share, and
 a watcher would only make local paths report sooner.
 
+A **scan request file** would force a scan on demand, where _Scan when files
+change_ only reacts to the disk and reacts an interval late. The operator names
+a directory on the share (`library.scanRequestPath`, empty by default, never a
+library path); the check's worker, which already wakes once a minute, stats one
+file there and starts a scan when its mtime is newer than the last one honoured.
+That mtime is remembered in `config.json`, so a relaunch does not re-fire a stale
+request and the app needs no write permission on it, and a status file written
+on every scan transition is the reply. Two things it would have to say plainly:
+it bypasses admin mode, since its authority is write access to that directory
+and nothing else ([admin-mode.md](./admin-mode.md)), and a request mid-show is
+honoured. Worth building only if waiting an interval turns out to be the
+complaint.
+
+Two other triggers were considered and refused. An **HTTP listener** in the
+studio app is an inbound port on the on-air machine, a token to manage, firewall
+and NAT, to save a minute over the above. **Scheduled nightly scans** run at a
+fixed hour whether anything changed or not; scanning because the disk moved is
+the same idea with a better condition, and a schedule is worth adding only as a
+quiet-hours window around it.
+
 ## Accepted limits
 
 - **Deleting a duplicate loses its play count.**
@@ -500,6 +521,14 @@ a watcher would only make local paths report sooner.
 - **History is not rewritten** when a track is purged.
 
 ## Why it is built this way
+
+**The check may start a scan, but only when told to.** Nothing in library health
+changes the library by itself, and _Scan when files change_ is the operator's
+opt-out of that rule — which is why it is off by default. It was chosen over
+every remote trigger because the machine was already looking: the check knew
+which files were new, and did nothing with the answer until someone pressed a
+button. Copying music onto the share became the trigger, with nothing to
+install, authenticate or open on the other computer.
 
 **No _ignored_ state.** Flagging an unwanted duplicate would have needed a
 hidden-but-present kind of track that every query and every scan respects.

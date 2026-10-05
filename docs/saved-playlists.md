@@ -203,7 +203,9 @@ Two authors are planned for:
   without a seat in the studio. The page does not exist, and its copy of the
   library is [external-library.md](./external-library.md) territory
   ([#505](https://github.com/Arskah/radiodiodj/issues/505)). The file is the
-  contract it will be written against.
+  contract it will be written against, and a draft the page keeps for an admin
+  to let in is that same file, not yet imported
+  ([external-library.md](./external-library.md#the-web-page)).
 
 Both know fingerprints, which is what makes the fingerprint-only rule
 affordable. M3U is not read: its identity is a path.
@@ -497,14 +499,14 @@ answer "none" on that tab rather than be handed entry ids.
 ## Open
 
 **Who owns saved playlists in external-library mode.** The tables are in the
-library database, and under option B2 of
+library database, and under options B2 and B3 of
 [external-library.md](./external-library.md) a studio machine's copy of that
-database is a replica the next pull overwrites. Either they are the library
-owner's, replicated like tracks and edited through it — which makes "build it on
-the web page, find it in the studio" need no file at all, at the cost of no
-edits while the owner is unreachable — or they are kept out of the replica and
-each studio has its own. Using one reads the local copy either way. To be
-settled when #505's transport is designed.
+database is a replica. Either they are replicated like tracks — which makes
+"build it on the web page, find it in the studio" need no file at all, and under
+that page's rules a list edited on two machines keeps the later save — or they
+are kept out of the replica and each studio has its own. Using one reads the
+local copy either way. That page assumes the first; to be settled when #505's
+outbox is built.
 
 ## Not in scope
 
