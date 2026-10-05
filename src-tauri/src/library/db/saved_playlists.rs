@@ -1,6 +1,8 @@
 //! Saved playlists: named, stored, ordered lists of entries. See
 //! `docs/saved-playlists.md`.
 
+use std::collections::HashSet;
+
 use anyhow::{anyhow, bail, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -388,18 +390,23 @@ impl Db {
         let tx = conn.transaction()?;
         touch(&tx, playlist_id, now_ms)?;
         let order = entry_ids(&tx, playlist_id)?;
+        let present: HashSet<i64> = order.iter().copied().collect();
         let block: Vec<i64> = moved
             .iter()
             .copied()
-            .filter(|id| order.contains(id))
+            .filter(|id| present.contains(id))
             .collect();
+        let lifted: HashSet<i64> = block.iter().copied().collect();
         // Where the gap falls once the block has been lifted out.
         let at = order
             .iter()
             .take(gap.min(order.len()))
-            .filter(|id| !block.contains(id))
+            .filter(|id| !lifted.contains(id))
             .count();
-        let mut order: Vec<i64> = order.into_iter().filter(|id| !block.contains(id)).collect();
+        let mut order: Vec<i64> = order
+            .into_iter()
+            .filter(|id| !lifted.contains(id))
+            .collect();
         order.splice(at..at, block);
         write_order(&tx, &order)?;
         tx.commit()?;
