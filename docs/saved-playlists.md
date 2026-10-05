@@ -203,8 +203,8 @@ Two authors are planned for:
   without a seat in the studio. The page does not exist, and its copy of the
   library is [external-library.md](./external-library.md) territory
   ([#505](https://github.com/Arskah/radiodiodj/issues/505)). The file is the
-  contract it will be written against, and a draft the page stores for an admin
-  to promote is that same file, not yet imported
+  contract it will be written against, and a draft the page keeps for an admin
+  to let in is that same file, not yet imported
   ([external-library.md](./external-library.md#the-web-page)).
 
 Both know fingerprints, which is what makes the fingerprint-only rule

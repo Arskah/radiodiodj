@@ -100,8 +100,10 @@ This is a **hard requirement** on every option here, in three parts:
    fingerprint, artist, title, duration and content type, and no id and no path.
    So the copy the page searches must carry fingerprints, and a track that has
    none yet cannot be offered.
-3. **Drafts, where the option allows it.** Better than a file passed by hand: the
-   page stores a draft, and an admin in the app promotes it to a saved playlist.
+3. **Drafts an admin lets in.** The page can keep what its authors build as
+   drafts. An admin has access to them and decides which become saved playlists.
+   How a chosen draft gets in is deliberately left open: it may be a step in the
+   app, or it may be the admin fetching the file and importing it by hand.
 
 Three things the page is not. It does not play audio — nothing here moves a
 file, so it searches and orders and cannot audition. It is not the app: a
@@ -125,7 +127,7 @@ and offers the saved playlist file as a download, which the app already imports.
 | -------------- | ------------------------------------------------------------------ |
 | Search         | yes, in the browser; as fresh as the last scan and the last upload |
 | A playlist out | yes — the file, carried by hand                                    |
-| Drafts         | **no.** A file has nowhere to keep one and nobody to promote it    |
+| Drafts         | the page's own to keep; one gets in as a file an admin imports     |
 
 Getting the file from the studio network to where the page is served is the
 operator's problem — a sync job, an upload — and the app does not grow a network
@@ -133,8 +135,7 @@ surface for it.
 
 **The scan:** untouched. Option A answers the web page and nothing else — the
 studio machine still decodes its own library. It stands entirely apart from
-option B and can ship first; what it cannot do is become drafts later, because
-nothing travels back.
+option B and can ship first.
 
 ## Option B — external library mode
 
@@ -157,7 +158,7 @@ question is most of the cost.
 | A dead server costs         | **playback**                   | freshness                     | freshness                        |
 | The web page searches       | the same tables as the app     | the owner, through its API    | a catalogue table in the hub     |
 | Search implementations      | one, and not today's           | one, today's                  | two — FTS5 and one in Postgres   |
-| Drafts from the web page    | a row with a flag              | stored by the owner           | a table in the hub               |
+| Drafts from the web page    | can sit beside the library     | can sit with the owner        | can sit in the hub               |
 | One studio and a web page   | works                          | **no** — see below            | works, outbound connections only |
 
 **The app ships with SQLite only.** A standalone station installs one desktop
@@ -225,7 +226,7 @@ Priced against the code rather than asserted:
 
 **The web page:** the best fit of the three, which is worth saying plainly. The
 page queries the tables the app queries, so there is one search and one set of
-ids, and a draft is a saved playlist row with a flag on it. None of that touches
+ids, and a draft could sit in the same database as the lists it becomes. None of that touches
 the reason B1 is refused — the page would be well served by a database the
 studio cannot afford to depend on.
 
@@ -257,7 +258,7 @@ flowchart LR
   end
   W -- "pull: snapshot, then changes" --> API
   W -- "push: operator work, plays" --> API
-  WEB["Web page backend"] -- "search, drafts" --> API
+  WEB["Web page backend"] -- "search" --> API
 ```
 
 **B3 — Postgres holds it.** Nothing of ours listens anywhere. The owner and the
@@ -279,7 +280,7 @@ flowchart LR
   HUB -- "pull: operator work, plays" --> OW
   HUB -- "pull: tracks, measurements" --> W
   W -- "push: operator work, plays" --> HUB
-  WEB["Web page backend"] -- "search, drafts" --> HUB
+  WEB["Web page backend"] -- "search" --> HUB
 ```
 
 The hub has two kinds of reader, and its shape follows from that. The app's
@@ -390,31 +391,20 @@ fingerprint is not in it — the page could only hand back an entry the app cann
 bind ([saved-playlists.md](./saved-playlists.md#binding)).
 
 **A draft is a saved playlist file that has not been imported yet.** The page
-does not write saved playlists. It stores a draft — the file's own JSON, with
-who made it and when — and _Promote_ in the app runs the import that already
-exists on it: bound by fingerprint, never overwriting a list, never dropping an
-entry, unmatched entries kept in place. So the page takes no part in the rules
-above, has no conflicts to lose, and cannot put anything in front of an operator
-that an admin has not seen. _Promote_ and _Discard_ are admin commands
-([admin-mode.md](./admin-mode.md)), and a promoted draft travels to the other
-machines as any saved playlist does.
+does not write saved playlists. It keeps drafts — the file's own JSON, with who
+made it and when — and an admin, who can see them, decides which go in. Whatever
+route a chosen draft takes, it ends in the import that already exists: bound by
+fingerprint, never overwriting a list, never dropping an entry, unmatched
+entries kept in place. So the page takes no part in the rules above, has no
+conflicts to lose, and cannot put anything in front of an operator that an admin
+has not let through. Once imported it is a saved playlist and travels to the
+other machines as any other does.
 
-```mermaid
-sequenceDiagram
-  participant Au as Show author
-  participant Web as Web page backend
-  participant Mid as Owner API or Postgres hub
-  participant App as App, admin unlocked
-  Web->>Mid: search the catalogue
-  Mid-->>Web: tracks with fingerprints
-  Au->>Web: order tracks, save
-  Web->>Mid: store draft, a saved playlist file
-  App->>Mid: list drafts
-  App->>Mid: fetch one
-  Note over App: the existing import binds by fingerprint, never overwrites
-  App->>Mid: mark promoted
-  Note over App: now a saved playlist, replicated like any other
-```
+**How a draft is promoted is not decided here.** At its plainest the admin
+downloads the file from the page and imports it in the app — which needs
+nothing built beyond the page itself, and works under every option including A.
+At its most built, the drafts sit with the owner or in the hub and the app
+lists them. Nothing else in this design depends on which.
 
 **Whether the owner has a window is a separate question.** An owner on an office
 desktop is an ordinary install in the owner role. An owner on a server needs a
@@ -439,7 +429,7 @@ for B2 and B3, and neither needs it to exist.
 | The web page's search     | the owner's FTS5 — the results the app gives                         | a `tsvector` query in the hub — a second search, ranked differently         |
 | The web page reaches it   | the owner must take connections from outside the station             | a hosted Postgres both sides reach outbound                                 |
 | Logins for the web page   | ours to build — a station token is not a person                      | the web backend's own, with one Postgres role behind it                     |
-| The page, owner off       | the page cannot search                                               | the page searches and stores drafts as usual                                |
+| The page, owner off       | the page cannot search                                               | the page searches as usual                                                  |
 | One studio, one web page  | the studio would have to serve it: an inbound port on the on-air box | the studio is the owner and only ever connects outwards                     |
 
 B2 is more code of ours and nothing new for the station to run. B3 is less code
@@ -476,7 +466,7 @@ flowchart TD
   I6["6 · Freshness, outbox count, unreachable states"]
   H["Headless owner (optional)"]
   W1["W1 · Catalogue published, web search"]
-  W2["W2 · Drafts, Promote and Discard"]
+  W2["W2 · Drafts reachable from the app (optional)"]
   I1 --> I3a
   I1 --> I3b
   I2 --> I3a
@@ -501,7 +491,7 @@ flowchart TD
 | 5   | The outbox                                                    | Cue points, metadata edits, saved playlists, dismissals and plays reach the owner and the other studios.                        |
 | 6   | The indicators                                                | A studio can see how stale it is and what it still owes.                                                                        |
 | W1  | The catalogue, and the query the web page searches it with    | **Meets the web requirement**: search, and a saved playlist file out. Under B3 a single studio machine can stop here.           |
-| W2  | Drafts stored by the page; _Promote_ and _Discard_ in the app | No file passed by hand.                                                                                                         |
+| W2  | Drafts kept where the app can list them                       | Optional. Saves the admin fetching a file by hand; importing one by hand needs none of it.                                      |
 
 Two things the first design had are gone. A **`Library` boundary** — the `Db`
 surface split so a remote implementation could sit beside the local one — is
@@ -519,7 +509,7 @@ longer a step on the way, only a way to run the owner.
 | Postgres only, bundled and supervised by the app | One dialect and nothing to install, but a child database process on the on-air machine with its own start-up, port, shutdown and crash recovery, and its binaries in every installer.                          |
 | Refusing operator work while the owner is away   | Nothing diverges and no conflict rule is needed, but a studio cannot save a cue point because of a network it does not otherwise depend on.                                                                    |
 | The web page reading a copy of the SQLite file   | It meets search, but the file carries every path, cue point and play count to wherever the page is hosted, and it is the whole library on every scan. Option A is the same idea with only what the page needs. |
-| The web page writing saved playlists directly    | It would make the page a party to the replication rules, with conflicts to lose, and put a list in the studio no admin had seen. A draft and a _Promote_ costs one click and avoids both.                      |
+| The web page writing saved playlists directly    | It would make the page a party to the replication rules, with conflicts to lose, and put a list in the studio no admin had seen. A draft an admin lets in avoids both.                                         |
 
 ## Verdict
 
@@ -527,7 +517,7 @@ longer a step on the way, only a way to run the owner.
 moves the scan — B1 out, and of B2 and B3 the web page favours B3.**
 
 Option A meets the web requirement with a file and nothing else: search and a
-playlist out, no drafts, and the scan stays where it is. It is the right first
+playlist out, drafts let in by hand, and the scan stays where it is. It is the right first
 step if the page is wanted before any of option B exists, and it is not thrown
 away afterwards — W1's catalogue is the same fields in a table.
 
