@@ -533,6 +533,24 @@ async fn saved_playlist_remove_entry(
     .await
 }
 
+/// Bind an entry to a track the operator picked for it.
+#[tauri::command(rename_all = "camelCase")]
+async fn saved_playlist_bind_entry(
+    handle: AppHandle,
+    state: State<'_, AppState>,
+    entry_id: i64,
+    track_id: i64,
+) -> Result<(), String> {
+    let db = Arc::clone(&state.db);
+    blocking(move || {
+        db.bind_saved_entry(entry_id, track_id, now_ms())
+            .map_err(err)?;
+        saved_playlists::emit(&handle, &db);
+        Ok(())
+    })
+    .await
+}
+
 /// Remove several entries of a saved playlist as one change.
 #[tauri::command(rename_all = "camelCase")]
 async fn saved_playlist_remove_entries(
@@ -1785,6 +1803,7 @@ pub fn run() {
             saved_playlist_import,
             saved_playlist_add_entries,
             saved_playlist_remove_entry,
+            saved_playlist_bind_entry,
             saved_playlist_move_entry,
             saved_playlist_remove_entries,
             saved_playlist_move_entries,

@@ -257,7 +257,7 @@ A named, stored, ordered list of **Entries**. Never on air by itself: it is appe
 _Avoid_: Playlist (that is the on-air one), show, set list, crate
 
 **Entry**:
-One row of a **Saved playlist**, referring to a Track of any content type. Keeps the artist, title, duration and **Fingerprint** it was written with, so it survives its Track being unknown here.
+One row of a **Saved playlist**, referring to a Track of any content type. Keeps the artist, title, duration and **Fingerprint** of its Track as last known, so it survives its Track being unknown here.
 _Avoid_: Item (that is a Playlist item), row, song
 
 **Unmatched entry**:

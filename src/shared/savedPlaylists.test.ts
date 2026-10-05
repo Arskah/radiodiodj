@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   appendMessage,
+  findQuery,
   importMessage,
   matchesSearch,
   sortEntries,
@@ -100,5 +101,50 @@ describe("sizeLabel", () => {
     expect(sizeLabel(12, 0)).toBe("12 tracks");
     expect(sizeLabel(1, 0)).toBe("1 track");
     expect(sizeLabel(12, 2)).toBe("12 tracks · 2 missing");
+  });
+});
+
+describe("findQuery", () => {
+  const entry = (artist: string, title: string) => ({
+    id: 1,
+    track: null,
+    artist,
+    title,
+    duration: 100,
+    contentType: "music",
+  });
+
+  it("is the artist and the title", () => {
+    expect(findQuery(entry("Kate Bush", "Cloudbusting"))).toBe(
+      "Kate Bush Cloudbusting",
+    );
+  });
+
+  it("leaves out what is in brackets", () => {
+    expect(
+      findQuery(
+        entry("Kate Bush", "Cloudbusting (Radio Edit) [2018 Remaster]"),
+      ),
+    ).toBe("Kate Bush Cloudbusting");
+  });
+
+  it("copes with an entry that has no text", () => {
+    expect(findQuery(entry("", ""))).toBe("");
+    expect(findQuery(entry("", "  Ident  "))).toBe("Ident");
+  });
+
+  it("reads a bound entry from its track", () => {
+    const bound = {
+      ...entry("old", "text"),
+      track: {
+        id: 9,
+        title: "Now",
+        artist: "Them",
+        album: "",
+        duration: 1,
+        play_count: 0,
+      },
+    };
+    expect(findQuery(bound)).toBe("Them Now");
   });
 });

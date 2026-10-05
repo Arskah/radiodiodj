@@ -211,11 +211,20 @@
       );
     }
     if (app.isAdmin) {
+      const findable = track === null || app.missingSince.has(track.id);
+      if (findable) {
+        items.push({
+          label: "Find in library…",
+          icon: "search",
+          onselect: () => (app.findingFor = entry),
+          separated: track !== null,
+        });
+      }
       items.push({
         label: "Remove from saved playlist",
         icon: "close",
         onselect: () => app.removeSavedEntry(entry.id),
-        separated: track !== null,
+        separated: track !== null && !findable,
       });
     }
     if (track) {

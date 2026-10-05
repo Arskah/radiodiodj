@@ -5,6 +5,7 @@ import type {
   ThemeListing,
   ContentType,
   LibraryTab,
+  SavedEntry,
   SavedPlaylist,
   SavedPlaylistSummary,
   SourceInfo,
@@ -165,6 +166,8 @@ export class AppState {
   savedNotice = $state<string | null>(null);
   /** The saved-playlist dialog that is up, if one is. */
   savedDialog = $state<SavedDialog | null>(null);
+  /** The entry _Find in library_ is up for, if it is. */
+  findingFor = $state<SavedEntry | null>(null);
   playlistTab = $state<PlaylistTab>("playlist");
 
   /**
@@ -805,6 +808,19 @@ export class AppState {
     const saved = this.openSaved;
     if (!saved || entryIds.length === 0) return;
     this.send(api.savedPlaylistMoveEntries(saved.id, entryIds, index));
+  }
+
+  /**
+   * The tracks of one type a search finds, for _Find in library_. It leaves
+   * the library's own search and rows alone.
+   */
+  findTracks(query: string, contentType: ContentType): Promise<Track[]> {
+    return api.search(query, contentType);
+  }
+
+  /** Rejects with the backend's reason, for the dialog to show. */
+  async bindSavedEntry(entryId: number, trackId: number): Promise<void> {
+    await api.savedPlaylistBindEntry(entryId, trackId);
   }
 
   removeSavedEntry(entryId: number): void {

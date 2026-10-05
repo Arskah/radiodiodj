@@ -47,6 +47,7 @@ pub const ADMIN_COMMANDS: &[&str] = &[
     "update_install",
     "saved_playlist_add_entries",
     "saved_playlist_remove_entry",
+    "saved_playlist_bind_entry",
     "saved_playlist_move_entry",
     "saved_playlist_remove_entries",
     "saved_playlist_move_entries",

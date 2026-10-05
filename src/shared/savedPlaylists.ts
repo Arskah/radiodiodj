@@ -1,3 +1,5 @@
+import type { SavedEntry } from "./types";
+
 /**
  * What the panel says after a saved playlist is appended to the playlist. Only
  * an unmatched entry is ever skipped. See `docs/saved-playlists.md`.
@@ -61,6 +63,21 @@ export function sortEntries<T extends EntryRow>(
   return [...rows].sort(
     (a, b) => sign * compare(a, b) || a.position - b.position,
   );
+}
+
+/**
+ * What _Find in library_ first searches for: the entry's artist and title,
+ * less anything in brackets. Every word of a search has to match, and
+ * `(Radio Edit)` or `[2011 Remaster]` is what two copies of a song differ by.
+ */
+export function findQuery(entry: SavedEntry): string {
+  const artist = entry.track?.artist ?? entry.artist;
+  const title = entry.track?.title ?? entry.title;
+  return `${artist} ${title}`
+    .replace(/\([^)]*\)|\[[^\]]*\]/g, " ")
+    .split(/\s+/)
+    .filter((word) => word !== "")
+    .join(" ");
 }
 
 /** What the panel says once a file has become a saved playlist. */

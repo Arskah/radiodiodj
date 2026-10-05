@@ -4,18 +4,10 @@ A named, stored list of tracks: built before a show or kept as a curated pool,
 moved between machines as a file, appended to the on-air playlist, or used as
 what the auto-playlist draws from.
 
-**Partly built.** Increments 1 to 3 of the [table below](#increments) are in:
-the tables, the _Playlists_ tab, authoring, both appends, the file with its
-import, export and binding, the auto-playlist source, and what the selection
-gains here. _Find in library_ is not. Designed 2026-10-04 against
-[#501](https://github.com/Arskah/radiodiodj/issues/501),
-[#503](https://github.com/Arskah/radiodiodj/issues/503) and
-[#577](https://github.com/Arskah/radiodiodj/issues/577). Two things it stands
-on are built and know nothing of saved playlists: the library **selection** and
-dragging library rows into the playlist, both in
-[library.md](./library.md#selecting-several). What the selection gains here
-([#587](https://github.com/Arskah/radiodiodj/issues/587)) came after
-increment 1.
+The web page that would author one away from the studio is the one part not
+built; see [Where a file comes from](#where-a-file-comes-from). The library
+**selection** and dragging library rows into the playlist, which this stands
+on, are in [library.md](./library.md#selecting-several).
 
 ## The problem
 
@@ -76,13 +68,18 @@ One appended migration step; see [database.md](./database.md).
 shows the live track, so a metadata edit or a corrected radio edit reaches every
 saved playlist the track is in. The snapshot columns are what the entry is when
 nothing is bound. They are what an unmatched entry displays, and what a file
-arriving later is matched against. This is the shape `play_log` already has, for
+arriving later is matched against. A snapshot is **the track as last known**:
+written when the entry is added, and rewritten from the track at the two
+moments the two could part — when the operator binds the entry by hand, and
+when the track is purged. Nothing rewrites it in between, since nothing reads
+it while the entry is bound. This is the shape `play_log` already has, for
 the same reason — see [rotation.md](./rotation.md#the-airing-log).
 
 No foreign keys, also for the reason given there: `PRAGMA foreign_keys` is off.
 Deleting a saved playlist deletes its entries in the same transaction, and
 `Db::purge_tracks` nulls `track_id` here in the transaction that already does it
-for `play_log`.
+for `play_log`, ahead of the delete, so that the entry can take the track's
+last artist, title, duration and fingerprint on the way.
 
 ### Unmatched and missing
 
@@ -126,8 +123,31 @@ entry's `duration` breaks the tie, closest wins, lowest id after that.
 not the recording the author chose: a live version, a clean edit and a remaster
 all read the same. This is the stance **possible duplicates** already take — a
 notice for the operator, not a match. What an unmatched entry gets instead is
-_Find in library_: the search box prefilled with its artist and title, and the
-operator picks.
+_Find in library_, where the operator picks.
+
+### Find in library
+
+An admin's menu item on an unmatched entry, and on one bound to a missing track
+whose file is not coming back. It opens a dialog over the saved playlist: a
+search of the library, one content type at a time, starting on the entry's own
+type with its artist and title typed in — less anything in brackets, since
+every word of a search must match and `(Radio Edit)` is what two copies of a
+song differ by. Each result shows its time beside the entry's, which is what
+tells a live cut from the studio one. Picking a row is
+`saved_playlist_bind_entry`.
+
+It is a dialog and not the library's own list because that list and an open
+saved playlist share the panel: a search there would mean leaving the saved
+playlist, picking in some mode, and being sent back.
+
+Binding by hand **rewrites the snapshot** from the chosen track. The operator
+has said which recording the entry is, so its old fingerprint — the one that
+matched nothing here — is no longer what it should fall back to. The entry is
+from then on what it would be had the track been added from the library, and it
+keeps its place in the order, which removing it and adding the right track
+would not. A missing track cannot be picked. One entry is bound at a time:
+another entry with the same unmatched fingerprint, in this saved playlist or
+another, is left as it is.
 
 **A fingerprint version bump** re-fingerprints the library, which would strand
 every stored snapshot at once. That is why `track_id` is the binding and the
@@ -303,7 +323,7 @@ The rules around it:
 
 ## Authoring
 
-In the first increment, with a saved playlist open in the _Playlists_ tab:
+With a saved playlist open in the _Playlists_ tab:
 
 - **Add to saved playlist…** in a library row's menu, and for a selection on
   the selection bar (_Save…_) and in the selection's menu. It opens a dialog
@@ -387,14 +407,15 @@ _Remove from saved playlist_ for an admin. Those act on the track, not on the
 entry: an entry holds a track's id and shows the track as it is, so a metadata
 edit made here is the same edit made from the library, and it shows in every
 saved playlist the track is in. A save ends in `Health::refresh`, which re-sends
-the list, which is what redraws the open saved playlist. An unmatched entry has no track, so its menu is that last item or
+the list, which is what redraws the open saved playlist. An unmatched entry has
+no track, so for an admin its menu is
+[_Find in library…_](#find-in-library) and that last item, and for a guest
 nothing. Both kinds of row take the library's keyboard bindings for the menu.
 
 Library rows are not dragged onto a saved playlist. The library and an open
 saved playlist share the one panel, so the two are never on screen together and
 a drag has nowhere to land; _Add to saved playlist…_ appends, and the entries
-are reordered where they are listed
-([#584](https://github.com/Arskah/radiodiodj/issues/584), dropped).
+are reordered where they are listed.
 
 The selection outlives a tab change, so on the _Playlists_ tab it is still held
 and its bar still acts on it; _Select all_ and Ctrl/Cmd+A have no track rows to
@@ -484,32 +505,6 @@ the web page, find it in the studio" need no file at all, at the cost of no
 edits while the owner is unreachable — or they are kept out of the replica and
 each studio has its own. Using one reads the local copy either way. To be
 settled when #505's transport is designed.
-
-## Increments
-
-Each is one pull request.
-
-| #   | increment              | delivers                                                                                                                           | needs | issue |
-| --- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ----- | ----- |
-| 1   | Saved playlists exist  | tables, commands and their gating, the _Playlists_ tab, the four authoring actions, the missing badge, both appends                | —     | #577  |
-| 2   | Export and import      | the file, binding at import, after a scan and after the analysis pass                                                              | 1     | #501  |
-| 3   | Auto-playlist source   | the source in session and `DbRefiller`, the pool predicate, the track count, the empty-pool revert and its notice, the switch line | 1     | #503  |
-| 4   | Find in library        | binding an unmatched entry by hand                                                                                                 | 2     | #580  |
-| 5   | Selection              | the selection's saved-playlist actions, and the selecting of entries                                                               | 1     | #587  |
-| 6   | The web authoring page | a show built away from the studio                                                                                                  | #505  | #581  |
-
-Increment 1 is usable alone: a show built in the app and appended at its hour.
-Increment 2 is what #501 asked for, increment 3 what #503 asked for, and
-increment 2 completes #577, whose last criterion is an entry becoming playable
-when its file arrives.
-
-There is no refactor to land first. In-order play is an append, the source is a
-field on a struct the service already builds, and the bulk add the appends need
-is already in the engine.
-
-Increment 4 is the one to drop if it turns out awkward. Without it an unmatched
-entry waits for its exact file, and the operator's way round is to remove it and
-add the track they meant.
 
 ## Not in scope
 
