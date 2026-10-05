@@ -31,6 +31,7 @@ export const sel = {
   savedAdd: "#btn-saved-add",
   savedNotice: "#saved-notice",
   savedBack: "#btn-saved-back",
+  saveSelection: "#btn-save-selection",
   savedSource: "#btn-saved-source",
   autoSource: "#auto-source",
   autoSourceOff: "#btn-source-off",

@@ -1395,7 +1395,8 @@ body {
   opacity: 1;
 }
 
-#track-headers .track-plays {
+#track-headers .track-plays,
+.saved-headers .track-plays {
   text-align: right;
   justify-content: flex-end;
 }
@@ -1623,7 +1624,9 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-#track-headers .track-no {
+#track-headers .track-no,
+.saved-headers .track-no,
+.saved-headers .track-duration {
   justify-content: flex-end;
 }
 

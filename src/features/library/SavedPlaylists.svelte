@@ -1,10 +1,17 @@
 <script lang="ts">
   import { app, formatTime } from "../../shared/state.svelte";
   import type { SavedEntry, SavedPlaylistSummary } from "../../shared/types";
-  import { airDuration } from "../../shared/cuePoints";
-  import { sizeLabel } from "../../shared/savedPlaylists";
+  import { airDuration, isTrimmed } from "../../shared/cuePoints";
+  import {
+    matchesSearch,
+    sizeLabel,
+    sortEntries,
+    type EntrySort,
+  } from "../../shared/savedPlaylists";
   import MissingBadge from "../track/MissingBadge.svelte";
   import { gapAt, moveTarget } from "../playlist/playlistDrop";
+  import ContextMenu from "../ui/ContextMenu.svelte";
+  import type { MenuItem } from "../ui/contextMenu";
 
   const shown = $derived.by<SavedPlaylistSummary[]>(() => {
     const query = app.searchQuery.trim().toLowerCase();
@@ -15,16 +22,214 @@
   });
 
   const open = $derived(app.openSaved);
+
+  // The search box means the list of saved playlists while none is open and
+  // the open one's entries once one is, so it starts empty on the way in and
+  // on the way out.
+  function openSaved(id: number): void {
+    app.searchQuery = "";
+    sortBy = "position";
+    sortDir = "asc";
+    void app.openSavedPlaylist(id);
+  }
+
+  function back(): void {
+    app.searchQuery = "";
+    app.closeSavedPlaylist();
+  }
   const openSummary = $derived(
     open ? app.savedPlaylists.find((saved) => saved.id === open.id) : undefined,
   );
 
   function onRowKeyDown(saved: SavedPlaylistSummary, e: KeyboardEvent): void {
     if (e.target !== e.currentTarget) return;
+    // The bindings the library rows use; macOS keyboards have no menu key.
+    const wantsMenu =
+      e.key === "ContextMenu" ||
+      (e.key === "F10" && e.shiftKey) ||
+      (e.key === "Enter" && e.ctrlKey);
+    if (wantsMenu) {
+      e.preventDefault();
+      showMenu({ kind: "saved", saved }, e.currentTarget as HTMLElement, null);
+      return;
+    }
     if (e.key !== "Enter" && e.key !== " ") return;
     e.preventDefault();
-    void app.openSavedPlaylist(saved.id);
+    openSaved(saved.id);
   }
+
+  // ----- Row menus -----
+
+  type MenuTarget =
+    | { kind: "saved"; saved: SavedPlaylistSummary }
+    | { kind: "entry"; entry: SavedEntry };
+
+  let menu = $state<{ target: MenuTarget; x: number; y: number } | null>(null);
+  // The row the menu was opened from, so focus goes back where it came from.
+  let menuRow: HTMLElement | null = null;
+
+  /** `at` is the cursor point; without one the menu hangs off the row itself. */
+  function showMenu(
+    target: MenuTarget,
+    row: HTMLElement,
+    at: { x: number; y: number } | null,
+  ): void {
+    if (itemsFor(target).length === 0) return;
+    // The hover tooltip is anchored to the row and would sit under the menu.
+    app.clearHover();
+    const rect = row.getBoundingClientRect();
+    menuRow = row;
+    menu = {
+      target,
+      x: at ? at.x : rect.left,
+      y: at ? at.y : rect.bottom,
+    };
+  }
+
+  function openMenu(target: MenuTarget, e: MouseEvent): void {
+    e.preventDefault();
+    const keyboard = e.clientX === 0 && e.clientY === 0;
+    showMenu(
+      target,
+      e.currentTarget as HTMLElement,
+      keyboard ? null : { x: e.clientX, y: e.clientY },
+    );
+  }
+
+  function closeMenu(restoreFocus: boolean): void {
+    menu = null;
+    if (restoreFocus) menuRow?.focus();
+    menuRow = null;
+  }
+
+  function savedItems(saved: SavedPlaylistSummary): MenuItem[] {
+    const isSource = app.autoSource?.id === saved.id;
+    const items: MenuItem[] = [
+      {
+        label: "Open",
+        icon: "folder_open",
+        onselect: () => openSaved(saved.id),
+      },
+    ];
+    if (saved.entries > 0) {
+      items.push(
+        {
+          label: "Add to playlist",
+          icon: "add",
+          onselect: () => append(saved.id, false),
+        },
+        {
+          label: "Add with jingles and commercials",
+          icon: "playlist_add",
+          onselect: () => append(saved.id, true),
+        },
+      );
+    }
+    items.push(
+      {
+        label: isSource ? "Stop using as Auto source" : "Use as Auto source",
+        icon: "auto_awesome",
+        onselect: () => void app.setAutoSource(isSource ? null : saved.id),
+        separated: true,
+      },
+      {
+        label: "Export…",
+        icon: "file_export",
+        onselect: () => void app.exportSavedPlaylist(saved.id, saved.name),
+      },
+    );
+    if (app.isAdmin) {
+      items.push(
+        {
+          label: "Rename…",
+          icon: "edit",
+          onselect: () => rename(saved),
+          separated: true,
+        },
+        { label: "Delete…", icon: "delete", onselect: () => remove(saved) },
+      );
+    }
+    return items;
+  }
+
+  // Play-now sits last, behind a divider, as it does on a library row: it is
+  // never the item under the cursor when the menu opens.
+  function entryItems(entry: SavedEntry): MenuItem[] {
+    const track = entry.track;
+    const items: MenuItem[] = [];
+    if (track) {
+      items.push(
+        {
+          label: "Add to playlist",
+          icon: "add",
+          onselect: () => app.addToPlaylist(track),
+        },
+        {
+          label: "Add as next",
+          icon: "playlist_play",
+          onselect: () => app.addNextToPlaylist(track),
+        },
+      );
+      if (app.cueDevice !== null) {
+        items.push({
+          label: "Preview on cue deck",
+          icon: "headphones",
+          onselect: () => app.cueLoad(track),
+        });
+      }
+      if (app.isAdmin) {
+        items.push({
+          label: "Edit metadata…",
+          icon: "edit",
+          onselect: () => (app.editingMetadata = track),
+        });
+      }
+      items.push(
+        {
+          label: "Cue points…",
+          icon: "line_start_diamond",
+          onselect: () => (app.editingCuePoints = track),
+        },
+        {
+          label: "Show in folder",
+          icon: "folder_open",
+          onselect: () => app.revealTrack(track),
+          separated: true,
+        },
+      );
+    }
+    if (app.isAdmin) {
+      items.push({
+        label: "Remove from saved playlist",
+        icon: "close",
+        onselect: () => app.removeSavedEntry(entry.id),
+        separated: track !== null,
+      });
+    }
+    if (track) {
+      items.push({
+        label: "Play now (on air)",
+        icon: "play_arrow",
+        onselect: () => app.playNow(track),
+        separated: true,
+        danger: true,
+      });
+    }
+    return items;
+  }
+
+  const itemsFor = (target: MenuTarget): MenuItem[] =>
+    target.kind === "saved"
+      ? savedItems(target.saved)
+      : entryItems(target.entry);
+
+  const menuItems = $derived(menu ? itemsFor(menu.target) : []);
+  const menuLabel = $derived.by(() => {
+    if (!menu) return "";
+    return menu.target.kind === "saved"
+      ? `Actions for ${menu.target.saved.name}`
+      : `Actions for ${title(menu.target.entry)}`;
+  });
 
   function append(id: number, weave: boolean, e?: MouseEvent): void {
     e?.stopPropagation();
@@ -50,6 +255,98 @@
 
   const album = (entry: SavedEntry): string => entry.track?.album ?? "";
 
+  // ----- What an entry row shares with a library row -----
+
+  function onEnter(entry: SavedEntry, e: MouseEvent): void {
+    if (!entry.track) return;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    app.setHover(entry.track, rect);
+  }
+
+  function onEntryDblClick(entry: SavedEntry, e: MouseEvent): void {
+    if (!entry.track) return;
+    // Two quick presses of a row button are two presses of that button.
+    if (e.target instanceof Element && e.target.closest("button")) return;
+    e.preventDefault();
+    app.addToPlaylist(entry.track);
+  }
+
+  function onEntryKeyDown(entry: SavedEntry, e: KeyboardEvent): void {
+    if (e.target !== e.currentTarget) return;
+    const wantsMenu =
+      e.key === "ContextMenu" ||
+      (e.key === "F10" && e.shiftKey) ||
+      (e.key === "Enter" && e.ctrlKey);
+    if (!wantsMenu) return;
+    e.preventDefault();
+    showMenu({ kind: "entry", entry }, e.currentTarget as HTMLElement, null);
+  }
+
+  // ----- Sorting -----
+  //
+  // A sort is a way of looking at the saved playlist, never a change to it: the
+  // order it is stored and queued in is the one under `#`.
+
+  let sortBy = $state<EntrySort>("position");
+  let sortDir = $state<"asc" | "desc">("asc");
+
+  const sortCols: { column: EntrySort; label: string; cls: string }[] = [
+    { column: "position", label: "#", cls: "track-no" },
+    { column: "title", label: "Title", cls: "track-title" },
+    { column: "artist", label: "Artist", cls: "track-artist" },
+    { column: "album", label: "Album", cls: "track-album" },
+    { column: "plays", label: "Plays", cls: "track-plays" },
+    { column: "duration", label: "Time", cls: "track-duration" },
+  ];
+
+  function toggleSort(column: EntrySort): void {
+    if (sortBy === column) {
+      sortDir = sortDir === "asc" ? "desc" : "asc";
+    } else {
+      sortBy = column;
+      sortDir = "asc";
+    }
+  }
+
+  function sortIcon(column: EntrySort): string {
+    if (sortBy !== column) return "unfold_more";
+    return sortDir === "asc" ? "arrow_upward" : "arrow_downward";
+  }
+
+  function ariaSort(column: EntrySort): "ascending" | "descending" | "none" {
+    if (sortBy !== column) return "none";
+    return sortDir === "asc" ? "ascending" : "descending";
+  }
+
+  /** The open saved playlist's entries as shown: searched, then sorted. */
+  const listed = $derived(
+    sortEntries(
+      (open?.entries ?? [])
+        .map((entry, position) => ({
+          entry,
+          position,
+          title: title(entry),
+          artist: artist(entry),
+          album: album(entry),
+          plays: entry.track?.play_count ?? 0,
+          duration: duration(entry),
+        }))
+        .filter((row) =>
+          matchesSearch(app.searchQuery, [row.title, row.artist, row.album]),
+        ),
+      sortBy,
+      sortDir,
+    ),
+  );
+  /**
+   * The rows on screen are the saved playlist's own, in its own order. Only
+   * then does a gap between two of them name a position, so only then can a
+   * drag reorder.
+   */
+  const inOwnOrder = $derived(
+    app.searchQuery.trim() === "" && sortBy === "position" && sortDir === "asc",
+  );
+
   // ----- Dragging -----
   //
   // An entry drags the way a library row does: a bound one can be dropped at a
@@ -71,7 +368,9 @@
   }
 
   function onDragStart(e: DragEvent, entry: SavedEntry, i: number): void {
-    dragFrom = app.isAdmin ? i : -1;
+    // The tooltip is anchored to the row and would hang over the drag.
+    app.clearHover();
+    dragFrom = app.isAdmin && inOwnOrder ? i : -1;
     app.draggedTrackIds = entry.track ? [entry.track.id] : null;
     if (e.dataTransfer) {
       e.dataTransfer.effectAllowed = "copyMove";
@@ -119,7 +418,7 @@
       class="btn-add"
       title="Back to saved playlists"
       aria-label="Back to saved playlists"
-      onclick={() => app.closeSavedPlaylist()}
+      onclick={back}
     >
       <span class="material-symbols-outlined">arrow_back</span>
     </button>
@@ -182,11 +481,22 @@
     {/if}
   </div>
   <div class="saved-headers">
-    <span class="track-header track-no">#</span>
-    <span class="track-header track-title">Title</span>
-    <span class="track-header track-artist">Artist</span>
-    <span class="track-header track-album">Album</span>
-    <span class="track-header track-duration">Time</span>
+    {#each sortCols as col (col.column)}
+      <button
+        class="track-header {col.cls}"
+        class:active={sortBy === col.column}
+        role="columnheader"
+        aria-sort={ariaSort(col.column)}
+        onclick={() => toggleSort(col.column)}
+      >
+        {col.label}
+        <span class="material-symbols-outlined" aria-hidden="true"
+          >{sortIcon(col.column)}</span
+        >
+      </button>
+    {/each}
+    {#if app.cueDevice !== null}<span class="saved-action-space"></span>{/if}
+    {#if app.isAdmin}<span class="saved-action-space"></span>{/if}
     <span class="saved-action-space"></span>
     {#if app.isAdmin}<span class="saved-action-space"></span>{/if}
   </div>
@@ -207,8 +517,15 @@
           >Add tracks from a library row's menu, while admin mode is unlocked.</span
         >
       </div>
+    {:else if listed.length === 0}
+      <div class="empty">
+        <span class="empty-icon"
+          ><span class="material-symbols-outlined">search_off</span></span
+        >
+        <span class="empty-title">No Match In This Playlist</span>
+      </div>
     {:else}
-      {#each open.entries as entry, i (entry.id)}
+      {#each listed as { entry, position: i } (entry.id)}
         <div
           class="track-row saved-entry"
           class:unmatched={entry.track === null}
@@ -220,7 +537,15 @@
           draggable={draggable(entry)}
           ondragstart={(e) => onDragStart(e, entry, i)}
           ondragend={onDragEnd}
-          role="listitem"
+          oncontextmenu={(e) => openMenu({ kind: "entry", entry }, e)}
+          ondblclick={(e) => onEntryDblClick(entry, e)}
+          onmouseenter={(e) => onEnter(entry, e)}
+          onmouseleave={() => app.clearHover()}
+          onkeydown={(e) => onEntryKeyDown(entry, e)}
+          role="button"
+          aria-label={`Entry ${i + 1}: ${title(entry)} by ${artist(entry)}`}
+          aria-haspopup="menu"
+          tabindex="0"
           data-entry-id={entry.id}
         >
           <span class="track-no">{i + 1}</span>
@@ -239,9 +564,34 @@
           </span>
           <span class="track-artist">{artist(entry)}</span>
           <span class="track-album">{album(entry)}</span>
-          <span class="track-duration">{formatTime(duration(entry))}</span>
+          <span class="track-plays">{entry.track?.play_count ?? ""}</span>
+          <span
+            class="track-duration"
+            class:trimmed={entry.track !== null && isTrimmed(entry.track)}
+            >{formatTime(duration(entry))}</span
+          >
           {#if entry.track}
             {@const track = entry.track}
+            {#if app.cueDevice !== null}
+              <button
+                class="btn-cue"
+                title="Preview on cue deck"
+                aria-label="Cue track"
+                onclick={() => app.cueLoad(track)}
+              >
+                <span class="material-symbols-outlined">headphones</span>
+              </button>
+            {/if}
+            {#if app.isAdmin}
+              <button
+                class="btn-edit"
+                title="Edit metadata"
+                aria-label="Edit track metadata"
+                onclick={() => (app.editingMetadata = track)}
+              >
+                <span class="material-symbols-outlined">edit</span>
+              </button>
+            {/if}
             <button
               class="btn-add"
               title="Add to playlist"
@@ -251,6 +601,9 @@
               <span class="material-symbols-outlined">add</span>
             </button>
           {:else}
+            {#if app.cueDevice !== null}<span class="saved-action-space"
+              ></span>{/if}
+            {#if app.isAdmin}<span class="saved-action-space"></span>{/if}
             <span class="saved-action-space"></span>
           {/if}
           {#if app.isAdmin}
@@ -292,9 +645,11 @@
       {#each shown as saved (saved.id)}
         <div
           class="track-row saved-row"
-          onclick={() => void app.openSavedPlaylist(saved.id)}
+          onclick={() => openSaved(saved.id)}
           onkeydown={(e) => onRowKeyDown(saved, e)}
+          oncontextmenu={(e) => openMenu({ kind: "saved", saved }, e)}
           role="button"
+          aria-haspopup="menu"
           tabindex="0"
           aria-label={`Saved playlist: ${saved.name}`}
           data-saved-id={saved.id}
@@ -346,6 +701,15 @@
       {/each}
     {/if}
   </div>
+{/if}
+{#if menu}
+  <ContextMenu
+    x={menu.x}
+    y={menu.y}
+    items={menuItems}
+    label={menuLabel}
+    onclose={closeMenu}
+  />
 {/if}
 {#if app.savedNotice}
   <div id="saved-notice" role="status">

@@ -306,12 +306,15 @@ The rules around it:
 
 In the first increment, with a saved playlist open in the _Playlists_ tab:
 
-- **Add to saved playlist…** in a single library row's menu, admin only. It
-  opens a dialog rather than a submenu: the saved playlists to pick from, and a
-  name field that makes a new one holding the track. Appends at the end. The
-  menu on a picked row is the selection's once more than one track is picked,
-  and that one is left alone here. Playlist and history rows have no menu to
-  put it in.
+- **Add to saved playlist…** in a library row's menu, and for a selection on
+  the selection bar (_Save…_) and in the selection's menu. It opens a dialog
+  rather than a submenu: the saved playlists to pick from, and a name field that
+  makes a new one. Tracks go in at the end, a selection in pick order. While
+  admin mode is locked the dialog is the name field alone and the item reads
+  _New saved playlist…_: making one is open, adding to one that exists is not.
+  A selection is cleared once its tracks have gone somewhere, as any add clears
+  it, and not if the dialog is cancelled. Rows of the on-air playlist and of
+  history have no menu to put it in.
 - **Remove** an entry.
 - **Drag** to reorder. The drop position is the playlist's: `gapAt` and
   `moveTarget` in `features/playlist/playlistDrop.ts` are pure and take any list
@@ -319,16 +322,47 @@ In the first increment, with a saved playlist open in the _Playlists_ tab:
 - **Save as** on the playlist panel: the upcoming tracks become a new saved
   playlist. Stop markers and item overrides are not carried.
 
-An open saved playlist also queues one of its tracks by that row's own **+**, as
-a library row does. On the list of saved playlists the search box filters by
-name; with one open it is disabled, since there is nothing it would search.
+An entry row is a library row wherever it has a track to be one for. It shows
+the same columns, play count and air time included, with a trimmed track's time
+marked. Hovering it shows the track's card. A double-click or its **+** queues
+the track; it has the cue-deck button when a cue device is set and the
+edit-metadata button for an admin; it takes the keyboard's menu bindings. What
+it does not do yet is get picked: a click selects nothing until
+[#587](https://github.com/Arskah/radiodiodj/issues/587)'s other half. An
+unmatched entry has none of this, being text and not a track.
 
-The selection and the library drag meet saved playlists afterwards, and both
-already have their source half:
+The search box follows what is on screen. On the list of saved playlists it
+filters by name. With one open it searches that playlist's entries — title,
+artist and album, by the library search's rule that each word typed starts a
+word — and starts empty on the way in and on the way out. Every entry is
+already in the renderer, so this is a filter and not a query.
 
-- [#587](https://github.com/Arskah/radiodiodj/issues/587) gives the selection
-  bar and the selection's menu _Add to saved playlist ▸_ and _New saved playlist
-  from selection_, in pick order, and makes the entries of an open saved
+The column headers of an open saved playlist **sort** it: title, artist, album,
+plays and time, a second click reversing. A sort is a way of looking, never a change:
+the order the saved playlist is stored, queued and exported in is the one under
+`#`, and a click there goes back to it. Rows that tie stay in that order.
+
+A row keeps the number of its place in the saved playlist through both. And
+reordering by drag waits until the rows on screen are the saved playlist's own,
+in its own order — no search, sorted by `#` ascending — because only then does
+a drop between two rows name a position.
+
+Rows in the _Playlists_ tab have a menu of their own. A saved playlist's offers
+_Open_, both appends, _Use as Auto source_, _Export…_ and, for an admin,
+_Rename…_ and _Delete…_. An entry's offers what a library row's does for its
+track — the two adds, _Preview on cue deck_, _Edit metadata…_ for an admin,
+_Cue points…_, _Show in folder_ and, set apart, _Play now (on air)_ — plus
+_Remove from saved playlist_ for an admin. Those act on the track, not on the
+entry: an entry holds a track's id and shows the track as it is, so a metadata
+edit made here is the same edit made from the library, and it shows in every
+saved playlist the track is in. A save ends in `Health::refresh`, which re-sends
+the list, which is what redraws the open saved playlist. An unmatched entry has no track, so its menu is that last item or
+nothing. Both kinds of row take the library's keyboard bindings for the menu.
+
+What is still to come:
+
+- [#587](https://github.com/Arskah/radiodiodj/issues/587), the rest of it,
+  makes the entries of an open saved
   playlist selectable. The library selection is keyed by track id and an entry
   is not a track — the same track can be in a saved playlist twice, and an
   unmatched entry has no track at all — so entries take a selection of their own
@@ -341,9 +375,9 @@ already have their source half:
   row carries the whole selection, so the drop is `saved_playlist_add_entries`
   with a position, for one track or for many.
 
-Until #587 the two do not meet. The selection outlives a tab change, so on the
-_Playlists_ tab it is still held and its bar still queues to the playlist;
-_Select all_ and Ctrl/Cmd+A have no track rows to act on there.
+The selection outlives a tab change, so on the _Playlists_ tab it is still held
+and its bar still acts on it; _Select all_ and Ctrl/Cmd+A have no track rows to
+act on there.
 
 ### Names
 
@@ -361,12 +395,12 @@ The line [admin-mode.md](./admin-mode.md) draws is that a guest runs a show and
 cannot change the station. Here that reads: a guest can **make** a saved
 playlist and **use** any of them, and cannot change one that exists.
 
-| open while locked                               | admin only                      |
-| ----------------------------------------------- | ------------------------------- |
-| import, _Save playlist as…_, new from selection | add, remove and reorder entries |
-| export                                          | rename, delete                  |
-| both append actions                             | _Find in library_               |
-| choosing the auto-playlist source               |                                 |
+| open while locked                                | admin only                      |
+| ------------------------------------------------ | ------------------------------- |
+| import, _Save as_, new from a row or a selection | add, remove and reorder entries |
+| export                                           | rename, delete                  |
+| both append actions                              | _Find in library_               |
+| choosing the auto-playlist source                |                                 |
 
 Choosing the source is open for the reason the auto-playlist switch is: it is
 how a show is run, and a guest who can switch the auto-playlist off altogether
@@ -439,7 +473,7 @@ Each is one pull request.
 | 2   | Export and import       | the file, binding at import, after a scan and after the analysis pass                                                              | 1     | #501       |
 | 3   | Auto-playlist source    | the source in session and `DbRefiller`, the pool predicate, the track count, the empty-pool revert and its notice, the switch line | 1     | #503       |
 | 4   | Find in library         | binding an unmatched entry by hand                                                                                                 | 2     | #580       |
-| 5   | Selection and drag-drop | the selection's two saved-playlist actions, selecting entries of a saved playlist, dragging library rows onto one                  | 1     | #587, #584 |
+| 5   | Selection and drag-drop | selecting entries of a saved playlist, dragging library rows onto one; the selection's own saved-playlist actions are built        | 1     | #587, #584 |
 | 6   | The web authoring page  | a show built away from the studio                                                                                                  | #505  | #581       |
 
 Increment 1 is usable alone: a show built in the app and appended at its hour.

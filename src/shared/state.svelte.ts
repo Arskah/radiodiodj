@@ -54,7 +54,7 @@ import { isStrictNever } from "./isStrictNever";
 import { APP_NAME } from "./appName";
 import { savePaintHint } from "./appearance";
 import { healthAttention as attentionOf } from "./health";
-import { appendMessage, importMessage } from "./savedPlaylists";
+import { appendMessage, importMessage, sizeLabel } from "./savedPlaylists";
 
 const logger = {
   error: (...args: unknown[]) => console.error(...args),
@@ -147,7 +147,8 @@ const messageOf = (err: unknown): string =>
 /** Which saved-playlist dialog is up, and what it acts on. */
 export type SavedDialog =
   | { kind: "saveAs" }
-  | { kind: "addTo"; trackIds: number[] }
+  /** `fromSelection` clears the library selection once the tracks are in. */
+  | { kind: "addTo"; trackIds: number[]; fromSelection?: boolean }
   | { kind: "rename"; id: number; name: string }
   | { kind: "delete"; id: number; name: string };
 
@@ -751,12 +752,27 @@ export class AppState {
 
   /** Rejects with the backend's reason, for the dialog to show. */
   async createSavedPlaylist(name: string, trackIds: number[]): Promise<void> {
-    await api.savedPlaylistCreate(name, trackIds);
+    const made = await api.savedPlaylistCreate(name, trackIds);
+    this.savedNotice = `Saved “${made.name}”: ${sizeLabel(made.entries, 0)}`;
   }
 
   /** Rejects with the backend's reason, for the dialog to show. */
   async addToSavedPlaylist(id: number, trackIds: number[]): Promise<void> {
     await api.savedPlaylistAddEntries(id, trackIds, null);
+  }
+
+  /**
+   * Offer the library selection to a saved playlist, in pick order: a new one,
+   * or for an admin an existing one. The selection is cleared once the dialog
+   * has put the tracks somewhere, not before.
+   */
+  saveSelection(): void {
+    if (this.selectedIds.length === 0) return;
+    this.savedDialog = {
+      kind: "addTo",
+      trackIds: [...this.selectedIds],
+      fromSelection: true,
+    };
   }
 
   /** Rejects with the backend's reason, for the dialog to show. */

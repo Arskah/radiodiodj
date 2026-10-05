@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { appendMessage, importMessage, sizeLabel } from "./savedPlaylists";
+import {
+  appendMessage,
+  importMessage,
+  matchesSearch,
+  sortEntries,
+  sizeLabel,
+} from "./savedPlaylists";
 
 describe("appendMessage", () => {
   it("counts what was added", () => {
@@ -22,6 +28,70 @@ describe("importMessage", () => {
     expect(importMessage("Show (2)", 12, 2)).toBe(
       "Imported “Show (2)”: 12 tracks · 2 missing",
     );
+  });
+});
+
+describe("matchesSearch", () => {
+  const row = ["Here Comes the Sun", "The Beatles", "Abbey Road"];
+
+  it("matches everything when nothing is typed", () => {
+    expect(matchesSearch("", row)).toBe(true);
+    expect(matchesSearch("  ", row)).toBe(true);
+  });
+
+  it("takes each word as the start of a word, across the fields", () => {
+    expect(matchesSearch("beat abb", row)).toBe(true);
+    expect(matchesSearch("SUN", row)).toBe(true);
+    expect(matchesSearch("road beatles here", row)).toBe(true);
+  });
+
+  it("does not match inside a word, or a word that is nowhere", () => {
+    expect(matchesSearch("eatles", row)).toBe(false);
+    expect(matchesSearch("beat stones", row)).toBe(false);
+  });
+
+  it("splits on punctuation and keeps letters outside ASCII", () => {
+    expect(matchesSearch("yö", ["Hyvää yötä (Live)"])).toBe(true);
+    expect(matchesSearch("live", ["Hyvää yötä (Live)"])).toBe(true);
+  });
+});
+
+describe("sortEntries", () => {
+  const row = (position: number, title: string, duration = 100) => ({
+    position,
+    title,
+    artist: "a",
+    album: "al",
+    plays: 3 - position,
+    duration,
+  });
+  const rows = [row(0, "beta", 300), row(1, "Alpha", 100), row(2, "älä", 200)];
+  const order = (sorted: { position: number }[]) =>
+    sorted.map((r) => r.position);
+
+  it("keeps the saved playlist's own order by position, and reverses it", () => {
+    expect(order(sortEntries(rows, "position", "asc"))).toEqual([0, 1, 2]);
+    expect(order(sortEntries(rows, "position", "desc"))).toEqual([2, 1, 0]);
+  });
+
+  it("sorts text without regard to case or accents", () => {
+    expect(order(sortEntries(rows, "title", "asc"))).toEqual([2, 1, 0]);
+    expect(order(sortEntries(rows, "title", "desc"))).toEqual([0, 1, 2]);
+  });
+
+  it("sorts durations and play counts as numbers", () => {
+    expect(order(sortEntries(rows, "duration", "asc"))).toEqual([1, 2, 0]);
+    expect(order(sortEntries(rows, "plays", "asc"))).toEqual([2, 1, 0]);
+  });
+
+  it("leaves ties in the saved playlist's order in both directions", () => {
+    expect(order(sortEntries(rows, "artist", "asc"))).toEqual([0, 1, 2]);
+    expect(order(sortEntries(rows, "artist", "desc"))).toEqual([0, 1, 2]);
+  });
+
+  it("does not reorder the rows it was given", () => {
+    sortEntries(rows, "title", "asc");
+    expect(order(rows)).toEqual([0, 1, 2]);
   });
 });
 
