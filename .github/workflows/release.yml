@@ -63,8 +63,8 @@ jobs:
       - build-linux-x64
       - build-windows-x64
     # Runs once the builds finish whatever their outcome, so a platform that fails to
-    # build does not hold back the bundles that did. The release itself is already
-    # public by then: release-please publishes the tag before any build starts.
+    # build does not hold back the bundles that did. The release already exists by
+    # then, as a draft: release-please creates it before any build starts.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     permissions:
@@ -100,6 +100,22 @@ jobs:
             exit 1
           fi
           gh release upload "$TAG" "${files[@]}" --clobber
+
+      # release-please creates the release as a draft, which GitHub shows to
+      # nobody and never reports as the latest, so nothing reads a release that
+      # has no bundles yet. `legacy` lets the creation date and version pick the
+      # latest, so rebuilding an older tag does not take it. See
+      # docs/website.md#deploy.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          id=$(gh release view "$TAG" --json databaseId --jq .databaseId)
+          gh api --method PATCH "repos/$GH_REPO/releases/$id" \
+            -F draft=false -f make_latest=legacy --silent
 
       # A bundle without a signature is one no install can update to.
       - name: Fail on missing updater signatures

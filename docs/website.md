@@ -87,6 +87,9 @@ missing a platform.
 When the lookup fails, or the release has no bundles at all:
 
 - **In CI the build fails.** A deploy must not replace working links with none.
+  A release still waiting for its bundles is not that case: it is a draft until
+  they are uploaded, and GitHub does not report a draft as the latest. See
+  [Deploy](#deploy).
 - **Locally** the page falls back to one link to the releases page, so the site
   can be worked on offline.
 
@@ -173,10 +176,27 @@ The build is in its own workflow because the deploy job needs `pages: write`,
 and a called workflow may not ask for more than its caller grants — a pull
 request's CI should not hold that permission.
 
+**A release is a draft until it has bundles.** release-please creates the
+release when the release PR merges, and `release.yml` uploads the bundles some
+minutes later. `"draft": true` in `release-please-config.json` keeps it
+unpublished for that stretch, and `upload-release` publishes it straight after
+the upload. GitHub's "latest release" skips drafts, so every reader of it — this
+site's build in a pull request, a deploy that happens to start mid-release, the
+_all files_ link on the live page — keeps seeing the previous release until the
+new one can actually be downloaded. Two things follow:
+
+- `"force-tag-creation": true` goes with it and must stay. GitHub creates a
+  draft's tag only when it is published, and release-please finds the previous
+  release by its tag, so without the setting a push to `main` mid-release would
+  not see the release that was just cut.
+- A release whose builds all failed uploads nothing and stays a draft, visible
+  only to maintainers. The site goes on offering the one before it. Running
+  **Release** by hand on the tag builds it again and publishes it.
+
 **The deploy follows Release Please rather than a push.** Baked links are only
 right if the build runs after the release's bundles are uploaded, and the
 `release: published` event fires before any of them exist: release-please
-publishes the tag first, then `release.yml` builds for half an hour. A Release
+creates the release first, then `release.yml` builds for half an hour. A Release
 Please _workflow run_ contains that build as a called workflow, so it completes
 only once `upload-release` has finished. On a push that releases nothing the run
 ends in seconds, and the site deploys just the same.
@@ -190,8 +210,9 @@ Two consequences:
 
 - `pages.yml` names the workflows, `workflows: [Release Please, Release]`.
   **Renaming either stops the site deploying after it**, silently.
-- Running `pages.yml` by hand while a release is still building fails the
-  build — the latest release has no bundles yet. Run it again afterwards.
+- A deploy that starts while a release is still building — `pages.yml` run by
+  hand, or following another push to `main` — republishes the previous release.
+  The release's own run deploys the new one once it is published.
 
 A release that finished with a platform missing still deploys, showing the
 platforms that built.
