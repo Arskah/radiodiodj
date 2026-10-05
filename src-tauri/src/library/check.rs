@@ -301,7 +301,7 @@ impl LibraryCheck {
         self.cancel.store(false, Ordering::SeqCst);
         let generation = self.generation.load(Ordering::SeqCst);
         self.health.set_checking(true);
-        let roots = listing::configured_roots(&self.config);
+        let roots = listing::configured_roots(&self.db);
         let outcome = check(&self.db, &roots, &|| self.cancel.load(Ordering::SeqCst));
         let mut result = None;
         match outcome {

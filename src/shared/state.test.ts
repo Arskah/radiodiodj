@@ -57,10 +57,10 @@ const { api } = vi.hoisted(() => {
     playlistSetAutoPlaylist: vi.fn(),
     playlistSetAutoAdvance: vi.fn(),
     getStats: vi.fn(),
-    getPaths: vi.fn(),
     getAllPaths: vi.fn(),
     addPath: vi.fn(),
     removePath: vi.fn(),
+    locatePath: vi.fn(),
     purgeTracks: vi.fn(),
     recalculateAutoCue: vi.fn(),
     libraryHealth: vi.fn(),
@@ -284,6 +284,7 @@ function resetApi(): void {
   });
   api.addPath.mockResolvedValue(null);
   api.removePath.mockResolvedValue(true);
+  api.locatePath.mockResolvedValue(null);
   api.purgeTracks.mockResolvedValue(0);
   api.libraryHealth.mockResolvedValue(structuredClone(EMPTY_HEALTH));
   api.savedPlaylistList.mockResolvedValue([]);
@@ -1284,7 +1285,7 @@ describe("AppState library + paths", () => {
       totalHours: 1,
     });
     api.getAllPaths.mockResolvedValue({
-      music: ["/m"],
+      music: [{ id: 1, path: "/m" }],
       commercial: [],
       jingle: [],
     });
@@ -1391,7 +1392,7 @@ describe("AppState library + paths", () => {
 
   it("loadLibraryPaths stores response", async () => {
     await app.loadLibraryPaths();
-    expect(app.libraryPaths.music).toEqual(["/m"]);
+    expect(app.libraryPaths.music).toEqual([{ id: 1, path: "/m" }]);
   });
 
   it("loadLibraryPaths marks the paths read", async () => {
@@ -1422,8 +1423,20 @@ describe("AppState library + paths", () => {
   });
 
   it("removePath calls api then reloads", async () => {
-    await app.removePath("music", "/m");
-    expect(api.removePath).toHaveBeenCalledWith("music", "/m");
+    await app.removePath(1);
+    expect(api.removePath).toHaveBeenCalledWith(1);
+    expect(api.getAllPaths).toHaveBeenCalled();
+  });
+
+  it("locatePath skips reload when no folder was taken", async () => {
+    await app.locatePath(1);
+    expect(api.locatePath).toHaveBeenCalledWith(1);
+    expect(api.getAllPaths).not.toHaveBeenCalled();
+  });
+
+  it("locatePath reloads when the path has a new folder", async () => {
+    api.locatePath.mockResolvedValueOnce("/moved");
+    await app.locatePath(1);
     expect(api.getAllPaths).toHaveBeenCalled();
   });
 

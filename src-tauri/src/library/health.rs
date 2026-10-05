@@ -14,7 +14,6 @@ use super::db::{Db, Dismissal, HealthRow, Track};
 use super::listing::{self, ScanRoot};
 use super::saved_playlists;
 use super::tag_write::{TagWriteFailure, TagWriter};
-use crate::persist::config::Config;
 
 pub const HEALTH_EVENT: &str = "library-health";
 
@@ -125,7 +124,6 @@ impl FindingKind {
 /// Keeps the latest report and pushes it to the renderer whenever it changes.
 pub struct Health {
     db: Arc<Db>,
-    config: Arc<Config>,
     tag_writer: Arc<TagWriter>,
     app: AppHandle,
     report: Mutex<HealthReport>,
@@ -175,15 +173,9 @@ impl Emits {
 }
 
 impl Health {
-    pub fn new(
-        app: AppHandle,
-        db: Arc<Db>,
-        config: Arc<Config>,
-        tag_writer: Arc<TagWriter>,
-    ) -> Arc<Self> {
+    pub fn new(app: AppHandle, db: Arc<Db>, tag_writer: Arc<TagWriter>) -> Arc<Self> {
         let health = Arc::new(Self {
             db,
-            config,
             tag_writer,
             app,
             report: Mutex::new(HealthReport::default()),
@@ -216,7 +208,7 @@ impl Health {
     }
 
     pub fn refresh(&self) {
-        let roots = listing::configured_roots(&self.config);
+        let roots = listing::configured_roots(&self.db);
         match build(&self.db, &roots) {
             Ok(mut report) => {
                 let check = self.check.lock().clone();

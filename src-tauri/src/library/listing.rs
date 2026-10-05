@@ -8,9 +8,8 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
-use super::db::IndexRow;
+use super::db::{Db, IndexRow};
 use crate::audio_measure::formats;
-use crate::persist::config::Config;
 
 /// A configured library path and the content type it feeds.
 pub struct ScanRoot {
@@ -18,15 +17,15 @@ pub struct ScanRoot {
     pub path: String,
 }
 
-/// Every configured library path, music first.
-pub fn configured_roots(config: &Config) -> Vec<ScanRoot> {
-    ["music", "commercial", "jingle"]
-        .into_iter()
-        .flat_map(|content_type| {
-            config
-                .get_paths(content_type)
-                .into_iter()
-                .map(move |path| ScanRoot { content_type, path })
+/// Every configured library path, music first. One this machine has not
+/// located is listed under a folder that cannot exist, so it reads as
+/// unreachable rather than as absent — which would mark its tracks missing.
+pub fn configured_roots(db: &Db) -> Vec<ScanRoot> {
+    db.roots()
+        .iter()
+        .map(|root| ScanRoot {
+            content_type: root.content_type,
+            path: root.folder(),
         })
         .collect()
 }

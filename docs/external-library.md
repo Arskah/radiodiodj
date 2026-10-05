@@ -53,11 +53,13 @@ database, which network filesystems do not provide, and SQLite's locking is
 unreliable over SMB and NFS in the first place. This is not a performance
 objection to be measured — it does not work.
 
-**Paths are absolute and canonicalised.** `Config::add_path`
-(`src-tauri/src/persist/config.rs`) stores a canonical path per library root, and
-`tracks.path` holds a canonical absolute path per file. The same share is
-`/Volumes/radio/music` on macOS, `Z:\music` on Windows and `/mnt/radio/music` on
-Linux, so one database cannot describe it for two machines.
+**Paths are relative to a library root, and the root's folder is local.** The
+same share is `/Volumes/radio/music` on macOS, `Z:\music` on Windows and
+`/mnt/radio/music` on Linux, so a track is stored as a root id plus the path
+below that root, and each machine's `config.json` says where the root is
+([library.md](./library.md#where-a-library-path-is)). One library can describe
+the share for two machines; what is missing is a way for them to hold the same
+library.
 
 **The database is on the on-air path.** Loading a track reads it:
 `PlaylistService` calls `get_track_load_info` and `get_paths_by_ids`
@@ -303,9 +305,12 @@ in both.
 
 Everything here is the same work under either variant.
 
-**Root-relative paths.** `tracks.path` becomes a library-root id plus a path
-relative to it. The list of roots — id and content type — is replicated; the
-map from root id to local mount stays in each machine's own `config.json`.
+**The root list travels, the folders do not.** A track is already stored as a
+library-root id plus a path below it
+([library.md](./library.md#where-a-library-path-is)). The list of roots — id and
+content type — is replicated with the tracks; the map from root id to folder
+stays in each machine's own `config.json`, and a studio that has not located a
+root yet sees it as an unreachable one.
 
 **Change capture.** A machine has to know what it has not sent yet. Triggers on
 `tracks`, the saved-playlist tables and `health_dismissals` note each changed
@@ -450,14 +455,12 @@ finds exactly what the studio finds.
 
 #### Increments
 
-Each is a PR on its own. The first two are the same under either variant, and
-the choice between B2 and B3 does not have to be made before they land. The web
-page's two increments hang off increment 3 and need nothing after it — nor
-increment 1, since a catalogue has no paths in it.
+Each is a PR on its own. Increment 2 is the same under either variant, and the
+choice between B2 and B3 does not have to be made before it lands. The web
+page's two increments hang off increment 3 and need nothing after it.
 
 ```mermaid
 flowchart TD
-  I1["1 · Root-relative paths"]
   I2["2 · Change capture and edit stamps"]
   I3a["3 · B2: owner HTTP API, token, snapshot"]
   I3b["3 · B3: hub tables and Postgres client"]
@@ -467,8 +470,6 @@ flowchart TD
   H["Headless owner (optional)"]
   W1["W1 · Catalogue published, web search"]
   W2["W2 · Drafts reachable from the app (optional)"]
-  I1 --> I3a
-  I1 --> I3b
   I2 --> I3a
   I2 --> I3b
   I3a --> I4
@@ -484,7 +485,6 @@ flowchart TD
 
 | #   | increment                                                     | by itself                                                                                                                       |
 | --- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | Root-relative track paths, and the root list as library data  | **Worth doing regardless.** Today a mount point that changes name loses the library ([track-identity.md](./track-identity.md)). |
 | 2   | Change capture, and a time and machine on each editable group | Inert. A migration and triggers nothing reads yet.                                                                              |
 | 3   | The middle: the owner's API (B2) or the hub (B3)              | The owner publishes; nothing consumes.                                                                                          |
 | 4   | The studio role                                               | **Delivers the ask**: the scan and the decode are off the studio machine. Read-only — cue work on a studio does not travel yet. |
@@ -536,6 +536,5 @@ has one studio machine — and B3 answers all three where B2 answers none withou
 exposing a machine of the station's. **B3, then**, at the price of a second
 search implementation and a Postgres to look after. B2 remains the answer for a
 station whose owner already sits on a server the outside can reach and that
-wants the page to find exactly what the studio finds. Increments 1 and 2 do not
-depend on the choice, and increment 1 is worth doing whether or not the rest
-ever ships.
+wants the page to find exactly what the studio finds. Increment 2 does not
+depend on the choice.

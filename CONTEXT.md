@@ -27,7 +27,7 @@ Aggregate of all tracks with content type `commercial`.
 _Avoid_: Ads, spots
 
 **Library path**:
-A user-configured filesystem root the scanner recurses into. Feeds tracks into one or more typed libraries.
+A user-configured filesystem root the scanner recurses into. Feeds tracks into one or more typed libraries. The library knows it by id and content type; the folder it is at is a setting of each computer, so tracks are stored relative to it.
 _Avoid_: Folder, source, watch dir
 
 **Selection**:

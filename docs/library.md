@@ -22,14 +22,60 @@ Every track has one **content type**: `music`, `jingle` or `commercial`. The
 content type comes from the library path a file was found under, not from its
 tags.
 
-_Settings → Library_ holds three lists of folders, one per content type. Adding
-a folder stores its canonical path in `config.json`, and removing one only
-changes the list: its tracks go missing on the next scan, and come back intact if
-the folder is added again.
+_Settings → Library_ holds three lists of folders, one per content type.
+Removing one only changes the list: its tracks go missing on the next scan, and
+come back intact if the folder is added again.
 
 A folder may hold subfolders; the scan recurses into them. If one file is under
 two library paths, it is indexed once, under the first path in the order music,
 commercials, jingles.
+
+### Where a library path is
+
+The library knows a library path by an id and a content type, and stores each
+track as that id plus the file's path _below_ the folder. Where the folder is on
+this computer is the one thing it does not hold: that is a line in
+`config.json`, `libraryMounts`, from the id to a canonical folder.
+
+So a share that comes back under another name — `/Volumes/radio` one day,
+`/Volumes/radio-1` the next, or a drive letter that changed — is one setting.
+**Locate**, the folder button on a library path's row, picks where the path is
+now. Nothing is rescanned and nothing is re-read: every track under it is found
+at the new place at once, with its cue points, play count and measurements, and
+the next scan sees the files it already knows.
+
+A library path this computer has no folder for — a `config.json` that was lost
+or replaced while the database was kept — is listed as _Not located on this
+computer_. It behaves as an unreachable path does: its tracks stay, nothing
+under it is marked missing, and nothing from it can be loaded until it is
+located.
+
+Pointing a library path at the wrong folder is not destructive either. A scan
+there marks its tracks missing, as it would for any file that is gone, and
+pointing it back and scanning again brings them back.
+
+| stored                         | where                    | example                |
+| ------------------------------ | ------------------------ | ---------------------- |
+| the path's id and content type | `library_roots`          | `3`, `music`           |
+| a track's place under it       | `tracks.root_id`, `path` | `3`, `Artist/Song.mp3` |
+| the folder, on this computer   | `config.json`            | `3: /Volumes/radio`    |
+
+The stored path uses `/` between folders on every platform. Everything outside
+`Db` still handles whole paths: the library joins the two on the way out and
+splits them on the way in (`library/roots.rs`), so the scan, the decks and the
+tag writer never see the difference.
+
+Which path a file belongs to depends on the whole list — the first that contains
+it, in listing order — so the library re-derives it for every track whenever the
+list or a folder changes. That is what keeps a path added _above_ an existing
+one from indexing its files a second time. A track under no library path keeps
+its whole path, with root id `0`: one whose library path was removed, until a
+path that contains it is added again.
+
+A library written before this, and a `config.json` that still lists
+`musicPaths`, `commercialPaths` or `jinglePaths`, are taken up at launch: each
+listed folder becomes a library path, its tracks move under it, and the lists
+are written back empty. Seeding a config by hand that way still works.
 
 The three content types make up three libraries: the **Music**, **Jingle** and
 **Commercial libraries**. They matter in two places. The library panel shows one
@@ -584,11 +630,11 @@ converts the same way, and a `.webm` holding Opus with `-c:a libmp3lame` too.
 
 ## Where it is stored
 
-| file            | holds                                                  |
-| --------------- | ------------------------------------------------------ |
-| `radiodiodj.db` | tracks, their operator work, and health dismissals     |
-| `config.json`   | library paths and tuning, including the check interval |
-| `session.json`  | the playlist and history, by track id                  |
+| file            | holds                                                             |
+| --------------- | ----------------------------------------------------------------- |
+| `radiodiodj.db` | library paths, tracks, their operator work, and health dismissals |
+| `config.json`   | where each library path is on this computer, and tuning           |
+| `session.json`  | the playlist and history, by track id                             |
 
 They sit in the app data directory listed in `AGENTS.md`. The database uses
 SQLite in WAL mode with an FTS5 index for search; its schema rules, backups and
@@ -599,6 +645,7 @@ baseline resets are in [database.md](./database.md).
 | area                               | where                                                                         |
 | ---------------------------------- | ----------------------------------------------------------------------------- |
 | listing and the changed/gone rules | `src-tauri/src/library/listing.rs`                                            |
+| library paths and their folders    | `library/roots.rs`                                                            |
 | scan and reconcile                 | `library/scanner.rs`, `library/scan_state.rs`, `Db::reconcile`                |
 | fingerprint                        | `audio_measure/fingerprint.rs`                                                |
 | waveforms and fingerprints         | `library/waveform_scan.rs`                                                    |

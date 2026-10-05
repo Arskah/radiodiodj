@@ -261,6 +261,18 @@ listed root or outside every root. New paths **reattach** by fingerprint,
 membership is `Path::starts_with`, never `LIKE`. Only _Settings → Purge_
 deletes. See [docs/track-identity.md](docs/track-identity.md).
 
+**Library paths** — a track's path is stored as `root_id` plus the path below
+that root, with `/` between folders; the root's folder on this machine is
+`libraryMounts` in `config.json` and never a column, being the one fact two
+machines reading the same library disagree on. Everything outside `Db` handles
+absolute paths: `Roots::resolve` on every read, `Roots::relativize` on every
+write, so a new query that selects `path` selects `root_id` with it and goes
+through `row_path`. A root with no folder resolves under a name that cannot
+exist, so it reads as **unreachable** — never as absent, which would mark its
+tracks missing. `Db::set_mounts` re-derives every row's root whenever the list
+or a folder changes. See
+[docs/library.md](docs/library.md#where-a-library-path-is).
+
 **A changed file is not changed audio** — an external tagger, `touch` and
 `rsync` all move an mtime without touching a sample. The scan re-fingerprints a
 known path whose mtime moved and the fingerprint decides: same → the tags are

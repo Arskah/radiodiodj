@@ -1,5 +1,16 @@
 export type ContentType = "music" | "commercial" | "jingle";
 
+/**
+ * A folder the library is scanned from. The library knows it by `id`; where it
+ * is on this computer is a setting, so the same library can sit under another
+ * mount point without its tracks changing.
+ */
+export interface LibraryPath {
+  id: number;
+  /** `null` until this computer has been told where the folder is. */
+  path: string | null;
+}
+
 /** A tab of the library panel: a typed library, or the saved playlists. */
 export type LibraryTab = ContentType | "playlists";
 

@@ -14,6 +14,7 @@ import type {
   DeviceRef,
   HealthReport,
   FindingKind,
+  LibraryPath,
   LibraryStats,
   PlaylistItem,
   Recalculated,
@@ -198,7 +199,7 @@ export class AppState {
    */
   private searchRequest = 0;
   stats = $state<LibraryStats | null>(null);
-  libraryPaths = $state<Record<ContentType, string[]>>({
+  libraryPaths = $state<Record<ContentType, LibraryPath[]>>({
     music: [],
     commercial: [],
     jingle: [],
@@ -1809,9 +1810,14 @@ export class AppState {
     if (added) await this.loadLibraryPaths();
   }
 
-  async removePath(type: ContentType, p: string): Promise<void> {
-    await api.removePath(type, p);
+  async removePath(id: number): Promise<void> {
+    await api.removePath(id);
     await this.loadLibraryPaths();
+  }
+
+  async locatePath(id: number): Promise<void> {
+    const located = await api.locatePath(id);
+    if (located) await this.loadLibraryPaths();
   }
 
   async loadHealth(): Promise<void> {

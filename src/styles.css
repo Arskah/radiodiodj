@@ -2527,6 +2527,33 @@ body {
   color: var(--on-surface-variant);
 }
 
+.path-row--unlocated .path-text {
+  font-family: inherit;
+  font-style: italic;
+  color: var(--error);
+}
+
+.btn-locate {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: var(--r-lg);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.btn-locate .material-symbols-outlined {
+  font-size: 16px;
+}
+
+.btn-locate:hover .material-symbols-outlined {
+  color: var(--primary);
+}
+
 .path-empty {
   padding: var(--sp-xl);
   text-align: center;
