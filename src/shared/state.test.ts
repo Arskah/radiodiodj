@@ -716,6 +716,19 @@ describe("AppState history view", () => {
     aired(t(1), t(2), t(3));
     expect(app.historyDisplay.map((x) => x.id)).toEqual([3, 2, 1]);
   });
+
+  it("requeueFromHistory appends the chosen entry to the playlist tail", () => {
+    aired(t(1), t(2), t(3));
+    app.requeueFromHistory(2);
+    expect(app.playlist.map(pid)).toEqual([1]);
+    expect(app.history.map((x) => x.id)).toEqual([1, 2, 3]);
+  });
+
+  it("requeueFromHistory is a no-op for invalid indices", () => {
+    aired(t(1));
+    app.requeueFromHistory(5);
+    expect(app.playlist.length).toBe(0);
+  });
 });
 
 describe("AppState playback control", () => {

@@ -975,6 +975,13 @@ export class AppState {
     return this.history.slice().reverse();
   }
 
+  requeueFromHistory(displayIndex: number): void {
+    const i = this.history.length - 1 - displayIndex;
+    const track = this.history[i];
+    if (!track) return;
+    this.send(api.playlistAdd(track.id));
+  }
+
   /**
    * Adopt a backend snapshot. This is the only writer of playlist state: the
    * queue, what is on air, and the auto flags are all projections of it.

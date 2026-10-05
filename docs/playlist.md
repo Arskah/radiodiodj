@@ -183,12 +183,12 @@ loading the next track, which is how an operator parks the show at a fixed point
 without emptying the queue. They contribute nothing to the prefetch window and
 nothing to the Upcoming tab's total duration.
 
-**A double-click does nothing in the Upcoming tab or in History.** A queued
-track goes on by its row's play button, and a stop marker only by the show
-arriving at it. A double-click used to do both — it played the track, and on a
-stop marker it stopped what was on air — which is the stray-click hazard the
-library row's _Play now_ was moved behind a menu to remove. A history row is a
-record of what aired, with nothing to press.
+**Nothing in the Upcoming tab reaches air by a double-click.** A queued track
+goes on by its row's play button, and a stop marker only by the show arriving at
+it. A double-click used to do both — it played the track, and on a stop marker
+it stopped what was on air — which is the stray-click hazard the library row's
+_Play now_ was moved behind a menu to remove. A double-click on a History row
+queues that track again, at the end: it adds, and never reaches air.
 
 ## Outages
 
