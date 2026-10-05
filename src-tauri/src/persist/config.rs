@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use parking_lot::{Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -491,11 +492,19 @@ impl Default for AppearanceConfig {
 #[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
+    /// Where this machine reaches each library path, by the id the library
+    /// knows it under. The paths themselves are library data
+    /// (`library::roots`); only the folder is this machine's to say.
     #[serde(default)]
+    pub library_mounts: BTreeMap<i64, String>,
+    /// Library paths as they were kept before the library held them, and still
+    /// the way to seed one by hand. Taken up at launch and then written out
+    /// empty: see [`Config::adopt_mounts`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub music_paths: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commercial_paths: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jingle_paths: Vec<String>,
     #[serde(default)]
     pub main_device: Option<DeviceRef>,
@@ -577,40 +586,52 @@ impl Config {
         Ok(())
     }
 
-    pub fn get_paths(&self, kind: &str) -> Vec<String> {
+    /// Library paths still held in the config, as `(content type, folder)` in
+    /// listing order.
+    pub fn legacy_paths(&self) -> Vec<(&'static str, String)> {
         let cfg = self.inner.lock();
-        match kind {
-            "music" => cfg.music_paths.clone(),
-            "commercial" => cfg.commercial_paths.clone(),
-            "jingle" => cfg.jingle_paths.clone(),
-            _ => vec![],
-        }
+        [
+            ("music", &cfg.music_paths),
+            ("commercial", &cfg.commercial_paths),
+            ("jingle", &cfg.jingle_paths),
+        ]
+        .into_iter()
+        .flat_map(|(kind, paths)| paths.iter().map(move |p| (kind, canonicalize_lossy(p))))
+        .collect()
     }
 
-    pub fn get_all_paths(&self) -> serde_json::Value {
-        let cfg = self.inner.lock();
-        serde_json::json!({
-            "music": cfg.music_paths,
-            "commercial": cfg.commercial_paths,
-            "jingle": cfg.jingle_paths,
-        })
+    /// This machine's folder for each library path.
+    pub fn mounts(&self) -> BTreeMap<i64, String> {
+        self.inner.lock().library_mounts.clone()
     }
 
-    pub fn add_path(&self, kind: &str, dir_path: &str) -> Result<bool> {
-        let resolved = canonicalize_lossy(dir_path);
+    /// Replace the folders and drop the paths [`Self::legacy_paths`] reported,
+    /// in one write: a config that holds both would have them taken up twice.
+    pub fn adopt_mounts(&self, mounts: BTreeMap<i64, String>) -> Result<()> {
         let mut cfg = self.inner.lock();
-        let arr = match kind {
-            "music" => &mut cfg.music_paths,
-            "commercial" => &mut cfg.commercial_paths,
-            "jingle" => &mut cfg.jingle_paths,
-            _ => return Ok(false),
-        };
-        if arr.contains(&resolved) {
-            return Ok(false);
-        }
-        arr.push(resolved);
-        self.save_and_unlock(cfg)?;
-        Ok(true)
+        cfg.library_mounts = mounts;
+        cfg.music_paths.clear();
+        cfg.commercial_paths.clear();
+        cfg.jingle_paths.clear();
+        self.save_and_unlock(cfg)
+    }
+
+    pub fn set_mount(&self, root_id: i64, dir: &str) -> Result<()> {
+        let mut cfg = self.inner.lock();
+        cfg.library_mounts.insert(root_id, dir.to_owned());
+        self.save_and_unlock(cfg)
+    }
+
+    pub fn remove_mount(&self, root_id: i64) -> Result<()> {
+        let mut cfg = self.inner.lock();
+        cfg.library_mounts.remove(&root_id);
+        self.save_and_unlock(cfg)
+    }
+
+    /// A folder as a library path stores it: canonical when it can be read,
+    /// as given when it cannot.
+    pub fn canonical_dir(dir: &str) -> String {
+        canonicalize_lossy(dir)
     }
 
     pub fn get_main_device(&self) -> Option<DeviceRef> {
@@ -700,23 +721,6 @@ impl Config {
         cfg.admin.idle_lock_min = minutes;
         self.save_and_unlock(cfg)?;
         Ok(minutes)
-    }
-
-    pub fn remove_path(&self, kind: &str, dir_path: &str) -> Result<bool> {
-        let resolved = canonicalize_lossy(dir_path);
-        let mut cfg = self.inner.lock();
-        let arr = match kind {
-            "music" => &mut cfg.music_paths,
-            "commercial" => &mut cfg.commercial_paths,
-            "jingle" => &mut cfg.jingle_paths,
-            _ => return Ok(false),
-        };
-        if let Some(idx) = arr.iter().position(|p| p == &resolved) {
-            arr.remove(idx);
-            self.save_and_unlock(cfg)?;
-            return Ok(true);
-        }
-        Ok(false)
     }
 }
 
@@ -839,29 +843,50 @@ mod tests {
     fn load_defaults_when_missing() {
         let dir = tempdir().unwrap();
         let cfg = Config::open(dir.path()).unwrap();
-        assert!(cfg.get_paths("music").is_empty());
+        assert!(cfg.mounts().is_empty());
+        assert!(cfg.legacy_paths().is_empty());
     }
 
     #[test]
     fn add_remove_round_trips_to_disk() {
         let dir = tempdir().unwrap();
         let cfg = Config::open(dir.path()).unwrap();
-        let added = cfg.add_path("music", dir.path().to_str().unwrap()).unwrap();
-        assert!(added);
-        // re-add returns false (already present)
-        let again = cfg.add_path("music", dir.path().to_str().unwrap()).unwrap();
-        assert!(!again);
+        cfg.set_mount(3, "/mnt/radio").unwrap();
 
         // reopen reads persisted state
         drop(cfg);
         let cfg2 = Config::open(dir.path()).unwrap();
-        assert_eq!(cfg2.get_paths("music").len(), 1);
+        assert_eq!(
+            cfg2.mounts(),
+            BTreeMap::from([(3, "/mnt/radio".to_owned())])
+        );
 
-        let removed = cfg2
-            .remove_path("music", dir.path().to_str().unwrap())
+        cfg2.remove_mount(3).unwrap();
+        assert!(Config::open(dir.path()).unwrap().mounts().is_empty());
+    }
+
+    #[test]
+    fn taking_up_the_legacy_paths_empties_them_on_disk() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("config.json"),
+            r#"{"musicPaths": ["/m"], "jinglePaths": ["/j"]}"#,
+        )
+        .unwrap();
+        let cfg = Config::open(dir.path()).unwrap();
+        assert_eq!(
+            cfg.legacy_paths(),
+            vec![("music", "/m".to_owned()), ("jingle", "/j".to_owned())]
+        );
+
+        cfg.adopt_mounts(BTreeMap::from([(1, "/m".to_owned()), (2, "/j".to_owned())]))
             .unwrap();
-        assert!(removed);
-        assert!(cfg2.get_paths("music").is_empty());
+
+        let reopened = Config::open(dir.path()).unwrap();
+        assert!(reopened.legacy_paths().is_empty());
+        assert_eq!(reopened.mounts().len(), 2);
+        let raw = fs::read_to_string(dir.path().join("config.json")).unwrap();
+        assert!(!raw.contains("musicPaths"));
     }
 
     #[test]
@@ -950,15 +975,7 @@ mod tests {
         let path = dir.path().join("config.json");
         fs::write(&path, r#"{"libraryPaths": ["/old"]}"#).unwrap();
         let cfg = Config::open(dir.path()).unwrap();
-        assert_eq!(cfg.get_paths("music"), vec!["/old".to_string()]);
-    }
-
-    #[test]
-    fn unknown_kind_is_noop() {
-        let dir = tempdir().unwrap();
-        let cfg = Config::open(dir.path()).unwrap();
-        assert!(!cfg.add_path("bogus", "/x").unwrap());
-        assert!(cfg.get_paths("bogus").is_empty());
+        assert_eq!(cfg.legacy_paths(), vec![("music", "/old".to_string())]);
     }
 
     #[test]

@@ -21,6 +21,7 @@ pub const ADMIN_COMMANDS: &[&str] = &[
     "dismiss_tag_write",
     "add_path",
     "remove_path",
+    "locate_path",
     "purge_tracks",
     "recalculate_auto_cue",
     "set_main_device",

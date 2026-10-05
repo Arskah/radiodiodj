@@ -91,7 +91,10 @@ The tab and the Settings button carry the same **attention count**:
 
 Missing tracks count once, however many there are, so removing a library path
 does not put _800_ on the button; bad durations count once for the same reason.
-An unreachable path cannot be dismissed. It clears itself when the share is
+A library path this computer has no folder for
+([library.md](./library.md#where-a-library-path-is)) is reported the same way,
+under a name that says so in place of a folder. An unreachable path cannot be
+dismissed. It clears itself when the share is
 back.
 
 A scan's result bar at the bottom of the window stays until the operator

@@ -1,11 +1,12 @@
 use anyhow::{Context, Result};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
 use rusqlite_migration::{Migrations, M};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::audio::cue_points::CuePoints;
 use crate::audio_measure::bpm::{self, Bpm};
@@ -13,6 +14,7 @@ use crate::audio_measure::fingerprint;
 use crate::audio_measure::key::{self, Key};
 use crate::audio_measure::level_envelope::{self, Envelope};
 use crate::library::auto_cue::{self, Analysed, Thresholds};
+use crate::library::roots::{Roots, NO_ROOT};
 use crate::library::scanner;
 
 mod saved_playlists;
@@ -549,6 +551,17 @@ pub struct Db {
     apply_auto_cue: AtomicBool,
     /// Whether a derived Next Start takes effect, under [`Self::apply_auto_cue`].
     apply_auto_next_start: AtomicBool,
+    /// The library paths, with the folder this machine reaches each at. Held
+    /// here because every path the library hands out or takes in crosses it.
+    /// Read without the connection, written only under it.
+    roots: RwLock<RootState>,
+}
+
+/// The `library_roots` table as last read, and the folders `config.json` gave.
+#[derive(Default)]
+struct RootState {
+    mounts: BTreeMap<i64, String>,
+    roots: Arc<Roots>,
 }
 
 /// What the library reports for a derived cue set. `trio` is the master switch
@@ -591,11 +604,7 @@ impl Db {
             backup(&conn, path, found)?;
         }
         MIGRATIONS.to_latest(&mut conn).context("migrate library")?;
-        let db = Self {
-            conn: Mutex::new(conn),
-            apply_auto_cue: AtomicBool::new(true),
-            apply_auto_next_start: AtomicBool::new(true),
-        };
+        let db = Self::over(conn)?;
         let adopted = db.adopt_decoded_durations(scanner::now_ms())?;
         if adopted > 0 {
             log::info!("library: corrected {adopted} tag duration(s) from a stored envelope");
@@ -607,11 +616,20 @@ impl Db {
     pub fn open_in_memory() -> Result<Self> {
         let mut conn = Connection::open_in_memory()?;
         MIGRATIONS.to_latest(&mut conn)?;
-        Ok(Self {
+        Self::over(conn)
+    }
+
+    /// A migrated connection as a library. The roots have no folders until
+    /// [`Self::set_mounts`] supplies them.
+    fn over(conn: Connection) -> Result<Self> {
+        let db = Self {
             conn: Mutex::new(conn),
             apply_auto_cue: AtomicBool::new(true),
             apply_auto_next_start: AtomicBool::new(true),
-        })
+            roots: RwLock::default(),
+        };
+        db.read_roots(&db.conn.lock())?;
+        Ok(db)
     }
 
     pub fn search(
@@ -691,17 +709,127 @@ impl Db {
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
 
-    pub fn get_media_track(&self, id: i64) -> Result<Option<MediaTrack>> {
+    /// The library paths as last read, each with this machine's folder for it.
+    pub fn roots(&self) -> Arc<Roots> {
+        Arc::clone(&self.roots.read().roots)
+    }
+
+    /// Re-read `library_roots` against the folders already held.
+    fn read_roots(&self, conn: &Connection) -> Result<()> {
+        let mut stmt = conn.prepare("SELECT id, content_type FROM library_roots")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<(i64, String)>>>()?;
+        let mut state = self.roots.write();
+        state.roots = Arc::new(Roots::new(rows, &state.mounts));
+        Ok(())
+    }
+
+    /// Add a library path of `content_type`. It has no folder, and so holds no
+    /// track, until [`Self::set_mounts`] names one.
+    pub fn add_root(&self, content_type: &str) -> Result<i64> {
         let conn = self.conn.lock();
-        let mut stmt =
-            conn.prepare("SELECT path, duration, rg_gain, rg_peak FROM tracks WHERE id = ?")?;
+        conn.execute(
+            "INSERT INTO library_roots (content_type) VALUES (?)",
+            [content_type],
+        )?;
+        let id = conn.last_insert_rowid();
+        self.read_roots(&conn)?;
+        Ok(id)
+    }
+
+    /// Remove a library path, leaving its tracks under the absolute path they
+    /// resolved to: no library path covers them now, which is the state the
+    /// scan already marks missing. Returns whether there was such a path.
+    pub fn remove_root(&self, id: i64) -> Result<bool> {
+        let roots = self.roots();
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let held = {
+            let mut stmt = tx.prepare("SELECT id, path FROM tracks WHERE root_id = ?")?;
+            let rows = stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect::<rusqlite::Result<Vec<(i64, String)>>>()?
+        };
+        {
+            let mut release =
+                tx.prepare("UPDATE tracks SET root_id = ?1, path = ?2 WHERE id = ?3")?;
+            for (track, path) in held {
+                release.execute(params![NO_ROOT, roots.resolve(id, path), track])?;
+            }
+        }
+        let removed = tx.execute("DELETE FROM library_roots WHERE id = ?", [id])? > 0;
+        tx.commit()?;
+        self.read_roots(&conn)?;
+        Ok(removed)
+    }
+
+    /// Take this machine's folder for each library path, and store every track
+    /// under the first root that now holds its file. Returns how many moved.
+    ///
+    /// The second half is what keeps one file from being two rows: which root
+    /// a path belongs to depends on the whole set, so whenever the set changes
+    /// each row is resolved and stored again. A row keeps its root through a
+    /// folder change — that is the point of storing it relative — and moves
+    /// only when another root now comes first for its file, or it had none. A
+    /// row that would land on a present row's path — two roots pointed at one
+    /// folder — goes missing rather than failing the move.
+    pub fn set_mounts(&self, mounts: &BTreeMap<i64, String>) -> Result<usize> {
+        let mut conn = self.conn.lock();
+        self.roots.write().mounts.clone_from(mounts);
+        self.read_roots(&conn)?;
+        let roots = self.roots();
+
+        let moves = {
+            let mut stmt = conn.prepare("SELECT id, root_id, path FROM tracks")?;
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+            let mut moves = Vec::new();
+            for row in rows {
+                let (id, root_id, path): (i64, i64, String) = row?;
+                let home = roots.relativize(&roots.resolve(root_id, path.clone()));
+                if home != (root_id, path) {
+                    moves.push((id, home));
+                }
+            }
+            moves
+        };
+        if moves.is_empty() {
+            return Ok(0);
+        }
+        let tx = conn.transaction()?;
+        {
+            let mut rehome =
+                tx.prepare("UPDATE tracks SET root_id = ?1, path = ?2 WHERE id = ?3")?;
+            let mut retire = tx.prepare(
+                "UPDATE tracks SET root_id = ?1, path = ?2, missing_since = ?4 WHERE id = ?3",
+            )?;
+            for (id, (root_id, path)) in &moves {
+                match rehome.execute(params![root_id, path, id]) {
+                    Ok(_) => {}
+                    Err(rusqlite::Error::SqliteFailure(e, _))
+                        if e.code == rusqlite::ErrorCode::ConstraintViolation =>
+                    {
+                        retire.execute(params![root_id, path, id, scanner::now_ms()])?;
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(moves.len())
+    }
+
+    pub fn get_media_track(&self, id: i64) -> Result<Option<MediaTrack>> {
+        let roots = self.roots();
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare("SELECT root_id, path, duration, rg_gain, rg_peak FROM tracks WHERE id = ?")?;
         let mut rows = stmt.query_map([id], |r| {
             Ok(MediaTrack {
-                path: r.get(0)?,
-                duration: r.get::<_, Option<f64>>(1)?.unwrap_or(0.0),
+                path: row_path(r, &roots)?,
+                duration: r.get::<_, Option<f64>>("duration")?.unwrap_or(0.0),
                 loudness: StoredLoudness {
-                    gain_db: r.get(2)?,
-                    peak: r.get(3)?,
+                    gain_db: r.get("rg_gain")?,
+                    peak: r.get("rg_peak")?,
                 },
             })
         })?;
@@ -715,9 +843,10 @@ impl Db {
     /// fields the now-playing broadcast announces.
     pub fn get_track_load_info(&self, id: i64) -> Result<Option<TrackLoadInfo>> {
         let policy = self.auto_cue_policy();
+        let roots = self.roots();
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, title, artist, album, genre, duration, content_type, path, \
+            "SELECT id, title, artist, album, genre, duration, content_type, path, root_id, \
                     cue_in_ms, fade_in_ms, fade_out_ms, cue_out_ms, next_start_ms, \
                     auto_cue_state, rg_gain, rg_peak \
              FROM tracks WHERE id = ?",
@@ -731,7 +860,7 @@ impl Db {
                 genre: r.get::<_, Option<String>>(4)?,
                 duration: r.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
                 content_type: r.get(6)?,
-                path: r.get(7)?,
+                path: row_path(r, &roots)?,
                 cue_points: effective_cue_points(r, policy)?,
                 loudness: StoredLoudness {
                     gain_db: r.get("rg_gain")?,
@@ -780,13 +909,14 @@ impl Db {
         if ids.is_empty() {
             return Ok(vec![]);
         }
+        let roots = self.roots();
         let conn = self.conn.lock();
         let sql = format!(
-            "SELECT id, path FROM tracks WHERE missing_since IS NULL AND id IN ({})",
+            "SELECT id, root_id, path FROM tracks WHERE missing_since IS NULL AND id IN ({})",
             placeholders(ids.len())
         );
         fetch_by_ids(&conn, &sql, ids, |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            Ok((r.get::<_, i64>(0)?, row_path(r, &roots)?))
         })
     }
 
@@ -1179,12 +1309,13 @@ impl Db {
             "(key_measured_at IS NULL OR key_version IS NULL OR key_version < {})",
             key::VERSION
         );
+        let roots = self.roots();
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(&format!(
             "SELECT id, path, mtime, content_type, waveform IS NULL, {stale_fingerprint}, \
                     rg_measured_at IS NULL, auto_cue_state = 'pending', \
                     {missing_levels}, {stale_bpm}, {stale_key}, \
-                    duration_measured_at IS NULL \
+                    duration_measured_at IS NULL, root_id \
              FROM tracks \
              WHERE missing_since IS NULL AND analysis_failed_at IS NULL \
                AND (waveform IS NULL OR {stale_fingerprint} \
@@ -1196,7 +1327,7 @@ impl Db {
         let rows = stmt.query_map([], |r| {
             Ok(AnalysisJob {
                 id: r.get(0)?,
-                path: r.get(1)?,
+                path: row_path(r, &roots)?,
                 mtime: r.get(2)?,
                 content_type: r.get(3)?,
                 needs_waveform: r.get(4)?,
@@ -1416,9 +1547,10 @@ impl Db {
     /// decode, which says nothing about whether the tags parse — and the tag
     /// read is a header read, not a decode.
     pub fn tracks_needing_tag_read(&self, version: i64) -> Result<Vec<TagReadJob>> {
+        let roots = self.roots();
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, path, mtime FROM tracks \
+            "SELECT id, path, mtime, root_id FROM tracks \
              WHERE missing_since IS NULL \
                AND (tags_read_version IS NULL OR tags_read_version < ?) \
              ORDER BY id",
@@ -1426,7 +1558,7 @@ impl Db {
         let rows = stmt.query_map([version], |r| {
             Ok(TagReadJob {
                 id: r.get(0)?,
-                path: r.get(1)?,
+                path: row_path(r, &roots)?,
                 mtime: r.get(2)?,
             })
         })?;
@@ -1614,9 +1746,10 @@ impl Db {
     /// Present tracks the analysis pass could not decode, oldest failure first.
     pub fn unreadable_tracks(&self) -> Result<Vec<UnreadableRow>> {
         let policy = self.auto_cue_policy();
+        let roots = self.roots();
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(&format!(
-            "SELECT {TRACK_COLUMNS}, path, content_type, fingerprint, \
+            "SELECT {TRACK_COLUMNS}, root_id, path, content_type, fingerprint, \
                     analysis_error, analysis_failed_at \
              FROM tracks \
              WHERE missing_since IS NULL AND analysis_failed_at IS NOT NULL \
@@ -1626,7 +1759,7 @@ impl Db {
             Ok(UnreadableRow {
                 row: HealthRow {
                     track: row_to_track(r, policy)?,
-                    path: r.get("path")?,
+                    path: row_path(r, &roots)?,
                     content_type: r.get("content_type")?,
                     fingerprint: r.get("fingerprint")?,
                 },
@@ -1650,9 +1783,10 @@ impl Db {
     /// the decoder cannot seek by either.
     pub fn bad_duration_tracks(&self) -> Result<Vec<BadDurationRow>> {
         let policy = self.auto_cue_policy();
+        let roots = self.roots();
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(&format!(
-            "SELECT {TRACK_COLUMNS}, path, content_type, fingerprint, tag_duration \
+            "SELECT {TRACK_COLUMNS}, root_id, path, content_type, fingerprint, tag_duration \
              FROM tracks \
              WHERE missing_since IS NULL AND duration_measured_at IS NOT NULL \
                AND (COALESCE(duration, 0) <= 0 \
@@ -1665,7 +1799,7 @@ impl Db {
             Ok(BadDurationRow {
                 row: HealthRow {
                     track: row_to_track(r, policy)?,
-                    path: r.get("path")?,
+                    path: row_path(r, &roots)?,
                     content_type: r.get("content_type")?,
                     fingerprint: r.get("fingerprint")?,
                 },
@@ -1680,9 +1814,10 @@ impl Db {
     /// [`Db::reconcile`].
     #[cfg(test)]
     pub fn insert_track(&self, t: &TrackInsert) -> Result<()> {
+        let home = self.roots().relativize(&t.path);
         self.conn
             .lock()
-            .execute(UPSERT_TRACK_SQL, upsert_params(t))?;
+            .execute(UPSERT_TRACK_SQL, upsert_params(t, &home))?;
         Ok(())
     }
 
@@ -1690,14 +1825,16 @@ impl Db {
     /// per scan so root membership can be decided by path component in Rust
     /// rather than by a `LIKE` prefix.
     pub fn track_index(&self) -> Result<Vec<IndexRow>> {
+        let roots = self.roots();
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, path, content_type, mtime, missing_since, fingerprint FROM tracks",
+            "SELECT id, path, content_type, mtime, missing_since, fingerprint, root_id \
+             FROM tracks",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(IndexRow {
                 id: r.get(0)?,
-                path: r.get(1)?,
+                path: row_path(r, &roots)?,
                 content_type: r.get(2)?,
                 mtime: r.get(3)?,
                 missing_since: r.get(4)?,
@@ -1717,6 +1854,7 @@ impl Db {
     ///    state.
     /// 3. Otherwise insert it as a new track.
     pub fn reconcile(&self, change: &Reconcile) -> Result<Reconciled> {
+        let roots = self.roots();
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         let mut done = Reconciled::default();
@@ -1730,7 +1868,7 @@ impl Db {
         {
             let mut upsert = tx.prepare(UPSERT_TRACK_SQL)?;
             for t in &change.upserts {
-                upsert.execute(upsert_params(t))?;
+                upsert.execute(upsert_params(t, &roots.relativize(&t.path)))?;
             }
         }
         // A file that is gone and a file that was replaced are both retired
@@ -1766,7 +1904,7 @@ impl Db {
             // carrying one hands over early on every airing until the pass
             // reaches it — for good, if its decode fails.
             let mut reattach = tx.prepare(
-                "UPDATE tracks SET path = ?1, content_type = ?2, mtime = ?3, \
+                "UPDATE tracks SET path = ?1, content_type = ?2, mtime = ?3, root_id = ?5, \
                         missing_since = NULL, \
                         analysis_error = NULL, analysis_failed_at = NULL, \
                         next_start_ms = CASE \
@@ -1831,19 +1969,20 @@ impl Db {
                  WHERE tracks.id = ?2",
             )?;
             for t in &change.new_files {
+                let home = roots.relativize(&t.path);
                 let Some(fp) = &t.fingerprint else {
-                    insert.query_row(upsert_params(t), |_| Ok(()))?;
+                    insert.query_row(upsert_params(t, &home), |_| Ok(()))?;
                     done.inserted += 1;
                     continue;
                 };
                 let twin: Option<i64> = missing_twin.query_row([fp], |r| r.get(0)).optional()?;
                 if let Some(id) = twin {
-                    reattach.execute(params![t.path, t.content_type, t.mtime, id])?;
+                    reattach.execute(params![home.1, t.content_type, t.mtime, id, home.0])?;
                     done.reattached += 1;
                     continue;
                 }
                 let source: Option<i64> = present_twin.query_row([fp], |r| r.get(0)).optional()?;
-                let id: i64 = insert.query_row(upsert_params(t), |r| r.get(0))?;
+                let id: i64 = insert.query_row(upsert_params(t, &home), |r| r.get(0))?;
                 match source {
                     Some(source) => {
                         copy_state.execute(params![source, id])?;
@@ -1863,9 +2002,10 @@ impl Db {
     /// fades — which nothing derives — always do, and so does a trio the
     /// operator took ownership of.
     pub fn missing_tracks(&self) -> Result<Vec<MissingRow>> {
+        let roots = self.roots();
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, title, artist, path, missing_since, play_count, \
+            "SELECT id, title, artist, path, missing_since, play_count, root_id, \
                     (COALESCE(fade_in_ms, fade_out_ms) IS NOT NULL \
                      OR (auto_cue_state = 'manual' \
                          AND COALESCE(cue_in_ms, cue_out_ms, next_start_ms) IS NOT NULL)) \
@@ -1877,10 +2017,10 @@ impl Db {
                 id: r.get(0)?,
                 title: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
                 artist: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                path: r.get(3)?,
+                path: row_path(r, &roots)?,
                 missing_since: r.get(4)?,
                 play_count: r.get(5)?,
-                has_cue_points: r.get(6)?,
+                has_cue_points: r.get(7)?,
             })
         })?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
@@ -1910,14 +2050,16 @@ impl Db {
 
     fn health_rows(&self, filter: &str) -> Result<Vec<HealthRow>> {
         let policy = self.auto_cue_policy();
+        let roots = self.roots();
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(&format!(
-            "SELECT {TRACK_COLUMNS}, path, content_type, fingerprint FROM tracks WHERE {filter}"
+            "SELECT {TRACK_COLUMNS}, root_id, path, content_type, fingerprint \
+             FROM tracks WHERE {filter}"
         ))?;
         let rows = stmt.query_map([], |r| {
             Ok(HealthRow {
                 track: row_to_track(r, policy)?,
-                path: r.get("path")?,
+                path: row_path(r, &roots)?,
                 content_type: r.get("content_type")?,
                 fingerprint: r.get("fingerprint")?,
             })
@@ -2321,16 +2463,17 @@ impl Db {
 
     /// A present track's tag columns, as a write-back reads them.
     pub fn tag_values(&self, id: i64) -> Result<Option<TagValues>> {
+        let roots = self.roots();
         let conn = self.conn.lock();
         conn.query_row(
             "SELECT path, title, artist, album, genre, year, album_artist, track_no, \
                     track_total, disc_no, disc_total, initial_key, comment, \
-                    fingerprint, tags_read_version, edited_fields \
+                    fingerprint, tags_read_version, edited_fields, root_id \
              FROM tracks WHERE id = ? AND missing_since IS NULL",
             [id],
             |r| {
                 Ok(TagValues {
-                    path: r.get(0)?,
+                    path: row_path(r, &roots)?,
                     title: r.get(1)?,
                     artist: r.get(2)?,
                     album: r.get(3)?,
@@ -2358,6 +2501,7 @@ impl Db {
     /// was written, so an edit made during the write keeps its flags. Returns
     /// whether the row matched.
     pub fn finish_tag_write(&self, id: i64, written: &TagValues, mtime: i64) -> Result<bool> {
+        let (root_id, path) = self.roots().relativize(&written.path);
         let conn = self.conn.lock();
         let n = conn.execute(
             "UPDATE tracks SET edited_fields = 0, mtime = ?1 \
@@ -2365,11 +2509,11 @@ impl Db {
                AND album IS ?6 AND genre IS ?7 AND year IS ?8 \
                AND album_artist IS ?9 AND track_no IS ?10 AND track_total IS ?11 \
                AND disc_no IS ?12 AND disc_total IS ?13 AND initial_key IS ?14 \
-               AND comment IS ?15",
+               AND comment IS ?15 AND root_id = ?16",
             params![
                 mtime,
                 id,
-                written.path,
+                path,
                 written.title,
                 written.artist,
                 written.album,
@@ -2381,7 +2525,8 @@ impl Db {
                 written.disc_no,
                 written.disc_total,
                 written.initial_key,
-                written.comment
+                written.comment,
+                root_id
             ],
         )?;
         Ok(n > 0)
@@ -2504,10 +2649,12 @@ impl Db {
 }
 
 /// Bind params for [`UPSERT_TRACK_SQL`], in column order. Shared by the single
-/// and batch insert paths so the two never drift.
-fn upsert_params(t: &TrackInsert) -> [&dyn rusqlite::ToSql; 24] {
+/// and batch insert paths so the two never drift. `home` is the track's path
+/// as [`Roots::relativize`] stores it.
+fn upsert_params<'a>(t: &'a TrackInsert, home: &'a (i64, String)) -> [&'a dyn rusqlite::ToSql; 25] {
     [
-        &t.path,
+        &home.0,
+        &home.1,
         &t.content_type,
         &t.title,
         &t.artist,
@@ -2535,6 +2682,11 @@ fn upsert_params(t: &TrackInsert) -> [&dyn rusqlite::ToSql; 24] {
         &scanner::TAG_READ_VERSION,
         &t.duration,
     ]
+}
+
+/// The absolute path of a row that selected both `root_id` and `path`.
+fn row_path(row: &Row, roots: &Roots) -> rusqlite::Result<String> {
+    Ok(roots.resolve(row.get("root_id")?, row.get("path")?))
 }
 
 /// Wrap one operator-typed word as an FTS5 prefix term.
@@ -2821,6 +2973,7 @@ const MIGRATION_STEPS: &[M] = &[
     M::up(MEASURED_DURATION),
     M::up(DURATION_DISMISSALS),
     M::up(SAVED_PLAYLISTS),
+    M::up(LIBRARY_ROOTS),
 ];
 const MIGRATIONS: Migrations = Migrations::from_slice(MIGRATION_STEPS);
 
@@ -3110,12 +3263,12 @@ INSERT INTO tracks_fts(tracks_fts) VALUES('rebuild');
 /// wins. `tags_read_version` records that this read was a current one, which is
 /// what keeps the row out of `library::tag_backfill`'s queue.
 const UPSERT_TRACK_SQL: &str = "INSERT INTO tracks \
-     (path, content_type, title, artist, album, genre, year, duration, bpm, \
+     (root_id, path, content_type, title, artist, album, genre, year, duration, bpm, \
       sample_rate, bitrate, format, mtime, fingerprint, album_artist, track_no, \
       track_total, disc_no, disc_total, isrc, initial_key, comment, tags_read_version, \
       tag_duration) \
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
-     ON CONFLICT(path) WHERE missing_since IS NULL DO UPDATE SET \
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
+     ON CONFLICT(root_id, path) WHERE missing_since IS NULL DO UPDATE SET \
         content_type=excluded.content_type, \
         title=CASE WHEN edited_fields & 1 THEN title ELSE excluded.title END, \
         artist=CASE WHEN edited_fields & 2 THEN artist ELSE excluded.artist END, \
@@ -3278,6 +3431,26 @@ CREATE TABLE saved_playlist_entries (
 
 CREATE INDEX saved_playlist_entries_list
   ON saved_playlist_entries(playlist_id, position);
+"#;
+
+/// Step 15: library paths as library data, and tracks stored relative to them.
+///
+/// `root_id` 0 is a track under no root, whose `path` is absolute — which is
+/// every row when this step runs, since a step cannot read `config.json`. The
+/// rows move under their roots at the next launch (`roots::adopt`), and until
+/// then they resolve exactly as they did.
+///
+/// A root's folder is deliberately not a column: it is the one fact about a
+/// library path that differs between two machines reading the same library.
+/// The present-row uniqueness moves from the path to the pair.
+const LIBRARY_ROOTS: &str = r#"
+CREATE TABLE library_roots (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  content_type TEXT NOT NULL CHECK (content_type IN ('music', 'jingle', 'commercial'))
+);
+ALTER TABLE tracks ADD COLUMN root_id INTEGER NOT NULL DEFAULT 0;
+DROP INDEX tracks_path_present;
+CREATE UNIQUE INDEX tracks_path_present ON tracks(root_id, path) WHERE missing_since IS NULL;
 "#;
 
 /// A database this build must not touch.
@@ -3658,6 +3831,27 @@ mod tests {
             )
             .unwrap();
         },
+        |conn| {
+            seed_track(conn);
+            seed_dismissal(conn);
+            conn.execute_batch(
+                "UPDATE tracks SET edited_fields = 1; \
+                 INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
+                 SELECT id, 1000, artist, title, duration FROM tracks; \
+                 INSERT INTO saved_playlists (name, created_at, updated_at) \
+                 VALUES ('Show', 1, 1); \
+                 INSERT INTO saved_playlist_entries \
+                   (playlist_id, position, track_id, fingerprint, artist, title, duration, \
+                    content_type) \
+                 SELECT 1, 0, id, fingerprint, artist, title, duration, content_type FROM tracks",
+            )
+            .unwrap();
+            conn.execute_batch(
+                "INSERT INTO library_roots (content_type) VALUES ('music'); \
+                 UPDATE tracks SET root_id = 1, path = 'seed.mp3'",
+            )
+            .unwrap();
+        },
     ];
 
     /// Step 13 rebuilds the table around its rows, so the rows have to come out
@@ -3702,11 +3896,7 @@ mod tests {
             MIGRATIONS.to_version(&mut conn, version).unwrap();
             SEEDS[version - 1](&conn);
             MIGRATIONS.to_latest(&mut conn).unwrap();
-            let db = Db {
-                conn: Mutex::new(conn),
-                apply_auto_cue: AtomicBool::new(true),
-                apply_auto_next_start: AtomicBool::new(true),
-            };
+            let db = Db::over(conn).unwrap();
             let id = only_id(&db);
             let track = db.get_track(id).unwrap().unwrap();
             assert_eq!(track.title, "Seed", "seeded at v{version}");
@@ -7509,11 +7699,7 @@ mod tests {
         )
         .unwrap();
         MIGRATIONS.to_latest(&mut conn).unwrap();
-        let db = Db {
-            conn: Mutex::new(conn),
-            apply_auto_cue: AtomicBool::new(true),
-            apply_auto_next_start: AtomicBool::new(true),
-        };
+        let db = Db::over(conn).unwrap();
 
         let hits = db.search("inherited", None, None, None).unwrap();
         assert_eq!(hits.len(), 1, "a pre-migration row fell out of the index");

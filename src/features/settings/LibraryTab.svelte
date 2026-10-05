@@ -68,15 +68,28 @@
             begin.
           </div>
         {:else}
-          {#each app.libraryPaths[type] as p (p)}
-            <div class="path-row">
-              <span class="material-symbols-outlined">folder</span>
-              <span class="path-text">{p}</span>
+          {#each app.libraryPaths[type] as p (p.id)}
+            <div class="path-row" class:path-row--unlocated={p.path === null}>
+              <span class="material-symbols-outlined"
+                >{p.path === null ? "folder_off" : "folder"}</span
+              >
+              <span class="path-text"
+                >{p.path ?? "Not located on this computer"}</span
+              >
+              <button
+                class="btn-locate"
+                title="Choose where this directory is on this computer. Its tracks, cue points and play counts are kept."
+                aria-label="Locate directory"
+                onclick={() => app.locatePath(p.id)}
+              >
+                <span class="material-symbols-outlined">folder_open</span>
+                Locate
+              </button>
               <button
                 class="btn-remove"
                 title="Remove"
                 aria-label="Remove directory"
-                onclick={() => app.removePath(type, p)}
+                onclick={() => app.removePath(p.id)}
               >
                 <span class="material-symbols-outlined">close</span>
               </button>

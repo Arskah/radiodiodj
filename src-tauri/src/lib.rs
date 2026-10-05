@@ -9,7 +9,7 @@
 
 use parking_lot::Mutex;
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
 
@@ -42,6 +42,7 @@ use library::db::{
     SavedPlaylistSummary, Track, TrackMetadataUpdate,
 };
 use library::health::{FindingKind, Health, HealthReport};
+use library::roots::{self, LibraryPath};
 use library::saved_playlists;
 use library::scan_state::{ScanState, ScanStatus, StartResult};
 use library::scanner::now_ms;
@@ -234,14 +235,11 @@ async fn track_played(state: State<'_, AppState>, id: i64) -> Result<(), String>
     blocking(move || db.increment_play_count(id).map_err(err)).await
 }
 
+/// Reads the library's own copy of its paths, which is memory, not the
+/// database: hence sync.
 #[tauri::command(rename_all = "camelCase")]
-fn get_paths(state: State<'_, AppState>, r#type: String) -> Vec<String> {
-    state.config.get_paths(&r#type)
-}
-
-#[tauri::command(rename_all = "camelCase")]
-fn get_all_paths(state: State<'_, AppState>) -> serde_json::Value {
-    state.config.get_all_paths()
+fn get_all_paths(state: State<'_, AppState>) -> BTreeMap<&'static str, Vec<LibraryPath>> {
+    roots::list(&state.db)
 }
 
 /// Adding a library path rebuilds the health report, which is a pass over the
@@ -253,10 +251,11 @@ async fn add_path(
     r#type: String,
     dir_path: String,
 ) -> Result<bool, String> {
+    let db = Arc::clone(&state.db);
     let config = Arc::clone(&state.config);
     let health = Arc::clone(&state.health);
     blocking(move || {
-        let added = config.add_path(&r#type, &dir_path).map_err(err)?;
+        let added = roots::add(&db, &config, &r#type, &dir_path).map_err(err)?;
         health.refresh();
         Ok(added)
     })
@@ -264,17 +263,32 @@ async fn add_path(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-async fn remove_path(
-    state: State<'_, AppState>,
-    r#type: String,
-    dir_path: String,
-) -> Result<bool, String> {
+async fn remove_path(state: State<'_, AppState>, id: i64) -> Result<bool, String> {
+    let db = Arc::clone(&state.db);
     let config = Arc::clone(&state.config);
     let health = Arc::clone(&state.health);
     blocking(move || {
-        let removed = config.remove_path(&r#type, &dir_path).map_err(err)?;
+        let removed = roots::remove(&db, &config, id).map_err(err)?;
         health.refresh();
         Ok(removed)
+    })
+    .await
+}
+
+/// Point a library path at another folder on this machine.
+#[tauri::command(rename_all = "camelCase")]
+async fn locate_path(
+    state: State<'_, AppState>,
+    id: i64,
+    dir_path: String,
+) -> Result<bool, String> {
+    let db = Arc::clone(&state.db);
+    let config = Arc::clone(&state.config);
+    let health = Arc::clone(&state.health);
+    blocking(move || {
+        let located = roots::locate(&db, &config, id, &dir_path).map_err(err)?;
+        health.refresh();
+        Ok(located)
     })
     .await
 }
@@ -1674,6 +1688,12 @@ pub fn run() {
             // it has to know it before anything reads a track.
             let auto_cue = config.get_tuning().auto_cue;
             db.set_auto_cue_policy(auto_cue.apply, auto_cue.apply_next_start);
+            // Nor can it name a file until it knows where this machine keeps
+            // each library path. A failure leaves the paths unlocated, which
+            // plays nothing from them but loses nothing either.
+            if let Err(e) = roots::adopt(&db, &config) {
+                log::error!("library paths could not be read from the config: {e:#}");
+            }
 
             // Give a first-run operator something to copy. Only when themes/ is
             // absent, so deleting the example does not bring it back.
@@ -1735,7 +1755,6 @@ pub fn run() {
             let health = Health::new(
                 app.handle().clone(),
                 Arc::clone(&db),
-                Arc::clone(&config),
                 Arc::clone(&tag_writer),
             );
             health.attach_to_app(app.handle());
@@ -1824,10 +1843,10 @@ pub fn run() {
             playlist_set_source,
             playlist_set_auto_advance,
             get_stats,
-            get_paths,
             get_all_paths,
             add_path,
             remove_path,
+            locate_path,
             scan_libraries,
             cancel_scan,
             cancel_analysis,

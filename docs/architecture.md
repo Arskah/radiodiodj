@@ -60,6 +60,8 @@ Grouped by domain.
   one reconcile transaction per scan, a background worker emitting
   `scan-progress` / `scan-state-changed` with a cancel token), `listing.rs`
   (root listing plus the changed/gone rules, shared by scan and check),
+  `roots.rs` (library paths: the stored root-relative form of a track's path
+  and each root's folder on this machine),
   `auto_cue.rs` (Cue In, Cue Out and Next Start derived from a measured level
   envelope), `waveform_scan.rs` (the background analysis pass filling waveforms,
   fingerprints, loudness and automatic cue points), `tag_backfill.rs` (the

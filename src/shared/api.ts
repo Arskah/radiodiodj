@@ -13,6 +13,7 @@ import type {
   FindingKind,
   HealthReport,
   Recalculated,
+  LibraryPath,
   LibraryStats,
   NowPlayingConfig,
   SavedAppend,
@@ -386,11 +387,8 @@ export const api = {
   getStats(): Promise<LibraryStats> {
     return invoke<LibraryStats>("get_stats");
   },
-  getPaths(type: ContentType): Promise<string[]> {
-    return invoke<string[]>("get_paths", { type });
-  },
-  getAllPaths(): Promise<Record<ContentType, string[]>> {
-    return invoke<Record<ContentType, string[]>>("get_all_paths");
+  getAllPaths(): Promise<Record<ContentType, LibraryPath[]>> {
+    return invoke<Record<ContentType, LibraryPath[]>>("get_all_paths");
   },
   async addPath(type: ContentType): Promise<string | null> {
     const dir = await open({ directory: true, multiple: false });
@@ -398,8 +396,20 @@ export const api = {
     const ok = await invoke<boolean>("add_path", { type, dirPath: dir });
     return ok ? dir : null;
   },
-  removePath(type: ContentType, dirPath: string): Promise<boolean> {
-    return invoke<boolean>("remove_path", { type, dirPath });
+  removePath(id: number): Promise<boolean> {
+    return invoke<boolean>("remove_path", { id });
+  },
+
+  /**
+   * Pick the folder library path `id` is in on this computer. Its tracks stay
+   * as they are and are read from there. Resolves to the folder, or `null`
+   * when none was picked or another library path already has it.
+   */
+  async locatePath(id: number): Promise<string | null> {
+    const dir = await open({ directory: true, multiple: false });
+    if (typeof dir !== "string") return null;
+    const ok = await invoke<boolean>("locate_path", { id, dirPath: dir });
+    return ok ? dir : null;
   },
 
   /**

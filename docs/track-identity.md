@@ -31,6 +31,9 @@ _1 moved_.
 - **Tag edits in other apps.** The fingerprint ignores tags.
 - **Removing a library path and adding it back.** Its tracks come back as they
   were.
+- **A library path whose folder was renamed or mounted somewhere else.**
+  _Locate_ it in _Settings → Library_ and its tracks are simply there, with no
+  scan: see [library.md](./library.md#where-a-library-path-is).
 - **A network share that is offline during a scan.** Nothing under it is marked
   missing.
 - **Copies.** A second copy of a track becomes its own track, starting with the
@@ -94,6 +97,13 @@ Two columns on `tracks`:
   until computed, or when the file cannot be demuxed.
 - `missing_since` — unix ms when a scan first found the file gone. `NULL` means
   present.
+
+A path is two columns, `root_id` and the file's path below that library path
+([library.md](./library.md#where-a-library-path-is)), and everything on this
+page that says _path_ means the pair. Before that it was one absolute string, so
+a share remounted under another name sent every row through the ladder below:
+all of them missing, every file fingerprinted again to be reattached, and any
+track not yet fingerprinted back as a new one.
 
 Only present rows are held to a unique path (`tracks_path_present` is a partial
 index). A missing row keeps its old path, so a different file can later take

@@ -5,13 +5,18 @@ CREATE INDEX saved_playlist_entries_list
 
 CREATE INDEX tracks_fingerprint ON tracks(fingerprint) WHERE fingerprint IS NOT NULL;
 
-CREATE UNIQUE INDEX tracks_path_present ON tracks(path) WHERE missing_since IS NULL;
+CREATE UNIQUE INDEX tracks_path_present ON tracks(root_id, path) WHERE missing_since IS NULL;
 
 CREATE TABLE "health_dismissals" (
   kind  TEXT NOT NULL CHECK (kind IN ('exact', 'possible', 'missing', 'duration')),
   key   TEXT NOT NULL,
   value TEXT NOT NULL,
   PRIMARY KEY (kind, key)
+);
+
+CREATE TABLE library_roots (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  content_type TEXT NOT NULL CHECK (content_type IN ('music', 'jingle', 'commercial'))
 );
 
 CREATE TABLE play_log (
@@ -69,7 +74,7 @@ CREATE TABLE tracks (
   fingerprint   TEXT,
   missing_since INTEGER
 , edited_fields INTEGER NOT NULL DEFAULT 0, analysis_error TEXT, analysis_failed_at INTEGER, rg_gain REAL, rg_peak REAL, rg_measured_at INTEGER, auto_cue_state TEXT NOT NULL DEFAULT 'pending'
-  CHECK (auto_cue_state IN ('pending', 'auto', 'manual')), auto_cue_version INTEGER, auto_cue_silence_db REAL, auto_cue_segue_db REAL, auto_cue_at INTEGER, auto_cue_levels BLOB, track_no          INTEGER, track_total       INTEGER, disc_no           INTEGER, disc_total        INTEGER, album_artist      TEXT, isrc              TEXT, initial_key       TEXT, comment           TEXT, tags_read_version INTEGER, detected_bpm REAL, bpm_confidence REAL, bpm_measured_at INTEGER, bpm_version INTEGER, detected_key TEXT, key_confidence REAL, key_measured_at INTEGER, key_version INTEGER, duration_measured_at INTEGER, tag_duration REAL);
+  CHECK (auto_cue_state IN ('pending', 'auto', 'manual')), auto_cue_version INTEGER, auto_cue_silence_db REAL, auto_cue_segue_db REAL, auto_cue_at INTEGER, auto_cue_levels BLOB, track_no          INTEGER, track_total       INTEGER, disc_no           INTEGER, disc_total        INTEGER, album_artist      TEXT, isrc              TEXT, initial_key       TEXT, comment           TEXT, tags_read_version INTEGER, detected_bpm REAL, bpm_confidence REAL, bpm_measured_at INTEGER, bpm_version INTEGER, detected_key TEXT, key_confidence REAL, key_measured_at INTEGER, key_version INTEGER, duration_measured_at INTEGER, tag_duration REAL, root_id INTEGER NOT NULL DEFAULT 0);
 
 CREATE VIRTUAL TABLE tracks_fts USING fts5(
   title, artist, album, genre, album_artist,

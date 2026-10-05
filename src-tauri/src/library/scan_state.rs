@@ -247,7 +247,7 @@ fn run(
 ) {
     const PROGRESS_THROTTLE: Duration = Duration::from_millis(200);
     let last_emit = Mutex::new(Instant::now() - PROGRESS_THROTTLE);
-    let roots = listing::configured_roots(&config);
+    let roots = listing::configured_roots(&db);
 
     let outcome = scanner::scan_all(
         &db,
