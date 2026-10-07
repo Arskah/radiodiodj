@@ -536,62 +536,140 @@ fn exact_groups(rows: Vec<HealthRow>) -> Vec<DuplicateGroup> {
     groups
 }
 
-/// Group tracks by normalised artist, album and title. A track without an album
-/// joins the tracks of the one album it shares a title with, or only other
-/// album-less tracks when there are several. A group whose tracks all share one
-/// fingerprint is an exact group and is left to that list.
+/// Group tracks by normalised artist and title, whatever album they are on,
+/// then join the groups one typo apart: the same artist under two [`near`]
+/// titles, or the same title under two near artists. A group whose tracks all
+/// share one fingerprint is an exact group and is left to that list.
 fn possible_groups(rows: Vec<HealthRow>) -> Vec<DuplicateGroup> {
-    let mut by_title: HashMap<(String, String), Vec<HealthRow>> = HashMap::new();
+    let mut by_name: HashMap<(String, String), Vec<HealthRow>> = HashMap::new();
     for row in rows {
         let artist = normalise(&row.track.artist);
         let title = normalise(&row.track.title);
-        // The scanner fills an untagged file's artist with "Unknown".
         if artist.is_empty() || title.is_empty() || artist == UNKNOWN {
             continue;
         }
-        by_title.entry((artist, title)).or_default().push(row);
+        by_name.entry((artist, title)).or_default().push(row);
     }
-    let mut groups: Vec<DuplicateGroup> = Vec::new();
-    for ((artist, title), rows) in by_title {
-        let mut by_album: HashMap<String, Vec<HealthRow>> = HashMap::new();
-        for row in rows {
-            by_album.entry(album_of(&row)).or_default().push(row);
+    let mut names: Vec<((String, String), Vec<HealthRow>)> = by_name.into_iter().collect();
+    names.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut by_artist: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut by_title: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, ((artist, title), _)) in names.iter().enumerate() {
+        by_artist.entry(artist).or_default().push(i);
+        by_title.entry(title).or_default().push(i);
+    }
+    // Each name points at an earlier one it was joined to, or at itself.
+    let mut parent: Vec<usize> = (0..names.len()).collect();
+    let root = |parent: &[usize], mut i: usize| {
+        while parent[i] != i {
+            i = parent[i];
         }
-        if by_album.len() == 2 {
-            if let Some(loose) = by_album.remove("") {
-                if let Some(rows) = by_album.values_mut().next() {
-                    rows.extend(loose);
+        i
+    };
+    let mut join = |siblings: &[usize], fields: Vec<Squashed>| {
+        for (x, a) in fields.iter().enumerate() {
+            for (y, b) in fields.iter().enumerate().skip(x + 1) {
+                if near(a, b) {
+                    let (ra, rb) = (root(&parent, siblings[x]), root(&parent, siblings[y]));
+                    parent[ra.max(rb)] = ra.min(rb);
                 }
             }
         }
-        for (album, mut rows) in by_album {
-            let first = &rows[0].fingerprint;
-            if rows.len() < 2 || (first.is_some() && rows.iter().all(|r| &r.fingerprint == first)) {
-                continue;
-            }
-            rows.sort_by_key(|r| r.track.id);
-            groups.push(DuplicateGroup {
-                key: format!("{artist}\u{1f}{album}\u{1f}{title}"),
-                dismissed: false,
-                tracks: rows.into_iter().map(member).collect(),
-            });
+    };
+    for siblings in by_artist.values().filter(|s| s.len() > 1) {
+        let titles = siblings.iter().map(|&i| Squashed::new(&names[i].0 .1));
+        join(siblings, titles.collect());
+    }
+    for siblings in by_title.values().filter(|s| s.len() > 1) {
+        let artists = siblings.iter().map(|&i| Squashed::new(&names[i].0 .0));
+        join(siblings, artists.collect());
+    }
+
+    let roots: Vec<usize> = (0..names.len()).map(|i| root(&parent, i)).collect();
+    let mut clusters: HashMap<usize, Vec<HealthRow>> = HashMap::new();
+    let mut keys: HashMap<usize, String> = HashMap::new();
+    for (i, ((artist, title), rows)) in names.into_iter().enumerate() {
+        if roots[i] == i {
+            keys.insert(i, format!("{artist}\u{1f}{title}"));
         }
+        clusters.entry(roots[i]).or_default().extend(rows);
+    }
+    let mut groups: Vec<DuplicateGroup> = Vec::new();
+    for (i, mut rows) in clusters {
+        let first = &rows[0].fingerprint;
+        if rows.len() < 2 || (first.is_some() && rows.iter().all(|r| &r.fingerprint == first)) {
+            continue;
+        }
+        rows.sort_by_key(|r| r.track.id);
+        groups.push(DuplicateGroup {
+            key: keys.remove(&i).unwrap_or_default(),
+            dismissed: false,
+            tracks: rows.into_iter().map(member).collect(),
+        });
     }
     sort_groups(&mut groups);
     groups
 }
 
-/// What the scanner fills in for a missing artist or album tag, normalised.
-const UNKNOWN: &str = "unknown";
+/// A normalised name beside itself with the spaces taken out, which is how two
+/// spellings of one compound (`dope man`, `dopeman`) compare equal.
+struct Squashed<'a> {
+    name: &'a str,
+    squashed: String,
+    chars: usize,
+}
 
-fn album_of(row: &HealthRow) -> String {
-    let album = normalise(&row.track.album);
-    if album == UNKNOWN {
-        String::new()
-    } else {
-        album
+impl<'a> Squashed<'a> {
+    fn new(name: &'a str) -> Self {
+        let squashed: String = name.chars().filter(|c| *c != ' ').collect();
+        let chars = squashed.chars().count();
+        Self {
+            name,
+            squashed,
+            chars,
+        }
     }
 }
+
+/// The shortest word a typo is looked for in. Below it one edit is as likely a
+/// different word: `i` and `ii`, `mix` and `remix`.
+const TYPO_WORD_MIN: usize = 4;
+/// The shortest name, spaces aside, whose word breaks may differ.
+const TYPO_NAME_MIN: usize = 5;
+
+/// Whether two different normalised names are one name with a typo: the same
+/// words but for one of them, which is one edit away, or the same letters but
+/// for one edit when the words are split differently. A transposition is one
+/// edit. Never when the edit touches a number, which tells parts and years
+/// apart.
+fn near(a: &Squashed, b: &Squashed) -> bool {
+    if a.chars.abs_diff(b.chars) > 1 {
+        return false;
+    }
+    let (words_a, words_b) = (a.name.split(' '), b.name.split(' '));
+    let one_edit = if words_a.clone().count() == words_b.clone().count() {
+        let mut differing = words_a.zip(words_b).filter(|(x, y)| x != y);
+        match (differing.next(), differing.next()) {
+            (Some((x, y)), None) => {
+                x.chars().count().min(y.chars().count()) >= TYPO_WORD_MIN
+                    && strsim::osa_distance(x, y) <= 1
+            }
+            _ => false,
+        }
+    } else {
+        a.chars.min(b.chars) >= TYPO_NAME_MIN && strsim::osa_distance(&a.squashed, &b.squashed) <= 1
+    };
+    one_edit && numbers(a.name).eq(numbers(b.name))
+}
+
+fn numbers(name: &str) -> impl Iterator<Item = &str> {
+    name.split(|c: char| !c.is_numeric())
+        .filter(|run| !run.is_empty())
+}
+
+/// What the scanner fills in for a missing artist tag, normalised.
+const UNKNOWN: &str = "unknown";
 
 fn sort_groups(groups: &mut [DuplicateGroup]) {
     groups.sort_by_cached_key(|g| {
@@ -824,32 +902,7 @@ mod tests {
     }
 
     #[test]
-    fn the_same_title_on_different_albums_is_not_a_possible_duplicate() {
-        let db = Db::open_in_memory().unwrap();
-        insert_on(
-            &db,
-            "/music/a.mp3",
-            "music",
-            "X",
-            "First",
-            "Intro",
-            Some("v1:1"),
-        );
-        insert_on(
-            &db,
-            "/music/b.mp3",
-            "music",
-            "X",
-            "Second",
-            "Intro",
-            Some("v1:2"),
-        );
-        let report = build(&db, &music_root()).unwrap();
-        assert!(report.possible.is_empty());
-    }
-
-    #[test]
-    fn a_track_without_an_album_joins_the_one_album_sharing_its_title() {
+    fn the_same_title_on_different_albums_is_a_possible_duplicate() {
         let db = Db::open_in_memory().unwrap();
         let a = insert_on(
             &db,
@@ -860,43 +913,100 @@ mod tests {
             "Song",
             Some("v1:1"),
         );
-        let b = insert_on(&db, "/music/b.mp3", "music", "X", "", "Song", Some("v1:2"));
-        let c = insert_on(&db, "/music/c.mp3", "music", "X", "Unknown", "Song", None);
-        let report = build(&db, &music_root()).unwrap();
-        assert_eq!(report.possible.len(), 1);
-        assert_eq!(ids(&report.possible[0]), vec![a, b, c]);
-        assert_eq!(report.possible[0].key, "x\u{1f}album\u{1f}song");
-    }
-
-    #[test]
-    fn tracks_without_an_album_group_only_together_beside_two_albums() {
-        let db = Db::open_in_memory().unwrap();
-        insert_on(
-            &db,
-            "/music/a.mp3",
-            "music",
-            "X",
-            "First",
-            "Intro",
-            Some("v1:1"),
-        );
-        insert_on(
+        let b = insert_on(
             &db,
             "/music/b.mp3",
             "music",
             "X",
-            "Second",
-            "Intro",
+            "Best Of",
+            "Song",
             Some("v1:2"),
         );
-        let c = insert_on(&db, "/music/c.mp3", "music", "X", "", "Intro", Some("v1:3"));
-        assert!(build(&db, &music_root()).unwrap().possible.is_empty());
-
-        let d = insert_on(&db, "/music/d.mp3", "music", "X", "Unknown", "Intro", None);
+        let c = insert_on(&db, "/music/c.mp3", "music", "X", "", "Song", None);
         let report = build(&db, &music_root()).unwrap();
         assert_eq!(report.possible.len(), 1);
-        assert_eq!(ids(&report.possible[0]), vec![c, d]);
-        assert_eq!(report.possible[0].key, "x\u{1f}\u{1f}intro");
+        assert_eq!(ids(&report.possible[0]), vec![a, b, c]);
+        assert_eq!(report.possible[0].key, "x\u{1f}song");
+    }
+
+    fn squashed_near(a: &str, b: &str) -> bool {
+        near(&Squashed::new(a), &Squashed::new(b))
+    }
+
+    #[test]
+    fn near_is_one_edit_in_one_long_word_or_a_moved_word_break() {
+        assert!(squashed_near("african herbman", "african herbsman"));
+        assert!(squashed_near("hot in here", "hot in herre"));
+        assert!(squashed_near("kraftwerk", "kraftwrek"));
+        assert!(squashed_near("dope man", "dopeman"));
+        assert!(squashed_near("o le o le saunotaan", "ole ole saunotaan"));
+        assert!(squashed_near("gin juice", "gin n juice"));
+
+        assert!(!squashed_near("kötinä ii", "kötinä iii"));
+        assert!(!squashed_near("one love club mix", "one love club remix"));
+        assert!(!squashed_near("älä mee", "älä tee"));
+        assert!(!squashed_near("humppatauti", "humppatähti"));
+        assert!(!squashed_near("fussin and fightin", "fussing and fighting"));
+        assert!(!squashed_near("a b", "ab"));
+    }
+
+    #[test]
+    fn near_never_crosses_a_number() {
+        assert!(!squashed_near("symphony 15", "symphony 16"));
+        assert!(!squashed_near("live 1999", "live 1989"));
+        assert!(!squashed_near("part 1", "part1 1"));
+        assert!(squashed_near("trench town rock 2", "trenchtown rock 2"));
+    }
+
+    #[test]
+    fn a_typo_in_the_title_or_the_artist_is_a_possible_duplicate() {
+        let db = Db::open_in_memory().unwrap();
+        let a = insert(
+            &db,
+            "/music/a.mp3",
+            "music",
+            "Eric Clapton",
+            "Possession",
+            Some("v1:1"),
+        );
+        let b = insert(
+            &db,
+            "/music/b.mp3",
+            "music",
+            "Eric Clapton",
+            "Possesion",
+            Some("v1:2"),
+        );
+        let c = insert(
+            &db,
+            "/music/c.mp3",
+            "music",
+            "Eric Clapten",
+            "Possesion",
+            Some("v1:3"),
+        );
+        insert(
+            &db,
+            "/music/d.mp3",
+            "music",
+            "Derek",
+            "Possession",
+            Some("v1:4"),
+        );
+        let report = build(&db, &music_root()).unwrap();
+        assert_eq!(report.possible.len(), 1);
+        assert_eq!(ids(&report.possible[0]), vec![a, b, c]);
+        assert_eq!(report.possible[0].key, "eric clapten\u{1f}possesion");
+    }
+
+    #[test]
+    fn a_typo_of_one_recording_is_left_to_the_exact_list() {
+        let db = Db::open_in_memory().unwrap();
+        insert(&db, "/music/a.mp3", "music", "X", "Dopeman", Some("v1:1"));
+        insert(&db, "/music/b.mp3", "music", "X", "Dope Man", Some("v1:1"));
+        let report = build(&db, &music_root()).unwrap();
+        assert_eq!(report.exact.len(), 1);
+        assert!(report.possible.is_empty());
     }
 
     #[test]
