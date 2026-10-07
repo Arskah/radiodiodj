@@ -185,7 +185,8 @@ pub struct Playlist {
     history_cap: usize,
     /// Track ids resident in the prefetch cache, from `main-deck:cache-state`.
     cached_ids: HashSet<i64>,
-    /// Track ids whose file a scan found gone, from the library health report.
+    /// Track ids that must not air, from the library health report: a scan
+    /// found the file gone, or an admin hid the track.
     missing_ids: HashSet<i64>,
     awaiting_network: bool,
     /// The auto-playlist source and the last one it was reverted from, as the

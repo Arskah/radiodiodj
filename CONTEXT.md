@@ -63,8 +63,12 @@ Marking tracks **Missing** when their file is gone from a fully listed library p
 _Avoid_: Cleanup, gc, sweep, delete
 
 **Missing track**:
-A track whose file a scan could not find. Hidden from every library but kept with its id, cue points and play count until **Purge**.
+A track whose file a scan could not find. Kept out of every library but kept with its id, cue points and play count until **Purge**.
 _Avoid_: Deleted, orphan, stale
+
+**Hidden track**:
+A present Track an admin has taken out of every library without touching its file. Not offered, not picked and not playable, but still the scan's row for that path, and restored from **Library health**. Never a **Missing track**, and never purged while its file is there.
+_Avoid_: Ignored, deleted, soft-deleted, archived, disabled
 
 **Fingerprint**:
 Hash of a track's audio (codec parameters plus the first MiB of packet data), independent of path and tags. Identifies the same recording at a new path.
@@ -79,7 +83,7 @@ The operator's explicit, permanent deletion of **Missing tracks**. The only way 
 _Avoid_: Prune, cleanup
 
 **Duplicate**:
-A present Track sharing its **Fingerprint** with another present Track. Starts as a copy of the original's operator state and is its own Track from then on. Removed only by the operator deleting its file.
+A present Track sharing its **Fingerprint** with another present Track. Starts as a copy of the original's operator state and is its own Track from then on. Hidden by an admin when the file should stay, removed by deleting the file when it should not.
 _Avoid_: Copy, clone, twin
 
 **Possible duplicate**:
@@ -95,7 +99,7 @@ A difference a **Library check** found that no **Scan** has applied yet.
 _Avoid_: Pending change, unscanned file
 
 **Library health**:
-The report of **Missing tracks**, **Duplicates**, **Possible duplicates** and **Disk changes**, and the Settings view that shows it.
+The report of **Missing tracks**, **Hidden tracks**, **Duplicates**, **Possible duplicates** and **Disk changes**, and the Settings view that shows it.
 _Avoid_: Library status, diagnostics
 
 **Dismissal**:
@@ -341,6 +345,7 @@ _Avoid_: Persist, sync
 - A **Saved playlist** holds **Entries**; an **Entry** is bound to a **Track** or is an **Unmatched entry**, and only a bound one whose Track is present can air
 - The **Auto-playlist source** is the Music library or one **Saved playlist**; only that saved playlist's music **Entries** are the pool
 - A **Dismissal** silences a **Library health** finding without hiding it
+- A **Hidden track** is present to a **Scan** and absent everywhere else; hiding one copy of a **Duplicate** ends the finding, and a later copy of the same audio is not hidden with it
 - A **Track** is identified by its row, not its path: **Prune** makes it **Missing**, **Reattach** or a returning path restores it, and only **Purge** deletes it
 
 - A **Theme** sets some or all **Theme tokens**; the rest come from the built-in matching its **Base**
@@ -409,7 +414,8 @@ _Avoid_: Persist, sync
 - "Analysis pass" vs **Measurement** → the pass is the background walk over rows that need decoding; a Measurement is what one decode yields. The module that produces them is `audio_measure`, never "analysis", which is why no directory is called that.
 - "Rotation" is a **Rotation rule** and nothing else — a constraint on what the **Auto-playlist** may select. It is not **Interleave**, which is the jingle/commercial cadence, and it is not a programming clock or a playlist category. The word was retired from the glossary before the rules existed; it is a domain term now.
 - "Play count" is not the **Airing log**. The count is a number on the **Track**; the log is the record of each **Airing**, with its own snapshot of the metadata.
-- "Ignore" is not a domain term → a **Dismissal** silences a finding, and there is no ignored-track state. An unwanted **Duplicate** is removed by deleting its file.
+- "Ignore" is not a domain term → a **Dismissal** silences a finding, and a track an admin wants out of the library is a **Hidden track**. Hiding acts on a Track, a Dismissal on a finding.
+- "Hidden" is the admin's mark and nothing else → a **Missing track** is "kept out of" the library, never "hidden".
 - "Content type" is a closed enum: `music | jingle | commercial`. New types require deliberate domain extension.
 - "Theme" is colours only. A change that needs different spacing, fonts or wording is a redesign, not a theme.
 - "Logo" alone is ambiguous → **Toolbar logo** and **Record label** are two images with different shapes and different fallbacks. The **app icon** is neither, and no theme touches it.

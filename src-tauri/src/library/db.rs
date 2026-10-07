@@ -468,6 +468,17 @@ pub struct Recalculated {
     pub manual: usize,
 }
 
+/// A hidden row, as the library health view lists it.
+pub struct HiddenRow {
+    pub id: i64,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub path: String,
+    pub content_type: String,
+    pub hidden_at: i64,
+}
+
 /// One row as the scanner sees it.
 pub struct IndexRow {
     pub id: i64,
@@ -652,7 +663,7 @@ impl Db {
             {
                 (
                     format!(
-                        "SELECT * FROM tracks WHERE missing_since IS NULL AND content_type = ? \
+                        "SELECT * FROM tracks WHERE missing_since IS NULL AND hidden_at IS NULL AND content_type = ? \
                          ORDER BY {} LIMIT 200",
                         order_sql
                     ),
@@ -661,7 +672,7 @@ impl Db {
             } else {
                 (
                     format!(
-                        "SELECT * FROM tracks WHERE missing_since IS NULL ORDER BY {} LIMIT 200",
+                        "SELECT * FROM tracks WHERE missing_since IS NULL AND hidden_at IS NULL ORDER BY {} LIMIT 200",
                         order_sql
                     ),
                     vec![],
@@ -685,7 +696,7 @@ impl Db {
                 format!(
                     "SELECT tracks.* FROM tracks_fts \
                      JOIN tracks ON tracks.id = tracks_fts.rowid \
-                     WHERE tracks_fts MATCH ? AND tracks.missing_since IS NULL \
+                     WHERE tracks_fts MATCH ? AND tracks.missing_since IS NULL AND tracks.hidden_at IS NULL \
                        AND tracks.content_type = ? \
                      ORDER BY {} LIMIT 200",
                     order_sql
@@ -697,7 +708,7 @@ impl Db {
                 format!(
                     "SELECT tracks.* FROM tracks_fts \
                      JOIN tracks ON tracks.id = tracks_fts.rowid \
-                     WHERE tracks_fts MATCH ? AND tracks.missing_since IS NULL \
+                     WHERE tracks_fts MATCH ? AND tracks.missing_since IS NULL AND tracks.hidden_at IS NULL \
                      ORDER BY {} LIMIT 200",
                     order_sql
                 ),
@@ -912,7 +923,7 @@ impl Db {
         let roots = self.roots();
         let conn = self.conn.lock();
         let sql = format!(
-            "SELECT id, root_id, path FROM tracks WHERE missing_since IS NULL AND id IN ({})",
+            "SELECT id, root_id, path FROM tracks WHERE missing_since IS NULL AND hidden_at IS NULL AND id IN ({})",
             placeholders(ids.len())
         );
         fetch_by_ids(&conn, &sql, ids, |r| {
@@ -1752,7 +1763,7 @@ impl Db {
             "SELECT {TRACK_COLUMNS}, root_id, path, content_type, fingerprint, \
                     analysis_error, analysis_failed_at \
              FROM tracks \
-             WHERE missing_since IS NULL AND analysis_failed_at IS NOT NULL \
+             WHERE missing_since IS NULL AND hidden_at IS NULL AND analysis_failed_at IS NOT NULL \
              ORDER BY analysis_failed_at, id"
         ))?;
         let rows = stmt.query_map([], |r| {
@@ -1788,7 +1799,7 @@ impl Db {
         let mut stmt = conn.prepare(&format!(
             "SELECT {TRACK_COLUMNS}, root_id, path, content_type, fingerprint, tag_duration \
              FROM tracks \
-             WHERE missing_since IS NULL AND duration_measured_at IS NOT NULL \
+             WHERE missing_since IS NULL AND hidden_at IS NULL AND duration_measured_at IS NOT NULL \
                AND (COALESCE(duration, 0) <= 0 \
                     OR (abs(tag_duration - duration) > {BAD_DURATION_TOLERANCE_S} \
                         AND abs(tag_duration - duration) \
@@ -2030,9 +2041,9 @@ impl Db {
     /// each group is contiguous.
     pub fn fingerprint_twins(&self) -> Result<Vec<HealthRow>> {
         self.health_rows(
-            "missing_since IS NULL AND fingerprint IN ( \
+            "missing_since IS NULL AND hidden_at IS NULL AND fingerprint IN ( \
                SELECT fingerprint FROM tracks \
-               WHERE missing_since IS NULL AND fingerprint IS NOT NULL \
+               WHERE missing_since IS NULL AND hidden_at IS NULL AND fingerprint IS NOT NULL \
                GROUP BY fingerprint HAVING COUNT(*) > 1) \
              ORDER BY fingerprint, id",
         )
@@ -2042,7 +2053,7 @@ impl Db {
     /// possible duplicates, which are grouped in Rust.
     pub fn tagged_music(&self) -> Result<Vec<HealthRow>> {
         self.health_rows(
-            "missing_since IS NULL AND content_type = 'music' \
+            "missing_since IS NULL AND hidden_at IS NULL AND content_type = 'music' \
              AND COALESCE(artist, '') <> '' AND COALESCE(title, '') <> '' \
              ORDER BY id",
         )
@@ -2073,7 +2084,7 @@ impl Db {
         let conn = self.conn.lock();
         Ok(conn.query_row(
             "SELECT COUNT(*) FROM tracks \
-             WHERE missing_since IS NULL AND fingerprint IS NULL \
+             WHERE missing_since IS NULL AND hidden_at IS NULL AND fingerprint IS NULL \
                AND analysis_failed_at IS NULL",
             [],
             |r| r.get(0),
@@ -2150,6 +2161,75 @@ impl Db {
         }
         tx.commit()?;
         Ok(deleted)
+    }
+
+    /// Hide the given present rows from the library. A row that is missing or
+    /// already hidden is skipped. Returns the ids actually hidden.
+    pub fn hide_tracks(&self, ids: &[i64], now_ms: i64) -> Result<Vec<i64>> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let mut hidden = Vec::new();
+        for chunk in ids.chunks(ID_CHUNK) {
+            let sql = format!(
+                "UPDATE tracks SET hidden_at = ?1 \
+                 WHERE hidden_at IS NULL AND missing_since IS NULL AND id IN ({}) RETURNING id",
+                placeholders_from(chunk.len(), 2)
+            );
+            let mut stmt = tx.prepare(&sql)?;
+            let params = std::iter::once(&now_ms).chain(chunk);
+            let rows = stmt.query_map(params_from_iter(params), |r| r.get::<_, i64>(0))?;
+            for id in rows {
+                hidden.push(id?);
+            }
+        }
+        tx.commit()?;
+        Ok(hidden)
+    }
+
+    /// Put the given hidden rows back in the library. Returns the ids actually
+    /// restored.
+    pub fn unhide_tracks(&self, ids: &[i64]) -> Result<Vec<i64>> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let mut restored = Vec::new();
+        for chunk in ids.chunks(ID_CHUNK) {
+            let sql = format!(
+                "UPDATE tracks SET hidden_at = NULL \
+                 WHERE hidden_at IS NOT NULL AND id IN ({}) RETURNING id",
+                placeholders(chunk.len())
+            );
+            let mut stmt = tx.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(chunk), |r| r.get::<_, i64>(0))?;
+            for id in rows {
+                restored.push(id?);
+            }
+        }
+        tx.commit()?;
+        Ok(restored)
+    }
+
+    /// Every hidden row whose file is still there, newest first. A hidden row
+    /// that went missing is listed with the missing ones instead.
+    pub fn hidden_tracks(&self) -> Result<Vec<HiddenRow>> {
+        let roots = self.roots();
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, title, artist, path, hidden_at, content_type, root_id, album \
+             FROM tracks WHERE hidden_at IS NOT NULL AND missing_since IS NULL \
+             ORDER BY hidden_at DESC, id DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(HiddenRow {
+                id: r.get(0)?,
+                title: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                artist: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                album: r.get::<_, Option<String>>(7)?.unwrap_or_default(),
+                path: row_path(r, &roots)?,
+                content_type: r.get(5)?,
+                hidden_at: r.get(4)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
 
     pub fn increment_play_count(&self, id: i64) -> Result<()> {
@@ -2557,14 +2637,14 @@ impl Db {
                 "SELECT * FROM tracks WHERE id IN ( \
                    SELECT id FROM ( \
                      SELECT id, ROW_NUMBER() OVER (PARTITION BY {key} ORDER BY RANDOM()) AS rn \
-                     FROM tracks WHERE missing_since IS NULL AND content_type = ?{where_clause} \
+                     FROM tracks WHERE missing_since IS NULL AND hidden_at IS NULL AND content_type = ?{where_clause} \
                    ) WHERE rn = 1 ORDER BY RANDOM() LIMIT ? \
                  ) ORDER BY RANDOM()",
                 key = SelectionFilter::SPREAD_KEY
             )
         } else {
             format!(
-                "SELECT * FROM tracks WHERE missing_since IS NULL AND content_type = ?{where_clause} \
+                "SELECT * FROM tracks WHERE missing_since IS NULL AND hidden_at IS NULL AND content_type = ?{where_clause} \
                  ORDER BY RANDOM() LIMIT ?"
             )
         };
@@ -2594,7 +2674,7 @@ impl Db {
         let sql = format!(
             "WITH bucket AS ( \
                 SELECT * FROM tracks \
-                WHERE missing_since IS NULL AND content_type = ?{exclude_clause} \
+                WHERE missing_since IS NULL AND hidden_at IS NULL AND content_type = ?{exclude_clause} \
                 ORDER BY play_count ASC, RANDOM() LIMIT ? \
             ) SELECT * FROM bucket ORDER BY RANDOM() LIMIT ?"
         );
@@ -2621,13 +2701,13 @@ impl Db {
             .query_row(
             "SELECT COUNT(*), COUNT(DISTINCT artist), COUNT(DISTINCT album), \
                  COALESCE(ROUND(SUM(duration) / 3600.0, 1), 0) FROM tracks \
-                 WHERE missing_since IS NULL",
+                 WHERE missing_since IS NULL AND hidden_at IS NULL",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )?;
         let mut tracks_by_type = TracksByType::default();
         let mut stmt =
-            conn.prepare("SELECT content_type, COUNT(*) FROM tracks WHERE missing_since IS NULL GROUP BY content_type")?;
+            conn.prepare("SELECT content_type, COUNT(*) FROM tracks WHERE missing_since IS NULL AND hidden_at IS NULL GROUP BY content_type")?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
         for row in rows {
             let (kind, n) = row?;
@@ -2974,6 +3054,7 @@ const MIGRATION_STEPS: &[M] = &[
     M::up(DURATION_DISMISSALS),
     M::up(SAVED_PLAYLISTS),
     M::up(LIBRARY_ROOTS),
+    M::up(HIDDEN_TRACKS),
 ];
 const MIGRATIONS: Migrations = Migrations::from_slice(MIGRATION_STEPS);
 
@@ -3453,6 +3534,12 @@ DROP INDEX tracks_path_present;
 CREATE UNIQUE INDEX tracks_path_present ON tracks(root_id, path) WHERE missing_since IS NULL;
 "#;
 
+/// A track an admin hid from the library. The row stays present — the scan
+/// still owns its path, so the file is never taken for a new one — and
+/// `hidden_at` (unix ms) only keeps it out of what the operator and the
+/// auto-playlist are offered. See `docs/library-health.md`.
+const HIDDEN_TRACKS: &str = "ALTER TABLE tracks ADD COLUMN hidden_at INTEGER;";
+
 /// A database this build must not touch.
 #[derive(Debug, PartialEq)]
 pub enum OpenError {
@@ -3848,6 +3935,18 @@ mod tests {
             .unwrap();
             conn.execute_batch(
                 "INSERT INTO library_roots (content_type) VALUES ('music'); \
+                 UPDATE tracks SET root_id = 1, path = 'seed.mp3'",
+            )
+            .unwrap();
+        },
+        |conn| {
+            seed_track(conn);
+            seed_dismissal(conn);
+            conn.execute_batch(
+                "UPDATE tracks SET edited_fields = 1; \
+                 INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
+                 SELECT id, 1000, artist, title, duration FROM tracks; \
+                 INSERT INTO library_roots (content_type) VALUES ('music'); \
                  UPDATE tracks SET root_id = 1, path = 'seed.mp3'",
             )
             .unwrap();

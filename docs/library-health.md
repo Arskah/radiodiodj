@@ -1,13 +1,14 @@
-# Library health — missing tracks, duplicates, unreadable files, bad durations and disk changes
+# Library health — missing and hidden tracks, duplicates, unreadable files, bad durations and disk changes
 
 The _Library_ tab of _Settings_ tells the operator when the library needs
-attention, and lets them act on it. It reports five things:
+attention, and lets them act on it. It reports five things, and lists a sixth:
 
 1. **Disk changes** — files added, changed or removed since the last scan.
 2. **Unreadable tracks** — files the analysis pass could not decode.
 3. **Bad durations** — files whose tags give a length the audio does not have.
 4. **Missing tracks** — tracks whose file a scan could not find, one by one.
 5. **Duplicates** — exact copies, and tracks that look like the same song.
+6. **Hidden tracks** — tracks an admin took out of the library, to put back.
 
 A count on the Settings button says when any of them needs attention.
 
@@ -60,21 +61,25 @@ across _Advanced_.
 │   ☐ ▸ No longer under a library path (812)                   │
 │   [Purge selected (1)…] [Purge all…]                         │
 │                                                              │
+│ ▸ Hidden tracks (3)                            [Restore all] │
+│     Title / Artist — Album  /comp/Title.mp3  music  2 d ago R│
+│                                                              │
 │ Duplicates                                                   │
 │   Still checking 140 tracks for exact copies…                │
 │   Exact copies (2)                                           │
 │   ▾ Title — Artist   2 copies                     [Dismiss]  │
-│       Title / Artist  /a/Title.mp3  music  3:34  ▶12  F E C  │
-│       Title / Artist  /b/Title.mp3  music  3:34  ▶0   F E C  │
+│       Title / Artist  /a/Title.mp3  music  3:34  ▶12 F E C H │
+│       Title / Artist  /b/Title.mp3  music  3:34  ▶0  F E C H │
 │   Possible duplicates (1)                                    │
 │   ▸ Title — Artist   2 copies   Dismissed   [Undo dismiss]   │
 └──────────────────────────────────────────────────────────────┘
 ◇ has cue points   ▶ play count   ≡ in the playlist
 F Show in folder   E Edit metadata…   C Cue points…
+H Hide from library   R Restore to library
 ```
 
 A section with nothing to report says _No issues_. Unreadable tracks, bad
-durations and tag writes are shown only when there is something to list. Disk changes says _Not
+durations, hidden tracks and tag writes are shown only when there is something to list. Disk changes says _Not
 checked since the last scan_ or _No changes_ instead.
 
 The tab and the Settings button carry the same **attention count**:
@@ -260,6 +265,42 @@ Advancement treats a missing track as **never playable**:
 - Playing a missing track from the playlist is refused, and the track stays
   where it is.
 
+## Hidden tracks
+
+A track an admin has taken out of the library without touching its file — the
+copy of a song that is also on a compilation, say. _Hide from library_ is on a
+library row's menu (and on a selection's, for all of it) and on every row of a
+duplicate group. It needs admin mode, asks nothing, and is undone from the list
+here: _Restore to library_ on a row, or _Restore all_.
+
+A hidden track is **still a present track to the scan.** Its row keeps its path,
+so the file is never read as a new one, and a rescan neither restores it nor
+disturbs it. Everywhere else it is out:
+
+- not in a library tab, search, the statistics or _Playtime_
+- never picked by the auto-playlist, from the music library or from a saved
+  playlist chosen as its source
+- not in a duplicate group, an unreadable or a bad-duration list — hiding one of
+  two copies ends that finding
+- **unplayable where it already is**, exactly as a missing track is: a queued
+  item is badged, skipped and dropped by advancement, and a saved playlist entry
+  bound to it counts as missing and offers _Find in library…_. See
+  [In the playlist, history and deck](#in-the-playlist-history-and-deck). The
+  badge is `visibility_off` in place of `link_off`. A hidden track that is on
+  air finishes.
+
+Nothing is lost: cue points, play count, edits and measurements stay on the row,
+and the analysis pass still measures it, so a restored track is ready at once.
+Hidden tracks are not in the attention count and cannot be purged.
+
+Hiding is a mark on **that row**, not on the audio:
+
+- A hidden track whose **file then disappears** goes missing like any other. It
+  moves to _Missing tracks_, where it can be purged; if the file comes back it
+  reattaches still hidden.
+- A **new copy** of the same audio is a new track, and starts visible. It
+  copies its twin's operator state as every duplicate does, but not the mark.
+
 ## Unreadable tracks
 
 A track whose file the analysis pass read but could not decode: a truncated or
@@ -365,6 +406,9 @@ A group whose tracks all share one fingerprint is shown under exact copies only.
 
 Each row has _Show in folder_, _Edit metadata…_ and _Cue points…_.
 
+- **An unwanted copy whose file should stay** — the same song on a compilation:
+  _Hide from library_. The group goes, the file and the row stay. See
+  [Hidden tracks](#hidden-tracks).
 - **An unwanted copy:** _Show in folder_, delete the file, then _Scan Library
   Now_. The copy becomes a missing track, which you purge. The kept copy loses
   nothing. The deleted copy's play count goes with it, because duplicates are
@@ -417,6 +461,8 @@ HealthReport
   missing          [MissingTrack]    id, title, artist, path, missingSince,
                                      playCount, hasCuePoints, outsideRoots
   missingDismissed bool
+  hidden           [HiddenTrack]     id, title, artist, album, path,
+                                     contentType, hiddenAt
   exact            [DuplicateGroup]  key, dismissed,
                                      tracks[{track, path, contentType}]
   possible         [DuplicateGroup]
@@ -440,7 +486,7 @@ The renderer loads it with `library_health` and replaces it on every
 - after a metadata edit, since artist, album and title decide possible
   duplicates
 - after a library path is added or removed
-- after a purge, a dismissal, and every check
+- after a purge, a hide or restore, a dismissal, and every check
 - when a check starts, and when one ends without a report (canceled by a scan,
   or failed); only the `checking` flag changes then
 - when the tag write failures change
@@ -454,14 +500,16 @@ emit is skipped if a higher sequence has already gone out. The report lock is no
 held across the emit: `library-health` has a backend listener too, which Tauri
 runs on the emitting thread.
 
-The renderer works out whether a missing track is queued from the playlist it
-mirrors. That keeps the report independent of the playlist, which itself
+The renderer works out whether a missing or hidden track is queued from the
+playlist it mirrors. That keeps the report independent of the playlist, which itself
 depends on the report.
 
 | command                       | does                                                                                                     |
 | ----------------------------- | -------------------------------------------------------------------------------------------------------- |
 | `library_health`              | returns the current report                                                                               |
 | `purge_tracks(ids)`           | see [Purge](#purge)                                                                                      |
+| `hide_tracks(ids)`            | hides present tracks; missing and already hidden ids are skipped. Returns how many it hid                |
+| `unhide_tracks(ids)`          | restores hidden tracks. Returns how many it restored                                                     |
 | `health_dismiss(kind, key)`   | `kind` is `exact`, `possible`, `missing`, `duration` or `check`; `key` is the group key, empty otherwise |
 | `health_undismiss(kind, key)` | undoes a dismissal                                                                                       |
 | `library_check_now`           | asks the worker for a check                                                                              |
@@ -479,6 +527,11 @@ CREATE TABLE health_dismissals (
   PRIMARY KEY (kind, key)
 );
 ```
+
+Migration step 16 added `tracks.hidden_at` (unix ms, `NULL` when not hidden). It
+is operator work, so it stays out of `UPSERT_TRACK_SQL`. `missing_since` remains
+the only thing the scan, the path index and purge read; a query that offers
+tracks to an operator or to the auto-playlist asks for both to be `NULL`.
 
 ## Not built
 
@@ -533,11 +586,19 @@ which files were new, and did nothing with the answer until someone pressed a
 button. Copying music onto the share became the trigger, with nothing to
 install, authenticate or open on the other computer.
 
-**No _ignored_ state.** Flagging an unwanted duplicate would have needed a
-hidden-but-present kind of track that every query and every scan respects.
-Deleting the file reuses what already exists: the scan marks it missing, and the
-operator purges it. A path exclusion list would be simpler still, but breaks the
-moment a file moves.
+**Hidden is a second mark, not a kind of missing.** Deleting the file was first
+the only way to drop a duplicate, which fails for the case that turned out to be
+the common one: a compilation the station wants kept whole on disk. Reusing
+`missing_since` for it would have told the scan the path was free, and the next
+scan would have inserted the file again. So `hidden_at` is its own column: the
+scan keeps treating the row as present, and only what is offered to play reads
+it. A path exclusion list would be simpler still, but breaks the moment a file
+moves.
+
+**A hidden track is unplayable, not merely unlisted.** The playlist already has
+one rule for a track that must not air — the missing one — with its badge, its
+skip and its drop. Hidden ids ride the same list, so there is no third state for
+an operator to learn.
 
 **No merging.** Folding one track into another means rewriting queued items,
 history and play counts. Keeping one copy covers the real case.

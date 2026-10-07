@@ -279,6 +279,18 @@ export interface MissingTrack {
   outsideRoots: boolean;
 }
 
+/** A track an admin hid from the library; its file is still there. */
+export interface HiddenTrack {
+  id: number;
+  title: string;
+  artist: string;
+  album: string;
+  path: string;
+  contentType: ContentType;
+  /** Unix ms. */
+  hiddenAt: number;
+}
+
 export interface DuplicateMember {
   track: Track;
   path: string;
@@ -328,6 +340,8 @@ export interface CheckReport {
 export interface HealthReport {
   missing: MissingTrack[];
   missingDismissed: boolean;
+  /** Tracks an admin hid from the library. */
+  hidden: HiddenTrack[];
   exact: DuplicateGroup[];
   possible: DuplicateGroup[];
   /** Present tracks still waiting to be fingerprinted. */

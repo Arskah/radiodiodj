@@ -21,6 +21,8 @@ While locked:
 - Metadata edits: the _Edit metadata…_ row action and the row's edit button are
   hidden. Revert, retry and dismiss for tag writes live in the metadata editor
   and the health view, so they are out of reach too.
+- _Hide from library_, on a library row and a selection. Restoring a hidden
+  track is in the health view, so it is out of reach too.
 - _Save to track_ in the cue-point editor. It changes every future airing, the
   same way a metadata edit does.
 - Cancelling a running scan, or the analysis pass behind it, from the status

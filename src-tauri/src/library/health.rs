@@ -1,5 +1,5 @@
-//! The library health report: missing tracks, duplicates, files that cannot be
-//! decoded, and what the operator has already dismissed. See `docs/library-health.md`.
+//! The library health report: missing tracks, hidden tracks, duplicates, files
+//! that cannot be decoded, and what the operator has already dismissed. See `docs/library-health.md`.
 
 use anyhow::{bail, Result};
 use parking_lot::Mutex;
@@ -23,6 +23,8 @@ pub struct HealthReport {
     pub missing: Vec<MissingTrack>,
     /// The operator has seen every track in `missing`.
     pub missing_dismissed: bool,
+    /// Tracks an admin hid from the library, whose file is still there.
+    pub hidden: Vec<HiddenTrack>,
     pub exact: Vec<DuplicateGroup>,
     pub possible: Vec<DuplicateGroup>,
     /// Present tracks still waiting to be fingerprinted, so not in any exact
@@ -58,6 +60,19 @@ pub struct MissingTrack {
     /// No configured library path contains `path`: the path was removed
     /// rather than the file.
     pub outside_roots: bool,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HiddenTrack {
+    pub id: i64,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub path: String,
+    pub content_type: String,
+    /// Unix ms.
+    pub hidden_at: i64,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -424,6 +439,19 @@ pub fn build(db: &Db, roots: &[ScanRoot]) -> Result<HealthReport> {
     Ok(HealthReport {
         missing,
         missing_dismissed,
+        hidden: db
+            .hidden_tracks()?
+            .into_iter()
+            .map(|row| HiddenTrack {
+                id: row.id,
+                title: row.title,
+                artist: row.artist,
+                album: row.album,
+                path: row.path,
+                content_type: row.content_type,
+                hidden_at: row.hidden_at,
+            })
+            .collect(),
         exact,
         possible,
         unhashed: db.unhashed_count()?,
@@ -592,7 +620,7 @@ pub fn normalise(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::audio::cue_points::CuePoints;
-    use crate::library::db::{Reconcile, TrackInsert};
+    use crate::library::db::{Reconcile, SelectionFilter, TrackInsert};
 
     fn insert(
         db: &Db,
@@ -1103,5 +1131,135 @@ mod tests {
         assert!(db.get_track(a).unwrap().is_none());
         assert!(db.get_track(b).unwrap().is_some());
         assert!(db.get_track(present).unwrap().is_some());
+    }
+
+    fn hidden_ids(db: &Db) -> Vec<i64> {
+        let report = build(db, &music_root()).unwrap();
+        report.hidden.iter().map(|t| t.id).collect()
+    }
+
+    fn searchable_ids(db: &Db) -> Vec<i64> {
+        let found = db.search("", None, None, None).unwrap();
+        found.iter().map(|t| t.id).collect()
+    }
+
+    #[test]
+    fn a_hidden_track_leaves_the_library_and_its_duplicate_group() {
+        let db = Db::open_in_memory().unwrap();
+        let a = insert(&db, "/music/a.mp3", "music", "X", "One", Some("v1:aa"));
+        let b = insert(&db, "/music/comp/a.mp3", "music", "X", "One", Some("v1:aa"));
+        assert_eq!(build(&db, &music_root()).unwrap().exact.len(), 1);
+
+        assert_eq!(db.hide_tracks(&[b, 999], 50).unwrap(), vec![b]);
+
+        let report = build(&db, &music_root()).unwrap();
+        assert_eq!(hidden_ids(&db), vec![b]);
+        assert!(report.exact.is_empty());
+        assert!(report.possible.is_empty());
+        assert!(report.missing.is_empty(), "hidden is not purgeable");
+        assert_eq!(searchable_ids(&db), vec![a]);
+        assert_eq!(
+            db.search("one", Some("music"), None, None).unwrap().len(),
+            1
+        );
+        assert_eq!(db.get_stats().unwrap().total_tracks, 1);
+        let picked = db
+            .get_random_tracks("music", 10, &SelectionFilter::default())
+            .unwrap();
+        assert_eq!(picked.iter().map(|t| t.id).collect::<Vec<_>>(), vec![a]);
+        assert!(db.get_track(b).unwrap().is_some(), "the row is kept");
+    }
+
+    #[test]
+    fn unhiding_puts_a_track_back() {
+        let db = Db::open_in_memory().unwrap();
+        let a = insert(&db, "/music/a.mp3", "music", "X", "One", None);
+        db.hide_tracks(&[a], 50).unwrap();
+        assert_eq!(db.hide_tracks(&[a], 60).unwrap(), Vec::<i64>::new());
+
+        assert_eq!(db.unhide_tracks(&[a, 999]).unwrap(), vec![a]);
+
+        assert!(hidden_ids(&db).is_empty());
+        assert_eq!(searchable_ids(&db), vec![a]);
+    }
+
+    /// The scan still owns a hidden row's path: the file is neither inserted
+    /// again nor un-hidden by being read again.
+    #[test]
+    fn a_rescan_keeps_a_hidden_track_hidden() {
+        let db = Db::open_in_memory().unwrap();
+        let a = insert(&db, "/music/a.mp3", "music", "X", "One", Some("v1:aa"));
+        db.hide_tracks(&[a], 50).unwrap();
+
+        let again = insert(&db, "/music/a.mp3", "music", "X", "One", Some("v1:aa"));
+
+        assert_eq!(again, a);
+        assert_eq!(db.track_index().unwrap().len(), 1);
+        assert_eq!(hidden_ids(&db), vec![a]);
+    }
+
+    #[test]
+    fn a_hidden_track_whose_file_is_gone_is_missing_until_it_returns() {
+        let db = Db::open_in_memory().unwrap();
+        let a = insert(&db, "/music/a.mp3", "music", "X", "One", Some("v1:aa"));
+        db.hide_tracks(&[a], 50).unwrap();
+
+        mark_missing(&db, &[a], 100);
+
+        let report = build(&db, &music_root()).unwrap();
+        assert!(report.hidden.is_empty());
+        assert_eq!(report.missing.len(), 1);
+
+        db.reconcile(&Reconcile {
+            new_files: vec![TrackInsert {
+                path: "/music/moved/a.mp3".into(),
+                content_type: "music".into(),
+                mtime: Some(2),
+                fingerprint: Some("v1:aa".into()),
+                ..Default::default()
+            }],
+            now_ms: 200,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(hidden_ids(&db), vec![a], "reattached, still hidden");
+        assert!(searchable_ids(&db).is_empty());
+    }
+
+    #[test]
+    fn a_missing_track_cannot_be_hidden() {
+        let db = Db::open_in_memory().unwrap();
+        let a = insert(&db, "/music/a.mp3", "music", "X", "One", None);
+        mark_missing(&db, &[a], 100);
+
+        assert!(db.hide_tracks(&[a], 150).unwrap().is_empty());
+    }
+
+    /// A duplicate starts with its twin's operator state, but hiding one copy
+    /// says nothing about a file that arrives later.
+    #[test]
+    fn a_new_copy_of_hidden_audio_is_not_hidden() {
+        let db = Db::open_in_memory().unwrap();
+        let a = insert(&db, "/music/a.mp3", "music", "X", "One", Some("v1:aa"));
+        db.hide_tracks(&[a], 50).unwrap();
+
+        db.reconcile(&Reconcile {
+            new_files: vec![TrackInsert {
+                path: "/music/other/a.mp3".into(),
+                content_type: "music".into(),
+                title: Some("One".into()),
+                artist: Some("X".into()),
+                mtime: Some(2),
+                fingerprint: Some("v1:aa".into()),
+                ..Default::default()
+            }],
+            now_ms: 200,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(hidden_ids(&db), vec![a]);
+        assert_eq!(searchable_ids(&db).len(), 1);
     }
 }

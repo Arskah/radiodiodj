@@ -62,6 +62,8 @@ const { api } = vi.hoisted(() => {
     removePath: vi.fn(),
     locatePath: vi.fn(),
     purgeTracks: vi.fn(),
+    hideTracks: vi.fn(),
+    unhideTracks: vi.fn(),
     recalculateAutoCue: vi.fn(),
     libraryHealth: vi.fn(),
     onLibraryHealth: vi.fn(),
@@ -286,6 +288,8 @@ function resetApi(): void {
   api.removePath.mockResolvedValue(true);
   api.locatePath.mockResolvedValue(null);
   api.purgeTracks.mockResolvedValue(0);
+  api.hideTracks.mockResolvedValue(0);
+  api.unhideTracks.mockResolvedValue(0);
   api.libraryHealth.mockResolvedValue(structuredClone(EMPTY_HEALTH));
   api.savedPlaylistList.mockResolvedValue([]);
   api.savedPlaylistGet.mockResolvedValue(null);
@@ -1447,6 +1451,39 @@ describe("AppState library + paths", () => {
     await app.purgeTracks([3, 4]);
 
     expect(api.purgeTracks).toHaveBeenCalledWith([3, 4]);
+    expect(api.getStats).toHaveBeenCalled();
+    expect(api.search).toHaveBeenCalled();
+  });
+
+  it("hideTracks hides the chosen tracks, drops them from the selection and refreshes", async () => {
+    app.selectedIds = [3, 5, 4];
+    api.getStats.mockClear();
+    api.search.mockClear();
+
+    await app.hideTracks([3, 4]);
+
+    expect(api.hideTracks).toHaveBeenCalledWith([3, 4]);
+    expect(app.selectedIds).toEqual([5]);
+    expect(api.getStats).toHaveBeenCalled();
+    expect(api.search).toHaveBeenCalled();
+  });
+
+  it("hideTracks keeps the selection when the backend refuses", async () => {
+    app.selectedIds = [3];
+    api.hideTracks.mockRejectedValueOnce("admin mode is locked");
+
+    await app.hideTracks([3]);
+
+    expect(app.selectedIds).toEqual([3]);
+  });
+
+  it("unhideTracks restores the chosen tracks, then refreshes stats and library", async () => {
+    api.getStats.mockClear();
+    api.search.mockClear();
+
+    await app.unhideTracks([3]);
+
+    expect(api.unhideTracks).toHaveBeenCalledWith([3]);
     expect(api.getStats).toHaveBeenCalled();
     expect(api.search).toHaveBeenCalled();
   });

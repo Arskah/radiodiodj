@@ -421,6 +421,20 @@ export const api = {
   },
 
   /**
+   * Hide the given tracks from the library without deleting anything. Ids of
+   * tracks that are missing or already hidden are ignored; resolves to how
+   * many were hidden.
+   */
+  hideTracks(ids: number[]): Promise<number> {
+    return invoke<number>("hide_tracks", { ids });
+  },
+
+  /** Put the given hidden tracks back; resolves to how many were restored. */
+  unhideTracks(ids: number[]): Promise<number> {
+    return invoke<number>("unhide_tracks", { ids });
+  },
+
+  /**
    * Apply the current automatic-analysis thresholds to material already in
    * the library. Rejects while a scan is running.
    */
