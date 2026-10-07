@@ -765,6 +765,18 @@
     cursor: pointer;
   }
 
+  /* `display: flex` drops the native disclosure marker, so draw one. */
+  .health-group summary::before {
+    content: "▸";
+    flex: none;
+    color: var(--on-surface-variant);
+    transition: transform 0.1s;
+  }
+
+  .health-group[open] > summary::before {
+    transform: rotate(90deg);
+  }
+
   .health-group summary .health-dismiss {
     margin-left: auto;
   }
