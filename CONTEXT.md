@@ -272,6 +272,34 @@ _Avoid_: Missing entry, broken, orphan
 Where the **Auto-playlist** draws music from: the Music library, or one **Saved playlist**. Narrows the pool and nothing else; **Rotation rules** and **Interleave** apply as before.
 _Avoid_: Pool, mode, curated mode
 
+### Shared library
+
+Planned. See [docs/shared-library.md](docs/shared-library.md).
+
+**Library owner**:
+The one install that runs the **Scan**, the **Analysis pass** and the **Library check** for a station whose library is shared, and the only one that adds, changes or purges a **Track**.
+_Avoid_: Server, master, primary, scanner
+
+**Studio**:
+An install that plays from its own copy of the **Library owner**'s library and never scans or decodes. Its cue points, **Metadata edits**, **Saved playlists**, **Dismissals** and **Airings** are saved locally first and sent on.
+_Avoid_: Client, replica, slave, secondary
+
+**Hub**:
+The Postgres database every install of a shared library connects out to. It moves rows between them and holds the **Catalogue**; no feature of the app reads it.
+_Avoid_: Server, backend, external database, cloud
+
+**Outbox**:
+A **Studio**'s or **Library owner**'s own changes that have not reached the **Hub** yet.
+_Avoid_: Queue, pending changes, sync queue
+
+**Catalogue**:
+What a web page searches: every present **Track** with a **Fingerprint**, with the fields the app's search covers and a **Saved playlist** file needs. No path, no **Cue points**.
+_Avoid_: Index, export, library copy
+
+**Draft**:
+A **Saved playlist** file a web page keeps and no install has imported yet. An admin decides which become **Saved playlists**.
+_Avoid_: Web playlist, pending playlist, submission
+
 ### Appearance
 
 **Theme**:

@@ -259,7 +259,7 @@ flowchart LR
     RDB --> P["Playlist, search, decks"]
   end
   W -- "pull: snapshot, then changes" --> API
-  W -- "push: operator work, plays" --> API
+  W -- "push: operator work" --> API
   WEB["Web page backend"] -- "search" --> API
 ```
 
@@ -279,9 +279,9 @@ flowchart LR
     RDB --> P["Playlist, search, decks"]
   end
   OW -- "push: tracks, measurements" --> HUB
-  HUB -- "pull: operator work, plays" --> OW
+  HUB -- "pull: operator work" --> OW
   HUB -- "pull: tracks, measurements" --> W
-  W -- "push: operator work, plays" --> HUB
+  W -- "push: operator work" --> HUB
   WEB["Web page backend"] -- "search" --> HUB
 ```
 
@@ -327,15 +327,15 @@ dropped, the old file is kept, and the toolbar says why.
 **Who may write what.** With a replica that is written to locally, the rules
 that used to be one process holding one mutex have to be stated.
 
-| what                                                                                       | written by  | when two machines disagree                                 |
-| ------------------------------------------------------------------------------------------ | ----------- | ---------------------------------------------------------- |
-| Tags, `mtime`, fingerprint, waveform, loudness, tempo, key, measured duration, level table | owner only  | cannot happen                                              |
-| The automatic cue trio                                                                     | owner only  | **a manual set wins, whenever it was made**                |
-| Manual cue points and fades                                                                | any machine | the later save wins, for the set as a whole                |
-| Metadata edits (`edited_fields` and the columns it flags)                                  | any machine | the later save wins, per field                             |
-| A saved playlist                                                                           | any machine | the later save wins, per list                              |
-| Health dismissals                                                                          | any machine | the later one wins, per finding                            |
-| The airing log and play counts                                                             | any machine | never — appended, and keyed by the machine that aired them |
+| what                                                                                       | written by               | when two machines disagree                  |
+| ------------------------------------------------------------------------------------------ | ------------------------ | ------------------------------------------- |
+| Tags, `mtime`, fingerprint, waveform, loudness, tempo, key, measured duration, level table | owner only               | cannot happen                               |
+| The automatic cue trio                                                                     | owner only               | **a manual set wins, whenever it was made** |
+| Manual cue points and fades                                                                | any machine              | the later save wins, for the set as a whole |
+| Metadata edits (`edited_fields` and the columns it flags)                                  | any machine              | the later save wins, per field              |
+| A saved playlist                                                                           | any machine              | the later save wins, per list               |
+| Health dismissals                                                                          | any machine              | the later one wins, per finding             |
+| The airing log and play counts                                                             | each machine, for itself | never — they are not shared                 |
 
 "Later" is the saving machine's wall clock, which means two studio machines with
 clocks apart can let the earlier edit win. That is the price of having no single
@@ -372,9 +372,10 @@ only while a track is still automatic
 ([cue-auto-analysis.md](./cue-auto-analysis.md)). It has to hold across the hop
 as well as inside one database.
 
-**Play history is never held back.** An airing is written to the local log
-first, as today, and pushed afterwards. The log stays the rotation rules' source
-on the machine that is on air, and two studios' logs are a union.
+**What a machine aired stays on it.** The airing log and the play counts are
+not library data: they are a record of one machine's broadcast, and the rotation
+rules and History read them where they were written. The shared library makes
+two studios hold the same tracks, not behave as one station.
 
 **Settings that shape stored data belong to the owner.** The automatic cue
 thresholds are per machine today. In this mode the owner's are the station's,
@@ -426,7 +427,7 @@ for B2 and B3, and neither needs it to exist.
 | Inbound port              | one, on the owner — never on the on-air machine                      | none of ours; Postgres' own                                                 |
 | Credentials               | a station token we design                                            | Postgres roles and TLS, already designed                                    |
 | A studio's first copy     | download the owner's database file — `VACUUM INTO` already makes one | pull every row                                                              |
-| The owner is switched off | no sync at all; studios keep their outboxes                          | studios still exchange cue points, edits and plays with each other          |
+| The owner is switched off | no sync at all; studios keep their outboxes                          | studios still exchange cue points and edits with each other                 |
 | Conflicts                 | settled inside the owner, in one SQLite transaction                  | settled by each machine applying the same rules to what it pulls            |
 | Ordering                  | the owner hands out one sequence                                     | a revision per row; two writers committing out of order need a guard        |
 | A second owner by mistake | impossible — studios are pointed at one address                      | needs a lock in the hub                                                     |
@@ -465,7 +466,7 @@ flowchart TD
   I3a["3 · B2: owner HTTP API, token, snapshot"]
   I3b["3 · B3: hub tables and Postgres client"]
   I4["4 · Studio role: pull, adopt ids, owner controls disabled"]
-  I5["5 · Outbox: operator work and plays go back"]
+  I5["5 · Outbox: operator work goes back"]
   I6["6 · Freshness, outbox count, unreachable states"]
   H["Headless owner (optional)"]
   W1["W1 · Catalogue published, web search"]
@@ -488,7 +489,7 @@ flowchart TD
 | 2   | Change capture, and a time and machine on each editable group | Inert. A migration and triggers nothing reads yet.                                                                              |
 | 3   | The middle: the owner's API (B2) or the hub (B3)              | The owner publishes; nothing consumes.                                                                                          |
 | 4   | The studio role                                               | **Delivers the ask**: the scan and the decode are off the studio machine. Read-only — cue work on a studio does not travel yet. |
-| 5   | The outbox                                                    | Cue points, metadata edits, saved playlists, dismissals and plays reach the owner and the other studios.                        |
+| 5   | The outbox                                                    | Cue points, metadata edits, saved playlists and dismissals reach the owner and the other studios.                               |
 | 6   | The indicators                                                | A studio can see how stale it is and what it still owes.                                                                        |
 | W1  | The catalogue, and the query the web page searches it with    | **Meets the web requirement**: search, and a saved playlist file out. Under B3 a single studio machine can stop here.           |
 | W2  | Drafts kept where the app can list them                       | Optional. Saves the admin fetching a file by hand; importing one by hand needs none of it.                                      |
@@ -538,3 +539,7 @@ search implementation and a Postgres to look after. B2 remains the answer for a
 station whose owner already sits on a server the outside can reach and that
 wants the page to find exactly what the studio finds. Increment 2 does not
 depend on the choice.
+
+What B3 is made of — the groups that travel, the local change log, the hub's
+tables and the rules for applying a pull — is
+[shared-library.md](./shared-library.md).
