@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.30.0](https://github.com/Arskah/radiodiodj/compare/v0.29.0...v0.30.0) (2026-10-07)
+
+
+### Features
+
+* **library:** let an admin hide tracks from the library ([#617](https://github.com/Arskah/radiodiodj/issues/617)) ([c857ce0](https://github.com/Arskah/radiodiodj/commit/c857ce09fb89aba1a56813606de4937616979e6a))
+
+
+### Bug Fixes
+
+* **deps:** update rust crate tokio to v1.53.2 ([#614](https://github.com/Arskah/radiodiodj/issues/614)) ([88aa933](https://github.com/Arskah/radiodiodj/commit/88aa933ccd6fd06f4dadca81facc76eacd6bea77))
+
 ## [0.29.0](https://github.com/Arskah/radiodiodj/compare/v0.28.0...v0.29.0) (2026-10-05)
 
 
