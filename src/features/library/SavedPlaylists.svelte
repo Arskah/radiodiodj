@@ -212,7 +212,10 @@
       );
     }
     if (app.isAdmin) {
-      const findable = track === null || app.missingSince.has(track.id);
+      const findable =
+        track === null ||
+        app.missingSince.has(track.id) ||
+        app.hiddenAt.has(track.id);
       if (findable) {
         items.push({
           label: "Find in library…",

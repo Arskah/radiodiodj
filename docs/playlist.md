@@ -220,7 +220,8 @@ than dead air.
   history and not in the airing log, whichever way it left.
 - **Missing tracks.** `on_missing_state` takes ids from the same
   `library-health` event the health report uses, and advancement drops them up
-  to the next stop marker, even on a cold cache. See
+  to the next stop marker, even on a cold cache. A track an admin hid is in
+  that set too, so it is skipped the same way. See
   [library-health.md](./library-health.md).
 
 ## Item overrides

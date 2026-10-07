@@ -23,6 +23,8 @@ pub const ADMIN_COMMANDS: &[&str] = &[
     "remove_path",
     "locate_path",
     "purge_tracks",
+    "hide_tracks",
+    "unhide_tracks",
     "recalculate_auto_cue",
     "set_main_device",
     "set_cue_device",

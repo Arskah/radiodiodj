@@ -217,6 +217,13 @@
             ><span class="material-symbols-outlined">line_start_diamond</span
             ></button
           >
+          <button
+            title="Hide from library"
+            aria-label="Hide from library"
+            onclick={() => app.hideTracks([m.track.id])}
+            ><span class="material-symbols-outlined">visibility_off</span
+            ></button
+          >
         </span>
       </div>
     {/each}
@@ -405,7 +412,7 @@
       <p class="health-summary">No issues.</p>
     {:else}
       <p class="health-note">
-        Hidden from the library. A track comes back with its cue points and play
+        Kept out of the library. A track comes back with its cue points and play
         count if its file reappears, even under a new name or folder.
       </p>
       {#each deleted as t (t.id)}
@@ -475,6 +482,65 @@
       {/if}
     {/if}
   </section>
+
+  {#if report.hidden.length > 0}
+    <section class="health-section" id="health-hidden">
+      <details class="health-group">
+        <summary>
+          <span class="health-group-title"
+            >Hidden tracks ({report.hidden.length})</span
+          >
+          <button
+            id="btn-unhide-all"
+            class="health-dismiss"
+            onclick={(e) => {
+              // Inside a <summary>, a click would also fold the group.
+              e.preventDefault();
+              app.unhideTracks(report.hidden.map((t) => t.id));
+            }}>Restore all</button
+          >
+        </summary>
+        <p class="health-note">
+          Hidden by an admin: out of the library, search and the auto-playlist,
+          and skipped where already in the playlist. The files are untouched.
+        </p>
+        {#each report.hidden as t (t.id)}
+          <div class="health-row">
+            <span class="health-name">
+              <span class="health-title">{t.title}</span>
+              <span class="health-sub"
+                >{t.artist}{#if t.album}
+                  — {t.album}{/if}</span
+              >
+            </span>
+            <span class="health-path" title={t.path}>{t.path}</span>
+            <span class="health-type">{t.contentType}</span>
+            <span
+              class="health-when"
+              title={new Date(t.hiddenAt).toLocaleString()}
+              >{formatAgo(t.hiddenAt)}</span
+            >
+            <span class="health-icons">
+              {#if queuedIds.has(t.id)}
+                <span class="material-symbols-outlined" title="In the playlist"
+                  >queue_music</span
+                >
+              {/if}
+            </span>
+            <span class="health-actions">
+              <button
+                title="Restore to library"
+                aria-label="Restore to library"
+                onclick={() => app.unhideTracks([t.id])}
+                ><span class="material-symbols-outlined">visibility</span
+                ></button
+              >
+            </span>
+          </div>
+        {/each}
+      </details>
+    </section>
+  {/if}
 
   <section class="health-section" id="health-duplicates">
     <header>
@@ -697,6 +763,18 @@
     gap: var(--sp-sm);
     font-size: 12px;
     cursor: pointer;
+  }
+
+  /* `display: flex` drops the native disclosure marker, so draw one. */
+  .health-group summary::before {
+    content: "▸";
+    flex: none;
+    color: var(--on-surface-variant);
+    transition: transform 0.1s;
+  }
+
+  .health-group[open] > summary::before {
+    transform: rotate(90deg);
   }
 
   .health-group summary .health-dismiss {

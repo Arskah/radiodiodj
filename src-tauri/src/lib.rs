@@ -1417,6 +1417,41 @@ async fn purge_tracks(state: State<'_, AppState>, ids: Vec<i64>) -> Result<usize
     .map_err(err)?
 }
 
+/// Hide the chosen tracks from the library: out of every tab, search, count,
+/// duplicate finding and auto-playlist pick, and unplayable where they are
+/// already queued. Nothing is deleted. Ids of tracks that are missing or
+/// already hidden are ignored. Returns how many were hidden.
+///
+/// The health refresh is what tells the playlist, so it runs on
+/// `spawn_blocking` for the reason `purge_tracks` gives.
+#[tauri::command(rename_all = "camelCase")]
+async fn hide_tracks(state: State<'_, AppState>, ids: Vec<i64>) -> Result<usize, String> {
+    let db = Arc::clone(&state.db);
+    let health = Arc::clone(&state.health);
+    tauri::async_runtime::spawn_blocking(move || {
+        let hidden = db.hide_tracks(&ids, now_ms()).map_err(err)?;
+        health.refresh();
+        Ok(hidden.len())
+    })
+    .await
+    .map_err(err)?
+}
+
+/// Put the chosen hidden tracks back in the library. Returns how many were
+/// restored.
+#[tauri::command(rename_all = "camelCase")]
+async fn unhide_tracks(state: State<'_, AppState>, ids: Vec<i64>) -> Result<usize, String> {
+    let db = Arc::clone(&state.db);
+    let health = Arc::clone(&state.health);
+    tauri::async_runtime::spawn_blocking(move || {
+        let restored = db.unhide_tracks(&ids).map_err(err)?;
+        health.refresh();
+        Ok(restored.len())
+    })
+    .await
+    .map_err(err)?
+}
+
 /// Apply the current automatic-analysis thresholds to material already in the
 /// library. Changing a threshold never re-analyses anything by itself, so this
 /// is how an operator makes a new one reach what they already have.
@@ -1852,6 +1887,8 @@ pub fn run() {
             cancel_analysis,
             get_scan_status,
             purge_tracks,
+            hide_tracks,
+            unhide_tracks,
             recalculate_auto_cue,
             library_health,
             library_check_now,

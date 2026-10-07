@@ -111,6 +111,7 @@ const DEFAULT_TUNING: TuningConfig = {
 export const EMPTY_HEALTH: HealthReport = {
   missing: [],
   missingDismissed: false,
+  hidden: [],
   exact: [],
   possible: [],
   unhashed: 0,
@@ -318,6 +319,10 @@ export class AppState {
    */
   missingSince = $derived(
     new Map(this.health.missing.map((t) => [t.id, t.missingSince])),
+  );
+  /** When each hidden track was hidden, keyed by id; badges the same rows. */
+  hiddenAt = $derived(
+    new Map(this.health.hidden.map((t) => [t.id, t.hiddenAt])),
   );
   /** Findings that want attention; badges the Settings button. */
   healthAttention = $derived(attentionOf(this.health));
@@ -1837,6 +1842,30 @@ export class AppState {
       await api.purgeTracks(ids);
     } catch (err) {
       logger.error("Purge failed:", err);
+    }
+    await Promise.all([this.loadStats(), this.search()]);
+  }
+
+  /**
+   * Hide the chosen tracks from the library. They leave the selection with
+   * the rows they were picked from; the backend sends a fresh health report.
+   */
+  async hideTracks(ids: number[]): Promise<void> {
+    try {
+      await api.hideTracks(ids);
+      this.selectedIds = without(this.selectedIds, ids);
+    } catch (err) {
+      logger.error("Hide failed:", err);
+    }
+    await Promise.all([this.loadStats(), this.search()]);
+  }
+
+  /** Put the chosen hidden tracks back in the library. */
+  async unhideTracks(ids: number[]): Promise<void> {
+    try {
+      await api.unhideTracks(ids);
+    } catch (err) {
+      logger.error("Restore failed:", err);
     }
     await Promise.all([this.loadStats(), this.search()]);
   }

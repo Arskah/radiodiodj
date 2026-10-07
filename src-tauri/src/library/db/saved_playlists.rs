@@ -16,7 +16,8 @@ pub struct SavedPlaylistSummary {
     pub id: i64,
     pub name: String,
     pub entries: i64,
-    /// Entries that cannot air: unmatched, or bound to a missing track.
+    /// Entries that cannot air: unmatched, or bound to a missing or hidden
+    /// track.
     pub missing: i64,
 }
 
@@ -110,7 +111,7 @@ impl SavedPlaylistFile {
 /// such tracks are told apart by the entry's duration, then by id.
 fn bind(conn: &Connection) -> Result<usize> {
     const MATCH: &str = "FROM tracks t \
-         WHERE t.fingerprint = saved_playlist_entries.fingerprint AND t.missing_since IS NULL";
+         WHERE t.fingerprint = saved_playlist_entries.fingerprint AND t.missing_since IS NULL AND t.hidden_at IS NULL";
     let sql = format!(
         "UPDATE saved_playlist_entries SET track_id = ( \
            SELECT t.id {MATCH} \
@@ -211,7 +212,8 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT p.id, p.name, COUNT(e.id), \
                     COALESCE(SUM(e.id IS NOT NULL \
-                                 AND (t.id IS NULL OR t.missing_since IS NOT NULL)), 0) \
+                                 AND (t.id IS NULL OR t.missing_since IS NOT NULL \
+                                      OR t.hidden_at IS NOT NULL)), 0) \
              FROM saved_playlists p \
              LEFT JOIN saved_playlist_entries e ON e.playlist_id = p.id \
              LEFT JOIN tracks t ON t.id = e.track_id \
@@ -352,13 +354,13 @@ impl Db {
 
     /// Bind an entry to the track the operator chose for it. The entry's
     /// snapshot is rewritten from that track, so it reads from then on as one
-    /// added from the library. A missing track is refused.
+    /// added from the library. A missing or hidden track is refused.
     pub fn bind_saved_entry(&self, entry_id: i64, track_id: i64, now_ms: i64) -> Result<()> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         let playlist_id: i64 = tx
             .query_row(
-                "UPDATE saved_playlist_entries                  SET track_id = t.id,                      fingerprint = COALESCE(t.fingerprint, saved_playlist_entries.fingerprint),                      artist = t.artist, title = t.title, duration = t.duration,                      content_type = t.content_type                  FROM tracks t                  WHERE saved_playlist_entries.id = ?1 AND t.id = ?2 AND t.missing_since IS NULL                  RETURNING playlist_id",
+                "UPDATE saved_playlist_entries                  SET track_id = t.id,                      fingerprint = COALESCE(t.fingerprint, saved_playlist_entries.fingerprint),                      artist = t.artist, title = t.title, duration = t.duration,                      content_type = t.content_type                  FROM tracks t                  WHERE saved_playlist_entries.id = ?1 AND t.id = ?2 AND t.missing_since IS NULL AND t.hidden_at IS NULL                  RETURNING playlist_id",
                 params![entry_id, track_id],
                 |r| r.get(0),
             )
@@ -499,7 +501,7 @@ impl Db {
             "SELECT p.name, ( \
                SELECT COUNT(DISTINCT t.id) \
                FROM saved_playlist_entries e JOIN tracks t ON t.id = e.track_id \
-               WHERE e.playlist_id = p.id AND t.missing_since IS NULL \
+               WHERE e.playlist_id = p.id AND t.missing_since IS NULL AND t.hidden_at IS NULL \
                  AND t.content_type = 'music') \
              FROM saved_playlists p WHERE p.id = ?",
             [id],
@@ -893,6 +895,27 @@ mod tests {
         assert!(db.bind_saved_entry(999, ids[0], 2).is_err());
         let list = db.saved_playlist(p).unwrap().unwrap();
         assert_eq!(list.entries[0].track.as_ref().map(|t| t.id), Some(ids[0]));
+    }
+
+    /// A hidden track is as unable to air as a missing one: counted with
+    /// them, out of the auto-playlist pool, and not something to bind to.
+    #[test]
+    fn a_hidden_track_counts_as_missing_and_leaves_the_pool() {
+        let (db, ids) = db_with_tracks(&["A", "B"]);
+        let p = db.create_saved_playlist("Show", &ids[..1], 1).unwrap().id;
+        let e = entry_ids_of(&db, p);
+        assert_eq!(db.saved_playlist_pool(p).unwrap().unwrap().1, 1);
+
+        db.hide_tracks(&ids, 2).unwrap();
+
+        assert_eq!(db.saved_playlists().unwrap()[0].missing, 1);
+        assert_eq!(db.saved_playlist_pool(p).unwrap().unwrap().1, 0);
+        assert!(db.bind_saved_entry(e[0], ids[1], 3).is_err());
+
+        db.unhide_tracks(&ids).unwrap();
+
+        assert_eq!(db.saved_playlists().unwrap()[0].missing, 0);
+        assert_eq!(db.saved_playlist_pool(p).unwrap().unwrap().1, 1);
     }
 
     #[test]

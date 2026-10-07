@@ -42,10 +42,12 @@ struct HandoverEvent {
     to: i64,
 }
 
-/// The part of the library health report the playlist needs.
+/// The part of the library health report the playlist needs: the tracks it
+/// must not air, whether their file is gone or an admin hid them.
 #[derive(serde::Deserialize)]
 struct MissingIds {
     missing: Vec<IdOnly>,
+    hidden: Vec<IdOnly>,
 }
 
 #[derive(serde::Deserialize)]
@@ -316,7 +318,12 @@ impl PlaylistService {
             let Ok(report) = serde_json::from_str::<MissingIds>(event.payload()) else {
                 return;
             };
-            let ids = report.missing.into_iter().map(|t| t.id).collect();
+            let ids = report
+                .missing
+                .into_iter()
+                .chain(report.hidden)
+                .map(|t| t.id)
+                .collect();
             Inner::apply(&missing, |p, r| p.on_missing_state(ids, r));
         });
 
@@ -589,7 +596,10 @@ impl PlaylistService {
     pub fn play_index(&self, index: usize) {
         self.queue(move |inner| {
             if inner.playlist.lock().is_missing_at(index) {
-                log::warn!("playlist: item {} cannot air — its file is missing", index);
+                log::warn!(
+                    "playlist: item {} cannot air — its track is missing or hidden",
+                    index
+                );
                 return;
             }
             Inner::apply(inner, move |p, r| p.play_index(index, r));

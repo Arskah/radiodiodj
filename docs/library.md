@@ -363,6 +363,11 @@ file reappears, at the same path or, by fingerprint, at a new one. See
 [track-identity.md](./track-identity.md#missing-not-deleted) and
 [library-health.md](./library-health.md#missing-tracks).
 
+An admin can also **hide** a track whose file should stay where it is, such as a
+copy that is on a compilation too: _Hide from library_ on its row. It leaves the
+same places a missing track does and keeps everything on it, and is put back from
+_Settings → Library_. See [library-health.md](./library-health.md#hidden-tracks).
+
 ## The library panel
 
 The library panel shows one library at a time: _Music_,
@@ -579,7 +584,7 @@ _Auto source_ on an open saved playlist. Jingles and commercials still come from
 their libraries. See
 [saved-playlists.md](./saved-playlists.md#as-the-auto-playlists-source).
 
-Tracks already in the playlist, and missing tracks, are never picked. The cadences and
+Tracks already in the playlist, and missing or hidden tracks, are never picked. The cadences and
 buffer sizes are under _Settings → Advanced_. _+ Jingle_ and _+ Comm_ in the
 playlist add one filler by the same rules.
 

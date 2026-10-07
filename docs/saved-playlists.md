@@ -98,6 +98,11 @@ its badge, as any other add of a missing track is. The second also heals itself:
 a scan that reattaches the track clears `missing_since` and the entry is
 playable again with no work here.
 
+An entry bound to a **hidden track** behaves as one bound to a missing track
+does — counted as missing, never picked, queued with a badge, offered _Find in
+library…_ — and is playable again when the track is restored. See
+[library-health.md](./library-health.md#hidden-tracks).
+
 ### Binding
 
 `Db::bind_saved_entries` is one idempotent statement: every entry with no

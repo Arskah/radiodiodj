@@ -16,6 +16,7 @@ import type {
 
 const empty: HealthReport = {
   missing: [],
+  hidden: [],
   missingDismissed: false,
   exact: [],
   possible: [],

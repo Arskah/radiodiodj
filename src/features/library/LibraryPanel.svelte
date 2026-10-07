@@ -261,6 +261,16 @@
           onselect: () => app.saveSelection(),
           separated: true,
         },
+        ...(app.isAdmin
+          ? [
+              {
+                label: `Hide ${selectedCount} from library`,
+                icon: "visibility_off",
+                onselect: () => void app.hideTracks([...app.selectedIds]),
+                separated: true,
+              },
+            ]
+          : []),
       ];
     }
     const items: MenuItem[] = [
@@ -306,6 +316,13 @@
       onselect: () => app.revealTrack(track),
       separated: true,
     });
+    if (app.isAdmin) {
+      items.push({
+        label: "Hide from library",
+        icon: "visibility_off",
+        onselect: () => void app.hideTracks([track.id]),
+      });
+    }
     items.push({
       label: "Play now (on air)",
       icon: "play_arrow",

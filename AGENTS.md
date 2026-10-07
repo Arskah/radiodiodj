@@ -295,7 +295,11 @@ Never invalidate a measurement on the mtime alone. See
 unreadable tracks, the latest library check), re-emitted as `library-health`
 after scans, the analysis pass, metadata edits, path changes and purges. The app
 never deletes audio files. Dismissals silence the badge only while the finding
-is unchanged. The playlist engine takes missing ids from the same event. Refreshes run
+is unchanged. The playlist engine takes missing ids from the same event, and
+hidden ids with them: `tracks.hidden_at` is an admin's _Hide from library_, a
+second mark beside `missing_since` and never a substitute for it — the scan
+reads only `missing_since`, so a hidden row still owns its path, while every
+query that offers tracks to an operator or the auto-playlist wants both `NULL`. Refreshes run
 concurrently, so each store stamps a sequence under the report lock and an emit
 that lost the race is dropped — the last event delivered is the last report
 stored, never an older one arriving late. The
