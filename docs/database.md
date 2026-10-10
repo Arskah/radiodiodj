@@ -84,6 +84,12 @@ The library lives in SQLite (`radiodiodj.db`, WAL mode) and is opened by
   UPDATE_SCHEMA=1 cargo test --manifest-path src-tauri/Cargo.toml schema_matches_snapshot
   ```
 
+- **A new `tracks` column is claimed by a sync trigger.** The triggers in
+  `library/db/sync.rs` name the columns that travel in a shared library, and a
+  column none of them names would never reach another machine. The step that
+  adds one drops and recreates the trigger whose group it belongs to, or lists
+  it as local in `every_tracks_column_is_claimed`, which fails until one or the
+  other is done. See [shared-library.md](./shared-library.md#change-capture).
 - **Seed the new version.** Append an entry to `SEEDS` in the `db.rs` tests.
   `every_step_preserves_seeded_rows` migrates a row written at every version to
   the latest one and checks that the operator work on it survives.

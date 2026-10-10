@@ -18,6 +18,7 @@ use crate::library::roots::{Roots, NO_ROOT};
 use crate::library::scanner;
 
 mod saved_playlists;
+mod sync;
 pub use saved_playlists::{SavedPlaylist, SavedPlaylistFile, SavedPlaylistSummary};
 
 /// `Default` exists for test fixtures, which would otherwise have to name every
@@ -3058,6 +3059,7 @@ const MIGRATION_STEPS: &[M] = &[
     M::up(SAVED_PLAYLISTS),
     M::up(LIBRARY_ROOTS),
     M::up(HIDDEN_TRACKS),
+    M::up(sync::CHANGE_CAPTURE),
 ];
 const MIGRATIONS: Migrations = Migrations::from_slice(MIGRATION_STEPS);
 
@@ -3951,6 +3953,18 @@ mod tests {
                  SELECT id, 1000, artist, title, duration FROM tracks; \
                  INSERT INTO library_roots (content_type) VALUES ('music'); \
                  UPDATE tracks SET root_id = 1, path = 'seed.mp3'",
+            )
+            .unwrap();
+        },
+        |conn| {
+            seed_track(conn);
+            seed_dismissal(conn);
+            conn.execute_batch(
+                "UPDATE tracks SET edited_fields = 1; \
+                 INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
+                 SELECT id, 1000, artist, title, duration FROM tracks; \
+                 INSERT INTO saved_playlists (name, created_at, updated_at) \
+                 VALUES ('Show', 1, 1)",
             )
             .unwrap();
         },
