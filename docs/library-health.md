@@ -51,13 +51,13 @@ across _Advanced_.
 │   [Check now]                                                │
 │                                                              │
 │ Unreadable tracks (1)                                        │
-│   Title / Artist   …/bad.mp3   fingerprint: probe: …      F  │
+│   Title / Artist — Album  …/bad.mp3  fingerprint: probe: … F │
 │                                                              │
 │ Bad durations (1)                                            │
-│   Title / Artist  …/vbr.mp3  tag says 24:37, audio is 3:58 F │
+│   Title / Artist — Album  …/vbr.mp3  tag 24:37, audio 3:58 F │
 │                                                              │
 │ Missing tracks (5)                                [Dismiss]  │
-│   ☐ Title / Artist   …/old/path.mp3   2 d ago   ◇ ▶12  ≡     │
+│   ☐ Title / Artist — Album  …/old/path.mp3  2 d ago ◇ ▶12 ≡  │
 │   ☐ ▸ No longer under a library path (812)                   │
 │   [Purge selected (1)…] [Purge all…]                         │
 │                                                              │
@@ -68,8 +68,8 @@ across _Advanced_.
 │   Still checking 140 tracks for exact copies…                │
 │   Exact copies (2)                                           │
 │   ▾ Title — Artist   2 copies                     [Dismiss]  │
-│       Title / Artist  /a/Title.mp3  music  3:34  ▶12 F E C H │
-│       Title / Artist  /b/Title.mp3  music  3:34  ▶0  F E C H │
+│     Title / Artist — Album  /a/Title.mp3  music 3:34 ▶12 FECH│
+│     Title / Artist — Album  /b/Title.mp3  music 3:34 ▶0  FECH│
 │   Possible duplicates (1)                                    │
 │   ▸ Title — Artist   2 copies   Dismissed   [Undo dismiss]   │
 └──────────────────────────────────────────────────────────────┘
@@ -475,8 +475,9 @@ this file_. Rename the file on the server, then _Retry_.
 
 ```text
 HealthReport
-  missing          [MissingTrack]    id, title, artist, path, missingSince,
-                                     playCount, hasCuePoints, outsideRoots
+  missing          [MissingTrack]    id, title, artist, album, path,
+                                     missingSince, playCount, hasCuePoints,
+                                     outsideRoots
   missingDismissed bool
   hidden           [HiddenTrack]     id, title, artist, album, path,
                                      contentType, hiddenAt
@@ -492,7 +493,8 @@ HealthReport
                                      unreachable, partial
   checkDismissed   bool
   checking         bool              a library check is running now
-  tagWriteFailures [TagWriteFailure] id, title, artist, path, error, at
+  tagWriteFailures [TagWriteFailure] id, title, artist, album, path, error,
+                                     at
 ```
 
 The renderer loads it with `library_health` and replaces it on every

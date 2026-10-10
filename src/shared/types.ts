@@ -269,6 +269,7 @@ export interface MissingTrack {
   id: number;
   title: string;
   artist: string;
+  album: string;
   /** Where the file was last seen. */
   path: string;
   /** Unix ms. */
@@ -365,6 +366,7 @@ export interface TagWriteFailure {
   id: number;
   title: string;
   artist: string;
+  album: string;
   path: string;
   error: string;
   /** Unix ms. */
