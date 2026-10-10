@@ -87,7 +87,7 @@ A present Track sharing its **Fingerprint** with another present Track. Starts a
 _Avoid_: Copy, clone, twin
 
 **Possible duplicate**:
-Present music Tracks with the same normalised artist and title, or one typo apart in either, but no shared **Fingerprint**. The album is not compared. A notice for the operator, not a match.
+Present music Tracks with the same normalised artist and title, or one typo apart in either, but no shared **Fingerprint**. A notice for the operator, not a match.
 _Avoid_: Near-duplicate, fuzzy match
 
 **Library check**:
