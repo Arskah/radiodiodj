@@ -145,6 +145,7 @@ pub struct MissingRow {
     pub id: i64,
     pub title: String,
     pub artist: String,
+    pub album: String,
     pub path: String,
     pub missing_since: i64,
     pub play_count: i64,
@@ -2019,7 +2020,8 @@ impl Db {
             "SELECT id, title, artist, path, missing_since, play_count, root_id, \
                     (COALESCE(fade_in_ms, fade_out_ms) IS NOT NULL \
                      OR (auto_cue_state = 'manual' \
-                         AND COALESCE(cue_in_ms, cue_out_ms, next_start_ms) IS NOT NULL)) \
+                         AND COALESCE(cue_in_ms, cue_out_ms, next_start_ms) IS NOT NULL)), \
+                    album \
              FROM tracks WHERE missing_since IS NOT NULL \
              ORDER BY missing_since DESC, id DESC",
         )?;
@@ -2028,6 +2030,7 @@ impl Db {
                 id: r.get(0)?,
                 title: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
                 artist: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                album: r.get::<_, Option<String>>(8)?.unwrap_or_default(),
                 path: row_path(r, &roots)?,
                 missing_since: r.get(4)?,
                 play_count: r.get(5)?,

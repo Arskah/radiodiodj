@@ -3088,6 +3088,7 @@ describe("AppState library health", () => {
     id,
     title: `t${id}`,
     artist: `a${id}`,
+    album: "",
     path: `/m/${id}.mp3`,
     missingSince,
     playCount: 0,

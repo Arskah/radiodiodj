@@ -52,6 +52,7 @@ pub struct MissingTrack {
     pub id: i64,
     pub title: String,
     pub artist: String,
+    pub album: String,
     /// Where the file was last seen.
     pub path: String,
     pub missing_since: i64,
@@ -367,6 +368,7 @@ pub fn build(db: &Db, roots: &[ScanRoot]) -> Result<HealthReport> {
             id: row.id,
             title: row.title,
             artist: row.artist,
+            album: row.album,
             path: row.path,
             missing_since: row.missing_since,
             play_count: row.play_count,
@@ -1119,6 +1121,7 @@ mod tests {
             listed,
             vec![(new, 20, false, 0, true), (old, 10, true, 1, false)]
         );
+        assert_eq!(report.missing[0].album, "Album");
     }
 
     fn dismiss(db: &Db, kind: FindingKind, key: &str, value: &str) {

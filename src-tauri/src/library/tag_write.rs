@@ -43,6 +43,7 @@ pub struct TagWriteFailure {
     pub id: i64,
     pub title: String,
     pub artist: String,
+    pub album: String,
     pub path: String,
     pub error: String,
     /// Unix ms.
@@ -162,6 +163,7 @@ impl TagWriter {
                         id,
                         title: values.title.clone().unwrap_or_default(),
                         artist: values.artist.clone().unwrap_or_default(),
+                        album: values.album.clone().unwrap_or_default(),
                         path: values.path.clone(),
                         error: format!("{e:#}"),
                         at: now_ms(),
