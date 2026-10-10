@@ -433,7 +433,9 @@ pub fn build(db: &Db, roots: &[ScanRoot]) -> Result<HealthReport> {
     }
 
     dismissed.retain(|id, _| !live.contains(id));
-    if !dismissed.is_empty() {
+    // Not on a studio: its copy may be behind, and the deletion would travel
+    // to an owner whose finding is still there.
+    if !dismissed.is_empty() && !db.is_replica()? {
         let stale: Vec<(String, String)> = dismissed.into_keys().collect();
         db.delete_dismissals(&stale)?;
     }

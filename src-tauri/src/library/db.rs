@@ -17,10 +17,12 @@ use crate::library::auto_cue::{self, Analysed, Thresholds};
 use crate::library::roots::{Roots, NO_ROOT};
 use crate::library::scanner;
 
+mod operator;
 mod saved_playlists;
 mod sync;
+pub use operator::KINDS as OPERATOR_KINDS;
 pub use saved_playlists::{SavedPlaylist, SavedPlaylistFile, SavedPlaylistSummary};
-pub use sync::{Incoming, Outgoing};
+pub use sync::{Applied, Incoming, Outgoing};
 
 /// `Default` exists for test fixtures, which would otherwise have to name every
 /// column each time one is added. Nothing in the app builds a `Track` that way —
@@ -3088,6 +3090,7 @@ const MIGRATION_STEPS: &[M] = &[
     M::up(HIDDEN_TRACKS),
     M::up(sync::CHANGE_CAPTURE),
     M::up(sync::REPLICA),
+    M::up(sync::PARKED),
 ];
 const MIGRATIONS: Migrations = Migrations::from_slice(MIGRATION_STEPS);
 
@@ -3986,6 +3989,18 @@ mod tests {
                  SELECT id, 1000, artist, title, duration FROM tracks; \
                  INSERT INTO library_roots (content_type) VALUES ('music'); \
                  UPDATE tracks SET root_id = 1, path = 'seed.mp3'",
+            )
+            .unwrap();
+        },
+        |conn| {
+            seed_track(conn);
+            seed_dismissal(conn);
+            conn.execute_batch(
+                "UPDATE tracks SET edited_fields = 1; \
+                 INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
+                 SELECT id, 1000, artist, title, duration FROM tracks; \
+                 INSERT INTO saved_playlists (name, created_at, updated_at) \
+                 VALUES ('Show', 1, 1)",
             )
             .unwrap();
         },

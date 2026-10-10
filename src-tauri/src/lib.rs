@@ -919,6 +919,12 @@ async fn update_track_metadata(
     let waveform = Arc::clone(&state.waveform);
     // Writing tags to the file and re-deriving cue points are the owner's.
     let owns_files = !state.hub.is_studio();
+    // So is which library a track belongs to: it follows the library path,
+    // and the next scan there would put it back.
+    let updates = TrackMetadataUpdate {
+        content_type: updates.content_type.filter(|_| owns_files),
+        ..updates
+    };
     blocking(move || {
         // Read before the write, so the kick below fires on a class that
         // actually moved rather than on every save that carries the field.
@@ -1940,12 +1946,36 @@ pub fn run() {
             }
             let updater = Updater::new(app.handle().clone(), Arc::clone(&config));
             updater.start();
+            // What another machine changed has copies here that nothing else
+            // would refresh: the cue points the playlist holds, the list of
+            // saved playlists, and — on the owner — the files that edits are
+            // written to.
+            let on_applied = {
+                let handle = app.handle().clone();
+                let db = Arc::clone(&db);
+                let playlist = Arc::clone(&playlist);
+                let tag_writer = Arc::clone(&tag_writer);
+                Box::new(move |applied: &library::db::Applied| {
+                    if applied.cue_points {
+                        playlist.reload_cue_points();
+                    }
+                    if applied.playlists {
+                        saved_playlists::emit(&handle, &db);
+                    }
+                    if !studio {
+                        for id in &applied.edited_tracks {
+                            tag_writer.request(*id);
+                        }
+                    }
+                })
+            };
             let hub = hub::Service::start(
                 app.handle().clone(),
                 role,
                 Arc::clone(&db),
                 &config,
                 Arc::clone(&health),
+                on_applied,
             );
             app.manage(AppState {
                 db,

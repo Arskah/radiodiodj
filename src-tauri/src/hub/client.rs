@@ -331,12 +331,21 @@ impl Hub {
         Ok(())
     }
 
-    /// Up to `limit` rows after revision `after`, oldest first.
-    pub async fn fetch(&self, after: i64, limit: i64) -> Result<Vec<Incoming>> {
+    /// Up to `limit` rows after revision `after`, oldest first. `skip` leaves
+    /// out one machine's own rows: an owner would otherwise be handed back the
+    /// whole library it published.
+    pub async fn fetch(
+        &self,
+        after: i64,
+        limit: i64,
+        skip: Option<&Machine>,
+    ) -> Result<Vec<Incoming>> {
+        let skip = skip.map(|m| m.id.as_str());
         let rows = timed(self.client.query(
-            "SELECT kind, key, rev, deleted, doc, waveform, levels FROM hub_rows \
-             WHERE rev > $1 ORDER BY rev LIMIT $2",
-            &[&after, &limit],
+            "SELECT kind, key, rev, deleted, doc, waveform, levels, edited_at, machine \
+             FROM hub_rows \
+             WHERE rev > $1 AND ($3::text IS NULL OR machine <> $3) ORDER BY rev LIMIT $2",
+            &[&after, &limit, &skip],
         ))
         .await?;
         Ok(rows
@@ -349,20 +358,40 @@ impl Hub {
                 doc: r.get(4),
                 waveform: r.get(5),
                 levels: r.get(6),
+                edited_at: r.get(7),
+                machine: r.get(8),
             })
             .collect())
     }
 
-    /// Publish the owner's groups: all of them, or none if this machine is no
-    /// longer the owner.
-    pub async fn publish(&mut self, machine: &Machine, groups: &[Outgoing]) -> Result<()> {
+    /// Send this machine's groups, all of them or none.
+    ///
+    /// The library's paths and tracks are the owner's: they are written as
+    /// they come, and only while this machine holds the role. Everything else
+    /// is anyone's, and is written only over an earlier save — the later one
+    /// wins, by the saving machines' clocks, with the machine id to settle a
+    /// tie. A group that loses is not an error; the winner comes back with the
+    /// next pull.
+    pub async fn send(
+        &mut self,
+        machine: &Machine,
+        groups: &[Outgoing],
+        owner: bool,
+    ) -> Result<()> {
         let tx = timed(self.client.transaction()).await?;
         timed(tx.execute("SELECT pg_advisory_xact_lock($1)", &[&STATION_LOCK])).await?;
-        let owner: Option<String> = timed(tx.query_opt("SELECT owner FROM hub_station", &[]))
-            .await?
-            .and_then(|r| r.get(0));
-        if owner.as_deref() != Some(machine.id.as_str()) {
-            return Err(anyhow!("another machine has taken the owner role"));
+        if owner {
+            let holder: Option<String> = timed(tx.query_opt("SELECT owner FROM hub_station", &[]))
+                .await?
+                .and_then(|r| r.get(0));
+            if holder.as_deref() != Some(machine.id.as_str()) {
+                return Err(anyhow!("another machine has taken the owner role"));
+            }
+        } else if groups
+            .iter()
+            .any(|g| OWNER_KINDS.contains(&g.kind.as_str()))
+        {
+            bail!("only the library owner publishes paths and tracks");
         }
         let upsert = timed(tx.prepare(
             "INSERT INTO hub_rows (kind, key, rev, machine, edited_at, deleted, doc, waveform, levels) \
@@ -370,7 +399,17 @@ impl Hub {
              ON CONFLICT (kind, key) DO UPDATE SET \
                rev = excluded.rev, machine = excluded.machine, edited_at = excluded.edited_at, \
                deleted = excluded.deleted, doc = excluded.doc, waveform = excluded.waveform, \
-               levels = excluded.levels",
+               levels = excluded.levels \
+             WHERE hub_rows.kind IN ('root', 'track') \
+                OR (excluded.edited_at, excluded.machine) > (hub_rows.edited_at, hub_rows.machine)",
+        ))
+        .await?;
+        // What was part of a purged track goes with it: nothing could apply
+        // it again, and a studio would park it forever.
+        let forget = timed(tx.prepare(
+            "DELETE FROM hub_rows \
+             WHERE (kind IN ('cue', 'hidden') AND key = $1) \
+                OR (kind = 'edit' AND key LIKE $1 || ':%')",
         ))
         .await?;
         for g in groups {
@@ -388,10 +427,16 @@ impl Hub {
                 ],
             ))
             .await?;
+            if g.kind == "track" && g.deleted {
+                timed(tx.execute(&forget, &[&g.key])).await?;
+            }
         }
         timed(tx.commit()).await
     }
 }
+
+/// The kinds only the owner writes.
+const OWNER_KINDS: &[&str] = &["root", "track"];
 
 /// One hub call, bounded: a hub that stops answering is an error, not a wait.
 async fn timed<T, E>(call: impl std::future::Future<Output = Result<T, E>>) -> Result<T>

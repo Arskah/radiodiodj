@@ -1,7 +1,10 @@
 //! The hub's tables. See `docs/shared-library.md#the-hub`.
 
 /// What this build speaks. A hub on a later protocol is left alone.
-pub const PROTOCOL: i32 = 1;
+///
+/// 2: operator work travels. A build on 1 would step over those rows and
+/// never see them again, so it has to stop instead.
+pub const PROTOCOL: i32 = 2;
 
 /// The transaction-level advisory lock every hub writer takes, so revisions
 /// are handed out in commit order.

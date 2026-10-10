@@ -320,7 +320,9 @@ mark what changed in `sync_rows`, per **group** rather than per row, and only
 while `sync_local.capture` is on — off for a standalone library. A **studio**
 never scans or decodes: its database is a copy filled by `Db::apply` under the
 owner's track ids, which keeps a column this machine edited and a trio it cued
-by hand. The connection to the hub is encrypted and its certificate checked
+by hand. Operator work travels both ways and the later save wins, compared
+the same way on every machine and in the hub — `(edited_at, machine)` — so no
+machine has to be asked. The connection to the hub is encrypted and its certificate checked
 unless an operator allowed otherwise — TLS is tried first even then, so
 plaintext is never a default and never a fallback from a bad certificate. The
 hub shares

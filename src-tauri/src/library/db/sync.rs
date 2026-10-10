@@ -7,7 +7,7 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 
 use std::path::Path;
 
-use super::{placeholders, Db, EditedFields, Opened, ID_CHUNK};
+use super::{operator, placeholders, Db, EditedFields, Opened, ID_CHUNK};
 
 /// Step 17: the change log, and the triggers that write it.
 ///
@@ -328,12 +328,64 @@ END;
 pub(super) const REPLICA: &str =
     "ALTER TABLE sync_local ADD COLUMN replica INTEGER NOT NULL DEFAULT 0;";
 
+/// Step 19: operator work that arrived before its track did. The hub holds
+/// each group as it reads now, in the order it last changed, so a cue set can
+/// come a page ahead of a track that was updated after it. It waits here.
+pub(super) const PARKED: &str = "
+CREATE TABLE sync_parked (
+  kind      TEXT NOT NULL,
+  key       TEXT NOT NULL,
+  track_id  INTEGER NOT NULL,
+  edited_at INTEGER NOT NULL,
+  machine   TEXT NOT NULL,
+  deleted   INTEGER NOT NULL,
+  doc       TEXT,
+  PRIMARY KEY (kind, key)
+) WITHOUT ROWID;
+CREATE INDEX sync_parked_track ON sync_parked(track_id);
+";
+
+/// What applying a page changed here, for whoever keeps copies of it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Applied {
+    /// Groups that changed something.
+    pub changed: usize,
+    /// Tracks whose tag columns another machine edited or reverted.
+    pub edited_tracks: Vec<i64>,
+    /// Whether a cue set moved.
+    pub cue_points: bool,
+    /// Whether a saved playlist was written or deleted.
+    pub playlists: bool,
+}
+
+impl Applied {
+    pub fn absorb(&mut self, other: Applied) {
+        self.changed += other.changed;
+        self.edited_tracks.extend(other.edited_tracks);
+        self.cue_points |= other.cue_points;
+        self.playlists |= other.playlists;
+    }
+
+    fn note(&mut self, kind: &str, key: &str) {
+        self.changed += 1;
+        match kind {
+            "cue" => self.cue_points = true,
+            "playlist" => self.playlists = true,
+            "edit" => self.edited_tracks.extend(operator::track_of(kind, key)),
+            _ => {}
+        }
+    }
+}
+
 /// One group as the hub holds it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Incoming {
     pub kind: String,
     pub key: String,
     pub rev: i64,
+    /// When the machine that wrote it changed it, by that machine's clock.
+    pub edited_at: i64,
+    pub machine: String,
     pub deleted: bool,
     pub doc: Option<serde_json::Value>,
     pub waveform: Option<Vec<u8>>,
@@ -367,7 +419,7 @@ const NOT_IN_A_TRACK_DOCUMENT: &[&str] = &[
 ];
 
 /// The tag columns an operator can edit, each with its `edited_fields` bit.
-const EDITABLE: [(&str, i64); 12] = [
+pub(super) const EDITABLE: [(&str, i64); 12] = [
     ("title", EditedFields::TITLE),
     ("artist", EditedFields::ARTIST),
     ("album", EditedFields::ALBUM),
@@ -428,7 +480,8 @@ impl Db {
         let conn = self.conn.lock();
         let sql = format!(
             "SELECT kind, key, edited_at, deleted FROM sync_rows \
-             WHERE pending AND kind IN ({}) ORDER BY kind, key LIMIT ?",
+             WHERE pending AND kind IN ({}) \
+             ORDER BY kind NOT IN ('root', 'track'), kind, key LIMIT ?",
             placeholders(kinds.len())
         );
         let waiting = {
@@ -453,12 +506,40 @@ impl Db {
         waiting
             .into_iter()
             .map(|group| match (group.deleted, group.kind.as_str()) {
-                (true, _) => Ok(group),
                 (false, "root") => root_document(&conn, group),
                 (false, "track") => track_document(&conn, group),
-                (false, kind) => anyhow::bail!("no document is defined for a {kind} group"),
+                // A reverted edit is a tombstone that still says something.
+                (deleted, kind) if !deleted || kind == "edit" => {
+                    Ok(match operator::document(&conn, &group)? {
+                        Some(doc) => Outgoing {
+                            doc: Some(doc),
+                            ..group
+                        },
+                        None => gone(group),
+                    })
+                }
+                _ => Ok(group),
             })
             .collect()
+    }
+
+    /// Whether anything of `kinds` is waiting to be sent.
+    pub fn has_outgoing(&self, kinds: &[&str]) -> Result<bool> {
+        let conn = self.conn.lock();
+        let sql = format!(
+            "SELECT EXISTS (SELECT 1 FROM sync_rows WHERE pending AND kind IN ({}))",
+            placeholders(kinds.len())
+        );
+        Ok(conn.query_row(&sql, params_from_iter(kinds.iter()), |r| r.get(0))?)
+    }
+
+    /// Give what is waiting the stamp `at`, as if it had been saved then.
+    #[cfg(test)]
+    pub fn restamp_pending(&self, at: i64) {
+        self.conn
+            .lock()
+            .execute("UPDATE sync_rows SET edited_at = ? WHERE pending", [at])
+            .unwrap();
     }
 
     /// Note that `groups` reached the hub. One changed again since it was read
@@ -565,12 +646,12 @@ impl Db {
     }
 
     /// Apply one page of the hub's rows, in revision order, and move the
-    /// cursor past it — together, so a page is never half taken. Returns how
-    /// many groups changed something here. See
+    /// cursor past it — together, so a page is never half taken. `me` is this
+    /// machine, which settles a tie between two stamps. See
     /// `docs/shared-library.md#applying-a-pull`.
-    pub fn apply(&self, page: &[Incoming], now_ms: i64) -> Result<usize> {
+    pub fn apply(&self, page: &[Incoming], me: &str, now_ms: i64) -> Result<Applied> {
         let Some(last) = page.iter().map(|g| g.rev).max() else {
-            return Ok(0);
+            return Ok(Applied::default());
         };
         let mut conn = self.conn.lock();
         let columns: Vec<String> = {
@@ -580,47 +661,163 @@ impl Db {
         };
         let tx = conn.transaction()?;
         tx.execute("UPDATE sync_local SET applying = 1", [])?;
-        let mut applied = 0;
+        let mut applied = Applied::default();
         let mut purged = Vec::new();
         for group in page {
-            let Ok(id) = group.key.parse::<i64>() else {
-                continue;
-            };
-            match (group.kind.as_str(), group.deleted, &group.doc) {
-                ("root", true, _) => {
-                    applied += tx.execute("DELETE FROM library_roots WHERE id = ?", [id])?;
+            let id = group.key.parse::<i64>().ok();
+            match (group.kind.as_str(), group.deleted, &group.doc, id) {
+                ("root", true, _, Some(id)) => {
+                    applied.changed +=
+                        tx.execute("DELETE FROM library_roots WHERE id = ?", [id])?;
                 }
-                ("root", false, Some(doc)) => {
+                ("root", false, Some(doc), Some(id)) => {
                     let Some(content_type) = doc.get("content_type").and_then(|v| v.as_str())
                     else {
                         continue;
                     };
-                    applied += tx.execute(
+                    applied.changed += tx.execute(
                         "INSERT INTO library_roots (id, content_type) VALUES (?1, ?2) \
                          ON CONFLICT (id) DO UPDATE SET content_type = excluded.content_type",
                         params![id, content_type],
                     )?;
                 }
-                ("track", true, _) => purged.push(id),
-                ("track", false, Some(doc)) => {
+                ("track", true, _, Some(id)) => purged.push(id),
+                ("track", false, Some(doc), Some(id)) => {
                     if apply_track(&tx, &columns, id, doc, group, now_ms)? {
-                        applied += 1;
+                        applied.changed += 1;
+                        unpark(&tx, id, &mut applied)?;
                     } else {
                         log::warn!(
                             "shared library: track {id} came without a path and was left out"
                         );
                     }
                 }
-                // A kind this build takes no part in yet.
+                (kind, _, _, _) if operator::KINDS.contains(&kind) => {
+                    apply_operator(&tx, group, me, &mut applied)?;
+                }
+                // A kind this build knows nothing of.
                 _ => {}
             }
         }
-        applied += forget_tracks(&tx, &purged, now_ms)?;
+        applied.changed += forget_tracks(&tx, &purged, now_ms)?;
         tx.execute("UPDATE sync_local SET applying = 0, pulled_rev = ?", [last])?;
         tx.commit()?;
         self.read_roots(&conn)?;
         Ok(applied)
     }
+}
+
+/// Take another machine's version of a group, unless this machine has a later
+/// one of its own waiting to go out — which the hub will prefer too, by the
+/// same comparison. The later save wins; the machine id settles a tie.
+fn apply_operator(
+    conn: &Connection,
+    group: &Incoming,
+    me: &str,
+    applied: &mut Applied,
+) -> Result<()> {
+    let waiting: Option<(i64, Option<String>)> = conn
+        .query_row(
+            "SELECT edited_at, machine FROM sync_rows WHERE kind = ?1 AND key = ?2 AND pending",
+            params![group.kind, group.key],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    if let Some((at, machine)) = waiting {
+        let ours = (at, machine.as_deref().unwrap_or(me));
+        if ours >= (group.edited_at, group.machine.as_str()) {
+            return Ok(());
+        }
+    }
+    let wrote = operator::write(
+        conn,
+        &group.kind,
+        &group.key,
+        group.deleted,
+        group.doc.as_ref(),
+    )?;
+    match (wrote, operator::track_of(&group.kind, &group.key)) {
+        // Part of a track this library does not hold yet.
+        (false, Some(track_id)) => {
+            conn.execute(
+                "INSERT OR REPLACE INTO sync_parked \
+                   (kind, key, track_id, edited_at, machine, deleted, doc) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    group.kind,
+                    group.key,
+                    track_id,
+                    group.edited_at,
+                    group.machine,
+                    group.deleted,
+                    group.doc.as_ref().map(serde_json::Value::to_string)
+                ],
+            )?;
+            return Ok(());
+        }
+        (false, None) => {}
+        (true, _) => applied.note(&group.kind, &group.key),
+    }
+    stamp(
+        conn,
+        &group.kind,
+        &group.key,
+        group.edited_at,
+        &group.machine,
+        group.deleted,
+    )
+}
+
+/// Record whose version of a group this library now holds, and that nothing
+/// of it is owed.
+fn stamp(
+    conn: &Connection,
+    kind: &str,
+    key: &str,
+    edited_at: i64,
+    machine: &str,
+    deleted: bool,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO sync_rows (kind, key, edited_at, machine, deleted, pending) \
+         VALUES (?1, ?2, ?3, ?4, ?5, 0) \
+         ON CONFLICT (kind, key) DO UPDATE SET \
+           edited_at = excluded.edited_at, machine = excluded.machine, \
+           deleted = excluded.deleted, pending = 0",
+        params![kind, key, edited_at, machine, deleted],
+    )?;
+    Ok(())
+}
+
+/// Apply what was waiting for track `id`, now that it is here.
+fn unpark(conn: &Connection, id: i64, applied: &mut Applied) -> Result<()> {
+    type Parked = (String, String, i64, String, bool, Option<String>);
+    let parked: Vec<Parked> = {
+        let mut stmt = conn.prepare_cached(
+            "SELECT kind, key, edited_at, machine, deleted, doc FROM sync_parked \
+             WHERE track_id = ?",
+        )?;
+        let rows = stmt.query_map([id], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
+        })?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    for (kind, key, edited_at, machine, deleted, doc) in parked {
+        let doc: Option<serde_json::Value> = doc.and_then(|text| serde_json::from_str(&text).ok());
+        if operator::write(conn, &kind, &key, deleted, doc.as_ref())? {
+            applied.note(&kind, &key);
+            stamp(conn, &kind, &key, edited_at, &machine, deleted)?;
+        }
+    }
+    conn.execute("DELETE FROM sync_parked WHERE track_id = ?", [id])?;
+    Ok(())
 }
 
 /// The trio and who owns it: left alone on a row this machine holds as
@@ -678,15 +875,7 @@ fn apply_track(
             None => format!("{column} = excluded.{column}"),
         });
         names.push(column.clone());
-        values.push(match &doc[column.as_str()] {
-            serde_json::Value::Bool(b) => Value::Integer(i64::from(*b)),
-            serde_json::Value::Number(n) => match n.as_i64() {
-                Some(i) => Value::Integer(i),
-                None => n.as_f64().map_or(Value::Null, Value::Real),
-            },
-            serde_json::Value::String(text) => Value::Text(text.clone()),
-            _ => Value::Null,
-        });
+        values.push(operator::sql_value(&doc[column.as_str()]));
     }
     let sql = format!(
         "INSERT INTO tracks ({}) VALUES ({}) ON CONFLICT (id) DO UPDATE SET {}",
@@ -743,6 +932,10 @@ fn forget_tracks(conn: &Connection, ids: &[i64], now_ms: i64) -> Result<usize> {
     let mut deleted = 0;
     for chunk in ids.chunks(ID_CHUNK) {
         let list = placeholders(chunk.len());
+        conn.execute(
+            &format!("DELETE FROM sync_parked WHERE track_id IN ({list})"),
+            params_from_iter(chunk),
+        )?;
         deleted += conn.execute(
             &format!("DELETE FROM tracks WHERE id IN ({list})"),
             params_from_iter(chunk),
@@ -758,6 +951,12 @@ fn forget_tracks(conn: &Connection, ids: &[i64], now_ms: i64) -> Result<usize> {
 /// Mark every group the library holds as owed, keeping the stamp of one that
 /// already has it.
 fn owe_everything(conn: &Connection, now_ms: i64) -> Result<()> {
+    // A copy owes nothing it was given. Everything in it came from the hub,
+    // and sending it back stamped with today would beat the saves it came
+    // from — a cue set arrives in a track document without its fades.
+    if is_replica(conn)? {
+        return Ok(());
+    }
     let mut groups = vec![
         "SELECT 'root', id FROM library_roots".to_owned(),
         "SELECT 'track', id FROM tracks".to_owned(),
@@ -851,7 +1050,7 @@ mod tests {
     use rusqlite_migration::Migrations;
 
     use super::super::{Db, Dismissal, TrackInsert, TrackMetadataUpdate, MIGRATION_STEPS};
-    use super::{Incoming, EDITABLE, NOT_IN_A_TRACK_DOCUMENT};
+    use super::{operator, Incoming, EDITABLE, NOT_IN_A_TRACK_DOCUMENT};
     use crate::audio::cue_points::CuePoints;
     use crate::audio_measure::level_envelope::RmsWindows;
     use crate::library::auto_cue::{Analysed, AutoCue, Thresholds};
@@ -1491,6 +1690,11 @@ mod tests {
         assert_eq!(tags.matches("IS NOT old.").count(), EDITABLE.len());
     }
 
+    /// Apply a page on a machine called `me`, and say how many groups took.
+    fn take(db: &Db, page: &[Incoming], now_ms: i64) -> usize {
+        db.apply(page, "me", now_ms).unwrap().changed
+    }
+
     /// What an owner holding `owner`'s tracks would have published.
     fn published(owner: &Db) -> Vec<Incoming> {
         owner
@@ -1502,6 +1706,8 @@ mod tests {
                 kind: g.kind,
                 key: g.key,
                 rev: i as i64 + 1,
+                edited_at: g.edited_at,
+                machine: "owner".into(),
                 deleted: g.deleted,
                 doc: g.doc,
                 waveform: g.waveform,
@@ -1521,6 +1727,8 @@ mod tests {
             kind: kind.into(),
             key: key.to_string(),
             rev,
+            edited_at: rev,
+            machine: "owner".into(),
             deleted: false,
             doc: Some(doc),
             waveform: None,
@@ -1548,7 +1756,7 @@ mod tests {
         let root = owner.add_root("jingle").unwrap();
         let copy = replica();
 
-        let applied = copy.apply(&published(&owner), 1).unwrap();
+        let applied = take(&copy, &published(&owner), 1);
 
         assert_eq!(applied, 3);
         let theirs = owner.get_track(id).unwrap().unwrap();
@@ -1575,7 +1783,7 @@ mod tests {
             .execute("UPDATE sync_local SET capture = 1", [])
             .unwrap();
 
-        copy.apply(&published(&owner), 1).unwrap();
+        take(&copy, &published(&owner), 1);
 
         assert_eq!(pending(&copy), [] as [&str; 0]);
     }
@@ -1585,7 +1793,7 @@ mod tests {
         let owner = capturing();
         let id = add_track(&owner);
         let copy = replica();
-        copy.apply(&published(&owner), 1).unwrap();
+        take(&copy, &published(&owner), 1);
         retitle(&copy, id, "Fixed here");
         copy.set_cue_points(
             id,
@@ -1607,7 +1815,7 @@ mod tests {
         owner
             .set_auto_cue(id, &analysis(190_000), "music", None)
             .unwrap();
-        copy.apply(&published(&owner), 2).unwrap();
+        take(&copy, &published(&owner), 2);
 
         let ours = copy.get_track(id).unwrap().unwrap();
         assert_eq!(ours.title, "Fixed here", "an edited column is kept");
@@ -1625,11 +1833,11 @@ mod tests {
         let owner = capturing();
         let id = add_track(&owner);
         let copy = replica();
-        copy.apply(&published(&owner), 1).unwrap();
+        take(&copy, &published(&owner), 1);
         let list = copy.create_saved_playlist("Show", &[id], 1).unwrap().id;
         copy.record_airing(id, 1000).unwrap();
 
-        assert_eq!(copy.apply(&[tombstone(id, 2)], 5).unwrap(), 1);
+        assert_eq!(take(&copy, &[tombstone(id, 2)], 5), 1);
 
         assert!(copy.get_track(id).unwrap().is_none());
         let entries = copy.saved_playlist(list).unwrap().unwrap().entries;
@@ -1653,9 +1861,9 @@ mod tests {
                 "root_id": 0, "path": "/a.mp3", "content_type": "music", "title": title
             })
         };
-        copy.apply(&[one("track", 1, 1, doc("Old"))], 1).unwrap();
+        take(&copy, &[one("track", 1, 1, doc("Old"))], 1);
 
-        copy.apply(&[one("track", 2, 2, doc("New"))], 9).unwrap();
+        take(&copy, &[one("track", 2, 2, doc("New"))], 9);
 
         let titles: Vec<String> = copy
             .search("", None, None, None)
@@ -1675,7 +1883,7 @@ mod tests {
             "a_column_from_the_future": 1, "play_count": 99, "id": 7
         });
 
-        assert_eq!(copy.apply(&[one("track", 3, 1, doc)], 1).unwrap(), 1);
+        assert_eq!(take(&copy, &[one("track", 3, 1, doc)], 1), 1);
 
         let track = copy.get_track(3).unwrap().unwrap();
         assert_eq!(track.title, "T");
@@ -1696,7 +1904,7 @@ mod tests {
             ),
         ];
 
-        assert_eq!(copy.apply(&page, 1).unwrap(), 1);
+        assert_eq!(take(&copy, &page, 1), 1);
 
         assert!(copy.get_track(1).unwrap().is_none());
         assert!(copy.get_track(2).unwrap().is_some());
@@ -1706,7 +1914,8 @@ mod tests {
     #[test]
     fn a_library_path_removed_by_the_owner_goes_here_too() {
         let copy = replica();
-        copy.apply(
+        take(
+            &copy,
             &[one(
                 "root",
                 4,
@@ -1714,8 +1923,7 @@ mod tests {
                 serde_json::json!({ "content_type": "music" }),
             )],
             1,
-        )
-        .unwrap();
+        );
         assert!(copy.roots().get(4).is_some());
 
         let gone = Incoming {
@@ -1723,7 +1931,7 @@ mod tests {
             doc: None,
             ..one("root", 4, 2, serde_json::Value::Null)
         };
-        copy.apply(&[gone], 1).unwrap();
+        take(&copy, &[gone], 1);
 
         assert!(copy.roots().get(4).is_none());
     }
@@ -1731,7 +1939,8 @@ mod tests {
     #[test]
     fn a_copy_does_not_decide_which_library_path_a_track_is_under() {
         let copy = replica();
-        copy.apply(
+        take(
+            &copy,
             &[
                 one("root", 1, 1, serde_json::json!({ "content_type": "music" })),
                 one("root", 2, 2, serde_json::json!({ "content_type": "music" })),
@@ -1745,8 +1954,7 @@ mod tests {
                 ),
             ],
             1,
-        )
-        .unwrap();
+        );
 
         // Root 1 now contains the file as well, which on an owner would move
         // the track under it.
@@ -1854,6 +2062,390 @@ mod tests {
         db.leave_replica().unwrap();
         assert!(!db.is_replica().unwrap());
         assert_eq!(db.library_id().unwrap(), None);
+    }
+
+    /// A studio's copy of `owner`, capturing as a studio in a shared library
+    /// does.
+    fn studio_of(owner: &Db) -> Db {
+        let copy = replica();
+        take(&copy, &published(owner), 1);
+        copy.start_capture(1).unwrap();
+        copy
+    }
+
+    /// Carry what `from` owes of operator work to `to`, as the hub would, and
+    /// say how many groups took there.
+    fn relay(from: &Db, from_name: &str, to: &Db, to_name: &str) -> usize {
+        let sent = from.outgoing(operator::KINDS, 100).unwrap();
+        let page: Vec<Incoming> = sent
+            .iter()
+            .enumerate()
+            .map(|(i, g)| Incoming {
+                kind: g.kind.clone(),
+                key: g.key.clone(),
+                rev: 1000 + i as i64,
+                edited_at: g.edited_at,
+                machine: from_name.into(),
+                deleted: g.deleted,
+                doc: g.doc.clone(),
+                waveform: None,
+                levels: None,
+            })
+            .collect();
+        from.mark_sent(&sent).unwrap();
+        to.apply(&page, to_name, 1).unwrap().changed
+    }
+
+    fn owed(db: &Db) -> Vec<String> {
+        waiting(db, operator::KINDS)
+    }
+
+    fn fades(fade_in_ms: i64) -> CuePoints {
+        CuePoints {
+            fade_in_ms: Some(fade_in_ms),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_cue_set_made_on_a_studio_reaches_the_owner() {
+        let owner = capturing();
+        let id = add_track(&owner);
+        let studio = studio_of(&owner);
+        settle(&owner);
+        studio
+            .set_cue_points(
+                id,
+                CuePoints {
+                    cue_in_ms: Some(500),
+                    fade_out_ms: Some(150_000),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(relay(&studio, "studio", &owner, "owner"), 1);
+
+        let theirs = owner.get_track(id).unwrap().unwrap().cue_points;
+        assert_eq!(theirs.cue_in_ms, Some(500));
+        assert_eq!(theirs.fade_out_ms, Some(150_000));
+        // The trio is now a hand's, so the owner's analysis leaves it alone.
+        assert!(owner
+            .set_auto_cue(id, &analysis(190_000), "music", None)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            owed(&owner),
+            [] as [&str; 0],
+            "taking it is not an edit here"
+        );
+    }
+
+    #[test]
+    fn fades_alone_travel_and_leave_the_trio_the_owners() {
+        let owner = capturing();
+        let id = add_track(&owner);
+        let studio = studio_of(&owner);
+        studio.set_cue_points(id, fades(2000)).unwrap();
+
+        relay(&studio, "studio", &owner, "owner");
+
+        assert_eq!(
+            owner.get_track(id).unwrap().unwrap().cue_points.fade_in_ms,
+            Some(2000)
+        );
+        assert!(owner
+            .set_auto_cue(id, &analysis(190_000), "music", None)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn a_metadata_edit_travels_and_a_revert_takes_it_back() {
+        let owner = capturing();
+        let id = add_track(&owner);
+        let studio = studio_of(&owner);
+        settle(&owner);
+        retitle(&studio, id, "Fixed");
+
+        assert_eq!(relay(&studio, "studio", &owner, "owner"), 1);
+        let edited = owner.get_track(id).unwrap().unwrap();
+        assert_eq!(edited.title, "Fixed");
+        assert_ne!(edited.edited_fields, 0, "a rescan must keep it");
+
+        owner
+            .revert_track_tags(
+                id,
+                &TrackInsert {
+                    title: Some("From the file".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        relay(&owner, "owner", &studio, "studio");
+
+        let reverted = studio.get_track(id).unwrap().unwrap();
+        assert_eq!(reverted.title, "From the file");
+        assert_eq!(reverted.edited_fields, 0);
+    }
+
+    #[test]
+    fn hiding_travels_and_so_does_unhiding() {
+        let owner = capturing();
+        let id = add_track(&owner);
+        let studio = studio_of(&owner);
+        studio.hide_tracks(&[id], 7).unwrap();
+
+        relay(&studio, "studio", &owner, "owner");
+        assert_eq!(owner.hidden_tracks().unwrap().len(), 1);
+
+        owner.unhide_tracks(&[id]).unwrap();
+        relay(&owner, "owner", &studio, "studio");
+        assert_eq!(studio.hidden_tracks().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn a_saved_playlist_travels_whole_and_is_one_list_everywhere() {
+        let owner = capturing();
+        let a = add_track(&owner);
+        let b = add_track(&owner);
+        let studio = studio_of(&owner);
+        let list = studio
+            .create_saved_playlist("Friday", &[a, b, a], 5)
+            .unwrap()
+            .id;
+
+        relay(&studio, "studio", &owner, "owner");
+
+        let theirs = owner.saved_playlists().unwrap();
+        assert_eq!(theirs.len(), 1);
+        assert_eq!(theirs[0].name, "Friday");
+        let entries = owner.saved_playlist(theirs[0].id).unwrap().unwrap().entries;
+        let ids: Vec<i64> = entries
+            .iter()
+            .map(|e| e.track.as_ref().unwrap().id)
+            .collect();
+        assert_eq!(ids, [a, b, a]);
+
+        // An edit there comes back as the same list, not a second one.
+        owner.remove_saved_entry(entries[0].id, 9).unwrap();
+        owner
+            .rename_saved_playlist(theirs[0].id, "Friday night", 10)
+            .unwrap();
+        relay(&owner, "owner", &studio, "studio");
+        let ours = studio.saved_playlist(list).unwrap().unwrap();
+        assert_eq!(ours.name, "Friday night");
+        assert_eq!(ours.entries.len(), 2);
+
+        studio.delete_saved_playlist(list).unwrap();
+        relay(&studio, "studio", &owner, "owner");
+        assert_eq!(owner.saved_playlists().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn a_dismissal_travels_and_so_does_undoing_it() {
+        let owner = capturing();
+        let studio = studio_of(&owner);
+        let dismissal = Dismissal {
+            kind: "possible".into(),
+            key: "a b".into(),
+            value: "1,2".into(),
+        };
+        studio.set_dismissal(&dismissal).unwrap();
+
+        relay(&studio, "studio", &owner, "owner");
+        assert_eq!(owner.dismissals().unwrap().len(), 1);
+        assert_eq!(owner.dismissals().unwrap()[0].value, "1,2");
+
+        owner
+            .delete_dismissals(&[("possible".into(), "a b".into())])
+            .unwrap();
+        relay(&owner, "owner", &studio, "studio");
+        assert_eq!(studio.dismissals().unwrap().len(), 0);
+    }
+
+    /// One incoming cue group for track `id`, saved elsewhere at `edited_at`.
+    fn cue_from(machine: &str, id: i64, edited_at: i64, fade_in_ms: i64) -> Incoming {
+        Incoming {
+            edited_at,
+            machine: machine.into(),
+            ..one(
+                "cue",
+                id,
+                500,
+                serde_json::json!({ "fade_in_ms": fade_in_ms, "fade_out_ms": null, "trio": null }),
+            )
+        }
+    }
+
+    #[test]
+    fn a_later_save_waiting_here_is_not_written_over() {
+        let owner = capturing();
+        let id = add_track(&owner);
+        let studio = studio_of(&owner);
+        studio.set_cue_points(id, fades(2000)).unwrap();
+        studio.restamp_pending(100);
+
+        let took = studio
+            .apply(&[cue_from("other", id, 90, 7000)], "studio", 1)
+            .unwrap();
+
+        assert_eq!(took.changed, 0);
+        assert_eq!(
+            studio.get_track(id).unwrap().unwrap().cue_points.fade_in_ms,
+            Some(2000)
+        );
+        assert_eq!(
+            owed(&studio),
+            [format!("cue {id}")],
+            "and it still goes out"
+        );
+    }
+
+    #[test]
+    fn an_earlier_save_waiting_here_gives_way() {
+        let owner = capturing();
+        let id = add_track(&owner);
+        let studio = studio_of(&owner);
+        studio.set_cue_points(id, fades(2000)).unwrap();
+        studio.restamp_pending(100);
+
+        let took = studio
+            .apply(&[cue_from("other", id, 110, 7000)], "studio", 1)
+            .unwrap();
+
+        assert_eq!(took.changed, 1);
+        assert!(took.cue_points);
+        assert_eq!(
+            studio.get_track(id).unwrap().unwrap().cue_points.fade_in_ms,
+            Some(7000)
+        );
+        assert_eq!(
+            owed(&studio),
+            [] as [&str; 0],
+            "the losing save is not sent"
+        );
+    }
+
+    /// The hub breaks a tie the same way, so every machine agrees on it.
+    #[test]
+    fn two_saves_in_the_same_millisecond_are_settled_by_machine() {
+        let owner = capturing();
+        let id = add_track(&owner);
+        let studio = studio_of(&owner);
+        studio.set_cue_points(id, fades(2000)).unwrap();
+        studio.restamp_pending(100);
+
+        let lower = studio
+            .apply(&[cue_from("a", id, 100, 7000)], "m", 1)
+            .unwrap();
+        assert_eq!(lower.changed, 0, "`m` sorts after `a`, so ours stands");
+
+        let higher = studio
+            .apply(&[cue_from("z", id, 100, 8000)], "m", 1)
+            .unwrap();
+        assert_eq!(higher.changed, 1);
+    }
+
+    /// The hub hands rows out in the order they last changed, so a track that
+    /// was updated after its cue set comes after it.
+    #[test]
+    fn work_that_arrives_before_its_track_waits_for_it() {
+        let copy = replica();
+        let early = [
+            cue_from("other", 4, 50, 3000),
+            Incoming {
+                edited_at: 51,
+                ..one("edit", 0, 501, serde_json::json!({ "value": "Edited" }))
+            },
+        ];
+        let early = [
+            early[0].clone(),
+            Incoming {
+                key: "4:title".into(),
+                ..early[1].clone()
+            },
+        ];
+        assert_eq!(copy.apply(&early, "studio", 1).unwrap().changed, 0);
+
+        let track = one(
+            "track",
+            4,
+            600,
+            serde_json::json!({ "path": "/a.mp3", "content_type": "music", "title": "T" }),
+        );
+        let took = copy.apply(&[track], "studio", 1).unwrap();
+
+        assert_eq!(took.changed, 3);
+        assert_eq!(took.edited_tracks, [4]);
+        let here = copy.get_track(4).unwrap().unwrap();
+        assert_eq!(here.title, "Edited");
+        assert_eq!(here.cue_points.fade_in_ms, Some(3000));
+    }
+
+    #[test]
+    fn work_waiting_for_a_track_that_was_purged_is_dropped() {
+        let copy = replica();
+        copy.apply(&[cue_from("other", 4, 50, 3000)], "studio", 1)
+            .unwrap();
+
+        copy.apply(&[tombstone(4, 600)], "studio", 1).unwrap();
+
+        let parked: i64 = copy
+            .conn
+            .lock()
+            .query_row("SELECT COUNT(*) FROM sync_parked", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(parked, 0);
+    }
+
+    /// Sent back stamped with today, what it was given would beat the saves
+    /// it came from.
+    #[test]
+    fn a_studio_owes_what_it_does_and_nothing_it_was_given() {
+        let owner = capturing();
+        let id = add_track(&owner);
+        owner.add_root("music").unwrap();
+        owner
+            .set_cue_points(
+                id,
+                CuePoints {
+                    cue_in_ms: Some(500),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let copy = replica();
+        take(&copy, &published(&owner), 1);
+
+        copy.start_capture(9).unwrap();
+        assert_eq!(pending(&copy), [] as [&str; 0]);
+
+        copy.set_cue_points(id, fades(2000)).unwrap();
+        assert_eq!(pending(&copy), [format!("cue {id}")]);
+    }
+
+    /// Its copy may be behind, and the deletion would travel to an owner whose
+    /// finding is still there.
+    #[test]
+    fn a_studio_does_not_forget_a_dismissal_whose_finding_it_cannot_see() {
+        let stale = Dismissal {
+            kind: "possible".into(),
+            key: "gone".into(),
+            value: "1,2".into(),
+        };
+        let owner = capturing();
+        owner.set_dismissal(&stale).unwrap();
+        let studio = studio_of(&owner);
+        studio.set_dismissal(&stale).unwrap();
+        settle(&studio);
+
+        crate::library::health::build(&owner, &[]).unwrap();
+        crate::library::health::build(&studio, &[]).unwrap();
+
+        assert_eq!(owner.dismissals().unwrap().len(), 0, "the owner tidies up");
+        assert_eq!(studio.dismissals().unwrap().len(), 1);
+        assert_eq!(owed(&studio), [] as [&str; 0]);
     }
 
     /// Columns that are this machine's own and never travel. See
