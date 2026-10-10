@@ -111,6 +111,8 @@ pub struct Status {
     pub reached_at: Option<i64>,
     /// Whether the last connection to the hub was encrypted, once one opened.
     pub encrypted: Option<bool>,
+    /// How many of this machine's changes the hub has not been sent yet.
+    pub waiting: usize,
 }
 
 /// Emitted with a [`Status`] whenever it changes.
@@ -158,6 +160,7 @@ impl Service {
                 message: String::new(),
                 reached_at: None,
                 encrypted: None,
+                waiting: 0,
             }),
             app,
         });
@@ -231,11 +234,8 @@ impl Service {
         let mut due = Instant::now();
         let mut failed = false;
         loop {
-            let waiting = !failed
-                && on(&db, move |db| db.has_outgoing(sends))
-                    .await
-                    .unwrap_or(false);
-            if Instant::now() < due && !waiting {
+            let waiting = self.count_waiting(&db, sends).await;
+            if Instant::now() < due && (failed || waiting == 0) {
                 tokio::time::sleep(GLANCE).await;
                 continue;
             }
@@ -257,6 +257,7 @@ impl Service {
                     Applied::default()
                 }
             };
+            self.count_waiting(&db, sends).await;
             if taken.changed > 0 {
                 // Entries that were waiting for these tracks, then everything
                 // that lists or holds a copy of what the library holds.
@@ -273,6 +274,24 @@ impl Service {
             }
             tokio::time::sleep(GLANCE).await;
         }
+    }
+
+    /// Count what this machine still owes the hub, and say so if it changed:
+    /// the page shows it, and an operator watching a save go out sees it go.
+    async fn count_waiting(&self, db: &Arc<Db>, sends: &'static [&'static str]) -> usize {
+        let waiting = on(db, move |db| db.outgoing_count(sends))
+            .await
+            .unwrap_or(0);
+        let changed = {
+            let mut status = self.status.lock();
+            let changed = status.waiting != waiting;
+            status.waiting = waiting;
+            changed.then(|| status.clone())
+        };
+        if let Some(status) = changed {
+            let _ = self.app.emit(STATE_EVENT, &status);
+        }
+        waiting
     }
 
     /// Report what a visit came to.

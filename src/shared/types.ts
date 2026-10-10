@@ -612,6 +612,8 @@ export interface HubStatus {
   reachedAt: number | null;
   /** Whether the last connection to the hub was encrypted, once one opened. */
   encrypted: boolean | null;
+  /** How many of this computer's changes the hub has not been sent yet. */
+  waiting: number;
 }
 
 /** A certificate authority trusted for the hub beside the system's own. */

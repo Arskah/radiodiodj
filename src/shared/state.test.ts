@@ -2053,6 +2053,7 @@ describe("AppState session persistence", () => {
         message: "",
         reachedAt: null,
         encrypted: null,
+        waiting: 0,
       },
     });
 
