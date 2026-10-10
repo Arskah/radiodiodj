@@ -317,7 +317,10 @@ else; the Postgres **hub** only moves rows between them, through one worker
 nothing waits on. So no feature queries the hub, no hub call holds the `Db`
 mutex, and a hub that is away costs freshness and never playback. Triggers
 mark what changed in `sync_rows`, per **group** rather than per row, and only
-while `sync_local.capture` is on — off for a standalone library. The hub shares
+while `sync_local.capture` is on — off for a standalone library. A **studio**
+never scans or decodes: its database is a copy filled by `Db::apply` under the
+owner's track ids, which keeps a column this machine edited and a trio it cued
+by hand. The hub shares
 a library and not a station: the airing log, History, the rotation rules and
 play counts never cross it. See [docs/shared-library.md](docs/shared-library.md).
 
@@ -418,6 +421,11 @@ runs `cargo doc` next to clippy because the rustdoc group only fires there.
   [docs/architecture.md](docs/architecture.md#conventions).
 - A new admin-only command must be added to `admin::ADMIN_COMMANDS`, or it runs
   while admin mode is locked. See [docs/admin-mode.md](docs/admin-mode.md).
+- A new command that scans, decodes or otherwise changes what the library holds
+  must be added to `hub::OWNER_COMMANDS`, or it runs on a studio, whose library
+  is a copy of the owner's. A new background job is not started there either —
+  see the `studio` checks in `setup`. See
+  [docs/shared-library.md](docs/shared-library.md#what-a-studio-does-not-run).
 - Tauri command argument name `state` collides with the `State<AppState>`
   injection; the managed state arg is named `app` in command handlers.
 - `release-please-config.json` bumps four files on each release:
@@ -441,7 +449,9 @@ runs `cargo doc` next to clippy because the rustdoc group only fires there.
   `cfg!(debug_assertions)` / `Info` in release. `symphonia*` modules are forced
   to `Warn` (`symphonia_bundle_mp3` to `Error`, whose false-sync warnings on a
   non-MP3 file otherwise fill the 1 MB log) to keep the webview console
-  readable.
+  readable. `tokio_postgres` is forced to `Warn` for the same reason: at debug
+  it logs every hub statement with its parameters, a track's whole document
+  and waveform among them.
 - The Rust toolchain is named once, in `.tool-versions`. CI installs it through
   `.github/actions/rust`, so bumping that one line moves every workflow.
   `rust-version` in `src-tauri/Cargo.toml` is a different number — the minimum

@@ -77,7 +77,8 @@ Grouped by domain.
   (atomic write) and `service.rs`.
 - **`hub/`** — the shared library's connection out: `schema.rs` (the hub's
   tables and protocol number), `client.rs` (every statement run against
-  Postgres) and `worker.rs` (the one task that visits it). What is owed to the
+  Postgres) and `worker.rs` (the role this launch took up, the one task that
+  visits the hub, and the commands a studio refuses). What is owed to the
   hub is `library/db/sync.rs`. See [shared-library.md](./shared-library.md).
 - **`appearance/`** — `theme.rs` (the `Theme` model, `THEMEABLE_TOKENS`, the
   colour-value grammar and `validate`) and `store.rs` (enumerating
@@ -140,6 +141,8 @@ physical deck is on air. The cue deck, being off the bus, emits `cue:*`.
 | `scan-progress`, `scan-state-changed`                                                                                                  | the scan worker              | counts, current file, run state             |
 | `cache-state`                                                                                                                          | the prefetch cache           | which track ids are resident in RAM         |
 | `update:state`                                                                                                                         | `update.rs`                  | the whole updater snapshot                  |
+| `hub:state`                                                                                                                            | `hub/worker.rs`              | where the shared library stands             |
+| `hub:library-changed`                                                                                                                  | `hub/worker.rs`              | a pull changed this machine's copy          |
 
 ## Commands
 

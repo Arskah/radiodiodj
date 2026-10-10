@@ -4,6 +4,7 @@
   import { restoreCleared } from "./numericInput";
   import AudioTab from "./AudioTab.svelte";
   import LibraryTab from "./LibraryTab.svelte";
+  import SharedLibraryTab from "./SharedLibraryTab.svelte";
   import PlaylistTab from "./PlaylistTab.svelte";
   import NowPlayingTab from "./NowPlayingTab.svelte";
   import AppearanceTab from "./AppearanceTab.svelte";
@@ -93,6 +94,22 @@
         </button>
         <button
           class="settings-tab"
+          class:active={app.settingsTab === "shared"}
+          role="tab"
+          aria-selected={app.settingsTab === "shared"}
+          onclick={() => (app.settingsTab = "shared")}
+        >
+          <span class="material-symbols-outlined">hub</span>
+          Shared Library
+          {#if app.hubAttention}
+            <span
+              class="attention-badge"
+              aria-label="The shared library needs attention">!</span
+            >
+          {/if}
+        </button>
+        <button
+          class="settings-tab"
           class:active={app.settingsTab === "playlist"}
           role="tab"
           aria-selected={app.settingsTab === "playlist"}
@@ -154,6 +171,8 @@
           <AudioTab bind:tuning {saveTuning} />
         {:else if app.settingsTab === "library"}
           <LibraryTab bind:tuning {saveTuning} />
+        {:else if app.settingsTab === "shared"}
+          <SharedLibraryTab />
         {:else if app.settingsTab === "playlist"}
           <PlaylistTab bind:tuning {saveTuning} />
         {:else if app.settingsTab === "now-playing"}

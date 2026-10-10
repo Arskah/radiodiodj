@@ -5,7 +5,9 @@ use anyhow::Result;
 use rusqlite::types::{Value, ValueRef};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 
-use super::{placeholders, Db, EditedFields};
+use std::path::Path;
+
+use super::{placeholders, Db, EditedFields, Opened, ID_CHUNK};
 
 /// Step 17: the change log, and the triggers that write it.
 ///
@@ -321,6 +323,23 @@ WHEN (SELECT capture AND NOT applying FROM sync_local) BEGIN
 END;
 "#;
 
+/// Step 18: whether this database is a studio's copy of an owner's library —
+/// what says its track ids are the owner's and it may be filled from the hub.
+pub(super) const REPLICA: &str =
+    "ALTER TABLE sync_local ADD COLUMN replica INTEGER NOT NULL DEFAULT 0;";
+
+/// One group as the hub holds it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Incoming {
+    pub kind: String,
+    pub key: String,
+    pub rev: i64,
+    pub deleted: bool,
+    pub doc: Option<serde_json::Value>,
+    pub waveform: Option<Vec<u8>>,
+    pub levels: Option<Vec<u8>>,
+}
+
 /// One group on its way to the hub: what it is, when this machine last
 /// changed it, and the row as a document. A tombstone carries no document.
 #[derive(Clone, Debug, PartialEq)]
@@ -461,6 +480,281 @@ impl Db {
     }
 }
 
+pub(super) fn is_replica(conn: &Connection) -> Result<bool> {
+    Ok(conn.query_row("SELECT replica FROM sync_local", [], |r| r.get(0))?)
+}
+
+impl Db {
+    /// Open the library for a machine that is a studio, or is not. Returns
+    /// whether this launch joined: the database was made a copy just now.
+    ///
+    /// A studio plays from the owner's library under the owner's track ids.
+    /// The library this machine had is not that, so it is set aside — here,
+    /// before anything holds a track by its id. A machine that stops being a
+    /// studio keeps its copy as its own.
+    pub fn open_for(path: &Path, studio: bool) -> Result<(Opened, bool)> {
+        let mut opened = Self::open(path)?;
+        let replica = opened.db.is_replica()?;
+        if studio && !replica {
+            if !opened.db.holds_nothing()? {
+                drop(opened);
+                Self::set_aside(path)?;
+                opened = Self::open(path)?;
+            }
+            opened.db.become_replica()?;
+            return Ok((opened, true));
+        }
+        if !studio && replica {
+            opened.db.leave_replica()?;
+        }
+        Ok((opened, false))
+    }
+
+    /// Whether this database is a studio's copy of an owner's library.
+    pub fn is_replica(&self) -> Result<bool> {
+        is_replica(&self.conn.lock())
+    }
+
+    /// Whether the library holds nothing a join would lose.
+    pub fn holds_nothing(&self) -> Result<bool> {
+        let conn = self.conn.lock();
+        Ok(conn.query_row(
+            "SELECT NOT EXISTS (SELECT 1 FROM tracks) \
+                AND NOT EXISTS (SELECT 1 FROM library_roots) \
+                AND NOT EXISTS (SELECT 1 FROM saved_playlists)",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Make this database a studio's copy, to be filled from the hub.
+    pub fn become_replica(&self) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE sync_local SET replica = 1, capture = 0, library_id = NULL, pulled_rev = 0",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Keep the copy as this machine's own library. See
+    /// `docs/shared-library.md#joining-and-leaving`.
+    pub fn leave_replica(&self) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE sync_local SET replica = 0, library_id = NULL, pulled_rev = 0",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Start copying the hub library `library_id`, from its first revision.
+    pub fn follow(&self, library_id: &str) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE sync_local SET library_id = ?, pulled_rev = 0",
+            [library_id],
+        )?;
+        Ok(())
+    }
+
+    /// The last hub revision this copy holds.
+    pub fn pulled_rev(&self) -> Result<i64> {
+        let conn = self.conn.lock();
+        Ok(conn.query_row("SELECT pulled_rev FROM sync_local", [], |r| r.get(0))?)
+    }
+
+    /// Apply one page of the hub's rows, in revision order, and move the
+    /// cursor past it — together, so a page is never half taken. Returns how
+    /// many groups changed something here. See
+    /// `docs/shared-library.md#applying-a-pull`.
+    pub fn apply(&self, page: &[Incoming], now_ms: i64) -> Result<usize> {
+        let Some(last) = page.iter().map(|g| g.rev).max() else {
+            return Ok(0);
+        };
+        let mut conn = self.conn.lock();
+        let columns: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT name FROM pragma_table_info('tracks')")?;
+            let rows = stmt.query_map([], |r| r.get(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        let tx = conn.transaction()?;
+        tx.execute("UPDATE sync_local SET applying = 1", [])?;
+        let mut applied = 0;
+        let mut purged = Vec::new();
+        for group in page {
+            let Ok(id) = group.key.parse::<i64>() else {
+                continue;
+            };
+            match (group.kind.as_str(), group.deleted, &group.doc) {
+                ("root", true, _) => {
+                    applied += tx.execute("DELETE FROM library_roots WHERE id = ?", [id])?;
+                }
+                ("root", false, Some(doc)) => {
+                    let Some(content_type) = doc.get("content_type").and_then(|v| v.as_str())
+                    else {
+                        continue;
+                    };
+                    applied += tx.execute(
+                        "INSERT INTO library_roots (id, content_type) VALUES (?1, ?2) \
+                         ON CONFLICT (id) DO UPDATE SET content_type = excluded.content_type",
+                        params![id, content_type],
+                    )?;
+                }
+                ("track", true, _) => purged.push(id),
+                ("track", false, Some(doc)) => {
+                    if apply_track(&tx, &columns, id, doc, group, now_ms)? {
+                        applied += 1;
+                    } else {
+                        log::warn!(
+                            "shared library: track {id} came without a path and was left out"
+                        );
+                    }
+                }
+                // A kind this build takes no part in yet.
+                _ => {}
+            }
+        }
+        applied += forget_tracks(&tx, &purged, now_ms)?;
+        tx.execute("UPDATE sync_local SET applying = 0, pulled_rev = ?", [last])?;
+        tx.commit()?;
+        self.read_roots(&conn)?;
+        Ok(applied)
+    }
+}
+
+/// The trio and who owns it: left alone on a row this machine holds as
+/// `manual`, as `set_auto_cue` leaves it.
+const TRIO: &[&str] = &["cue_in_ms", "cue_out_ms", "next_start_ms", "auto_cue_state"];
+
+/// Write one `track` document under the owner's id. `false` when the document
+/// lacks what a row cannot be without.
+fn apply_track(
+    conn: &Connection,
+    columns: &[String],
+    id: i64,
+    doc: &serde_json::Value,
+    group: &Incoming,
+    now_ms: i64,
+) -> Result<bool> {
+    let Some(doc) = doc.as_object() else {
+        return Ok(false);
+    };
+    if !doc.get("path").is_some_and(serde_json::Value::is_string) {
+        return Ok(false);
+    }
+    // A key this build has no column for is ignored, and a column the document
+    // lacks keeps its default: the two builds need not be the same version.
+    let sent: Vec<&String> = columns
+        .iter()
+        .filter(|c| !NOT_IN_A_TRACK_DOCUMENT.contains(&c.as_str()) && doc.contains_key(*c))
+        .collect();
+    let mut names = vec![
+        "id".to_owned(),
+        "waveform".to_owned(),
+        "auto_cue_levels".to_owned(),
+    ];
+    let mut sets = vec![
+        "waveform = excluded.waveform".to_owned(),
+        "auto_cue_levels = excluded.auto_cue_levels".to_owned(),
+    ];
+    let mut values = vec![
+        Value::Integer(id),
+        group.waveform.clone().map_or(Value::Null, Value::Blob),
+        group.levels.clone().map_or(Value::Null, Value::Blob),
+    ];
+    for column in sent {
+        let keep = if let Some((_, bit)) = EDITABLE.iter().find(|(c, _)| c == column) {
+            Some(format!("tracks.edited_fields & {bit}"))
+        } else if TRIO.contains(&column.as_str()) {
+            Some("tracks.auto_cue_state = 'manual'".to_owned())
+        } else {
+            None
+        };
+        sets.push(match keep {
+            Some(kept) => format!(
+                "{column} = CASE WHEN {kept} THEN tracks.{column} ELSE excluded.{column} END"
+            ),
+            None => format!("{column} = excluded.{column}"),
+        });
+        names.push(column.clone());
+        values.push(match &doc[column.as_str()] {
+            serde_json::Value::Bool(b) => Value::Integer(i64::from(*b)),
+            serde_json::Value::Number(n) => match n.as_i64() {
+                Some(i) => Value::Integer(i),
+                None => n.as_f64().map_or(Value::Null, Value::Real),
+            },
+            serde_json::Value::String(text) => Value::Text(text.clone()),
+            _ => Value::Null,
+        });
+    }
+    let sql = format!(
+        "INSERT INTO tracks ({}) VALUES ({}) ON CONFLICT (id) DO UPDATE SET {}",
+        names.join(", "),
+        placeholders(names.len()),
+        sets.join(", ")
+    );
+    let mut write = conn.prepare_cached(&sql)?;
+    match write.execute(params_from_iter(values.iter())) {
+        Ok(_) => Ok(true),
+        // The hub holds each track as it reads now, so the row that used to be
+        // at this path may not have been told it left yet. Its own document
+        // follows; until then it is missing, which is what it is.
+        Err(rusqlite::Error::SqliteFailure(e, _))
+            if e.code == rusqlite::ErrorCode::ConstraintViolation =>
+        {
+            conn.execute(
+                "UPDATE tracks SET missing_since = ?1 \
+                 WHERE missing_since IS NULL AND id <> ?2 \
+                   AND root_id = ?3 AND path = ?4",
+                params![
+                    now_ms,
+                    id,
+                    doc.get("root_id")
+                        .and_then(serde_json::Value::as_i64)
+                        .unwrap_or(0),
+                    doc["path"].as_str()
+                ],
+            )?;
+            write.execute(params_from_iter(values.iter()))?;
+            Ok(true)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Delete tracks the owner purged, with the cleanup a purge here does. The
+/// hub keeps only the tombstone, so a copy that was behind never heard the
+/// track went missing first — which is what the unbinding looks for.
+fn forget_tracks(conn: &Connection, ids: &[i64], now_ms: i64) -> Result<usize> {
+    for chunk in ids.chunks(ID_CHUNK) {
+        let mut params = vec![now_ms];
+        params.extend_from_slice(chunk);
+        conn.execute(
+            &format!(
+                "UPDATE tracks SET missing_since = ?1 \
+                 WHERE missing_since IS NULL AND id IN ({})",
+                super::placeholders_from(chunk.len(), 2)
+            ),
+            params_from_iter(params),
+        )?;
+    }
+    super::saved_playlists::unbind_purged(conn, ids)?;
+    let mut deleted = 0;
+    for chunk in ids.chunks(ID_CHUNK) {
+        let list = placeholders(chunk.len());
+        deleted += conn.execute(
+            &format!("DELETE FROM tracks WHERE id IN ({list})"),
+            params_from_iter(chunk),
+        )?;
+        conn.execute(
+            &format!("UPDATE play_log SET track_id = NULL WHERE track_id IN ({list})"),
+            params_from_iter(chunk),
+        )?;
+    }
+    Ok(deleted)
+}
+
 /// Mark every group the library holds as owed, keeping the stamp of one that
 /// already has it.
 fn owe_everything(conn: &Connection, now_ms: i64) -> Result<()> {
@@ -557,7 +851,7 @@ mod tests {
     use rusqlite_migration::Migrations;
 
     use super::super::{Db, Dismissal, TrackInsert, TrackMetadataUpdate, MIGRATION_STEPS};
-    use super::{EDITABLE, NOT_IN_A_TRACK_DOCUMENT};
+    use super::{Incoming, EDITABLE, NOT_IN_A_TRACK_DOCUMENT};
     use crate::audio::cue_points::CuePoints;
     use crate::audio_measure::level_envelope::RmsWindows;
     use crate::library::auto_cue::{Analysed, AutoCue, Thresholds};
@@ -1195,6 +1489,371 @@ mod tests {
         }
         assert_eq!(edits.matches("SELECT 'edit'").count(), EDITABLE.len());
         assert_eq!(tags.matches("IS NOT old.").count(), EDITABLE.len());
+    }
+
+    /// What an owner holding `owner`'s tracks would have published.
+    fn published(owner: &Db) -> Vec<Incoming> {
+        owner
+            .outgoing(&["root", "track"], 100)
+            .unwrap()
+            .into_iter()
+            .enumerate()
+            .map(|(i, g)| Incoming {
+                kind: g.kind,
+                key: g.key,
+                rev: i as i64 + 1,
+                deleted: g.deleted,
+                doc: g.doc,
+                waveform: g.waveform,
+                levels: g.levels,
+            })
+            .collect()
+    }
+
+    fn replica() -> Db {
+        let db = Db::open_in_memory().unwrap();
+        db.become_replica().unwrap();
+        db
+    }
+
+    fn one(kind: &str, key: i64, rev: i64, doc: serde_json::Value) -> Incoming {
+        Incoming {
+            kind: kind.into(),
+            key: key.to_string(),
+            rev,
+            deleted: false,
+            doc: Some(doc),
+            waveform: None,
+            levels: None,
+        }
+    }
+
+    fn tombstone(key: i64, rev: i64) -> Incoming {
+        Incoming {
+            deleted: true,
+            doc: None,
+            ..one("track", key, rev, serde_json::Value::Null)
+        }
+    }
+
+    #[test]
+    fn a_copy_takes_the_owners_tracks_under_the_owners_ids() {
+        let owner = capturing();
+        add_track(&owner);
+        let id = add_track(&owner);
+        owner.set_waveform(id, &[4, 5], None).unwrap();
+        owner
+            .set_auto_cue(id, &analysis(190_000), "music", None)
+            .unwrap();
+        let root = owner.add_root("jingle").unwrap();
+        let copy = replica();
+
+        let applied = copy.apply(&published(&owner), 1).unwrap();
+
+        assert_eq!(applied, 3);
+        let theirs = owner.get_track(id).unwrap().unwrap();
+        let ours = copy.get_track(id).unwrap().unwrap();
+        assert_eq!(ours.title, theirs.title);
+        assert_eq!(ours.cue_points, theirs.cue_points);
+        assert_eq!(copy.get_waveform(id).unwrap(), Some(vec![4, 5]));
+        assert_eq!(copy.roots().get(root).unwrap().content_type, "jingle");
+        assert_eq!(copy.pulled_rev().unwrap(), 3);
+        assert_eq!(
+            copy.search("T", Some("music"), None, None).unwrap().len(),
+            2,
+            "the copy is searchable"
+        );
+    }
+
+    #[test]
+    fn applying_is_not_captured_as_this_machines_change() {
+        let owner = capturing();
+        add_track(&owner);
+        let copy = replica();
+        copy.conn
+            .lock()
+            .execute("UPDATE sync_local SET capture = 1", [])
+            .unwrap();
+
+        copy.apply(&published(&owner), 1).unwrap();
+
+        assert_eq!(pending(&copy), [] as [&str; 0]);
+    }
+
+    #[test]
+    fn an_update_keeps_what_this_machine_edited_and_cued_by_hand() {
+        let owner = capturing();
+        let id = add_track(&owner);
+        let copy = replica();
+        copy.apply(&published(&owner), 1).unwrap();
+        retitle(&copy, id, "Fixed here");
+        copy.set_cue_points(
+            id,
+            CuePoints {
+                cue_in_ms: Some(500),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        owner
+            .conn
+            .lock()
+            .execute(
+                "UPDATE tracks SET title = 'From the file', album = 'New album'",
+                [],
+            )
+            .unwrap();
+        owner
+            .set_auto_cue(id, &analysis(190_000), "music", None)
+            .unwrap();
+        copy.apply(&published(&owner), 2).unwrap();
+
+        let ours = copy.get_track(id).unwrap().unwrap();
+        assert_eq!(ours.title, "Fixed here", "an edited column is kept");
+        assert_eq!(ours.album, "New album", "an unedited one follows the owner");
+        assert_eq!(
+            ours.cue_points.cue_in_ms,
+            Some(500),
+            "a manual trio is kept"
+        );
+        assert_eq!(ours.cue_points.cue_out_ms, None);
+    }
+
+    #[test]
+    fn a_purge_on_the_owner_deletes_here_and_unbinds_what_pointed_at_it() {
+        let owner = capturing();
+        let id = add_track(&owner);
+        let copy = replica();
+        copy.apply(&published(&owner), 1).unwrap();
+        let list = copy.create_saved_playlist("Show", &[id], 1).unwrap().id;
+        copy.record_airing(id, 1000).unwrap();
+
+        assert_eq!(copy.apply(&[tombstone(id, 2)], 5).unwrap(), 1);
+
+        assert!(copy.get_track(id).unwrap().is_none());
+        let entries = copy.saved_playlist(list).unwrap().unwrap().entries;
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].track.is_none(), "the entry stays, unmatched");
+        let logged: Option<i64> = copy
+            .conn
+            .lock()
+            .query_row("SELECT track_id FROM play_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(logged, None);
+    }
+
+    /// The hub holds each track as it reads now, so the newcomer at a path can
+    /// arrive before the news that the old track left it.
+    #[test]
+    fn a_track_arriving_at_a_path_another_still_holds_retires_that_one() {
+        let copy = replica();
+        let doc = |title: &str| {
+            serde_json::json!({
+                "root_id": 0, "path": "/a.mp3", "content_type": "music", "title": title
+            })
+        };
+        copy.apply(&[one("track", 1, 1, doc("Old"))], 1).unwrap();
+
+        copy.apply(&[one("track", 2, 2, doc("New"))], 9).unwrap();
+
+        let titles: Vec<String> = copy
+            .search("", None, None, None)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.title)
+            .collect();
+        assert_eq!(titles, ["New"]);
+        assert_eq!(copy.missing_tracks().unwrap()[0].id, 1);
+    }
+
+    #[test]
+    fn a_document_from_another_version_is_taken_as_far_as_it_is_understood() {
+        let copy = replica();
+        let doc = serde_json::json!({
+            "path": "/a.mp3", "content_type": "music", "title": "T",
+            "a_column_from_the_future": 1, "play_count": 99, "id": 7
+        });
+
+        assert_eq!(copy.apply(&[one("track", 3, 1, doc)], 1).unwrap(), 1);
+
+        let track = copy.get_track(3).unwrap().unwrap();
+        assert_eq!(track.title, "T");
+        assert_eq!(track.play_count, 0, "a play count is never taken");
+    }
+
+    #[test]
+    fn what_cannot_be_a_row_is_skipped_and_the_cursor_still_moves() {
+        let copy = replica();
+        let page = [
+            one("track", 1, 1, serde_json::json!({ "title": "No path" })),
+            one("cue", 1, 2, serde_json::json!({})),
+            one(
+                "track",
+                2,
+                3,
+                serde_json::json!({ "path": "/b.mp3", "content_type": "music" }),
+            ),
+        ];
+
+        assert_eq!(copy.apply(&page, 1).unwrap(), 1);
+
+        assert!(copy.get_track(1).unwrap().is_none());
+        assert!(copy.get_track(2).unwrap().is_some());
+        assert_eq!(copy.pulled_rev().unwrap(), 3);
+    }
+
+    #[test]
+    fn a_library_path_removed_by_the_owner_goes_here_too() {
+        let copy = replica();
+        copy.apply(
+            &[one(
+                "root",
+                4,
+                1,
+                serde_json::json!({ "content_type": "music" }),
+            )],
+            1,
+        )
+        .unwrap();
+        assert!(copy.roots().get(4).is_some());
+
+        let gone = Incoming {
+            deleted: true,
+            doc: None,
+            ..one("root", 4, 2, serde_json::Value::Null)
+        };
+        copy.apply(&[gone], 1).unwrap();
+
+        assert!(copy.roots().get(4).is_none());
+    }
+
+    #[test]
+    fn a_copy_does_not_decide_which_library_path_a_track_is_under() {
+        let copy = replica();
+        copy.apply(
+            &[
+                one("root", 1, 1, serde_json::json!({ "content_type": "music" })),
+                one("root", 2, 2, serde_json::json!({ "content_type": "music" })),
+                one(
+                    "track",
+                    5,
+                    3,
+                    serde_json::json!({
+                        "root_id": 2, "path": "a.mp3", "content_type": "music"
+                    }),
+                ),
+            ],
+            1,
+        )
+        .unwrap();
+
+        // Root 1 now contains the file as well, which on an owner would move
+        // the track under it.
+        let moved = copy
+            .set_mounts(&std::collections::BTreeMap::from([
+                (1, "/music".to_owned()),
+                (2, "/music".to_owned()),
+            ]))
+            .unwrap();
+
+        assert_eq!(moved, 0);
+        let root: i64 = copy
+            .conn
+            .lock()
+            .query_row("SELECT root_id FROM tracks WHERE id = 5", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(root, 2);
+        assert_eq!(copy.get_paths_by_ids(&[5]).unwrap()[0].1, "/music/a.mp3");
+    }
+
+    fn track_count(db: &Db) -> usize {
+        db.search("", None, None, None).unwrap().len()
+    }
+
+    #[test]
+    fn a_machine_made_a_studio_sets_its_own_library_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("radiodiodj.db");
+        add_track(&Db::open(&path).unwrap().db);
+
+        let (opened, joined) = Db::open_for(&path, true).unwrap();
+
+        assert!(joined);
+        assert!(opened.db.is_replica().unwrap());
+        assert_eq!(track_count(&opened.db), 0);
+        let kept = Db::open(&dir.path().join("radiodiodj.standalone.bak.db")).unwrap();
+        assert_eq!(track_count(&kept.db), 1, "the old library is kept");
+    }
+
+    #[test]
+    fn joining_a_second_time_keeps_the_library_set_aside_the_first_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("radiodiodj.db");
+        add_track(&Db::open(&path).unwrap().db);
+        let (copy, _) = Db::open_for(&path, true).unwrap();
+        add_track(&copy.db);
+        add_track(&copy.db);
+        drop(copy);
+        drop(Db::open_for(&path, false).unwrap());
+
+        let (again, joined) = Db::open_for(&path, true).unwrap();
+
+        assert!(joined);
+        assert_eq!(track_count(&again.db), 0);
+        let first = Db::open(&dir.path().join("radiodiodj.standalone.bak.db")).unwrap();
+        assert_eq!(track_count(&first.db), 1, "the library this machine built");
+        let second = Db::open(&dir.path().join("radiodiodj.standalone.2.bak.db")).unwrap();
+        assert_eq!(track_count(&second.db), 2, "the copy it left with");
+    }
+
+    #[test]
+    fn a_studio_keeps_its_copy_from_one_launch_to_the_next() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("radiodiodj.db");
+        let (first, _) = Db::open_for(&path, true).unwrap();
+        add_track(&first.db);
+        drop(first);
+
+        let (again, joined) = Db::open_for(&path, true).unwrap();
+
+        assert!(!joined);
+        assert_eq!(track_count(&again.db), 1);
+        assert!(!dir.path().join("radiodiodj.standalone.bak.db").exists());
+    }
+
+    #[test]
+    fn a_machine_that_stops_being_a_studio_keeps_the_copy_as_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("radiodiodj.db");
+        let (studio, _) = Db::open_for(&path, true).unwrap();
+        add_track(&studio.db);
+        drop(studio);
+
+        let (alone, joined) = Db::open_for(&path, false).unwrap();
+
+        assert!(!joined);
+        assert!(!alone.db.is_replica().unwrap());
+        assert_eq!(track_count(&alone.db), 1);
+    }
+
+    #[test]
+    fn joining_and_leaving_reset_what_the_copy_follows() {
+        let db = capturing();
+        assert!(!db.is_replica().unwrap());
+        assert!(db.holds_nothing().unwrap());
+        add_track(&db);
+        assert!(!db.holds_nothing().unwrap());
+
+        db.become_replica().unwrap();
+        db.follow("lib-1").unwrap();
+        assert!(db.is_replica().unwrap());
+        add_track(&db);
+        assert_eq!(pending(&db).len(), 1, "a copy captures nothing new");
+
+        db.leave_replica().unwrap();
+        assert!(!db.is_replica().unwrap());
+        assert_eq!(db.library_id().unwrap(), None);
     }
 
     /// Columns that are this machine's own and never travel. See

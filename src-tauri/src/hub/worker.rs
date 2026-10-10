@@ -4,10 +4,16 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
+use parking_lot::Mutex;
+use serde::Serialize;
+use tauri::{AppHandle, Emitter};
 
 use super::client::{Claim, Hub, Machine};
+use super::schema::PROTOCOL;
+use super::{OWNER_COMMANDS, STUDIO_ERROR};
 use crate::library::db::Db;
+use crate::library::health::Health;
 use crate::library::scanner::now_ms;
 use crate::persist::config::{Config, LibraryRole};
 
@@ -22,65 +28,251 @@ const OWNER_KINDS: &[&str] = &["root", "track"];
 /// What one visit to the hub came to.
 #[derive(Debug, PartialEq, Eq)]
 enum Visit {
+    /// The owner sent this many groups.
     Published(usize),
-    NotTheOwner { owner: String },
+    /// A studio took this many rows, and this many of them changed its copy.
+    Pulled {
+        rows: usize,
+        applied: usize,
+        owner: OwnerSeen,
+    },
+    NotTheOwner {
+        owner: String,
+    },
+    /// A studio found a hub no owner has published to.
+    NothingToCopy,
 }
 
-/// Take up the role `config.json` gives this install. Read once: a changed
-/// role takes effect at the next launch.
-pub fn start(db: Arc<Db>, config: Arc<Config>) {
-    if let Err(e) = try_start(db, &config) {
-        log::error!("shared library: not started: {e:#}");
+/// Whether anything is feeding the library a studio copies.
+#[derive(Debug, PartialEq, Eq)]
+enum OwnerSeen {
+    Lately,
+    /// The owner has not checked in for this many seconds.
+    Quiet {
+        name: String,
+        secs: i64,
+    },
+    /// No machine holds the owner role.
+    Nobody,
+}
+
+/// How long an owner may go without checking in before a studio says so:
+/// long enough that one slow visit is not news.
+const OWNER_QUIET_AFTER: i64 = 10 * INTERVAL.as_secs() as i64;
+
+/// A duration as an operator reads it.
+fn ago(secs: i64) -> String {
+    let one = |n: i64, unit: &str| format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" });
+    match secs {
+        s if s < 3600 => one((s / 60).max(1), "minute"),
+        s if s < 86_400 => one(s / 3600, "hour"),
+        s => one(s / 86_400, "day"),
     }
 }
 
-fn try_start(db: Arc<Db>, config: &Config) -> Result<()> {
-    let settings = config.external_library();
-    let url = settings.url.filter(|u| !u.trim().is_empty());
-    let (LibraryRole::Owner, Some(url)) = (settings.role, url) else {
-        return db.stop_capture();
+/// An error chain as a sentence.
+fn sentence(text: &str) -> String {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
     };
-    let hub: tokio_postgres::Config = url
-        .parse()
-        .context("externalLibrary.url is not a postgresql:// connection URL")?;
-    let (id, name) = config.machine()?;
-    db.start_capture(now_ms())?;
-    log::info!("shared library: this machine ({name}) is the library owner");
-    tauri::async_runtime::spawn(run(db, hub, Machine { id, name }));
-    Ok(())
+    let mut out: String = first.to_uppercase().chain(chars).collect();
+    if !out.ends_with(['.', '!', '?']) {
+        out.push('.');
+    }
+    out
 }
 
-async fn run(db: Arc<Db>, hub: tokio_postgres::Config, machine: Machine) {
-    let mut prepared = false;
-    // Said once per change, not once per visit: an unreachable hub would
-    // otherwise write the same line every half minute for as long as it is away.
-    let mut last = String::new();
-    loop {
-        let visit = visit(&db, &hub, &machine, &mut prepared).await;
-        let line = match &visit {
-            Ok(Visit::Published(0)) => "the hub is up to date".to_owned(),
-            Ok(Visit::Published(n)) => format!("published {n} changes"),
-            Ok(Visit::NotTheOwner { owner }) => {
-                format!("{owner} is the library owner, so nothing is published from here")
-            }
-            Err(e) => {
-                prepared = false;
-                format!("{e:#}")
-            }
-        };
-        if line != last || matches!(visit, Ok(Visit::Published(n)) if n > 0) {
-            match visit {
-                Ok(Visit::Published(_)) => log::info!("shared library: {line}"),
-                _ => log::warn!("shared library: {line}"),
-            }
-            last = line;
-        }
-        tokio::time::sleep(INTERVAL).await;
+/// Where the shared library stands, for the Settings page.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Status {
+    /// The role this launch took up, which a saved change does not move.
+    pub role: LibraryRole,
+    /// Whether the last visit did what the role asks.
+    pub ok: bool,
+    pub message: String,
+    /// When the hub last answered, unix ms.
+    pub reached_at: Option<i64>,
+}
+
+/// Emitted with a [`Status`] whenever it changes.
+pub const STATE_EVENT: &str = "hub:state";
+/// Emitted when a pull changed this machine's copy of the library.
+pub const LIBRARY_EVENT: &str = "hub:library-changed";
+
+/// The role `config.json` asks for, which needs an address to mean anything.
+pub fn role_in_effect(config: &Config) -> LibraryRole {
+    let settings = config.external_library();
+    match settings.url {
+        Some(url) if !url.trim().is_empty() => settings.role,
+        _ => LibraryRole::Standalone,
     }
 }
 
-/// Claim the owner role and publish what is owed.
-async fn visit(
+/// This machine's part in a shared library, and the worker that plays it.
+pub struct Service {
+    role: LibraryRole,
+    status: Mutex<Status>,
+    app: AppHandle,
+}
+
+impl Service {
+    /// Take up `role`, which the caller has already prepared the database for.
+    /// Read once: a changed role takes effect at the next launch.
+    pub fn start(
+        app: AppHandle,
+        role: LibraryRole,
+        db: Arc<Db>,
+        config: &Config,
+        health: Arc<Health>,
+    ) -> Arc<Self> {
+        let service = Arc::new(Self {
+            role,
+            status: Mutex::new(Status {
+                role,
+                ok: role == LibraryRole::Standalone,
+                message: String::new(),
+                reached_at: None,
+            }),
+            app,
+        });
+        if let Err(e) = Arc::clone(&service).spawn(db, config, health) {
+            log::error!("shared library: not started: {e:#}");
+            service.report(false, sentence(&format!("{e:#}")), false);
+        }
+        service
+    }
+
+    fn spawn(self: Arc<Self>, db: Arc<Db>, config: &Config, health: Arc<Health>) -> Result<()> {
+        if self.role == LibraryRole::Standalone {
+            return db.stop_capture();
+        }
+        let url = config.external_library().url.unwrap_or_default();
+        let hub: tokio_postgres::Config = url
+            .parse()
+            .context("the hub's address is not a postgresql:// connection URL")?;
+        let (id, name) = config.machine()?;
+        match self.role {
+            LibraryRole::Owner => db.start_capture(now_ms())?,
+            _ => db.stop_capture()?,
+        }
+        log::info!("shared library: this machine ({name}) is {:?}", self.role);
+        tauri::async_runtime::spawn(self.run(db, hub, Machine { id, name }, health));
+        Ok(())
+    }
+
+    pub fn is_studio(&self) -> bool {
+        self.role == LibraryRole::Studio
+    }
+
+    pub fn status(&self) -> Status {
+        self.status.lock().clone()
+    }
+
+    /// Refuse a command that is the owner's while this machine is a studio.
+    pub fn gate(&self, command: &str) -> Result<(), &'static str> {
+        if self.is_studio() && OWNER_COMMANDS.contains(&command) {
+            return Err(STUDIO_ERROR);
+        }
+        Ok(())
+    }
+
+    /// Store and announce where things stand. Logged once per change, not once
+    /// per visit: an unreachable hub would otherwise write the same line every
+    /// half minute for as long as it is away.
+    fn report(&self, ok: bool, message: String, reached: bool) {
+        let next = {
+            let mut status = self.status.lock();
+            if status.message != message {
+                if ok {
+                    log::info!("shared library: {message}");
+                } else {
+                    log::warn!("shared library: {message}");
+                }
+            }
+            status.ok = ok;
+            status.message = message;
+            if reached {
+                status.reached_at = Some(now_ms());
+            }
+            status.clone()
+        };
+        let _ = self.app.emit(STATE_EVENT, &next);
+    }
+
+    async fn run(
+        self: Arc<Self>,
+        db: Arc<Db>,
+        hub: tokio_postgres::Config,
+        machine: Machine,
+        health: Arc<Health>,
+    ) {
+        let mut prepared = false;
+        loop {
+            let visit = match self.role {
+                LibraryRole::Owner => publish(&db, &hub, &machine, &mut prepared).await,
+                _ => pull(&db, &hub, &machine).await,
+            };
+            match visit {
+                Ok(Visit::Published(0)) => self.report(true, "The hub is up to date.".into(), true),
+                Ok(Visit::Published(n)) => {
+                    self.report(true, format!("Published {n} changes."), true)
+                }
+                Ok(Visit::Pulled {
+                    rows,
+                    applied,
+                    owner,
+                }) => {
+                    if applied > 0 {
+                        // Entries that were waiting for these tracks, then
+                        // everything that lists what the library holds.
+                        let _ = on(&db, Db::bind_saved_entries).await;
+                        // A pass over the whole library, so not on one of
+                        // the async runtime's own threads.
+                        let report = Arc::clone(&health);
+                        let _ =
+                            tauri::async_runtime::spawn_blocking(move || report.refresh()).await;
+                        let _ = self.app.emit(LIBRARY_EVENT, ());
+                    }
+                    let mut message = match rows {
+                        0 => "This copy is up to date.".to_owned(),
+                        n => format!("Took {n} changes from the library owner."),
+                    };
+                    match owner {
+                        OwnerSeen::Lately => {}
+                        OwnerSeen::Quiet { name, secs } => message.push_str(&format!(
+                            " The library owner, {name}, was last seen {}.",
+                            ago(secs)
+                        )),
+                        OwnerSeen::Nobody => message.push_str(
+                            " No computer is the library owner now, so nothing new will arrive.",
+                        ),
+                    }
+                    self.report(true, message, true);
+                }
+                Ok(Visit::NotTheOwner { owner }) => self.report(
+                    false,
+                    format!("{owner} is the library owner, so nothing is published from here."),
+                    true,
+                ),
+                Ok(Visit::NothingToCopy) => self.report(
+                    false,
+                    "The hub holds no library yet: no owner has published to it.".into(),
+                    true,
+                ),
+                Err(e) => {
+                    prepared = false;
+                    self.report(false, sentence(&format!("{e:#}")), false);
+                }
+            }
+            tokio::time::sleep(INTERVAL).await;
+        }
+    }
+}
+
+/// The owner's visit: claim the role and publish what is owed.
+async fn publish(
     db: &Arc<Db>,
     config: &tokio_postgres::Config,
     machine: &Machine,
@@ -109,6 +301,59 @@ async fn visit(
         hub.publish(machine, &batch).await?;
         published += batch.len();
         on(db, move |db| db.mark_sent(&batch)).await?;
+    }
+}
+
+/// A studio's visit: take what the hub has that this copy does not.
+async fn pull(db: &Arc<Db>, config: &tokio_postgres::Config, machine: &Machine) -> Result<Visit> {
+    let hub = Hub::connect_with(config.clone()).await?;
+    let Some(station) = hub.station().await? else {
+        return Ok(Visit::NothingToCopy);
+    };
+    if station.protocol > PROTOCOL {
+        bail!(
+            "the hub speaks protocol {} and this version speaks {PROTOCOL}: \
+             update RadiodioDJ on this machine",
+            station.protocol
+        );
+    }
+    match on(db, Db::library_id).await? {
+        None => {
+            let id = station.library_id.clone();
+            on(db, move |db| db.follow(&id)).await?;
+        }
+        Some(held) if held == station.library_id => {}
+        Some(_) => bail!(
+            "the hub now holds a different library than this copy was made from: \
+             join the shared library again"
+        ),
+    }
+    hub.check_in(machine).await?;
+    let owner = match station.owner {
+        Some(owner) if owner.id == machine.id => {
+            hub.release(machine).await?;
+            OwnerSeen::Nobody
+        }
+        Some(owner) if owner.quiet_for > OWNER_QUIET_AFTER => OwnerSeen::Quiet {
+            name: owner.name,
+            secs: owner.quiet_for,
+        },
+        Some(_) => OwnerSeen::Lately,
+        None => OwnerSeen::Nobody,
+    };
+    let (mut rows, mut applied) = (0, 0);
+    loop {
+        let after = on(db, Db::pulled_rev).await?;
+        let page = hub.fetch(after, BATCH as i64).await?;
+        if page.is_empty() {
+            return Ok(Visit::Pulled {
+                rows,
+                applied,
+                owner,
+            });
+        }
+        rows += page.len();
+        applied += on(db, move |db| db.apply(&page, now_ms())).await?;
     }
 }
 
@@ -188,7 +433,7 @@ mod tests {
         let db = library(&["One", "Two"]);
         db.add_root("music").unwrap();
 
-        let visit = visit(&db, &hub, &machine("office"), &mut false)
+        let visit = publish(&db, &hub, &machine("office"), &mut false)
             .await
             .unwrap();
 
@@ -209,9 +454,9 @@ mod tests {
         let Some(hub) = test_hub().await else { return };
         let db = library(&["One", "Two"]);
         let me = machine("office");
-        visit(&db, &hub, &me, &mut false).await.unwrap();
+        publish(&db, &hub, &me, &mut false).await.unwrap();
         assert_eq!(
-            visit(&db, &hub, &me, &mut true).await.unwrap(),
+            publish(&db, &hub, &me, &mut true).await.unwrap(),
             Visit::Published(0)
         );
 
@@ -224,7 +469,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            visit(&db, &hub, &me, &mut true).await.unwrap(),
+            publish(&db, &hub, &me, &mut true).await.unwrap(),
             Visit::Published(1)
         );
         assert_eq!(
@@ -237,12 +482,12 @@ mod tests {
     #[tokio::test]
     async fn a_second_owner_is_refused_and_publishes_nothing() {
         let Some(hub) = test_hub().await else { return };
-        visit(&library(&["One"]), &hub, &machine("office"), &mut false)
+        publish(&library(&["One"]), &hub, &machine("office"), &mut false)
             .await
             .unwrap();
         let other = library(&["Intruder"]);
 
-        let visit = visit(&other, &hub, &machine("laptop"), &mut true)
+        let visit = publish(&other, &hub, &machine("laptop"), &mut true)
             .await
             .unwrap();
 
@@ -266,10 +511,10 @@ mod tests {
         let Some(hub) = test_hub().await else { return };
         let me = machine("office");
         let before = library(&["Old one", "Old two"]);
-        visit(&before, &hub, &me, &mut false).await.unwrap();
+        publish(&before, &hub, &me, &mut false).await.unwrap();
         let after = library(&["New"]);
 
-        visit(&after, &hub, &me, &mut true).await.unwrap();
+        publish(&after, &hub, &me, &mut true).await.unwrap();
 
         assert_eq!(titles(&hub).await, ["New"]);
         assert_ne!(after.library_id().unwrap(), before.library_id().unwrap());
@@ -280,7 +525,7 @@ mod tests {
         let Some(hub) = test_hub().await else { return };
         let db = library(&["One"]);
         let me = machine("office");
-        visit(&db, &hub, &me, &mut false).await.unwrap();
+        publish(&db, &hub, &me, &mut false).await.unwrap();
         let id = db.search("", None, None, None).unwrap()[0].id;
         db.reconcile(&crate::library::db::Reconcile {
             gone: vec![id],
@@ -290,7 +535,7 @@ mod tests {
         .unwrap();
         db.purge_tracks(&[id]).unwrap();
 
-        visit(&db, &hub, &me, &mut true).await.unwrap();
+        publish(&db, &hub, &me, &mut true).await.unwrap();
 
         let rows = query(&hub, "SELECT deleted, doc IS NULL FROM hub_rows").await;
         assert_eq!(rows.len(), 1);
@@ -302,15 +547,200 @@ mod tests {
         let Some(hub) = test_hub().await else { return };
         let db = library(&["One"]);
         let me = machine("office");
-        visit(&db, &hub, &me, &mut false).await.unwrap();
+        publish(&db, &hub, &me, &mut false).await.unwrap();
         query(&hub, "UPDATE hub_station SET protocol = protocol + 1").await;
         query(&hub, "DELETE FROM hub_rows").await;
         db.publish_as(&db.library_id().unwrap().unwrap(), 9)
             .unwrap();
 
-        let refused = visit(&db, &hub, &me, &mut true).await.unwrap_err();
+        let refused = publish(&db, &hub, &me, &mut true).await.unwrap_err();
 
         assert!(format!("{refused:#}").contains("protocol"), "{refused:#}");
         assert!(titles(&hub).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_studio_copies_what_the_owner_published() {
+        let Some(hub) = test_hub().await else { return };
+        let owner = library(&["One", "Two"]);
+        publish(&owner, &hub, &machine("office"), &mut false)
+            .await
+            .unwrap();
+        let studio = Arc::new(Db::open_in_memory().unwrap());
+        studio.become_replica().unwrap();
+
+        let visit = pull(&studio, &hub, &machine("studio")).await.unwrap();
+
+        assert_eq!(
+            visit,
+            Visit::Pulled {
+                rows: 2,
+                applied: 2,
+                owner: OwnerSeen::Lately
+            }
+        );
+        assert_eq!(studio.library_id().unwrap(), owner.library_id().unwrap());
+        let ids = |db: &Db| -> Vec<(i64, String)> {
+            let mut all: Vec<_> = db
+                .search("", None, None, None)
+                .unwrap()
+                .into_iter()
+                .map(|t| (t.id, t.title))
+                .collect();
+            all.sort();
+            all
+        };
+        assert_eq!(ids(&studio), ids(&owner));
+        let seen = query(&hub, "SELECT name FROM hub_machines ORDER BY name").await;
+        assert_eq!(seen.len(), 2);
+
+        assert_eq!(
+            pull(&studio, &hub, &machine("studio")).await.unwrap(),
+            Visit::Pulled {
+                rows: 0,
+                applied: 0,
+                owner: OwnerSeen::Lately
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_studio_takes_a_later_change_and_a_purge() {
+        let Some(hub) = test_hub().await else { return };
+        let owner = library(&["One", "Two"]);
+        let me = machine("office");
+        publish(&owner, &hub, &me, &mut false).await.unwrap();
+        let studio = Arc::new(Db::open_in_memory().unwrap());
+        studio.become_replica().unwrap();
+        pull(&studio, &hub, &machine("studio")).await.unwrap();
+
+        let gone = owner.search("Two", None, None, None).unwrap()[0].id;
+        owner
+            .reconcile(&crate::library::db::Reconcile {
+                gone: vec![gone],
+                now_ms: 5,
+                ..Default::default()
+            })
+            .unwrap();
+        owner.purge_tracks(&[gone]).unwrap();
+        owner
+            .insert_track(&TrackInsert {
+                path: "/One.mp3".into(),
+                content_type: "music".into(),
+                title: Some("One again".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        publish(&owner, &hub, &me, &mut true).await.unwrap();
+
+        pull(&studio, &hub, &machine("studio")).await.unwrap();
+
+        let titles: Vec<String> = studio
+            .search("", None, None, None)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.title)
+            .collect();
+        assert_eq!(titles, ["One again"]);
+    }
+
+    #[tokio::test]
+    async fn a_studio_finds_nothing_to_copy_in_a_hub_no_owner_has_used() {
+        let Some(hub) = test_hub().await else { return };
+        let studio = Arc::new(Db::open_in_memory().unwrap());
+        studio.become_replica().unwrap();
+
+        assert_eq!(
+            pull(&studio, &hub, &machine("studio")).await.unwrap(),
+            Visit::NothingToCopy
+        );
+    }
+
+    /// Its ids are the old library's, so taking the new one's rows over them
+    /// would join two unrelated tracks.
+    #[tokio::test]
+    async fn a_studio_stops_when_the_hub_holds_another_library() {
+        let Some(hub) = test_hub().await else { return };
+        let me = machine("office");
+        publish(&library(&["Old"]), &hub, &me, &mut false)
+            .await
+            .unwrap();
+        let studio = Arc::new(Db::open_in_memory().unwrap());
+        studio.become_replica().unwrap();
+        pull(&studio, &hub, &machine("studio")).await.unwrap();
+        publish(&library(&["New"]), &hub, &me, &mut true)
+            .await
+            .unwrap();
+
+        let refused = pull(&studio, &hub, &machine("studio")).await.unwrap_err();
+
+        assert!(format!("{refused:#}").contains("join"), "{refused:#}");
+        assert_eq!(studio.search("", None, None, None).unwrap()[0].title, "Old");
+    }
+
+    async fn joined_studio(hub: &tokio_postgres::Config) -> Arc<Db> {
+        publish(&library(&["One"]), hub, &machine("office"), &mut false)
+            .await
+            .unwrap();
+        let studio = Arc::new(Db::open_in_memory().unwrap());
+        studio.become_replica().unwrap();
+        studio
+    }
+
+    fn owner_seen(visit: Visit) -> OwnerSeen {
+        match visit {
+            Visit::Pulled { owner, .. } => owner,
+            other => panic!("not a pull: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_studio_says_when_the_owner_has_gone_quiet() {
+        let Some(hub) = test_hub().await else { return };
+        let studio = joined_studio(&hub).await;
+        query(
+            &hub,
+            "UPDATE hub_machines SET seen_at = now() - interval '3 hours' WHERE name = 'office'",
+        )
+        .await;
+
+        let seen = owner_seen(pull(&studio, &hub, &machine("studio")).await.unwrap());
+
+        let OwnerSeen::Quiet { name, secs } = seen else {
+            panic!("{seen:?}");
+        };
+        assert_eq!(name, "office");
+        assert_eq!(ago(secs), "3 hours ago");
+    }
+
+    /// The claim would otherwise name an owner that never publishes again.
+    #[tokio::test]
+    async fn an_owner_that_became_a_studio_gives_the_role_up() {
+        let Some(hub) = test_hub().await else { return };
+        let studio = joined_studio(&hub).await;
+
+        let seen = owner_seen(pull(&studio, &hub, &machine("office")).await.unwrap());
+
+        assert_eq!(seen, OwnerSeen::Nobody);
+        let owner = query(&hub, "SELECT owner FROM hub_station").await;
+        assert_eq!(owner[0].get::<_, Option<String>>(0), None);
+    }
+
+    #[test]
+    fn a_duration_reads_in_its_largest_whole_unit() {
+        assert_eq!(ago(20), "1 minute ago");
+        assert_eq!(ago(300), "5 minutes ago");
+        assert_eq!(ago(3600), "1 hour ago");
+        assert_eq!(ago(86_400 * 2 + 5), "2 days ago");
+    }
+
+    #[test]
+    fn an_error_is_shown_as_a_sentence() {
+        assert_eq!(
+            sentence("the hub cannot be reached: connection refused"),
+            "The hub cannot be reached: connection refused."
+        );
+        assert_eq!(sentence("Done."), "Done.");
+        assert_eq!(sentence(""), "");
     }
 }

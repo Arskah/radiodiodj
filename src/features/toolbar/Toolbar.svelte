@@ -9,6 +9,7 @@
     if (app.healthAttention > 0) {
       notes.push(`the library needs attention (${app.healthAttention})`);
     }
+    if (app.hubAttention) notes.push("the shared library needs attention");
     if (app.update.offer) {
       notes.push(`version ${app.update.offer.version} is available`);
     }
@@ -62,6 +63,11 @@
     {:else if app.libraryReset}
       <ErrorBanner
         message="Library rebuilt for this version — rescanning…"
+        type="warning"
+      />
+    {:else if app.libraryJoined}
+      <ErrorBanner
+        message="Joined the shared library — fetching it from the hub…"
         type="warning"
       />
     {/if}
@@ -121,13 +127,19 @@
       title={settingsTitle}
       aria-label={app.healthAttention > 0
         ? `Settings, ${app.healthAttention} library issues`
-        : "Settings"}
+        : app.hubAttention
+          ? "Settings, the shared library needs attention"
+          : "Settings"}
       onclick={openSettings}
     >
       <span class="material-symbols-outlined">settings</span>
       {#if app.healthAttention > 0}
         <span class="attention-badge attention-badge--corner" aria-hidden="true"
           >{app.healthAttention}</span
+        >
+      {:else if app.hubAttention}
+        <span class="attention-badge attention-badge--corner" aria-hidden="true"
+          >!</span
         >
       {:else if app.updateWaiting}
         <span

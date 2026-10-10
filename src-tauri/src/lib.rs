@@ -50,7 +50,9 @@ use library::scanner::now_ms;
 use library::tag_backfill::TagBackfillJob;
 use library::tag_write::TagWriter;
 use library::waveform_scan::{WaveformJob, WaveformStatus};
-use persist::config::{AppearanceConfig, Config, DeviceRef, NowPlayingConfig, TuningConfig};
+use persist::config::{
+    AppearanceConfig, Config, DeviceRef, LibraryRole, NowPlayingConfig, TuningConfig,
+};
 use persist::session::{Session, SessionPlaylistItem, SessionState};
 use playlist::{PlaylistService, Snapshot};
 use std::time::Duration;
@@ -126,6 +128,11 @@ pub struct AppState {
     /// Set when this launch replaced a database from an older epoch, so the
     /// renderer can say why the library is rescanning.
     library_reset: bool,
+    /// Set when this launch replaced the library to join a shared one, so the
+    /// renderer can say why it is empty.
+    library_joined: bool,
+    /// This machine's part in a shared library.
+    hub: Arc<hub::Service>,
     /// The per-user data directory, root of `themes/` and `branding/`.
     data_dir: std::path::PathBuf,
     app_handle: AppHandle,
@@ -136,6 +143,7 @@ struct SessionLoadResult {
     state: SessionState,
     tracks: Vec<Track>,
     library_reset: bool,
+    library_joined: bool,
 }
 
 fn err<E: std::fmt::Display>(e: E) -> String {
@@ -299,6 +307,7 @@ async fn load_session(app: State<'_, AppState>) -> Result<SessionLoadResult, Str
     let session = Arc::clone(&app.session);
     let db = Arc::clone(&app.db);
     let library_reset = app.library_reset;
+    let library_joined = app.library_joined;
     blocking(move || {
         let s = session.load();
         let mut ids: Vec<i64> = Vec::new();
@@ -322,6 +331,7 @@ async fn load_session(app: State<'_, AppState>) -> Result<SessionLoadResult, Str
             state: s,
             tracks,
             library_reset,
+            library_joined,
         })
     })
     .await
@@ -906,6 +916,8 @@ async fn update_track_metadata(
     let health = Arc::clone(&state.health);
     let tag_writer = Arc::clone(&state.tag_writer);
     let waveform = Arc::clone(&state.waveform);
+    // Writing tags to the file and re-deriving cue points are the owner's.
+    let owns_files = !state.hub.is_studio();
     blocking(move || {
         // Read before the write, so the kick below fires on a class that
         // actually moved rather than on every save that carries the field.
@@ -917,13 +929,13 @@ async fn update_track_metadata(
             None => false,
         };
         let track = db.update_track_metadata(&updates).map_err(err)?;
-        if track.edited_fields != 0 {
+        if track.edited_fields != 0 && owns_files {
             tag_writer.request(track.id);
         }
         // The update itself requeued the track: a reclassification changes what
         // automatic analysis would infer. This kicks the pass that drains the
         // queue.
-        if reclassified {
+        if reclassified && owns_files {
             waveform.start(app, Arc::clone(&db), config);
         }
         // Artist and title decide possible duplicates.
@@ -1129,6 +1141,52 @@ fn cue_seek(state: State<'_, AppState>, seconds: f64) -> Result<(), String> {
 #[tauri::command(rename_all = "camelCase")]
 fn cue_set_volume(state: State<'_, AppState>, volume: f32) -> Result<(), String> {
     with_cue(&state, |h| h.send(Cmd::SetVolume(volume)))
+}
+
+/// What the Settings page shows of the shared library: what `config.json`
+/// asks for, and where the role this launch took up stands.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SharedLibrary {
+    role: LibraryRole,
+    url: Option<String>,
+    machine_name: Option<String>,
+    status: hub::Status,
+}
+
+fn shared_library(state: &AppState) -> SharedLibrary {
+    let saved = state.config.external_library();
+    SharedLibrary {
+        role: saved.role,
+        url: saved.url,
+        machine_name: saved.machine_name,
+        status: state.hub.status(),
+    }
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_shared_library(state: State<'_, AppState>) -> SharedLibrary {
+    shared_library(&state)
+}
+
+/// Save the role, the hub's address and this machine's name. None of it takes
+/// effect before the next launch: a role is not changed under a running
+/// playlist.
+#[tauri::command(rename_all = "camelCase")]
+async fn set_shared_library(
+    state: State<'_, AppState>,
+    role: LibraryRole,
+    url: Option<String>,
+    machine_name: Option<String>,
+) -> Result<SharedLibrary, String> {
+    let config = Arc::clone(&state.config);
+    blocking(move || {
+        config
+            .set_external_library(role, url, machine_name)
+            .map_err(err)
+    })
+    .await?;
+    Ok(shared_library(&state))
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -1551,11 +1609,19 @@ fn admin_gated<R: tauri::Runtime>(
     handler: impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static,
 ) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
     move |invoke| {
+        let command = invoke.message.command();
         let refused = invoke
             .message
             .webview()
             .try_state::<AppState>()
-            .and_then(|state| state.admin.gate(invoke.message.command()).err());
+            .and_then(|state| {
+                state
+                    .admin
+                    .gate(command)
+                    .err()
+                    .map(|e| e.to_string())
+                    .or_else(|| state.hub.gate(command).err().map(str::to_owned))
+            });
         if let Some(e) = refused {
             log::warn!("refused {}: {e}", invoke.message.command());
             invoke.resolver.reject(e);
@@ -1685,6 +1751,9 @@ pub fn run() {
                 .level_for("symphonia", log::LevelFilter::Warn)
                 .level_for("symphonia_core", log::LevelFilter::Warn)
                 .level_for("symphonia_bundle_mp3", log::LevelFilter::Error)
+                // At debug it writes every statement with its parameters, which
+                // for the hub is each track's whole document and waveform.
+                .level_for("tokio_postgres", log::LevelFilter::Warn)
                 .max_file_size(1024 * 1024)
                 .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
                 .build(),
@@ -1707,23 +1776,32 @@ pub fn run() {
             }));
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
-            let opened = match Db::open(&data_dir.join("radiodiodj.db")) {
-                Ok(opened) => opened,
-                Err(e) => match e.downcast_ref::<OpenError>() {
-                    Some(refusal) => {
-                        refuse_to_start(app.handle(), refusal);
-                        return Ok(());
-                    }
-                    None => return Err(e.into()),
-                },
-            };
+            let config = Arc::new(Config::open(&data_dir)?);
+            let role = hub::role_in_effect(&config);
+            let studio = role == LibraryRole::Studio;
+            let (opened, library_joined) =
+                match Db::open_for(&data_dir.join("radiodiodj.db"), studio) {
+                    Ok(opened) => opened,
+                    Err(e) => match e.downcast_ref::<OpenError>() {
+                        Some(refusal) => {
+                            refuse_to_start(app.handle(), refusal);
+                            return Ok(());
+                        }
+                        None => return Err(e.into()),
+                    },
+                };
             let library_reset = opened.reset_backup.is_some();
             let db = Arc::new(opened.db);
-            let config = Arc::new(Config::open(&data_dir)?);
             // The library applies the automatic-cue policy on the way out, so
             // it has to know it before anything reads a track.
             let auto_cue = config.get_tuning().auto_cue;
             db.set_auto_cue_policy(auto_cue.apply, auto_cue.apply_next_start);
+            // The folders in `config.json` are keyed by library path ids, and
+            // after a join those ids are the owner's: path 1 there need not be
+            // path 1 here. So a studio starts with every path unlocated.
+            if library_joined {
+                config.adopt_mounts(BTreeMap::new())?;
+            }
             // Nor can it name a file until it knows where this machine keeps
             // each library path. A failure leaves the paths unlocated, which
             // plays nothing from them but loses nothing either.
@@ -1741,7 +1819,7 @@ pub fn run() {
                 Some(app.handle().clone()),
             ));
             let session = Arc::new(Session::open(&data_dir));
-            if library_reset {
+            if library_reset || library_joined {
                 session.forget_tracks()?;
             }
             // Pass the saved DeviceRef (not a pre-resolved device): the worker
@@ -1782,11 +1860,21 @@ pub fn run() {
             // Backfill waveforms, loudness and automatic cue points for any
             // already-indexed track that lacks one, without waiting for the
             // next scan. No-op on an empty library.
-            Arc::clone(&waveform).start(app.handle().clone(), Arc::clone(&db), Arc::clone(&config));
+            // Not on a studio, here or below: decoding, reading tags, checking
+            // the disk and scanning are the library owner's.
+            if !studio {
+                Arc::clone(&waveform).start(
+                    app.handle().clone(),
+                    Arc::clone(&db),
+                    Arc::clone(&config),
+                );
+            }
             let tag_backfill = Arc::new(TagBackfillJob::default());
             // Fill tag columns added after a row was last read. No-op once
             // every row is at the current version, which is the steady state.
-            Arc::clone(&tag_backfill).start(app.handle().clone(), Arc::clone(&db));
+            if !studio {
+                Arc::clone(&tag_backfill).start(app.handle().clone(), Arc::clone(&db));
+            }
             let tag_writer = TagWriter::new(Arc::clone(&db), Arc::clone(&config));
             let health = Health::new(
                 app.handle().clone(),
@@ -1802,8 +1890,10 @@ pub fn run() {
                 Arc::clone(&health),
                 Arc::clone(&waveform),
             );
-            check.start(app.handle());
-            if library_reset {
+            if !studio {
+                check.start(app.handle());
+            }
+            if library_reset && !studio {
                 Arc::clone(&scan).start(
                     app.handle().clone(),
                     Arc::clone(&db),
@@ -1813,7 +1903,13 @@ pub fn run() {
             }
             let updater = Updater::new(app.handle().clone(), Arc::clone(&config));
             updater.start();
-            hub::start(Arc::clone(&db), Arc::clone(&config));
+            let hub = hub::Service::start(
+                app.handle().clone(),
+                role,
+                Arc::clone(&db),
+                &config,
+                Arc::clone(&health),
+            );
             app.manage(AppState {
                 db,
                 config,
@@ -1834,6 +1930,8 @@ pub fn run() {
                 app_handle: app.handle().clone(),
                 data_dir: data_dir.clone(),
                 library_reset,
+                library_joined,
+                hub,
             });
             Ok(())
         })
@@ -1919,6 +2017,8 @@ pub fn run() {
             get_waveform,
             get_waveform_detail,
             get_cover_art,
+            get_shared_library,
+            set_shared_library,
             get_now_playing_config,
             set_now_playing_config,
             get_tuning_config,

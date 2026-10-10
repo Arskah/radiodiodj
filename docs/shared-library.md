@@ -1,9 +1,11 @@
 # Shared library
 
-**Partly built.** [Change capture](#change-capture) is, and so is an owner
-[publishing its library to the hub](#the-hub). Nothing takes the library back
-out of the hub yet: there is no `studio` role, no outbox for operator work and
-no catalogue. This is the design of the variant [external-library.md](./external-library.md) settles on, B3: every
+**Partly built.** An owner [publishes its library to the hub](#the-hub) and a
+studio [copies it](#applying-a-pull), which is what takes the scan and the
+decode off the studio machine. Not built: the outbox, so cue points, metadata
+edits, hidden tracks, saved playlists and dismissals made on one machine stay
+on it — the owner included, whose own edits in the app reach no studio yet; the owner's automatic cue settings reaching a studio; the catalogue.
+Each is marked where it is described. This is the design of the variant [external-library.md](./external-library.md) settles on, B3: every
 machine keeps its own SQLite library, one of them owns the scan, and a Postgres
 **hub** sits between them. That page argues why; this one says what gets built.
 Tracked as [#505](https://github.com/Arskah/radiodiodj/issues/505).
@@ -16,9 +18,9 @@ file is the contract a web page writes
 
 ## Roles
 
-One setting, `externalLibrary.role` in `config.json`, with three values. It is
-read at launch, so changing it takes a restart, and there is no Settings page
-for it yet — the section is written by hand:
+One setting with three values, under _Settings → Shared Library_, admin only.
+It is read at launch, so a change takes a restart: a role is never changed
+under a running playlist. It is the `externalLibrary` section of `config.json`:
 
 ```json
 "externalLibrary": {
@@ -29,8 +31,17 @@ for it yet — the section is written by hand:
 ```
 
 `machineId` appears beside them the first time the app starts in a role, and is
-what the hub knows this install by from then on. `studio` is not a value this
-build accepts: it reads as `standalone`.
+what the hub knows this install by from then on. A role with no address is
+`standalone`, and so is a role this build does not know — the alternative is
+the whole of `config.json` failing to parse over one word.
+
+The page also says where the running role stands: the last thing the worker
+found, and when the hub last answered. A hub that cannot be reached, or a role
+this machine cannot play — an owner refused because another machine is the
+owner, a studio at a hub nobody has published to — puts a mark on the Settings
+button and on the tab, as a library health finding does. A studio also says
+when nothing is feeding it: the owner has not checked in for five minutes, or
+no machine holds the role.
 
 | role         | scans and decodes | reads                  | talks to the hub                  |
 | ------------ | ----------------- | ---------------------- | --------------------------------- |
@@ -248,6 +259,9 @@ transaction. Taking the role over from a machine that is gone is to be an
 admin's confirmed click, and is not built; until it is, the way is to clear
 `hub_station.owner` by hand.
 
+**A machine that becomes a studio gives the role up.** Its claim would
+otherwise name an owner that never publishes again.
+
 **One library.** `library_id` is stamped when the owner first publishes, and
 kept in its `sync_local`. An owner that finds the hub holding any other id —
 its own database was replaced, or it was pointed at a hub it never published
@@ -324,12 +338,29 @@ empty, with the library it replaces; the old file keeps the old ones.
 is marked pending, and the first push publishes it.
 
 **Becoming a studio replaces this machine's library**, because its track ids
-are its own and the owner's are the station's. It is the baseline reset the app
-already has ([database.md](./database.md#baseline-resets)): the old file is
-kept, the ids in `session.json` are dropped, and the toolbar says why. Like
-that reset it happens **at the next launch**, never under a running playlist,
-and the library is empty until the first pull finishes — joining is done off
-air.
+are its own and the owner's are the station's. It works as the baseline reset
+does ([database.md](./database.md#baseline-resets)): the old file is kept, as
+`radiodiodj.standalone.bak.db` (a later join never writes over it, and is kept
+as `standalone.2.bak.db`); the ids in `session.json` are dropped; and the
+toolbar says why the library is empty until the hub has answered. Like that
+reset it happens **at the next launch**, never under a running playlist —
+Settings asks before saving the role — and the library is empty until the
+first pull finishes, so joining is done off air. A library that holds nothing
+is not set aside, only marked.
+
+What says a database is a studio's copy is `sync_local.replica`, so a studio
+keeps its copy from one launch to the next and a hand-edited role cannot fill
+a library that was never set aside.
+
+**The library paths arrive unlocated.** A studio gets the owner's paths by id
+and content type; where each is on this machine is _Locate_, under _Settings →
+Library_, as for any path whose folder this computer has not been told
+([library.md](./library.md#where-a-library-path-is)). Until then its tracks
+are listed and cannot be loaded.
+
+**Joining again.** A studio whose hub now holds a different library stops and
+says so. Setting the role to _Not shared_, restarting, and setting it back
+joins from the start.
 
 **Leaving** keeps the copy and turns capture off. The machine is a standalone
 station with the library it last pulled.
@@ -340,19 +371,27 @@ The role gates the jobs, not only their buttons.
 
 - The scan, _Scan when files change_, the analysis pass, the tag backfill, the
   library check and its timer, _Recalculate now_, purge, and adding or removing
-  a library path. Their commands are refused with the reason, as admin mode
-  refuses a locked one.
-- The tag writer. A metadata edit made on a studio reaches the owner as an
+  a library path. The jobs are never started, and their commands are refused
+  with the reason, as admin mode refuses a locked one: the list is
+  `hub::OWNER_COMMANDS`, checked by the same wrapper. Their controls are
+  disabled with that reason as the tooltip.
+- The tag writer. A metadata edit made on a studio is to reach the owner as an
   `edit` group, and the owner writes it to the file if _Write edits to file
-  tags_ is on there.
+  tags_ is on there. Until the outbox exists the edit stays on the studio.
+- Reverting a metadata edit to the file's tags. The file is the owner's to
+  read: a studio whose path is located at the wrong folder, or at a stale copy,
+  would send another file's tags to every machine. A studio undoes an edit by
+  editing it back.
 - The second half of `set_mounts`. _Locate_ works — the folder is this
   machine's — but re-deriving which root each track is under does not run:
   `root_id` and `path` are the owner's columns.
 - Forgetting a dismissal whose finding is gone, which `health::build` does on
   every report. A studio that is behind would otherwise delete a dismissal the
-  owner still needs and send the tombstone to everyone.
+  owner still needs and send the tombstone to everyone. Not gated yet: nothing
+  a studio does is sent anywhere until the outbox.
 
-**Automatic cue settings are the station's.** The thresholds shape what is
+**Automatic cue settings are the station's.** Not built: a studio still uses
+its own. The thresholds shape what is
 stored, and `autoCue.apply` and `autoCue.applyNextStart` decide what airs, so
 all of them are the owner's: published in `hub_station.settings`, applied on
 every studio as they arrive, and shown there read-only. The station sounds the

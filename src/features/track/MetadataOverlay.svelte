@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from "../../shared/state.svelte";
+  import { OWNER_ONLY } from "../../shared/sharedLibrary";
   import { EditedField } from "../../shared/types";
 
   const MIN_YEAR = 1900;
@@ -431,8 +432,10 @@
               id="btn-metadata-revert"
               class="btn btn-revert"
               onclick={() => (confirmingRevert = true)}
-              disabled={saving}
-              title="Discard the edited fields and read them from the file again"
+              disabled={saving || app.isStudio}
+              title={app.isStudio
+                ? OWNER_ONLY
+                : "Discard the edited fields and read them from the file again"}
               >Revert to file tags</button
             >
           {/if}
