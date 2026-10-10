@@ -320,7 +320,10 @@ mark what changed in `sync_rows`, per **group** rather than per row, and only
 while `sync_local.capture` is on — off for a standalone library. A **studio**
 never scans or decodes: its database is a copy filled by `Db::apply` under the
 owner's track ids, which keeps a column this machine edited and a trio it cued
-by hand. The hub shares
+by hand. The connection to the hub is encrypted and its certificate checked
+unless an operator allowed otherwise — TLS is tried first even then, so
+plaintext is never a default and never a fallback from a bad certificate. The
+hub shares
 a library and not a station: the airing log, History, the rotation rules and
 play counts never cross it. See [docs/shared-library.md](docs/shared-library.md).
 

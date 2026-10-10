@@ -5,8 +5,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
-use tokio_postgres::Config;
+use parking_lot::Mutex;
+use rustls::pki_types::CertificateDer;
+use rustls_platform_verifier::Verifier;
+use tokio_postgres::config::{SslMode, SslNegotiation};
+use tokio_postgres::{Config, Socket};
 use tokio_postgres_rustls::MakeRustlsConnect;
+
+use super::certs;
+use crate::persist::config::ExternalLibraryConfig;
 
 use super::schema::{PROTOCOL, STATION_LOCK, TABLES};
 use crate::library::db::{Incoming, Outgoing};
@@ -52,36 +59,146 @@ pub struct Owner {
     pub quiet_for: i64,
 }
 
+/// How to reach the hub: its address, and what this machine accepts of the
+/// connection. See `docs/shared-library.md#reaching-the-hub`.
+pub struct Link {
+    config: Config,
+    allow_unencrypted: bool,
+    ca: Vec<CertificateDer<'static>>,
+    /// Whether the last connection that opened was encrypted.
+    encrypted: Mutex<Option<bool>>,
+}
+
+impl Link {
+    pub fn new(settings: &ExternalLibraryConfig) -> Result<Self> {
+        let mut config: Config = settings
+            .url
+            .as_deref()
+            .unwrap_or_default()
+            .parse()
+            .context("the hub's address is not a postgresql:// connection URL")?;
+        config.connect_timeout(Duration::from_secs(10));
+        config.application_name("radiodiodj");
+        if settings.direct_tls {
+            config.ssl_negotiation(SslNegotiation::Direct);
+        }
+        let ca = match &settings.ca_certificate {
+            Some(pem) => certs::parse(pem).context("the hub's CA certificate")?,
+            None => Vec::new(),
+        };
+        Ok(Self {
+            config,
+            allow_unencrypted: settings.allow_unencrypted,
+            ca,
+            encrypted: Mutex::new(None),
+        })
+    }
+
+    /// A link to a test database, which is addressed by more than a URL can
+    /// say.
+    #[cfg(test)]
+    pub fn over(config: Config, allow_unencrypted: bool, ca: Vec<CertificateDer<'static>>) -> Self {
+        Self {
+            config,
+            allow_unencrypted,
+            ca,
+            encrypted: Mutex::new(None),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
+    /// Whether the last connection that opened was encrypted, once one has.
+    pub fn encrypted(&self) -> Option<bool> {
+        *self.encrypted.lock()
+    }
+
+    /// TLS as this machine accepts it: a certificate from an authority the
+    /// system trusts or from the station's own, for the host name asked for.
+    fn tls(&self) -> Result<MakeRustlsConnect> {
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let verifier = Verifier::new_with_extra_roots(self.ca.iter().cloned(), provider.clone())?;
+        let mut tls = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()?
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(verifier))
+            .with_no_client_auth();
+        // What a proxy ending TLS in front of the hub routes on, and what
+        // Postgres itself insists on when the handshake comes first.
+        tls.alpn_protocols = vec![b"postgresql".to_vec()];
+        Ok(MakeRustlsConnect::new(tls))
+    }
+
+    /// Open a connection. Encrypted, unless the operator allowed otherwise
+    /// and the hub offers nothing else: TLS is always tried first, so a
+    /// connection is never plaintext because of a default.
+    pub async fn connect(&self) -> Result<Hub> {
+        let mut config = self.config.clone();
+        config.ssl_mode(SslMode::Require);
+        match timed(config.connect(self.tls()?)).await {
+            Ok(opened) => return Ok(self.opened(opened, true)),
+            Err(e) if !offers_no_tls(&e) => return Err(explained(e)),
+            Err(_) if !self.allow_unencrypted => bail!(
+                "the hub does not offer an encrypted connection: enable TLS on it, \
+                 or allow an unencrypted connection under Shared Library"
+            ),
+            Err(_) => {}
+        }
+        config.ssl_mode(SslMode::Disable);
+        let opened = timed(config.connect(tokio_postgres::NoTls))
+            .await
+            .map_err(explained)?;
+        Ok(self.opened(opened, false))
+    }
+
+    fn opened<S>(
+        &self,
+        (client, connection): (
+            tokio_postgres::Client,
+            tokio_postgres::Connection<Socket, S>,
+        ),
+        encrypted: bool,
+    ) -> Hub
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = connection.await {
+                log::debug!("hub connection closed: {e}");
+            }
+        });
+        *self.encrypted.lock() = Some(encrypted);
+        Hub { client }
+    }
+}
+
+/// Whether a connection failed because the server has no TLS to offer —
+/// the one failure an unencrypted connection is an answer to.
+fn offers_no_tls(e: &anyhow::Error) -> bool {
+    format!("{e:#}").contains("server does not support TLS")
+}
+
+/// A failed connection as the operator should read it: what to do, where
+/// Settings can do something, and what happened otherwise.
+fn explained(e: anyhow::Error) -> anyhow::Error {
+    match certs::advice(e.as_ref()) {
+        Some(advice) => {
+            log::debug!("hub connection refused: {e:#}");
+            anyhow!(advice)
+        }
+        None => e.context("the hub cannot be reached"),
+    }
+}
+
 /// A connection to the hub.
 pub struct Hub {
     client: tokio_postgres::Client,
 }
 
 impl Hub {
-    /// Whether TLS is used is the URL's `sslmode` to say; the connector is
-    /// there either way.
-    pub async fn connect_with(mut config: Config) -> Result<Self> {
-        config.connect_timeout(Duration::from_secs(10));
-        config.application_name("radiodiodj");
-        let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::aws_lc_rs::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()?;
-        let tls = {
-            use rustls_platform_verifier::BuilderVerifierExt;
-            tls.with_platform_verifier()?.with_no_client_auth()
-        };
-        let (client, connection) = timed(config.connect(MakeRustlsConnect::new(tls)))
-            .await
-            .context("the hub cannot be reached")?;
-        tauri::async_runtime::spawn(async move {
-            if let Err(e) = connection.await {
-                log::debug!("hub connection closed: {e}");
-            }
-        });
-        Ok(Self { client })
-    }
-
     /// Create the hub's tables where they are missing. The owner's to run.
     pub async fn create_tables(&self) -> Result<()> {
         timed(self.client.batch_execute(TABLES)).await
@@ -284,5 +401,171 @@ where
     match tokio::time::timeout(TIMEOUT, call).await {
         Ok(result) => result.map_err(Into::into),
         Err(_) => bail!("the hub did not answer in {} s", TIMEOUT.as_secs()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The plain test database, as [`super::super::worker`]'s tests reach it.
+    fn plain() -> Option<Config> {
+        Some(std::env::var("RADIODIODJ_TEST_HUB").ok()?.parse().unwrap())
+    }
+
+    /// A test database that offers TLS under a private authority:
+    /// `RADIODIODJ_TEST_HUB_TLS` is its URL and `RADIODIODJ_TEST_HUB_CA` the
+    /// path of the authority's certificate. `None` without both.
+    fn with_tls() -> Option<(Config, Vec<CertificateDer<'static>>)> {
+        let url = std::env::var("RADIODIODJ_TEST_HUB_TLS").ok()?;
+        let ca = std::fs::read_to_string(std::env::var("RADIODIODJ_TEST_HUB_CA").ok()?).unwrap();
+        Some((url.parse().unwrap(), certs::parse(&ca).unwrap()))
+    }
+
+    fn refusal(outcome: Result<Hub>) -> String {
+        match outcome {
+            Ok(_) => panic!("the connection opened"),
+            Err(e) => format!("{e:#}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_private_authority_is_trusted_once_it_is_named() {
+        let Some((config, ca)) = with_tls() else {
+            return;
+        };
+        let link = Link::over(config, false, ca);
+
+        link.connect().await.unwrap();
+
+        assert_eq!(link.encrypted(), Some(true));
+    }
+
+    #[tokio::test]
+    async fn a_certificate_from_an_unknown_authority_is_refused_with_what_to_do() {
+        let Some((config, _)) = with_tls() else {
+            return;
+        };
+        let link = Link::over(config, false, Vec::new());
+
+        let why = refusal(link.connect().await);
+
+        assert!(why.contains("CA certificate"), "{why}");
+        assert_eq!(link.encrypted(), None);
+    }
+
+    /// Allowing plaintext is an answer to a hub with no TLS, not to one whose
+    /// certificate cannot be trusted.
+    #[tokio::test]
+    async fn an_untrusted_certificate_is_not_answered_with_plaintext() {
+        let Some((config, _)) = with_tls() else {
+            return;
+        };
+        let link = Link::over(config, true, Vec::new());
+
+        let why = refusal(link.connect().await);
+
+        assert!(why.contains("CA certificate"), "{why}");
+    }
+
+    #[tokio::test]
+    async fn a_certificate_for_another_name_is_refused() {
+        let Some((config, ca)) = with_tls() else {
+            return;
+        };
+        // The same server, asked for by a name its certificate does not carry.
+        let mut renamed = Config::new();
+        renamed
+            .host("hub.invalid")
+            .hostaddr([127, 0, 0, 1].into())
+            .port(config.get_ports()[0])
+            .user(config.get_user().unwrap())
+            .dbname(config.get_dbname().unwrap());
+        if let Some(password) = config.get_password() {
+            renamed.password(password);
+        }
+        let link = Link::over(renamed, false, ca);
+
+        let why = refusal(link.connect().await);
+
+        assert!(why.contains("another host name"), "{why}");
+    }
+
+    #[tokio::test]
+    async fn a_hub_without_tls_is_refused_unless_plaintext_is_allowed() {
+        let Some(config) = plain() else { return };
+
+        let strict = Link::over(config.clone(), false, Vec::new());
+        let why = refusal(strict.connect().await);
+        assert!(why.contains("allow an unencrypted connection"), "{why}");
+
+        let lenient = Link::over(config, true, Vec::new());
+        lenient.connect().await.unwrap();
+        assert_eq!(lenient.encrypted(), Some(false));
+    }
+
+    /// TLS is tried first even when plaintext is allowed, so allowing it
+    /// never costs an encryption the hub offers.
+    #[tokio::test]
+    async fn allowing_plaintext_still_encrypts_where_the_hub_can() {
+        let Some((config, ca)) = with_tls() else {
+            return;
+        };
+        let link = Link::over(config, true, ca);
+
+        link.connect().await.unwrap();
+
+        assert_eq!(link.encrypted(), Some(true));
+    }
+
+    /// Postgres takes a handshake that comes first from version 17 on; an
+    /// older test server has nothing to say about this.
+    #[tokio::test]
+    async fn the_handshake_can_come_first() {
+        let Some((mut config, ca)) = with_tls() else {
+            return;
+        };
+        let probe = Link::over(config.clone(), false, ca.clone());
+        let version: String = probe
+            .connect()
+            .await
+            .unwrap()
+            .client
+            .query_one("SHOW server_version_num", &[])
+            .await
+            .unwrap()
+            .get(0);
+        if version.parse::<i32>().unwrap() < 170_000 {
+            return;
+        }
+        config.ssl_negotiation(SslNegotiation::Direct);
+        let link = Link::over(config, false, ca);
+
+        link.connect().await.unwrap();
+
+        assert_eq!(link.encrypted(), Some(true));
+    }
+
+    #[test]
+    fn an_address_that_is_not_a_url_is_said_to_be_one() {
+        let settings = ExternalLibraryConfig {
+            url: Some("hub.example.org".into()),
+            ..Default::default()
+        };
+        let why = Link::new(&settings)
+            .err()
+            .map(|e| format!("{e:#}"))
+            .unwrap();
+        assert!(why.contains("connection URL"), "{why}");
+    }
+
+    #[test]
+    fn a_ca_certificate_that_is_not_one_is_refused_before_connecting() {
+        let settings = ExternalLibraryConfig {
+            url: Some("postgresql://hub/x".into()),
+            ca_certificate: Some("nonsense".into()),
+            ..Default::default()
+        };
+        assert!(Link::new(&settings).is_err());
     }
 }
