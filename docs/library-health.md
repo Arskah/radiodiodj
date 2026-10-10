@@ -363,11 +363,12 @@ tracks](#unreadable-tracks) instead, so the note does not stay up for good.
 
 ### Possible duplicates
 
-Present **music** tracks with the same artist, album and title but different
-audio, usually the same song in another encoding or edit. In practice they
-almost always are the same recording, so the operator is told and decides.
+Present **music** tracks with the same artist and title but different audio,
+usually the same song in another encoding or edit, or on another release. In
+practice they almost always are the same recording, so the operator is told and
+decides.
 
-Artist, album and title are compared after:
+Artist and title are compared after:
 
 - lower-casing
 - turning every run of anything but letters and digits into one space
@@ -375,19 +376,35 @@ Artist, album and title are compared after:
 Words are kept, so `Song (Remix)` and `Song` stay apart, while `Don't Stop!!`
 and `DON'T STOP` match.
 
-The album keeps an artist's many _Intro_ tracks apart. A track without an album
-(or with the scanner's `Unknown`) matches any album, so a loose file still sits
-with its album copy. The one exception: when the title is on two or more
-albums, a track without an album cannot pick one, so it is grouped only with
-other tracks that have no album.
+The album is not compared. The same song on its album, a single and a
+compilation is one group, and the copies not wanted on air are
+[hidden](#hidden-tracks).
 
-| same artist and title, albums | grouped                       |
-| ----------------------------- | ----------------------------- |
-| `A`, `A`                      | yes                           |
-| `A`, `B`                      | no                            |
-| `A`, none                     | yes                           |
-| `A`, `B`, none                | no                            |
-| `A`, `B`, none, none          | only the two without an album |
+#### Typos
+
+Two spellings are also grouped when one field is the same and the other is one
+typo away — the same artist under two close titles, or the same title under two
+close artists. One typo is either of:
+
+- **one edit in one word** of four letters or more, every other word the same.
+  An edit is a letter added, dropped or changed, or two neighbours swapped.
+- **one edit once the spaces are taken out**, when the words are split
+  differently and the name is five letters or more without them. A whole word
+  added or dropped is not a typo.
+
+| titles                               | grouped | why                     |
+| ------------------------------------ | ------- | ----------------------- |
+| `Possesion`, `Possession`            | yes     | one letter              |
+| `Kraftwerk`, `Kraftwrek`             | yes     | a swap                  |
+| `Dope Man`, `Dopeman`                | yes     | the word break          |
+| `Believe`, `I Believe`               | no      | a whole word            |
+| `Part I`, `Part II`                  | no      | the word is too short   |
+| `Club Mix`, `Club Remix`             | no      | the word is too short   |
+| `Symphony 15`, `Symphony 16`         | no      | the edit is in a number |
+| `Fussin and Fightin`, `Fussing and…` | no      | two words differ        |
+| `Humppatauti`, `Humppatähti`         | no      | two edits               |
+
+Typos chain: three spellings each one edit from the next are one group.
 
 Left out:
 
@@ -483,8 +500,7 @@ The renderer loads it with `library_health` and replaces it on every
 
 - when a scan starts, finishes, is canceled or fails
 - when the analysis pass starts or finishes
-- after a metadata edit, since artist, album and title decide possible
-  duplicates
+- after a metadata edit, since artist and title decide possible duplicates
 - after a library path is added or removed
 - after a purge, a hide or restore, a dismissal, and every check
 - when a check starts, and when one ends without a report (canceled by a scan,
@@ -603,16 +619,25 @@ an operator to learn.
 **No merging.** Folding one track into another means rewriting queued items,
 history and play counts. Keeping one copy covers the real case.
 
-**Possible duplicates from the start.** Tracks that share an artist, album and
-title are nearly always the same recording. The notice is worth more than the
+**Possible duplicates from the start.** Tracks that share an artist and a title
+are nearly always the same recording. The notice is worth more than the
 occasional wrong group, which _Dismiss_ handles.
 
-**The album is part of the match.** Artist and title alone grouped every
-_Intro_, _Outro_ and _Skit_ an artist ever released. With the album, a song on
-both a single and an album, or on a compilation, is no longer a possible
-duplicate. Exact copies are still found by fingerprint, so only a re-encode on
-another release is missed. A list of generic titles would keep that catch, but
-depends on the language of the library.
+**The album is not part of the match.** It was, once: artist and title alone
+grouped every _Intro_, _Outro_ and _Skit_ an artist ever released, and nothing
+could be done about a group but dismiss it. That also hid the common case, the
+same song on an album and on a compilation, which is exactly the copy a station
+does not want aired twice as often. Since a track can be
+[hidden](#hidden-tracks) the group has an answer that leaves the file alone, so
+the wider match is worth its _Intro_ groups, which are dismissed once.
+
+**One typo, and only where a typo is likely.** A wider budget finds more, and
+most of what it adds is different songs: `Part I` and `Part II`, `Mix` and
+`Remix`, `Believe` and `I Believe`, `Life` and `Time`. So a short word is never
+a typo, a number is never one, an added word is never one, and a second edit is
+a different title. Only one field may differ, because
+with both loose every pair of tracks in the library is a candidate; a typo in
+the artist and the title of the same file is rare enough to miss.
 
 **A timer, not a watcher.** FSEvents and inotify do not report changes made by
 other SMB or NFS clients, which is where this library lives.
