@@ -115,13 +115,17 @@
   >
 {/snippet}
 
-{#snippet name(t: { title: string; artist: string; album: string })}
+{#snippet name(
+  t: { title: string; artist: string; album: string },
+  path: string,
+)}
   <span class="health-name">
     <span class="health-title">{t.title}</span>
     <span class="health-sub"
       >{t.artist}{#if t.album}
         — {t.album}{/if}</span
     >
+    <span class="health-path" title={path}>{path}</span>
   </span>
 {/snippet}
 
@@ -148,8 +152,7 @@
       checked={selected.has(t.id)}
       onchange={() => toggle(t.id)}
     />
-    {@render name(t)}
-    <span class="health-path" title={t.path}>{t.path}</span>
+    {@render name(t, t.path)}
     <span class="health-when" title={new Date(t.missingSince).toLocaleString()}
       >{formatAgo(t.missingSince)}</span
     >
@@ -185,8 +188,7 @@
     </summary>
     {#each g.tracks as m (m.track.id)}
       <div class="health-row">
-        {@render name(m.track)}
-        <span class="health-path" title={m.path}>{m.path}</span>
+        {@render name(m.track, m.path)}
         <span class="health-type">{m.contentType}</span>
         <span class="health-duration" class:trimmed={isTrimmed(m.track)}
           >{formatTime(airDuration(m.track))}</span
@@ -309,8 +311,7 @@
       </p>
       {#each report.tagWriteFailures as f (f.id)}
         <div class="health-row">
-          {@render name(f)}
-          <span class="health-path" title={f.path}>{f.path}</span>
+          {@render name(f, f.path)}
           <span class="health-error" title={f.error}>{f.error}</span>
           <span class="health-actions">
             <button
@@ -344,8 +345,7 @@
       </p>
       {#each report.unreadable as u (u.track.id)}
         <div class="health-row">
-          {@render name(u.track)}
-          <span class="health-path" title={u.path}>{u.path}</span>
+          {@render name(u.track, u.path)}
           <span class="health-error" title={u.error}>{u.error}</span>
           <span class="health-actions">
             <button
@@ -377,8 +377,7 @@
       {#each report.badDurations as b (b.track.id)}
         {@const text = badDurationText(b, formatTime)}
         <div class="health-row">
-          {@render name(b.track)}
-          <span class="health-path" title={b.path}>{b.path}</span>
+          {@render name(b.track, b.path)}
           <span class="health-error" title={text}>{text}</span>
           <span class="health-actions">
             <button
@@ -501,8 +500,7 @@
         </p>
         {#each report.hidden as t (t.id)}
           <div class="health-row">
-            {@render name(t)}
-            <span class="health-path" title={t.path}>{t.path}</span>
+            {@render name(t, t.path)}
             <span class="health-type">{t.contentType}</span>
             <span
               class="health-when"
@@ -655,7 +653,7 @@
   .health-name {
     display: flex;
     flex-direction: column;
-    flex: 0 1 18rem;
+    flex: 1 1 12rem;
     min-width: 0;
   }
 
@@ -676,8 +674,6 @@
   }
 
   .health-path {
-    flex: 1 1 0;
-    min-width: 0;
     color: var(--on-surface-variant);
     font-family: var(--font-mono);
     font-size: 11px;
@@ -698,6 +694,10 @@
 
   .health-duration.trimmed {
     color: var(--cue-in-color);
+  }
+
+  .health-error {
+    max-width: 40%;
   }
 
   .health-icons,

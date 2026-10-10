@@ -51,25 +51,31 @@ across _Advanced_.
 │   [Check now]                                                │
 │                                                              │
 │ Unreadable tracks (1)                                        │
-│   Title / Artist — Album  …/bad.mp3  fingerprint: probe: … F │
+│   Title / Artist — Album       fingerprint: probe: …       F │
+│   /music/bad.mp3                                             │
 │                                                              │
 │ Bad durations (1)                                            │
-│   Title / Artist — Album  …/vbr.mp3  tag 24:37, audio 3:58 F │
+│   Title / Artist — Album   tag says 24:37, audio is 3:58   F │
+│   /music/vbr.mp3                                             │
 │                                                              │
 │ Missing tracks (5)                                [Dismiss]  │
-│   ☐ Title / Artist — Album  …/old/path.mp3  2 d ago ◇ ▶12 ≡  │
+│   ☐ Title / Artist — Album                2 d ago   ◇ ▶12  ≡ │
+│     /music/old/path.mp3                                      │
 │   ☐ ▸ No longer under a library path (812)                   │
 │   [Purge selected (1)…] [Purge all…]                         │
 │                                                              │
 │ ▸ Hidden tracks (3)                            [Restore all] │
-│     Title / Artist — Album  /comp/Title.mp3  music  2 d ago R│
+│     Title / Artist — Album                 music  2 d ago  R │
+│     /comp/Title.mp3                                          │
 │                                                              │
 │ Duplicates                                                   │
 │   Still checking 140 tracks for exact copies…                │
 │   Exact copies (2)                                           │
 │   ▾ Title — Artist   2 copies                     [Dismiss]  │
-│     Title / Artist — Album  /a/Title.mp3  music 3:34 ▶12 FECH│
-│     Title / Artist — Album  /b/Title.mp3  music 3:34 ▶0  FECH│
+│       Title / Artist — Album        music  3:34  ▶12 F E C H │
+│       /a/Title.mp3                                           │
+│       Title / Artist — Album        music  3:34  ▶0  F E C H │
+│       /b/Title.mp3                                           │
 │   Possible duplicates (1)                                    │
 │   ▸ Title — Artist   2 copies   Dismissed   [Undo dismiss]   │
 └──────────────────────────────────────────────────────────────┘
