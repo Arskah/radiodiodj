@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.0](https://github.com/Arskah/radiodiodj/compare/v0.30.0...v0.31.0) (2026-10-10)
+
+
+### Features
+
+* **library:** find possible duplicates across albums and typos ([#622](https://github.com/Arskah/radiodiodj/issues/622)) ([5f2261a](https://github.com/Arskah/radiodiodj/commit/5f2261af82241c49faf8e198daba51976ecf0ffe))
+
 ## [0.30.0](https://github.com/Arskah/radiodiodj/compare/v0.29.0...v0.30.0) (2026-10-07)
 
 
