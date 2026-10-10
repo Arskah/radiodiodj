@@ -21,7 +21,7 @@ pnpm -C site build                                # astro check + static build �
 ## Architecture
 
 Tauri 2 app. Two process boundaries: a Rust backend (`src-tauri/src/`, grouped
-by domain — `audio/`, `audio_measure/`, `library/`, `playlist/`, `broadcast/`,
+by domain — `audio/`, `audio_measure/`, `library/`, `playlist/`, `broadcast/`, `hub/`,
 `appearance/`, `persist/`, `admin.rs`, `update.rs`) and a Svelte 5 / Vite renderer (`src/`, one folder per
 UI feature under `features/` plus `shared/`), talking over Tauri `invoke` +
 `emit`/`listen`.
@@ -311,6 +311,15 @@ column and `UPSERT_TRACK_SQL` keeps a flagged column, so a rescan cannot clobber
 an edit. `TagWriter` never writes in place (lofty truncates and rewrites): tag in
 memory, check the fingerprint, write a temp file, rename it over the original.
 See [docs/library.md](docs/library.md#editing-a-track).
+
+**Shared library** — every install keeps its own SQLite and reads nothing
+else; the Postgres **hub** only moves rows between them, through one worker
+nothing waits on. So no feature queries the hub, no hub call holds the `Db`
+mutex, and a hub that is away costs freshness and never playback. Triggers
+mark what changed in `sync_rows`, per **group** rather than per row, and only
+while `sync_local.capture` is on — off for a standalone library. The hub shares
+a library and not a station: the airing log, History, the rotation rules and
+play counts never cross it. See [docs/shared-library.md](docs/shared-library.md).
 
 **Theming** — a theme sets **colours only**; the token contract is the `:root`
 block of `src/styles.css`. Validation is a token-name allowlist plus one closed

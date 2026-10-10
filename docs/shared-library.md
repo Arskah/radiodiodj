@@ -1,8 +1,9 @@
 # Shared library
 
-**Planned — a draft.** Only [change capture](#change-capture) is built, and it
-is switched off on every library. This is the design of the
-variant [external-library.md](./external-library.md) settles on, B3: every
+**Partly built.** [Change capture](#change-capture) is, and so is an owner
+[publishing its library to the hub](#the-hub). Nothing takes the library back
+out of the hub yet: there is no `studio` role, no outbox for operator work and
+no catalogue. This is the design of the variant [external-library.md](./external-library.md) settles on, B3: every
 machine keeps its own SQLite library, one of them owns the scan, and a Postgres
 **hub** sits between them. That page argues why; this one says what gets built.
 Tracked as [#505](https://github.com/Arskah/radiodiodj/issues/505).
@@ -15,7 +16,21 @@ file is the contract a web page writes
 
 ## Roles
 
-One setting, `externalLibrary.role` in `config.json`, with three values.
+One setting, `externalLibrary.role` in `config.json`, with three values. It is
+read at launch, so changing it takes a restart, and there is no Settings page
+for it yet — the section is written by hand:
+
+```json
+"externalLibrary": {
+  "role": "owner",
+  "url": "postgresql://radiodiodj:secret@hub.example.org:5432/radiodiodj?sslmode=require",
+  "machineName": "Office"
+}
+```
+
+`machineId` appears beside them the first time the app starts in a role, and is
+what the hub knows this install by from then on. `studio` is not a value this
+build accepts: it reads as `standalone`.
 
 | role         | scans and decodes | reads                  | talks to the hub                  |
 | ------------ | ----------------- | ---------------------- | --------------------------------- |
@@ -176,14 +191,14 @@ Increment 3. Three tables, created and migrated by the owner.
 ```sql
 CREATE TABLE hub_station (
   id         boolean PRIMARY KEY DEFAULT true CHECK (id),
-  library_id uuid    NOT NULL,   -- new whenever the owner's library is replaced
+  library_id text    NOT NULL,   -- new whenever the owner's library is replaced
   protocol   integer NOT NULL,
-  owner      uuid,               -- the one machine that may write root and track
+  owner      text,               -- the one machine that may write root and track
   settings   jsonb   NOT NULL    -- the owner's settings that shape stored data
 );
 
 CREATE TABLE hub_machines (
-  id uuid PRIMARY KEY, name text NOT NULL, build text NOT NULL,
+  id text PRIMARY KEY, name text NOT NULL, build text NOT NULL,
   seen_at timestamptz NOT NULL
 );
 
@@ -191,7 +206,7 @@ CREATE TABLE hub_rows (
   kind      text    NOT NULL,
   key       text    NOT NULL,
   rev       bigint  NOT NULL,
-  machine   uuid    NOT NULL,
+  machine   text    NOT NULL,
   edited_at bigint  NOT NULL,
   deleted   boolean NOT NULL DEFAULT false,
   doc       jsonb,
@@ -226,13 +241,18 @@ nothing worth measuring.
 `rev` order, in pages, and applies each page in one local transaction with the
 cursor.
 
-**One owner.** `hub_station.owner` is claimed by an explicit action in Settings
-and refused while another machine holds it. Taking it over from a machine that
-is gone is an admin's confirmed click; the old owner, if it ever comes back,
-finds it is not the owner and stops publishing.
+**One owner.** A machine in the `owner` role claims `hub_station.owner` on each
+visit, and is refused while another machine holds it: it publishes nothing and
+says who the owner is. Every publish checks the claim again inside its
+transaction. Taking the role over from a machine that is gone is to be an
+admin's confirmed click, and is not built; until it is, the way is to clear
+`hub_station.owner` by hand.
 
-**One library.** `library_id` is stamped when the owner first publishes and
-again if its database is ever replaced, since its ids restart. A studio whose
+**One library.** `library_id` is stamped when the owner first publishes, and
+kept in its `sync_local`. An owner that finds the hub holding any other id —
+its own database was replaced, or it was pointed at a hub it never published
+to — **empties `hub_rows`**, stamps a new id and publishes everything again:
+the rows there carry another database's track ids. A studio whose
 `sync_local.library_id` differs stops syncing and says it has to join again.
 
 **The version rule.** `protocol` is a constant in the build, and the hub carries
@@ -242,9 +262,16 @@ inside one protocol a key a build does not know is ignored and one it expected
 is left at its default.
 
 **The client** is `tokio-postgres` over `rustls`, which `reqwest` already brings
-in. It runs in the sync worker alone: on a timer, and nudged when `sync_rows`
-gains a pending row. Every hub call has a timeout, and none holds the `Db`
-mutex.
+in (`hub/`). It runs in one worker task and nowhere else: every 30 seconds it
+connects, claims, checks in to `hub_machines`, and publishes what `sync_rows`
+owes in transactions of 200 groups. Whether the connection is encrypted is the
+URL's `sslmode` to say. Every hub call has a timeout, and none holds the `Db`
+mutex. What it finds goes to the log, once per change and not once per visit.
+Waking it when `sync_rows` gains a row is left for the outbox, where a cue save
+should not wait half a minute.
+
+**What the owner publishes so far is `root` and `track`.** The other kinds are
+captured and wait in `sync_rows` for the outbox.
 
 **The hub's address is a connection URL in `config.json`, password included, in
 plain text.** It is the only secret there that is not a hash, and the README's
@@ -352,8 +379,9 @@ are what it goes back to when it leaves.
   the groups it should, and none while `capture` is off or `applying` is on.
 - **Merge rules** — `cargo test`, two in-memory databases and the documents
   passed by hand.
-- **The hub statements** — a Postgres service in CI. A local run without
-  `RADIODIODJ_TEST_HUB` set skips them.
+- **The hub** — a Postgres service in CI, where each test makes a schema of its
+  own. A local run without `RADIODIODJ_TEST_HUB` set to a connection URL passes
+  them without running.
 
 ## Increments
 

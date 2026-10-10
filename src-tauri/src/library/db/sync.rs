@@ -1,6 +1,12 @@
 //! Change capture for a shared library: which groups this machine has changed
 //! and not sent yet. See `docs/shared-library.md#change-capture`.
 
+use anyhow::Result;
+use rusqlite::types::{Value, ValueRef};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
+
+use super::{placeholders, Db, EditedFields};
+
 /// Step 17: the change log, and the triggers that write it.
 ///
 /// Nothing reads `sync_rows` yet and nothing turns `sync_local.capture` on, so
@@ -315,6 +321,234 @@ WHEN (SELECT capture AND NOT applying FROM sync_local) BEGIN
 END;
 "#;
 
+/// One group on its way to the hub: what it is, when this machine last
+/// changed it, and the row as a document. A tombstone carries no document.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Outgoing {
+    pub kind: String,
+    pub key: String,
+    pub edited_at: i64,
+    pub deleted: bool,
+    pub doc: Option<serde_json::Value>,
+    pub waveform: Option<Vec<u8>>,
+    pub levels: Option<Vec<u8>>,
+}
+
+/// `tracks` columns a `track` document leaves out: the two BLOBs, which travel
+/// beside it, what belongs to another group, and what never leaves the machine.
+const NOT_IN_A_TRACK_DOCUMENT: &[&str] = &[
+    "id",
+    "play_count",
+    "waveform",
+    "auto_cue_levels",
+    "fade_in_ms",
+    "fade_out_ms",
+    "edited_fields",
+    "hidden_at",
+];
+
+/// The tag columns an operator can edit, each with its `edited_fields` bit.
+const EDITABLE: [(&str, i64); 12] = [
+    ("title", EditedFields::TITLE),
+    ("artist", EditedFields::ARTIST),
+    ("album", EditedFields::ALBUM),
+    ("genre", EditedFields::GENRE),
+    ("year", EditedFields::YEAR),
+    ("album_artist", EditedFields::ALBUM_ARTIST),
+    ("track_no", EditedFields::TRACK_NO),
+    ("track_total", EditedFields::TRACK_TOTAL),
+    ("disc_no", EditedFields::DISC_NO),
+    ("disc_total", EditedFields::DISC_TOTAL),
+    ("initial_key", EditedFields::INITIAL_KEY),
+    ("comment", EditedFields::COMMENT),
+];
+
+impl Db {
+    /// Start capturing changes, and owe the hub everything the library already
+    /// holds. Does nothing to a library that is capturing already.
+    pub fn start_capture(&self, now_ms: i64) -> Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let was_on: bool = tx.query_row("SELECT capture FROM sync_local", [], |r| r.get(0))?;
+        if !was_on {
+            tx.execute("UPDATE sync_local SET capture = 1", [])?;
+            owe_everything(&tx, now_ms)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Stop capturing. What was captured stays, for a library that is shared
+    /// again later.
+    pub fn stop_capture(&self) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute("UPDATE sync_local SET capture = 0 WHERE capture", [])?;
+        Ok(())
+    }
+
+    /// The hub library this database was last published as.
+    pub fn library_id(&self) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        Ok(conn.query_row("SELECT library_id FROM sync_local", [], |r| r.get(0))?)
+    }
+
+    /// Take the id the hub now holds this library under, and owe it everything
+    /// again: a hub given a new id was emptied first.
+    pub fn publish_as(&self, library_id: &str, now_ms: i64) -> Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        tx.execute("UPDATE sync_local SET library_id = ?", [library_id])?;
+        owe_everything(&tx, now_ms)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Up to `limit` groups of `kinds` that have not been sent, each with its
+    /// document as the row reads now.
+    pub fn outgoing(&self, kinds: &[&str], limit: usize) -> Result<Vec<Outgoing>> {
+        let conn = self.conn.lock();
+        let sql = format!(
+            "SELECT kind, key, edited_at, deleted FROM sync_rows \
+             WHERE pending AND kind IN ({}) ORDER BY kind, key LIMIT ?",
+            placeholders(kinds.len())
+        );
+        let waiting = {
+            let mut stmt = conn.prepare(&sql)?;
+            let params = kinds
+                .iter()
+                .map(|k| Value::Text((*k).to_owned()))
+                .chain(std::iter::once(Value::Integer(limit as i64)));
+            let rows = stmt.query_map(params_from_iter(params), |r| {
+                Ok(Outgoing {
+                    kind: r.get(0)?,
+                    key: r.get(1)?,
+                    edited_at: r.get(2)?,
+                    deleted: r.get(3)?,
+                    doc: None,
+                    waveform: None,
+                    levels: None,
+                })
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        waiting
+            .into_iter()
+            .map(|group| match (group.deleted, group.kind.as_str()) {
+                (true, _) => Ok(group),
+                (false, "root") => root_document(&conn, group),
+                (false, "track") => track_document(&conn, group),
+                (false, kind) => anyhow::bail!("no document is defined for a {kind} group"),
+            })
+            .collect()
+    }
+
+    /// Note that `groups` reached the hub. One changed again since it was read
+    /// stays owed.
+    pub fn mark_sent(&self, groups: &[Outgoing]) -> Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        {
+            let mut sent = tx.prepare(
+                "UPDATE sync_rows SET pending = 0 \
+                 WHERE kind = ?1 AND key = ?2 AND edited_at = ?3 AND deleted = ?4",
+            )?;
+            for g in groups {
+                sent.execute(params![g.kind, g.key, g.edited_at, g.deleted])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+}
+
+/// Mark every group the library holds as owed, keeping the stamp of one that
+/// already has it.
+fn owe_everything(conn: &Connection, now_ms: i64) -> Result<()> {
+    let mut groups = vec![
+        "SELECT 'root', id FROM library_roots".to_owned(),
+        "SELECT 'track', id FROM tracks".to_owned(),
+        "SELECT 'cue', id FROM tracks \
+         WHERE fade_in_ms IS NOT NULL OR fade_out_ms IS NOT NULL OR auto_cue_state = 'manual'"
+            .to_owned(),
+        "SELECT 'hidden', id FROM tracks WHERE hidden_at IS NOT NULL".to_owned(),
+        "SELECT 'playlist', uid FROM saved_playlists WHERE uid IS NOT NULL".to_owned(),
+        "SELECT 'dismissal', kind || ':' || key FROM health_dismissals".to_owned(),
+    ];
+    groups.extend(EDITABLE.iter().map(|(column, bit)| {
+        format!("SELECT 'edit', id || ':{column}' FROM tracks WHERE edited_fields & {bit}")
+    }));
+    for select in groups {
+        conn.execute(
+            &format!(
+                "INSERT INTO sync_rows (kind, key, edited_at) \
+                 SELECT g.*, ?1 FROM ({select}) AS g WHERE true \
+                 ON CONFLICT (kind, key) DO NOTHING"
+            ),
+            [now_ms],
+        )?;
+    }
+    conn.execute("UPDATE sync_rows SET pending = 1", [])?;
+    Ok(())
+}
+
+/// A row that has gone since the group was marked is sent as its tombstone.
+fn gone(group: Outgoing) -> Outgoing {
+    Outgoing {
+        deleted: true,
+        ..group
+    }
+}
+
+fn root_document(conn: &Connection, group: Outgoing) -> Result<Outgoing> {
+    let content_type: Option<String> = conn
+        .query_row(
+            "SELECT content_type FROM library_roots WHERE id = ?",
+            [&group.key],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(match content_type {
+        Some(content_type) => Outgoing {
+            doc: Some(serde_json::json!({ "content_type": content_type })),
+            ..group
+        },
+        None => gone(group),
+    })
+}
+
+/// The row as a document keyed by column name, so a column added to `tracks`
+/// needs nothing here. See `docs/shared-library.md#the-hub`.
+fn track_document(conn: &Connection, group: Outgoing) -> Result<Outgoing> {
+    let mut stmt = conn.prepare_cached("SELECT * FROM tracks WHERE id = ?")?;
+    let columns: Vec<String> = stmt.column_names().into_iter().map(String::from).collect();
+    let mut rows = stmt.query([&group.key])?;
+    let Some(row) = rows.next()? else {
+        return Ok(gone(group));
+    };
+    let mut doc = serde_json::Map::new();
+    for (i, column) in columns.iter().enumerate() {
+        if NOT_IN_A_TRACK_DOCUMENT.contains(&column.as_str()) {
+            continue;
+        }
+        let value = match row.get_ref(i)? {
+            ValueRef::Null => serde_json::Value::Null,
+            ValueRef::Integer(n) => n.into(),
+            ValueRef::Real(x) => x.into(),
+            ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned().into(),
+            ValueRef::Blob(_) => {
+                anyhow::bail!("tracks.{column} is a BLOB with no place in the hub")
+            }
+        };
+        doc.insert(column.clone(), value);
+    }
+    Ok(Outgoing {
+        doc: Some(doc.into()),
+        waveform: row.get("waveform")?,
+        levels: row.get("auto_cue_levels")?,
+        ..group
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -323,6 +557,7 @@ mod tests {
     use rusqlite_migration::Migrations;
 
     use super::super::{Db, Dismissal, TrackInsert, TrackMetadataUpdate, MIGRATION_STEPS};
+    use super::{EDITABLE, NOT_IN_A_TRACK_DOCUMENT};
     use crate::audio::cue_points::CuePoints;
     use crate::audio_measure::level_envelope::RmsWindows;
     use crate::library::auto_cue::{Analysed, AutoCue, Thresholds};
@@ -735,6 +970,231 @@ mod tests {
         db.delete_dismissals(&[("exact".into(), "v2:ab".into())])
             .unwrap();
         assert_eq!(pending(&db), ["dismissal exact:v2:ab -"]);
+    }
+
+    fn waiting(db: &Db, kinds: &[&str]) -> Vec<String> {
+        db.outgoing(kinds, 100)
+            .unwrap()
+            .into_iter()
+            .map(|g| format!("{} {}{}", g.kind, g.key, if g.deleted { " -" } else { "" }))
+            .collect()
+    }
+
+    #[test]
+    fn taking_a_role_owes_the_hub_everything_already_there() {
+        let db = Db::open_in_memory().unwrap();
+        let plain = add_track(&db);
+        let worked = add_track(&db);
+        retitle(&db, worked, "Edited");
+        db.set_cue_points(
+            worked,
+            CuePoints {
+                fade_in_ms: Some(2000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        db.hide_tracks(&[worked], 5).unwrap();
+        let root = db.add_root("music").unwrap();
+        db.create_saved_playlist("Show", &[plain], 1).unwrap();
+
+        db.start_capture(42).unwrap();
+
+        let owed = pending(&db);
+        for group in [
+            format!("root {root}"),
+            format!("track {plain}"),
+            format!("track {worked}"),
+            format!("cue {worked}"),
+            format!("edit {worked}:title"),
+            format!("hidden {worked}"),
+        ] {
+            assert!(owed.contains(&group), "{group} is owed, of {owed:?}");
+        }
+        assert!(!owed.contains(&format!("cue {plain}")));
+        assert_eq!(
+            owed.iter().filter(|g| g.starts_with("playlist ")).count(),
+            1
+        );
+    }
+
+    #[test]
+    fn taking_a_role_twice_owes_nothing_new() {
+        let db = Db::open_in_memory().unwrap();
+        let id = add_track(&db);
+        db.start_capture(42).unwrap();
+        let sent = db.outgoing(&["track"], 10).unwrap();
+        db.mark_sent(&sent).unwrap();
+
+        db.start_capture(43).unwrap();
+
+        assert_eq!(waiting(&db, &["track"]), [] as [&str; 0], "track {id}");
+    }
+
+    #[test]
+    fn a_library_that_leaves_stops_capturing() {
+        let db = capturing();
+        db.stop_capture().unwrap();
+        add_track(&db);
+        assert_eq!(pending(&db), [] as [&str; 0]);
+    }
+
+    #[test]
+    fn a_track_goes_out_as_its_row_with_the_blobs_beside_it() {
+        let db = capturing();
+        let id = add_track(&db);
+        db.set_waveform(id, &[1, 2, 3], None).unwrap();
+        db.record_airing(id, 1000).unwrap();
+
+        let out = db.outgoing(&["track"], 10).unwrap();
+
+        assert_eq!(out.len(), 1);
+        let doc = out[0].doc.as_ref().unwrap().as_object().unwrap();
+        assert_eq!(doc["title"], "T");
+        assert_eq!(doc["duration"], 200.0);
+        assert_eq!(doc["content_type"], "music");
+        assert_eq!(doc["cue_in_ms"], serde_json::Value::Null);
+        for local in NOT_IN_A_TRACK_DOCUMENT {
+            assert!(
+                !doc.contains_key(*local),
+                "{local} stays out of the document"
+            );
+        }
+        assert_eq!(out[0].waveform.as_deref(), Some(&[1u8, 2, 3][..]));
+        assert_eq!(out[0].levels, None);
+    }
+
+    #[test]
+    fn a_library_path_goes_out_without_its_folder() {
+        let db = capturing();
+        let id = db.add_root("jingle").unwrap();
+
+        let out = db.outgoing(&["root"], 10).unwrap();
+
+        assert_eq!(out[0].key, id.to_string());
+        assert_eq!(
+            out[0].doc,
+            Some(serde_json::json!({ "content_type": "jingle" }))
+        );
+    }
+
+    #[test]
+    fn only_the_kinds_asked_for_go_out_and_no_more_than_the_limit() {
+        let db = capturing();
+        let a = add_track(&db);
+        let b = add_track(&db);
+        retitle(&db, a, "Edited");
+
+        assert_eq!(db.outgoing(&["track"], 1).unwrap().len(), 1);
+        assert_eq!(
+            waiting(&db, &["root", "track"]),
+            [format!("track {a}"), format!("track {b}")]
+        );
+    }
+
+    #[test]
+    fn what_was_sent_is_no_longer_owed() {
+        let db = capturing();
+        add_track(&db);
+        let sent = db.outgoing(&["track"], 10).unwrap();
+
+        db.mark_sent(&sent).unwrap();
+
+        assert_eq!(waiting(&db, &["track"]), [] as [&str; 0]);
+    }
+
+    #[test]
+    fn a_group_changed_while_it_was_being_sent_stays_owed() {
+        let db = capturing();
+        let id = add_track(&db);
+        let sent = db.outgoing(&["track"], 10).unwrap();
+        db.conn
+            .lock()
+            .execute("UPDATE sync_rows SET edited_at = edited_at + 1", [])
+            .unwrap();
+
+        db.mark_sent(&sent).unwrap();
+
+        assert_eq!(waiting(&db, &["track"]), [format!("track {id}")]);
+    }
+
+    #[test]
+    fn a_purged_track_goes_out_as_a_tombstone() {
+        let db = capturing();
+        let id = add_track(&db);
+        db.conn
+            .lock()
+            .execute("UPDATE tracks SET missing_since = 5 WHERE id = ?", [id])
+            .unwrap();
+        db.purge_tracks(&[id]).unwrap();
+
+        let out = db.outgoing(&["track"], 10).unwrap();
+
+        assert!(out[0].deleted);
+        assert_eq!(out[0].doc, None);
+    }
+
+    #[test]
+    fn a_new_hub_library_is_owed_everything_again() {
+        let db = capturing();
+        let id = add_track(&db);
+        let sent = db.outgoing(&["track"], 10).unwrap();
+        db.mark_sent(&sent).unwrap();
+        assert_eq!(db.library_id().unwrap(), None);
+
+        db.publish_as("lib-2", 99).unwrap();
+
+        assert_eq!(db.library_id().unwrap().as_deref(), Some("lib-2"));
+        assert_eq!(waiting(&db, &["track"]), [format!("track {id}")]);
+        assert_eq!(
+            db.outgoing(&["track"], 10).unwrap()[0].edited_at,
+            sent[0].edited_at,
+            "the stamp is when it changed, not when it was owed again"
+        );
+    }
+
+    /// The edit triggers are a shipped migration step and cannot be made from
+    /// [`EDITABLE`], so the two are written twice. A bit that differed between
+    /// them would send an edit under another column's name.
+    #[test]
+    fn the_edit_triggers_name_every_editable_column_with_its_own_bit() {
+        let db = Db::open_in_memory().unwrap();
+        let conn = db.conn.lock();
+        let trigger = |name: &str| -> String {
+            conn.query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+                [name],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let edits = trigger("sync_edit");
+        let tags = trigger("sync_track_tags");
+
+        for (column, bit) in EDITABLE {
+            assert!(
+                edits.contains(&format!(
+                    "SELECT 'edit', new.id || ':{column}', CAST(unixepoch('subsec') * 1000 AS INTEGER), \
+                     NOT new.edited_fields & {bit}\n"
+                )),
+                "sync_edit marks {column} with bit {bit}"
+            );
+            assert!(
+                edits.contains(&format!(
+                    "(new.edited_fields & {bit} AND (new.{column} IS NOT old.{column} \
+                     OR NOT old.edited_fields & {bit}))"
+                )),
+                "sync_edit fires for {column} on bit {bit}"
+            );
+            assert!(
+                tags.contains(&format!(
+                    "(new.{column} IS NOT old.{column} AND NOT new.edited_fields & {bit})"
+                )),
+                "sync_track_tags leaves an edited {column} to its edit, by bit {bit}"
+            );
+        }
+        assert_eq!(edits.matches("SELECT 'edit'").count(), EDITABLE.len());
+        assert_eq!(tags.matches("IS NOT old.").count(), EDITABLE.len());
     }
 
     /// Columns that are this machine's own and never travel. See

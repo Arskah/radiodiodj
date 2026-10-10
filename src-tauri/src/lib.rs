@@ -18,6 +18,7 @@ mod appearance;
 mod audio;
 mod audio_measure;
 mod broadcast;
+mod hub;
 mod library;
 mod persist;
 mod playlist;
@@ -1812,6 +1813,7 @@ pub fn run() {
             }
             let updater = Updater::new(app.handle().clone(), Arc::clone(&config));
             updater.start();
+            hub::start(Arc::clone(&db), Arc::clone(&config));
             app.manage(AppState {
                 db,
                 config,

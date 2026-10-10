@@ -15,6 +15,44 @@ pub struct DeviceRef {
     pub description: String,
 }
 
+/// What this install is to a shared library. See `docs/shared-library.md`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum LibraryRole {
+    /// The library is this machine's own, and no hub is contacted.
+    #[default]
+    Standalone,
+    /// This machine runs the scan and publishes the library to the hub.
+    Owner,
+}
+
+/// A role this build does not know reads as standalone: the alternative is the
+/// whole of `config.json` failing to parse over one word.
+fn lenient_role<'de, D: serde::Deserializer<'de>>(d: D) -> Result<LibraryRole, D::Error> {
+    let word = Option::<String>::deserialize(d)?;
+    Ok(match word.as_deref() {
+        Some("owner") => LibraryRole::Owner,
+        _ => LibraryRole::Standalone,
+    })
+}
+
+/// The shared-library section. `url` is a `postgresql://` connection URL with
+/// its password, in plain text.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalLibraryConfig {
+    #[serde(default, deserialize_with = "lenient_role")]
+    pub role: LibraryRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// What the hub knows this install by. Written the first time it is needed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<String>,
+    /// What other machines call this one. Defaults to the start of its id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_name: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct NowPlayingConfig {
@@ -518,6 +556,8 @@ pub struct AppConfig {
     pub appearance: AppearanceConfig,
     #[serde(default)]
     pub admin: AdminConfig,
+    #[serde(default)]
+    pub external_library: ExternalLibraryConfig,
 }
 
 pub struct Config {
@@ -652,6 +692,31 @@ impl Config {
         let mut cfg = self.inner.lock();
         cfg.cue_device = device;
         self.save_and_unlock(cfg)
+    }
+
+    pub fn external_library(&self) -> ExternalLibraryConfig {
+        self.inner.lock().external_library.clone()
+    }
+
+    /// This install's id and name on the hub. The id is made and saved the
+    /// first time it is asked for, and is this machine's from then on.
+    pub fn machine(&self) -> Result<(String, String)> {
+        let mut cfg = self.inner.lock();
+        let section = &mut cfg.external_library;
+        let fresh = section.machine_id.is_none();
+        let id = section
+            .machine_id
+            .get_or_insert_with(|| uuid::Uuid::new_v4().to_string())
+            .clone();
+        let name = section
+            .machine_name
+            .clone()
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| id.chars().take(8).collect());
+        if fresh {
+            self.save_and_unlock(cfg)?;
+        }
+        Ok((id, name))
     }
 
     pub fn get_now_playing(&self) -> NowPlayingConfig {
@@ -838,6 +903,43 @@ fn canonicalize_lossy(p: &str) -> String {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn a_library_is_standalone_until_told_otherwise() {
+        let dir = tempdir().unwrap();
+        let cfg = Config::open(dir.path()).unwrap();
+        assert_eq!(cfg.external_library(), ExternalLibraryConfig::default());
+        assert_eq!(cfg.external_library().role, LibraryRole::Standalone);
+    }
+
+    #[test]
+    fn a_role_this_build_does_not_know_keeps_the_rest_of_the_config() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("config.json"),
+            r#"{"libraryMounts": {"3": "/mnt/radio"},
+                "externalLibrary": {"role": "studio", "url": "postgresql://hub/x"}}"#,
+        )
+        .unwrap();
+
+        let cfg = Config::open(dir.path()).unwrap();
+
+        assert_eq!(cfg.mounts().len(), 1);
+        let section = cfg.external_library();
+        assert_eq!(section.role, LibraryRole::Standalone);
+        assert_eq!(section.url.as_deref(), Some("postgresql://hub/x"));
+    }
+
+    #[test]
+    fn the_machine_id_is_made_once_and_kept() {
+        let dir = tempdir().unwrap();
+        let (id, name) = Config::open(dir.path()).unwrap().machine().unwrap();
+        assert_eq!(id.len(), 36);
+        assert_eq!(name, id[..8]);
+
+        let again = Config::open(dir.path()).unwrap();
+        assert_eq!(again.machine().unwrap().0, id);
+    }
 
     #[test]
     fn load_defaults_when_missing() {

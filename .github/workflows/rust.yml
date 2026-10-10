@@ -58,6 +58,22 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-24.04
+    # The hub a shared library publishes to. The tests that need one skip
+    # without RADIODIODJ_TEST_HUB, which is how a local run behaves.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: hub
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      RADIODIODJ_TEST_HUB: postgresql://postgres:hub@localhost:5432/postgres
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
