@@ -389,19 +389,20 @@ close artists. One typo is either of:
 - **one edit in one word** of four letters or more, every other word the same.
   An edit is a letter added, dropped or changed, or two neighbours swapped.
 - **one edit once the spaces are taken out**, when the words are split
-  differently and the name is five letters or more without them.
+  differently and the name is five letters or more without them. A whole word
+  added or dropped is not a typo.
 
-| titles                               | grouped | why                      |
-| ------------------------------------ | ------- | ------------------------ |
-| `Possesion`, `Possession`            | yes     | one letter               |
-| `Kraftwerk`, `Kraftwrek`             | yes     | a swap                   |
-| `Dope Man`, `Dopeman`                | yes     | the word break           |
-| `Gin & Juice`, `Gin n Juice`         | yes     | one letter, spaces aside |
-| `Part I`, `Part II`                  | no      | the word is too short    |
-| `Club Mix`, `Club Remix`             | no      | the word is too short    |
-| `Symphony 15`, `Symphony 16`         | no      | the edit is in a number  |
-| `Fussin and Fightin`, `Fussing and…` | no      | two words differ         |
-| `Humppatauti`, `Humppatähti`         | no      | two edits                |
+| titles                               | grouped | why                     |
+| ------------------------------------ | ------- | ----------------------- |
+| `Possesion`, `Possession`            | yes     | one letter              |
+| `Kraftwerk`, `Kraftwrek`             | yes     | a swap                  |
+| `Dope Man`, `Dopeman`                | yes     | the word break          |
+| `Believe`, `I Believe`               | no      | a whole word            |
+| `Part I`, `Part II`                  | no      | the word is too short   |
+| `Club Mix`, `Club Remix`             | no      | the word is too short   |
+| `Symphony 15`, `Symphony 16`         | no      | the edit is in a number |
+| `Fussin and Fightin`, `Fussing and…` | no      | two words differ        |
+| `Humppatauti`, `Humppatähti`         | no      | two edits               |
 
 Typos chain: three spellings each one edit from the next are one group.
 
@@ -632,8 +633,9 @@ the wider match is worth its _Intro_ groups, which are dismissed once.
 
 **One typo, and only where a typo is likely.** A wider budget finds more, and
 most of what it adds is different songs: `Part I` and `Part II`, `Mix` and
-`Remix`, `Life` and `Time`. So a short word is never a typo, a number is never
-one, and a second edit is a different title. Only one field may differ, because
+`Remix`, `Believe` and `I Believe`, `Life` and `Time`. So a short word is never
+a typo, a number is never one, an added word is never one, and a second edit is
+a different title. Only one field may differ, because
 with both loose every pair of tracks in the library is a candidate; a typo in
 the artist and the title of the same file is rare enough to miss.
 

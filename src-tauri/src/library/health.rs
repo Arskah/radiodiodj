@@ -640,8 +640,8 @@ const TYPO_NAME_MIN: usize = 5;
 
 /// Whether two different normalised names are one name with a typo: the same
 /// words but for one of them, which is one edit away, or the same letters but
-/// for one edit when the words are split differently. A transposition is one
-/// edit. Never when the edit touches a number, which tells parts and years
+/// for one edit when the words are split differently, unless the edit is a
+/// whole word. A transposition is one edit. Never when the edit touches a number, which tells parts and years
 /// apart.
 fn near(a: &Squashed, b: &Squashed) -> bool {
     if a.chars.abs_diff(b.chars) > 1 {
@@ -658,9 +658,27 @@ fn near(a: &Squashed, b: &Squashed) -> bool {
             _ => false,
         }
     } else {
-        a.chars.min(b.chars) >= TYPO_NAME_MIN && strsim::osa_distance(&a.squashed, &b.squashed) <= 1
+        a.chars.min(b.chars) >= TYPO_NAME_MIN
+            && strsim::osa_distance(&a.squashed, &b.squashed) <= 1
+            && !one_word_more(a.name, b.name)
     };
     one_edit && numbers(a.name).eq(numbers(b.name))
+}
+
+/// Whether one name is the other with a whole word added: `believe` and
+/// `i believe` are an edit apart and two titles.
+fn one_word_more(a: &str, b: &str) -> bool {
+    let (long, short) = if a.len() > b.len() { (a, b) } else { (b, a) };
+    let (long, short): (Vec<&str>, Vec<&str>) =
+        (long.split(' ').collect(), short.split(' ').collect());
+    long.len() == short.len() + 1
+        && (0..long.len()).any(|skip| {
+            long.iter()
+                .enumerate()
+                .filter(|(i, _)| *i != skip)
+                .map(|(_, w)| w)
+                .eq(short.iter())
+        })
 }
 
 fn numbers(name: &str) -> impl Iterator<Item = &str> {
@@ -940,7 +958,10 @@ mod tests {
         assert!(squashed_near("kraftwerk", "kraftwrek"));
         assert!(squashed_near("dope man", "dopeman"));
         assert!(squashed_near("o le o le saunotaan", "ole ole saunotaan"));
-        assert!(squashed_near("gin juice", "gin n juice"));
+        assert!(squashed_near(
+            "lainelautaileva lehmänmaha",
+            "lainelautailevan lehmän maha"
+        ));
 
         assert!(!squashed_near("kötinä ii", "kötinä iii"));
         assert!(!squashed_near("one love club mix", "one love club remix"));
@@ -948,6 +969,9 @@ mod tests {
         assert!(!squashed_near("humppatauti", "humppatähti"));
         assert!(!squashed_near("fussin and fightin", "fussing and fighting"));
         assert!(!squashed_near("a b", "ab"));
+        assert!(!squashed_near("believe", "i believe"));
+        assert!(!squashed_near("song part", "song part i"));
+        assert!(!squashed_near("gin juice", "gin n juice"));
     }
 
     #[test]
