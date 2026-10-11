@@ -119,6 +119,8 @@ const { api } = vi.hoisted(() => {
     updateInstall: vi.fn(),
     onUpdateState: vi.fn(),
     getSharedLibrary: vi.fn(),
+    pickCertificateFile: vi.fn(),
+    readCaCertificate: vi.fn(),
     setSharedLibrary: vi.fn(),
     onHubState: vi.fn(),
     onHubLibraryChanged: vi.fn(),
@@ -2035,21 +2037,28 @@ describe("AppState session persistence", () => {
 
   it("keeps the running role when new settings are saved", async () => {
     ({ app } = makeApp());
-    const status = {
-      role: "standalone",
-      ok: true,
-      message: "",
-      reachedAt: null,
-    };
-    api.setSharedLibrary.mockResolvedValueOnce({
-      role: "studio",
+    const settings = {
+      role: "studio" as const,
       url: "postgresql://hub/x",
       machineName: null,
-      status,
+      allowUnencrypted: false,
+      directTls: false,
+      caCertificate: null,
+    };
+    api.setSharedLibrary.mockResolvedValueOnce({
+      ...settings,
+      status: {
+        role: "standalone",
+        ok: true,
+        message: "",
+        reachedAt: null,
+        encrypted: null,
+      },
     });
 
-    await app.saveSharedLibrary("studio", "postgresql://hub/x", null);
+    await app.saveSharedLibrary(settings);
 
+    expect(api.setSharedLibrary).toHaveBeenCalledWith(settings);
     expect(app.sharedLibrary.role).toBe("studio");
     expect(app.isStudio).toBe(false);
   });

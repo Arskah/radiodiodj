@@ -24,7 +24,7 @@ import type {
   TrackMetadataInput,
   TuningConfig,
   UpdateState,
-  LibraryRole,
+  SharedLibrarySettings,
   SharedLibrary,
 } from "./types";
 import { METADATA_KEYS } from "./types";
@@ -325,7 +325,16 @@ export class AppState {
     role: "standalone",
     url: null,
     machineName: null,
-    status: { role: "standalone", ok: true, message: "", reachedAt: null },
+    allowUnencrypted: false,
+    directTls: false,
+    caCertificate: null,
+    status: {
+      role: "standalone",
+      ok: true,
+      message: "",
+      reachedAt: null,
+      encrypted: null,
+    },
   });
   /** Missing tracks, duplicates and disk changes, from `library-health`. */
   health = $state<HealthReport>(structuredClone(EMPTY_HEALTH));
@@ -2052,12 +2061,8 @@ export class AppState {
   }
 
   /** Save the shared-library settings. They apply at the next launch. */
-  async saveSharedLibrary(
-    role: LibraryRole,
-    url: string | null,
-    machineName: string | null,
-  ): Promise<void> {
-    this.sharedLibrary = await api.setSharedLibrary(role, url, machineName);
+  async saveSharedLibrary(settings: SharedLibrarySettings): Promise<void> {
+    this.sharedLibrary = await api.setSharedLibrary(settings);
   }
 
   async loadAdmin(): Promise<void> {

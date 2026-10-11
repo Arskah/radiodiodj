@@ -25,7 +25,7 @@ under a running playlist. It is the `externalLibrary` section of `config.json`:
 ```json
 "externalLibrary": {
   "role": "owner",
-  "url": "postgresql://radiodiodj:secret@hub.example.org:5432/radiodiodj?sslmode=require",
+  "url": "postgresql://radiodiodj:secret@hub.example.org:5432/radiodiodj",
   "machineName": "Office"
 }
 ```
@@ -292,6 +292,52 @@ plain text.** It is the only secret there that is not a hash, and the README's
 data-files section says so. What bounds it is the Postgres role: a studio
 connects as `studio`, which can move rows and cannot change the hub's shape.
 
+## Reaching the hub
+
+The owner and every studio connect out to the hub, often across the internet,
+with a password. So the connection is **encrypted unless an operator says
+otherwise**, and the hub has to prove who it is: a certificate from an
+authority this machine trusts, for the host name in the address. Both are
+checked whenever TLS is used; there is no setting that encrypts without
+checking, because one that exists gets switched on.
+
+Three ways a station runs its hub, and what each needs under _Settings → Shared
+Library → Connection_:
+
+| the hub                                                           | certificate from   | needs                                         |
+| ----------------------------------------------------------------- | ------------------ | --------------------------------------------- |
+| is reached through a proxy that ends TLS — an ingress, a balancer | a public authority | _Encryption ends at a proxy_                  |
+| holds its own certificate, as a database operator sets it up      | the cluster's own  | _Hub's own certificate authority_: its `.crt` |
+| is on a private network or behind a tunnel, with no TLS           | —                  | _Allow an unencrypted connection_             |
+
+**Trust is the system's authorities plus one of the station's.** A public
+certificate needs nothing configured. A private authority is chosen once per
+machine, and trusted for the hub only, beside the system's and not instead of
+them. Its certificate is public, so `config.json` keeps the PEM text itself
+(`caCertificate`) and not a path to a file somebody tidies away; the page shows
+whose it is and when it expires.
+
+**A proxy that ends TLS has to see the handshake first.** Postgres' own way in
+opens with a plaintext question — "do you speak TLS?" — before any handshake,
+which a proxy waiting for a handshake never answers. `directTls` skips the
+question (`sslnegotiation=direct`). The proxy's certificate is usually a public
+one, which makes this the deployment that needs nothing installed on a studio.
+A database that holds its own certificate takes the handshake first only from
+PostgreSQL 17 on.
+
+**Plaintext is a choice, never a default.** TLS is tried first, always. Only
+when the hub answers that it has none, and `allowUnencrypted` is on, is the
+connection made without it — so allowing plaintext never costs an encryption
+the hub offers, and a hub whose certificate cannot be trusted is refused, not
+talked to in the clear. The page says which of the two the last connection was.
+A `sslmode` in the URL is not what decides this; the two settings are.
+
+**A refusal says what to do.** An unknown authority asks for the hub's CA
+certificate, a certificate for another name says so, an expired one says so,
+and a hub with no TLS asks for it to be enabled or for plaintext to be allowed.
+
+Not done: client certificates. A machine proves who it is with its password.
+
 ## Applying a pull
 
 All of this is one module that takes documents and a `Db`, so its rules are
@@ -421,6 +467,10 @@ are what it goes back to when it leaves.
 - **The hub** — a Postgres service in CI, where each test makes a schema of its
   own. A local run without `RADIODIODJ_TEST_HUB` set to a connection URL passes
   them without running.
+- **TLS** — a second Postgres in CI, started with a certificate from an
+  authority made for the run: `RADIODIODJ_TEST_HUB_TLS` is its URL and
+  `RADIODIODJ_TEST_HUB_CA` the authority's certificate. It is version 17, so
+  the handshake-first test has a server that takes one.
 
 ## Increments
 

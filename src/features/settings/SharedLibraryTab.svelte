@@ -2,7 +2,8 @@
   import { app } from "../../shared/state.svelte";
   import { formatAgo } from "../../shared/health";
   import { replacesLibrary, roleLabel } from "../../shared/sharedLibrary";
-  import type { LibraryRole } from "../../shared/types";
+  import { api } from "../../shared/api";
+  import type { CaCertificate, LibraryRole } from "../../shared/types";
 
   const roles: LibraryRole[] = ["standalone", "owner", "studio"];
 
@@ -11,6 +12,9 @@
   let role = $state<LibraryRole>("standalone");
   let url = $state("");
   let machineName = $state("");
+  let allowUnencrypted = $state(false);
+  let directTls = $state(false);
+  let ca = $state<CaCertificate | null>(null);
   let showUrl = $state(false);
   let confirming = $state(false);
   let saving = $state(false);
@@ -21,7 +25,10 @@
   const dirty = $derived(
     role !== saved.role ||
       url.trim() !== (saved.url ?? "") ||
-      machineName.trim() !== (saved.machineName ?? ""),
+      machineName.trim() !== (saved.machineName ?? "") ||
+      allowUnencrypted !== saved.allowUnencrypted ||
+      directTls !== saved.directTls ||
+      (ca?.pem ?? null) !== (saved.caCertificate?.pem ?? null),
   );
   const needsUrl = $derived(role !== "standalone" && url.trim() === "");
   // What is saved is not what is running until the app has been restarted. A
@@ -35,6 +42,9 @@
     role = app.sharedLibrary.role;
     url = app.sharedLibrary.url ?? "";
     machineName = app.sharedLibrary.machineName ?? "";
+    allowUnencrypted = app.sharedLibrary.allowUnencrypted;
+    directTls = app.sharedLibrary.directTls;
+    ca = app.sharedLibrary.caCertificate;
     confirming = false;
     error = null;
   }
@@ -51,16 +61,29 @@
     saving = true;
     error = null;
     try {
-      await app.saveSharedLibrary(
+      await app.saveSharedLibrary({
         role,
-        url.trim() || null,
-        machineName.trim() || null,
-      );
+        url: url.trim() || null,
+        machineName: machineName.trim() || null,
+        allowUnencrypted,
+        directTls,
+        caCertificate: ca?.pem ?? null,
+      });
       adopt();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
       saving = false;
+    }
+  }
+
+  async function chooseCa(): Promise<void> {
+    error = null;
+    try {
+      const path = await api.pickCertificateFile();
+      if (path) ca = await api.readCaCertificate(path);
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
     }
   }
 </script>
@@ -153,6 +176,86 @@
       </div>
       <div class="np-file-hint">What the other computers see it as.</div>
     </div>
+
+    <h5 class="tuning-group-title">Connection</h5>
+    <p class="settings-section-desc">
+      The connection to the hub is encrypted, and the hub has to prove who it is
+      with a certificate for the host name in its address. A certificate from a
+      public authority needs nothing here.
+    </p>
+    <div class="np-field">
+      <span class="np-field-label">Hub's own certificate authority</span>
+      <div class="np-input-wrap">
+        <span class="material-symbols-outlined">verified_user</span>
+        <span id="shared-ca" class="np-file-dir">
+          {#if ca}
+            {ca.summary.subject}{ca.summary.count > 1
+              ? ` and ${ca.summary.count - 1} more`
+              : ""} — expires {new Date(
+              ca.summary.expiresAt,
+            ).toLocaleDateString()}
+          {:else}
+            None — only public authorities are trusted
+          {/if}
+        </span>
+        <button class="np-browse" onclick={chooseCa}>
+          <span class="material-symbols-outlined">search</span>
+          Choose
+        </button>
+        {#if ca}
+          <button class="np-browse" onclick={() => (ca = null)}>Remove</button>
+        {/if}
+      </div>
+      <div class="np-file-hint">
+        For a hub whose certificate comes from an authority of its own, as a
+        database inside a cluster usually has. A <code>.pem</code> or
+        <code>.crt</code> file; it is trusted for the hub only, beside the ones this
+        computer already trusts.
+      </div>
+    </div>
+    <div class="np-group" class:disabled={!directTls}>
+      <div class="np-group-header">
+        <span class="material-symbols-outlined" aria-hidden="true">lan</span>
+        <span class="np-group-title">Encryption ends at a proxy</span>
+        <label class="np-toggle" title="Start with the TLS handshake">
+          <input
+            id="shared-direct-tls"
+            type="checkbox"
+            bind:checked={directTls}
+          />
+          <span class="np-toggle-track"></span>
+        </label>
+      </div>
+      <p class="settings-section-desc">
+        Turn on when a load balancer or ingress in front of the hub holds the
+        certificate. The connection then opens with the TLS handshake, which
+        such a proxy needs to see first. Leave off when the database holds its
+        own certificate, unless it is PostgreSQL 17 or later.
+      </p>
+    </div>
+    <div class="np-group" class:disabled={!allowUnencrypted}>
+      <div class="np-group-header">
+        <span class="material-symbols-outlined" aria-hidden="true"
+          >lock_open</span
+        >
+        <span class="np-group-title">Allow an unencrypted connection</span>
+        <label class="np-toggle" title="Allow an unencrypted connection">
+          <input
+            id="shared-allow-unencrypted"
+            type="checkbox"
+            disabled={directTls}
+            bind:checked={allowUnencrypted}
+          />
+          <span class="np-toggle-track"></span>
+        </label>
+      </div>
+      <p class="settings-section-desc">
+        Only for a hub on a private network or behind a tunnel. With this on, a
+        hub that offers no encryption is used anyway, and the password and the
+        library cross the network readable. Encryption is still used wherever
+        the hub offers it.
+      </p>
+    </div>
   {/if}
 
   {#if confirming}
@@ -204,7 +307,10 @@
       {#if saved.status.message === ""}
         Waiting for the hub.
       {:else if saved.status.ok}
-        The hub answered {formatAgo(saved.status.reachedAt ?? Date.now())}.
+        The hub answered {formatAgo(
+          saved.status.reachedAt ?? Date.now(),
+        )}{#if saved.status.encrypted === true}, over an encrypted connection.{:else if saved.status.encrypted === false},
+          over a connection that is <strong>not encrypted</strong>.{:else}.{/if}
       {:else if saved.status.reachedAt !== null}
         It last answered {formatAgo(saved.status.reachedAt)}.
       {:else}

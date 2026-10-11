@@ -4,6 +4,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import type {
   AdminStatus,
   Appearance,
+  CaCertificate,
   ContentType,
   CuePoints,
   DeckRoleEntry,
@@ -13,7 +14,6 @@ import type {
   FindingKind,
   HealthReport,
   HubStatus,
-  LibraryRole,
   Recalculated,
   LibraryPath,
   LibraryStats,
@@ -23,6 +23,7 @@ import type {
   SavedPlaylistSummary,
   ScanResult,
   SharedLibrary,
+  SharedLibrarySettings,
   SourceInfo,
   SortColumn,
   SortDir,
@@ -650,17 +651,23 @@ export const api = {
   getSharedLibrary(): Promise<SharedLibrary> {
     return invoke<SharedLibrary>("get_shared_library");
   },
-  /** Save the role, hub address and machine name. Applies at the next launch. */
-  setSharedLibrary(
-    role: LibraryRole,
-    url: string | null,
-    machineName: string | null,
-  ): Promise<SharedLibrary> {
-    return invoke<SharedLibrary>("set_shared_library", {
-      role,
-      url,
-      machineName,
+  /** Save the shared-library settings. They apply at the next launch. */
+  setSharedLibrary(settings: SharedLibrarySettings): Promise<SharedLibrary> {
+    return invoke<SharedLibrary>("set_shared_library", { settings });
+  },
+  /** Ask for a certificate file. Resolves `null` when the dialog is cancelled. */
+  async pickCertificateFile(): Promise<string | null> {
+    const file = await open({
+      multiple: false,
+      filters: [
+        { name: "Certificate", extensions: ["pem", "crt", "cer", "cert"] },
+      ],
     });
+    return typeof file === "string" ? file : null;
+  },
+  /** Read a picked file as the hub's CA certificate. Stores nothing. */
+  readCaCertificate(path: string): Promise<CaCertificate> {
+    return invoke<CaCertificate>("read_ca_certificate", { path });
   },
   onHubState(callback: (status: HubStatus) => void): Promise<UnlistenFn> {
     return listen<HubStatus>("hub:state", (e) => callback(e.payload));

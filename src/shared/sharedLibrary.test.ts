@@ -30,7 +30,13 @@ describe("roleLabel", () => {
 });
 
 describe("needsAttention", () => {
-  const status = { role: "studio", ok: false, message: "", reachedAt: null };
+  const status = {
+    role: "studio" as const,
+    ok: false,
+    message: "",
+    reachedAt: null,
+    encrypted: null,
+  };
 
   it("is quiet for a computer that shares nothing", () => {
     expect(

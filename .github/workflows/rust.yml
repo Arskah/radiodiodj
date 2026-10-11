@@ -92,6 +92,46 @@ jobs:
           workspaces: src-tauri
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # A second hub, with TLS under an authority made for this run: what a
+      # database inside a cluster usually has. A service container cannot be
+      # handed files made in a step, hence `docker run`.
+      - name: Start a hub with TLS
+        run: |
+          set -euo pipefail
+          certs="$RUNNER_TEMP/hub-certs"
+          mkdir -p "$certs"
+          cd "$certs"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
+            -keyout ca.key -out ca.crt -subj "/CN=Test Hub CA"
+          openssl req -newkey rsa:2048 -nodes \
+            -keyout server.key -out server.csr -subj "/CN=localhost"
+          printf '%s\n' \
+            'subjectAltName=DNS:localhost,IP:127.0.0.1' \
+            'basicConstraints=CA:FALSE' \
+            'extendedKeyUsage=serverAuth' > ext.cnf
+          openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key \
+            -CAcreateserial -days 2 -out server.crt -extfile ext.cnf
+          docker run -d --name hub-tls -p 5433:5432 \
+            -e POSTGRES_PASSWORD=hub -v "$certs:/certs:ro" \
+            postgres:17-alpine sh -c '
+              cp /certs/server.crt /certs/server.key /var/lib/postgresql/ &&
+              chown postgres:postgres /var/lib/postgresql/server.crt /var/lib/postgresql/server.key &&
+              chmod 600 /var/lib/postgresql/server.key &&
+              exec docker-entrypoint.sh postgres -c ssl=on \
+                -c ssl_cert_file=/var/lib/postgresql/server.crt \
+                -c ssl_key_file=/var/lib/postgresql/server.key'
+          # Over TCP: the entrypoint's first, temporary server listens on the
+          # socket alone, and is not the one the tests reach.
+          for _ in $(seq 60); do
+            docker exec hub-tls pg_isready -h 127.0.0.1 -U postgres && break
+            sleep 1
+          done
+          docker exec hub-tls pg_isready -h 127.0.0.1 -U postgres
+          {
+            echo "RADIODIODJ_TEST_HUB_TLS=postgresql://postgres:hub@localhost:5433/postgres"
+            echo "RADIODIODJ_TEST_HUB_CA=$certs/ca.crt"
+          } >> "$GITHUB_ENV"
+
       - name: cargo test
         working-directory: src-tauri
         run: cargo test

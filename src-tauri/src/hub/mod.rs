@@ -2,10 +2,12 @@
 //! Nothing the app plays, searches or edits reads it — one worker moves rows
 //! through it. See `docs/shared-library.md`.
 
+mod certs;
 mod client;
 mod schema;
 mod worker;
 
+pub use certs::{summarize as summarize_ca, Summary as CaSummary, MAX_PEM_BYTES};
 pub use worker::{role_in_effect, Service, Status};
 
 /// Commands a studio refuses: the scan, the analysis and what else changes the

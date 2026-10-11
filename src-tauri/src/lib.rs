@@ -51,7 +51,8 @@ use library::tag_backfill::TagBackfillJob;
 use library::tag_write::TagWriter;
 use library::waveform_scan::{WaveformJob, WaveformStatus};
 use persist::config::{
-    AppearanceConfig, Config, DeviceRef, LibraryRole, NowPlayingConfig, TuningConfig,
+    AppearanceConfig, Config, DeviceRef, LibraryRole, NowPlayingConfig, SharedLibrarySettings,
+    TuningConfig,
 };
 use persist::session::{Session, SessionPlaylistItem, SessionState};
 use playlist::{PlaylistService, Snapshot};
@@ -1151,7 +1152,19 @@ struct SharedLibrary {
     role: LibraryRole,
     url: Option<String>,
     machine_name: Option<String>,
+    allow_unencrypted: bool,
+    direct_tls: bool,
+    ca_certificate: Option<CaCertificate>,
     status: hub::Status,
+}
+
+/// A certificate authority for the hub: its PEM text, which the page sends
+/// back when it saves, and what it is.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CaCertificate {
+    pem: String,
+    summary: hub::CaSummary,
 }
 
 fn shared_library(state: &AppState) -> SharedLibrary {
@@ -1160,8 +1173,33 @@ fn shared_library(state: &AppState) -> SharedLibrary {
         role: saved.role,
         url: saved.url,
         machine_name: saved.machine_name,
+        allow_unencrypted: saved.allow_unencrypted,
+        direct_tls: saved.direct_tls,
+        // One that no longer reads is dropped from the page, not shown as
+        // trusted: the worker refuses to start on it and says so.
+        ca_certificate: saved.ca_certificate.and_then(|pem| {
+            let summary = hub::summarize_ca(&pem).ok()?;
+            Some(CaCertificate { pem, summary })
+        }),
         status: state.hub.status(),
     }
+}
+
+/// Read a certificate file the operator picked as the hub's authority. Nothing
+/// is stored: the page shows what it is and sends the text back on save.
+#[tauri::command(rename_all = "camelCase")]
+async fn read_ca_certificate(path: String) -> Result<CaCertificate, String> {
+    blocking(move || {
+        let size = std::fs::metadata(&path).map_err(err)?.len();
+        if size > hub::MAX_PEM_BYTES {
+            return Err("this file is too large to be a certificate".to_owned());
+        }
+        let pem = std::fs::read_to_string(&path)
+            .map_err(|_| "this file is not a PEM certificate".to_owned())?;
+        let summary = hub::summarize_ca(&pem).map_err(err)?;
+        Ok(CaCertificate { pem, summary })
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -1175,15 +1213,14 @@ fn get_shared_library(state: State<'_, AppState>) -> SharedLibrary {
 #[tauri::command(rename_all = "camelCase")]
 async fn set_shared_library(
     state: State<'_, AppState>,
-    role: LibraryRole,
-    url: Option<String>,
-    machine_name: Option<String>,
+    settings: SharedLibrarySettings,
 ) -> Result<SharedLibrary, String> {
     let config = Arc::clone(&state.config);
     blocking(move || {
-        config
-            .set_external_library(role, url, machine_name)
-            .map_err(err)
+        if let Some(pem) = &settings.ca_certificate {
+            hub::summarize_ca(pem).map_err(err)?;
+        }
+        config.set_external_library(settings).map_err(err)
     })
     .await?;
     Ok(shared_library(&state))
@@ -2019,6 +2056,7 @@ pub fn run() {
             get_cover_art,
             get_shared_library,
             set_shared_library,
+            read_ca_certificate,
             get_now_playing_config,
             set_now_playing_config,
             get_tuning_config,

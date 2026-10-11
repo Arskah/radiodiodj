@@ -68,6 +68,7 @@ tokio-postgres-rustls = "=0.14.0"
 rustls = { version = "=0.23.45", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 rustls-platform-verifier = "=0.7.1"
 uuid = { version = "=1.27.0", features = ["v4"] }
+x509-cert = "=0.2.5"
 
 [dev-dependencies]
 tempfile = "=3.27.0"

@@ -610,6 +610,35 @@ export interface HubStatus {
   message: string;
   /** When the hub last answered, unix ms. */
   reachedAt: number | null;
+  /** Whether the last connection to the hub was encrypted, once one opened. */
+  encrypted: boolean | null;
+}
+
+/** A certificate authority trusted for the hub beside the system's own. */
+export interface CaCertificate {
+  /** The certificate as PEM text. Public, and stored in `config.json`. */
+  pem: string;
+  summary: {
+    /** Who the first certificate names. */
+    subject: string;
+    /** When the first of them to expire does, unix ms. */
+    expiresAt: number;
+    count: number;
+  };
+}
+
+/** What an operator sets of the shared library. Applies at the next launch. */
+export interface SharedLibrarySettings {
+  role: LibraryRole;
+  /** A `postgresql://` connection URL, password included. */
+  url: string | null;
+  machineName: string | null;
+  /** Reach the hub without TLS where it offers none. Off unless said. */
+  allowUnencrypted: boolean;
+  /** Open with the TLS handshake, for a hub behind a TLS-ending proxy. */
+  directTls: boolean;
+  /** PEM text of the hub's certificate authority, when not a public one. */
+  caCertificate: string | null;
 }
 
 /** The shared-library settings as saved, with the status of the running role. */
@@ -618,6 +647,9 @@ export interface SharedLibrary {
   /** A `postgresql://` connection URL, password included. */
   url: string | null;
   machineName: string | null;
+  allowUnencrypted: boolean;
+  directTls: boolean;
+  caCertificate: CaCertificate | null;
   status: HubStatus;
 }
 

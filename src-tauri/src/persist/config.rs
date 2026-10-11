@@ -54,6 +54,39 @@ pub struct ExternalLibraryConfig {
     /// What other machines call this one. Defaults to the start of its id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine_name: Option<String>,
+    /// Whether the hub may be reached without TLS. Off unless an operator
+    /// says the network between is private: a connection is never plaintext
+    /// by accident.
+    #[serde(default)]
+    pub allow_unencrypted: bool,
+    /// Open with the TLS handshake instead of Postgres' own preamble, for a
+    /// hub whose TLS ends at a proxy in front of it.
+    #[serde(default)]
+    pub direct_tls: bool,
+    /// A certificate authority to trust for the hub beside the system's own,
+    /// as PEM text. A certificate is public, so it is kept here whole rather
+    /// than as a path to a file that can be moved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_certificate: Option<String>,
+}
+
+/// What an operator sets of [`ExternalLibraryConfig`]: everything but the
+/// machine id.
+#[derive(Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedLibrarySettings {
+    #[serde(default, deserialize_with = "lenient_role")]
+    pub role: LibraryRole,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub machine_name: Option<String>,
+    #[serde(default)]
+    pub allow_unencrypted: bool,
+    #[serde(default)]
+    pub direct_tls: bool,
+    #[serde(default)]
+    pub ca_certificate: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -701,19 +734,21 @@ impl Config {
         self.inner.lock().external_library.clone()
     }
 
-    /// Store the role, the hub's address and this machine's name. The machine
-    /// id is not the caller's to change. Takes effect at the next launch.
+    /// Store what an operator sets of the shared library. The machine id is
+    /// not the caller's to change. Takes effect at the next launch.
     pub fn set_external_library(
         &self,
-        role: LibraryRole,
-        url: Option<String>,
-        machine_name: Option<String>,
+        settings: SharedLibrarySettings,
     ) -> Result<ExternalLibraryConfig> {
         let tidy = |v: Option<String>| v.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
         let mut cfg = self.inner.lock();
-        cfg.external_library.role = role;
-        cfg.external_library.url = tidy(url);
-        cfg.external_library.machine_name = tidy(machine_name);
+        let section = &mut cfg.external_library;
+        section.role = settings.role;
+        section.url = tidy(settings.url);
+        section.machine_name = tidy(settings.machine_name);
+        section.allow_unencrypted = settings.allow_unencrypted;
+        section.direct_tls = settings.direct_tls;
+        section.ca_certificate = tidy(settings.ca_certificate);
         let stored = cfg.external_library.clone();
         self.save_and_unlock(cfg)?;
         Ok(stored)
@@ -958,16 +993,18 @@ mod tests {
         let (id, _) = cfg.machine().unwrap();
 
         let stored = cfg
-            .set_external_library(
-                LibraryRole::Studio,
-                Some(" postgresql://hub/x ".into()),
-                Some("  ".into()),
-            )
+            .set_external_library(SharedLibrarySettings {
+                role: LibraryRole::Studio,
+                url: Some(" postgresql://hub/x ".into()),
+                machine_name: Some("  ".into()),
+                ..Default::default()
+            })
             .unwrap();
 
         assert_eq!(stored.role, LibraryRole::Studio);
         assert_eq!(stored.url.as_deref(), Some("postgresql://hub/x"));
         assert_eq!(stored.machine_name, None);
+        assert!(!stored.allow_unencrypted, "plaintext is never the default");
         let reopened = Config::open(dir.path()).unwrap().external_library();
         assert_eq!(reopened.machine_id, Some(id));
         assert_eq!(reopened.role, LibraryRole::Studio);

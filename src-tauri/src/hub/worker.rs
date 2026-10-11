@@ -4,12 +4,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use parking_lot::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
-use super::client::{Claim, Hub, Machine};
+use super::client::{Claim, Link, Machine};
 use super::schema::PROTOCOL;
 use super::{OWNER_COMMANDS, STUDIO_ERROR};
 use crate::library::db::Db;
@@ -94,6 +94,8 @@ pub struct Status {
     pub message: String,
     /// When the hub last answered, unix ms.
     pub reached_at: Option<i64>,
+    /// Whether the last connection to the hub was encrypted, once one opened.
+    pub encrypted: Option<bool>,
 }
 
 /// Emitted with a [`Status`] whenever it changes.
@@ -134,6 +136,7 @@ impl Service {
                 ok: role == LibraryRole::Standalone,
                 message: String::new(),
                 reached_at: None,
+                encrypted: None,
             }),
             app,
         });
@@ -148,10 +151,7 @@ impl Service {
         if self.role == LibraryRole::Standalone {
             return db.stop_capture();
         }
-        let url = config.external_library().url.unwrap_or_default();
-        let hub: tokio_postgres::Config = url
-            .parse()
-            .context("the hub's address is not a postgresql:// connection URL")?;
+        let hub = Link::new(&config.external_library())?;
         let (id, name) = config.machine()?;
         match self.role {
             LibraryRole::Owner => db.start_capture(now_ms())?,
@@ -201,19 +201,14 @@ impl Service {
         let _ = self.app.emit(STATE_EVENT, &next);
     }
 
-    async fn run(
-        self: Arc<Self>,
-        db: Arc<Db>,
-        hub: tokio_postgres::Config,
-        machine: Machine,
-        health: Arc<Health>,
-    ) {
+    async fn run(self: Arc<Self>, db: Arc<Db>, hub: Link, machine: Machine, health: Arc<Health>) {
         let mut prepared = false;
         loop {
             let visit = match self.role {
                 LibraryRole::Owner => publish(&db, &hub, &machine, &mut prepared).await,
                 _ => pull(&db, &hub, &machine).await,
             };
+            self.status.lock().encrypted = hub.encrypted();
             match visit {
                 Ok(Visit::Published(0)) => self.report(true, "The hub is up to date.".into(), true),
                 Ok(Visit::Published(n)) => {
@@ -274,11 +269,11 @@ impl Service {
 /// The owner's visit: claim the role and publish what is owed.
 async fn publish(
     db: &Arc<Db>,
-    config: &tokio_postgres::Config,
+    link: &Link,
     machine: &Machine,
     prepared: &mut bool,
 ) -> Result<Visit> {
-    let mut hub = Hub::connect_with(config.clone()).await?;
+    let mut hub = link.connect().await?;
     if !*prepared {
         hub.create_tables().await?;
         *prepared = true;
@@ -305,8 +300,8 @@ async fn publish(
 }
 
 /// A studio's visit: take what the hub has that this copy does not.
-async fn pull(db: &Arc<Db>, config: &tokio_postgres::Config, machine: &Machine) -> Result<Visit> {
-    let hub = Hub::connect_with(config.clone()).await?;
+async fn pull(db: &Arc<Db>, link: &Link, machine: &Machine) -> Result<Visit> {
+    let hub = link.connect().await?;
     let Some(station) = hub.station().await? else {
         return Ok(Visit::NothingToCopy);
     };
@@ -374,7 +369,7 @@ mod tests {
 
     /// A hub of this test's own: a schema in the database `RADIODIODJ_TEST_HUB`
     /// names. `None` without the variable, and the test passes without running.
-    async fn test_hub() -> Option<tokio_postgres::Config> {
+    async fn test_hub() -> Option<Link> {
         let url = std::env::var("RADIODIODJ_TEST_HUB").ok()?;
         let mut config: tokio_postgres::Config = url.parse().unwrap();
         let schema = format!("hub_{}", uuid::Uuid::new_v4().simple());
@@ -385,11 +380,11 @@ mod tests {
             .await
             .unwrap();
         config.options(format!("-c search_path={schema}"));
-        Some(config)
+        Some(Link::over(config, true, Vec::new()))
     }
 
-    async fn query(hub: &tokio_postgres::Config, sql: &str) -> Vec<tokio_postgres::Row> {
-        let (client, connection) = hub.connect(tokio_postgres::NoTls).await.unwrap();
+    async fn query(hub: &Link, sql: &str) -> Vec<tokio_postgres::Row> {
+        let (client, connection) = hub.config().connect(tokio_postgres::NoTls).await.unwrap();
         tokio::spawn(connection);
         client.query(sql, &[]).await.unwrap()
     }
@@ -416,7 +411,7 @@ mod tests {
         Arc::new(db)
     }
 
-    async fn titles(hub: &tokio_postgres::Config) -> Vec<String> {
+    async fn titles(hub: &Link) -> Vec<String> {
         query(
             hub,
             "SELECT doc->>'title' FROM hub_rows WHERE kind = 'track' AND NOT deleted ORDER BY rev",
@@ -678,7 +673,7 @@ mod tests {
         assert_eq!(studio.search("", None, None, None).unwrap()[0].title, "Old");
     }
 
-    async fn joined_studio(hub: &tokio_postgres::Config) -> Arc<Db> {
+    async fn joined_studio(hub: &Link) -> Arc<Db> {
         publish(&library(&["One"]), hub, &machine("office"), &mut false)
             .await
             .unwrap();
