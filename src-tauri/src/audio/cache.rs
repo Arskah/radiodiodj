@@ -50,7 +50,7 @@ use super::player::{
 /// supplied (tests, and the config default). The live cap is held per-`Cache`.
 /// The whole playlist is attempted, but only as many leading tracks as fit
 /// under the cap stay resident.
-pub const MAX_CACHE_BYTES: usize = 512 * 1024 * 1024;
+pub const MAX_CACHE_BYTES: usize = 1024 * 1024 * 1024;
 
 /// Event topic on which cache membership changes are broadcast. Prefetch is a
 /// main-deck concept, so the cache-state event carries the main-deck prefix.

@@ -1454,7 +1454,7 @@ mod tests {
         let t = cfg.get_tuning();
         assert_eq!(t.interleave.jingle_every, 6);
         assert_eq!(t.interleave.commercial_every, 8); // default
-        assert_eq!(t.cache.max_cache_bytes, 512 * 1024 * 1024); // default
+        assert_eq!(t.cache.max_cache_bytes, 1024 * 1024 * 1024); // default
     }
 
     #[test]
