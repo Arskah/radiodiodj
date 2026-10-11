@@ -502,18 +502,6 @@ track list becomes one of two things the panel can show. The selection reads the
 listed rows as track ids, so everything that asks "which rows are listed" has to
 answer "none" on that tab rather than be handed entry ids.
 
-## Open
-
-**Who owns saved playlists in external-library mode.** The tables are in the
-library database, and under options B2 and B3 of
-[external-library.md](./external-library.md) a studio machine's copy of that
-database is a replica. Either they are replicated like tracks — which makes
-"build it on the web page, find it in the studio" need no file at all, and under
-that page's rules a list edited on two machines keeps the later save — or they
-are kept out of the replica and each studio has its own. Using one reads the
-local copy either way. That page assumes the first; to be settled when #505's
-outbox is built.
-
 ## Not in scope
 
 - **M3U and other players' formats.** Path-based identity; revisit once
@@ -527,4 +515,6 @@ outbox is built.
   serve.
 - **Dragging library rows onto a saved playlist.** See
   [Selecting entries](#selecting-entries); it would take the two lists side by side.
-- **Sync between installs.** That is the open question above.
+- **Sync between installs.** A shared library carries saved playlists between
+  its computers, the later save winning per list
+  ([shared-library.md](./shared-library.md#what-travels)).

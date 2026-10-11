@@ -1,16 +1,15 @@
 # Shared library
 
-**Partly built.** An owner [publishes its library to the hub](#the-hub), a
-studio [copies it](#applying-a-pull), and operator work — cue points, metadata
-edits, hidden tracks, saved playlists, dismissals — made on any of them reaches
-the rest. Not built: the owner's automatic cue settings reaching a studio, and
-the catalogue. Each is marked where it is described. This is the design of the variant [external-library.md](./external-library.md) settles on, B3: every
-machine keeps its own SQLite library, one of them owns the scan, and a Postgres
-**hub** sits between them. That page argues why; this one says what gets built.
-Tracked as [#505](https://github.com/Arskah/radiodiodj/issues/505).
+One library on several computers. Every machine keeps its own SQLite library,
+one of them owns the scan, and a Postgres **hub** sits between them: an owner
+[publishes its library to the hub](#the-hub), a studio
+[copies it](#applying-a-pull), and operator work — cue points, metadata edits,
+hidden tracks, saved playlists, dismissals — made on any of them reaches the
+rest. Why this shape and not another is argued in
+[external-library.md](./external-library.md), where it is variant B3.
 
-Two things are already in place: a track is stored relative to a library path
-whose folder is each machine's own setting
+It stands on two things: a track is stored relative to a library path whose
+folder is each machine's own setting
 ([library.md](./library.md#where-a-library-path-is)), and the saved playlist
 file is the contract a web page writes
 ([saved-playlists.md](./saved-playlists.md#the-file)).
@@ -124,8 +123,8 @@ catalogue, as it is left out of everything but a scan.
 
 ## Change capture
 
-Increment 2, and the same work whether or not a hub is ever configured. It is
-one migration step and nothing else: no `Db` method changes.
+The same work whether or not a hub is ever configured. It is one migration
+step and nothing else: no `Db` method changes.
 
 ```sql
 CREATE TABLE sync_rows (
@@ -198,7 +197,7 @@ short list of local-only ones — the contract-guard pattern the theme tokens us
 
 ## The hub
 
-Increment 3. Three tables, created and migrated by the owner.
+Three tables, created and migrated by the owner.
 
 ```sql
 CREATE TABLE hub_station (
@@ -232,8 +231,14 @@ CREATE INDEX hub_rows_rev ON hub_rows (rev);
 `hub_rows` is deliberately generic. The hub does not know what a track is: a
 column added to `tracks` changes a JSON document and no hub table, which is the
 line [external-library.md](./external-library.md#b2-and-b3--a-local-replica-on-every-machine)
-asks to be held. The catalogue the web page queries is the exception and is its
-own table, added by W1.
+asks to be held.
+
+**The catalogue is not built.** What a web page searches is the exception to
+that line: a table of its own, `hub_catalogue`, published by the owner from its
+effective rows — one per present track with a fingerprint, carrying the fields
+the app's search covers and what a saved playlist file needs
+([external-library.md](./external-library.md#the-web-page)). Tracked in
+[#505](https://github.com/Arskah/radiodiodj/issues/505).
 
 **A push** is one transaction. It takes `pg_advisory_xact_lock` on the station,
 then upserts each pending group with a fresh `rev` from one sequence:
@@ -521,19 +526,3 @@ are what it goes back to when it leaves.
   authority made for the run: `RADIODIODJ_TEST_HUB_TLS` is its URL and
   `RADIODIODJ_TEST_HUB_CA` the authority's certificate. It is version 17, so
   the handshake-first test has a server that takes one.
-
-## Increments
-
-Increment 1 is merged. The rest, as B3 makes them:
-
-| #   | increment                                                                                                  | by itself                                                        |
-| --- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| 2   | One migration step: `sync_rows`, `sync_local`, the triggers, `uid`, the column-claim test                  | Inert. `capture` is off and nothing can turn it on.              |
-| 3   | The role setting, the Postgres client, the hub tables, claiming the owner role, pushing `root` and `track` | The owner publishes; nothing consumes.                           |
-| 4   | The studio role: join at launch, pull and apply `root` and `track`, the role gates                         | **The scan is off the studio machine.** Studio work stays local. |
-| 5   | The outbox: `cue`, `edit`, `hidden`, `playlist`, `dismissal`, both ways                                    | Operator work reaches every machine.                             |
-| 6   | The indicators: how fresh the copy is, how much is waiting, why syncing stopped                            | A studio can see what it owes.                                   |
-| W1  | `hub_catalogue`, published by the owner from its effective rows, and the search query                      | **The web page can search.** Needs 2 and 3 only.                 |
-
-Option A's catalogue file and W2 are as
-[external-library.md](./external-library.md) leaves them.

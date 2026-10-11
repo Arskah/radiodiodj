@@ -1,11 +1,15 @@
 # External library
 
-**Planned.** Nothing on this page is built. It answers two questions: can the
+The argument behind the shared library. It answers two questions: can the
 library be shared between machines, so that the scan runs somewhere other than
 the studio machine — and what does a web page search when a show is built
-outside the studio? Tracked as
-[#505](https://github.com/Arskah/radiodiodj/issues/505). The library as it exists
-today is [library.md](./library.md); its schema is [database.md](./database.md).
+outside the studio? The answer to the first is built, as variant B3, and
+[shared-library.md](./shared-library.md) is its design. Nothing for the web page
+is: not option A's catalogue file, not the catalogue in the hub, not drafts.
+That is tracked as [#505](https://github.com/Arskah/radiodiodj/issues/505).
+
+The page is written from before any of it existed, and [Today](#today) is the
+library as it stood then.
 
 Two requirements, and every option below is held to both:
 
@@ -454,45 +458,15 @@ on-air machine, which was already refused as a way to trigger a scan
 install at all. What B2 keeps is the search: one implementation, and a page that
 finds exactly what the studio finds.
 
-#### Increments
+#### What the web page still needs
 
-Each is a PR on its own. Increment 2 is the same under either variant, and the
-choice between B2 and B3 does not have to be made before it lands. The web
-page's two increments hang off increment 3 and need nothing after it.
+The scan half is built as B3. The web page's half hangs off the hub and needs
+nothing else:
 
-```mermaid
-flowchart TD
-  I2["2 · Change capture and edit stamps"]
-  I3a["3 · B2: owner HTTP API, token, snapshot"]
-  I3b["3 · B3: hub tables and Postgres client"]
-  I4["4 · Studio role: pull, adopt ids, owner controls disabled"]
-  I5["5 · Outbox: operator work goes back"]
-  I6["6 · Freshness, outbox count, unreachable states"]
-  H["Headless owner (optional)"]
-  W1["W1 · Catalogue published, web search"]
-  W2["W2 · Drafts reachable from the app (optional)"]
-  I2 --> I3a
-  I2 --> I3b
-  I3a --> I4
-  I3b --> I4
-  I4 --> I5
-  I4 --> I6
-  I3a --> W1
-  I3b --> W1
-  W1 --> W2
-  H -.-> I3a
-  H -.-> I3b
-```
-
-| #   | increment                                                     | by itself                                                                                                                       |
-| --- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| 2   | Change capture, and a time and machine on each editable group | Inert. A migration and triggers nothing reads yet.                                                                              |
-| 3   | The middle: the owner's API (B2) or the hub (B3)              | The owner publishes; nothing consumes.                                                                                          |
-| 4   | The studio role                                               | **Delivers the ask**: the scan and the decode are off the studio machine. Read-only — cue work on a studio does not travel yet. |
-| 5   | The outbox                                                    | Cue points, metadata edits, saved playlists and dismissals reach the owner and the other studios.                               |
-| 6   | The indicators                                                | A studio can see how stale it is and what it still owes.                                                                        |
-| W1  | The catalogue, and the query the web page searches it with    | **Meets the web requirement**: search, and a saved playlist file out. Under B3 a single studio machine can stop here.           |
-| W2  | Drafts kept where the app can list them                       | Optional. Saves the admin fetching a file by hand; importing one by hand needs none of it.                                      |
+| step                                                       | by itself                                                                                                            |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| The catalogue, and the query the web page searches it with | **Meets the web requirement**: search, and a saved playlist file out. A single studio machine, as owner, stops here. |
+| Drafts kept where the app can list them                    | Optional. Saves the admin fetching a file by hand; importing one by hand needs none of it.                           |
 
 Two things the first design had are gone. A **`Library` boundary** — the `Db`
 surface split so a remote implementation could sit beside the local one — is
@@ -520,7 +494,7 @@ moves the scan — B1 out, and of B2 and B3 the web page favours B3.**
 Option A meets the web requirement with a file and nothing else: search and a
 playlist out, drafts let in by hand, and the scan stays where it is. It is the right first
 step if the page is wanted before any of option B exists, and it is not thrown
-away afterwards — W1's catalogue is the same fields in a table.
+away afterwards — the hub's catalogue is the same fields in a table.
 
 Option B is the answer to the other requirement — if the library grows past
 what the studio machine should be decoding between shows, or if a second studio
@@ -537,8 +511,7 @@ has one studio machine — and B3 answers all three where B2 answers none withou
 exposing a machine of the station's. **B3, then**, at the price of a second
 search implementation and a Postgres to look after. B2 remains the answer for a
 station whose owner already sits on a server the outside can reach and that
-wants the page to find exactly what the studio finds. Increment 2 does not
-depend on the choice.
+wants the page to find exactly what the studio finds.
 
 What B3 is made of — the groups that travel, the local change log, the hub's
 tables and the rules for applying a pull — is

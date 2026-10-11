@@ -274,7 +274,7 @@ _Avoid_: Pool, mode, curated mode
 
 ### Shared library
 
-Planned. See [docs/shared-library.md](docs/shared-library.md).
+See [docs/shared-library.md](docs/shared-library.md).
 
 **Library owner**:
 The one install that runs the **Scan**, the **Analysis pass** and the **Library check** for a station whose library is shared, and the only one that adds, changes or purges a **Track**.
