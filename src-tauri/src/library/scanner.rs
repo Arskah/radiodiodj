@@ -16,6 +16,7 @@ pub use super::listing::ScanRoot;
 use super::listing::{self, Found};
 #[cfg(test)]
 use super::listing::{find_audio_files, should_rescan};
+use super::on_disk;
 use crate::audio_measure::fingerprint;
 
 /// Upper bound on parallel tag-read workers. A scan is dominated by per-file
@@ -705,7 +706,10 @@ pub fn read_file_tags(path: &str) -> Result<TrackInsert> {
 /// no artwork or cannot be read. Read on demand for the deck's vinyl disc — the
 /// image is never stored, keeping the library DB free of large blobs.
 pub fn read_cover_art(path: &str) -> Option<String> {
-    let tagged = Probe::open(path).ok()?.read().ok()?;
+    let tagged = Probe::open(on_disk::find(Path::new(path)))
+        .ok()?
+        .read()
+        .ok()?;
     let picture = tagged
         .primary_tag()
         .or_else(|| tagged.first_tag())?

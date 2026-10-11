@@ -3,6 +3,7 @@ pub mod check;
 pub mod db;
 pub mod health;
 pub mod listing;
+pub mod on_disk;
 pub mod roots;
 pub mod saved_playlists;
 pub mod scan_state;

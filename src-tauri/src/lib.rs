@@ -224,11 +224,11 @@ async fn reveal_track(state: State<'_, AppState>, id: i64) -> Result<(), String>
             .get_track_load_info(id)
             .map_err(err)?
             .ok_or_else(|| format!("track {id} not found"))?;
-        let path = std::path::Path::new(&info.path);
+        let path = library::on_disk::find(std::path::Path::new(&info.path));
         if !path.exists() {
             return Err(format!("file not found: {}", info.path));
         }
-        tauri_plugin_opener::reveal_item_in_dir(path).map_err(err)
+        tauri_plugin_opener::reveal_item_in_dir(library::on_disk::for_shell(&path)).map_err(err)
     })
     .await
 }
@@ -863,7 +863,8 @@ async fn get_waveform_detail(
                 let media = db
                     .get_media_track(id)?
                     .ok_or_else(|| anyhow::anyhow!("track not found"))?;
-                Arc::from(std::fs::read(&media.path)?.into_boxed_slice())
+                let path = library::on_disk::find(std::path::Path::new(&media.path));
+                Arc::from(std::fs::read(path)?.into_boxed_slice())
             }
         };
         audio_measure::waveform::compute_detail(bytes)

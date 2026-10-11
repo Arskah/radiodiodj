@@ -72,6 +72,16 @@ one from indexing its files a second time. A track under no library path keeps
 its whole path, with root id `0`: one whose library path was removed, until a
 path that contains it is added again.
 
+The path below the folder is spelled as the computer that scanned it read it,
+and two computers can spell one name differently: macOS hands back `ä` as an
+`a` and a combining mark, where Windows and Linux ask a share for exactly the
+characters they are given. In a shared library that is a studio asking for a
+name its share does not have. So a file that is not found as stored is asked
+for again composed, then decomposed, before it counts as unreadable
+(`library/on_disk.rs`) — on the way to a deck, the cover art and the file
+manager. Nothing stored changes. A name with a character Windows does not allow,
+`:` among them, is not covered: such a track cannot be read there.
+
 A library written before this, and a `config.json` that still lists
 `musicPaths`, `commercialPaths` or `jinglePaths`, are taken up at launch: each
 listed folder becomes a library path, its tracks move under it, and the lists
@@ -651,6 +661,7 @@ baseline resets are in [database.md](./database.md).
 | ---------------------------------- | ----------------------------------------------------------------------------- |
 | listing and the changed/gone rules | `src-tauri/src/library/listing.rs`                                            |
 | library paths and their folders    | `library/roots.rs`                                                            |
+| the spelling of a file's name      | `library/on_disk.rs`                                                          |
 | scan and reconcile                 | `library/scanner.rs`, `library/scan_state.rs`, `Db::reconcile`                |
 | fingerprint                        | `audio_measure/fingerprint.rs`                                                |
 | waveforms and fingerprints         | `library/waveform_scan.rs`                                                    |

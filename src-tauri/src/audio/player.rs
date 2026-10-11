@@ -7,7 +7,6 @@
 use anyhow::{Context, Result};
 use rodio::source::SkipDuration;
 use rodio::{Decoder, Sink, Source};
-use std::fs::File;
 use std::io::{Cursor, ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -16,6 +15,7 @@ use std::time::{Duration, Instant};
 
 use super::cue_points::{CuePoints, Resolved};
 use super::envelope::Enveloped;
+use crate::library::on_disk;
 
 /// A background read that has delivered no further bytes within this budget is
 /// treated as a wedged (e.g. networked) mount. The audio worker stops waiting
@@ -437,7 +437,7 @@ impl Seen {
 /// decodes from one contiguous buffer.
 pub(super) fn read_file_watched(path: &Path, progress: &Progress) -> Result<Bytes> {
     let ctx = || format!("read {}", path.display());
-    let mut file = File::open(path).with_context(ctx)?;
+    let mut file = on_disk::open(path).with_context(ctx)?;
     let hint = file
         .metadata()
         .map(|m| usize::try_from(m.len()).unwrap_or(0))
