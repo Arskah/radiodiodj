@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.32.1](https://github.com/Arskah/radiodiodj/compare/v0.32.0...v0.32.1) (2026-10-11)
+
+
+### Bug Fixes
+
+* **deps:** update rust crate tauri-plugin-updater to v2.13.2 ([#643](https://github.com/Arskah/radiodiodj/issues/643)) ([dac7c33](https://github.com/Arskah/radiodiodj/commit/dac7c3354950381ecf2d4284eb2c89b7fe190d6c))
+* **library:** find a file whose name another computer spelled differently ([#653](https://github.com/Arskah/radiodiodj/issues/653)) ([76bbe19](https://github.com/Arskah/radiodiodj/commit/76bbe1902089dc1e2a28c2fd5676dfdf9ee8717f))
+* **player:** clear the Reconnecting banner once the share answers again ([#652](https://github.com/Arskah/radiodiodj/issues/652)) ([064f341](https://github.com/Arskah/radiodiodj/commit/064f34149d6adae1f7b675719cea0881d4578746))
+
 ## [0.32.0](https://github.com/Arskah/radiodiodj/compare/v0.31.0...v0.32.0) (2026-10-11)
 
 

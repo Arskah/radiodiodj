@@ -1,6 +1,6 @@
 [package]
 name = "radiodiodj"
-version = "0.32.0"
+version = "0.32.1"
 description = "Radio station music player"
 authors = ["Aarni Halinen"]
 license = "GPL-3.0-or-later"
