@@ -50,7 +50,7 @@ use super::player::{
 /// supplied (tests, and the config default). The live cap is held per-`Cache`.
 /// The whole playlist is attempted, but only as many leading tracks as fit
 /// under the cap stay resident.
-pub const MAX_CACHE_BYTES: usize = 150 * 1024 * 1024;
+pub const MAX_CACHE_BYTES: usize = 1024 * 1024 * 1024;
 
 /// Event topic on which cache membership changes are broadcast. Prefetch is a
 /// main-deck concept, so the cache-state event carries the main-deck prefix.
@@ -58,7 +58,9 @@ const CACHE_STATE_EVENT: &str = "main-deck:cache-state";
 
 /// Event topic raised when a prefetch read fails — the share is (probably)
 /// unreachable. Drives the reconnecting indicator; a later cache-state emit
-/// (a read succeeded) signals recovery and clears it on the frontend.
+/// signals recovery and clears it on the frontend. A run that ends without a
+/// failed read sends one even when membership did not change — see
+/// [`Inner::recovered`].
 const PREFETCH_FAILED_EVENT: &str = "main-deck:prefetch-failed";
 
 /// How long a deck waiting on someone else's read sleeps before looking again.
@@ -91,6 +93,9 @@ struct Inner {
     /// someone else's copy of a large file would be failed for the size of the
     /// file rather than for a stall.
     in_flight: HashMap<i64, Progress>,
+    /// A prefetch read failed and no run has ended cleanly since: the renderer
+    /// was told the share is unreachable and is still owed the all-clear.
+    failing: bool,
 }
 
 impl Inner {
@@ -101,7 +106,19 @@ impl Inner {
             generation: 0,
             cap,
             in_flight: HashMap::new(),
+            failing: false,
         }
+    }
+
+    /// The prefetch run for window `generation` ended without a failed read.
+    /// True when that ends an outage the renderer was told about, which the
+    /// caller announces with a cache-state emit.
+    ///
+    /// Membership alone cannot carry that news: a read that succeeds beyond the
+    /// byte cap is discarded, and a failing entry that left the window was
+    /// never resident, so neither changes what is cached.
+    fn recovered(&mut self, generation: u64) -> bool {
+        self.generation == generation && std::mem::take(&mut self.failing)
     }
 
     /// Take bytes some other reader pulled off the share.
@@ -180,6 +197,16 @@ fn retain_within_cap(
         }
     }
     keep
+}
+
+/// Whether the file at `path` is already known not to fit beside `retained`
+/// resident bytes. Asked before the read, so a file the cap would refuse does
+/// not cross the share on every run only to be dropped. A size that cannot be
+/// had answers no: the read that follows is what reports a share that is away.
+fn beyond_cap(path: &Path, retained: usize, cap: usize) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| {
+        usize::try_from(m.len()).map_or(true, |len| retained.saturating_add(len) > cap)
+    })
 }
 
 /// What the prefetch worker should do with one window entry.
@@ -501,6 +528,7 @@ fn run_prefetch(shared: &Arc<Shared>, app: &AppHandle) {
     };
 
     let mut retained_bytes: usize = 0;
+    let mut failed = false;
     'window: for (id, path) in &window {
         // Wait out a read someone else holds rather than walking past the
         // entry: nothing but a window push wakes this worker, so a skipped
@@ -525,6 +553,10 @@ fn run_prefetch(shared: &Arc<Shared>, app: &AppHandle) {
             }
         };
 
+        if beyond_cap(path, retained_bytes, cap) {
+            break;
+        }
+
         // Read on the worker thread — one file at a time.
         let bytes = match read_file_watched(path, &progress) {
             Ok(b) => b,
@@ -532,14 +564,17 @@ fn run_prefetch(shared: &Arc<Shared>, app: &AppHandle) {
                 log::warn!("cache: prefetch read {} failed: {}", path.display(), e);
                 // Surface the failure so the UI can flag the share as
                 // unreachable. Idempotent on the frontend; cleared by the next
-                // successful cache-state emit below.
+                // cache-state emit.
+                failed = true;
+                shared.inner.lock().failing = true;
                 let _ = app.emit(PREFETCH_FAILED_EVENT, ());
                 continue;
             }
         };
 
         // Stop once the cap would be exceeded — leading entries are prioritised
-        // and later ones would only be evicted anyway.
+        // and later ones would only be evicted anyway. Asked again of the bytes
+        // themselves, which are the authority on a file that grew.
         if retained_bytes + bytes.len() > cap {
             break;
         }
@@ -569,11 +604,27 @@ fn run_prefetch(shared: &Arc<Shared>, app: &AppHandle) {
             let _ = app.emit(CACHE_STATE_EVENT, ids);
         }
     }
+
+    if failed {
+        return;
+    }
+    let ids = {
+        let mut guard = shared.inner.lock();
+        guard
+            .recovered(generation)
+            .then(|| guard.entries.keys().copied().collect::<Vec<_>>())
+    };
+    if let Some(ids) = ids {
+        let _ = app.emit(CACHE_STATE_EVENT, ids);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The cap these tests size their entries against, whatever the default is.
+    const CAP: usize = 150 * 1024 * 1024;
 
     /// Synthetic cached entry of `len` bytes — no real file/audio needed.
     fn bytes(len: usize) -> Bytes {
@@ -585,8 +636,42 @@ mod tests {
     }
 
     #[test]
+    fn a_clean_run_after_a_failed_read_announces_recovery_once() {
+        let mut inner = Inner::new(CAP);
+        assert!(!inner.recovered(0), "nothing failed, nothing to announce");
+
+        inner.failing = true;
+        assert!(inner.recovered(0));
+        assert!(!inner.recovered(0), "announced already");
+    }
+
+    #[test]
+    fn a_superseded_run_does_not_announce_recovery() {
+        let mut inner = Inner::new(CAP);
+        inner.failing = true;
+        inner.generation = 1;
+
+        assert!(!inner.recovered(0), "says nothing about the new window");
+        assert!(inner.recovered(1), "still owed by the run that replaced it");
+    }
+
+    #[test]
+    fn a_file_the_cap_would_refuse_is_known_before_it_is_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("track.flac");
+        std::fs::write(&path, [0u8; 10]).expect("write");
+
+        assert!(!beyond_cap(&path, 0, 10), "fits exactly");
+        assert!(beyond_cap(&path, 1, 10));
+        assert!(
+            !beyond_cap(&dir.path().join("gone.flac"), 0, 0),
+            "no size to judge by, so the read decides"
+        );
+    }
+
+    #[test]
     fn evict_out_of_window_drops_ids_outside_window() {
-        let mut inner = Inner::new(MAX_CACHE_BYTES);
+        let mut inner = Inner::new(CAP);
         inner.entries.insert(1, bytes(10));
         inner.entries.insert(2, bytes(10));
         inner.entries.insert(3, bytes(10));
@@ -601,7 +686,7 @@ mod tests {
 
     #[test]
     fn evict_out_of_window_is_noop_when_all_in_window() {
-        let mut inner = Inner::new(MAX_CACHE_BYTES);
+        let mut inner = Inner::new(CAP);
         inner.entries.insert(1, bytes(10));
         inner.entries.insert(2, bytes(10));
         inner.window = win(&[1, 2, 3]);
@@ -614,7 +699,7 @@ mod tests {
     fn enforce_cap_retains_nearest_first_until_full() {
         // Three ~60 MB entries, cap 150 MB → only the first two fit.
         let big = 60 * 1024 * 1024;
-        let mut inner = Inner::new(MAX_CACHE_BYTES);
+        let mut inner = Inner::new(CAP);
         inner.window = win(&[1, 2, 3]);
         inner.entries.insert(1, bytes(big));
         inner.entries.insert(2, bytes(big));
@@ -628,7 +713,7 @@ mod tests {
 
     #[test]
     fn enforce_cap_noop_when_under_cap() {
-        let mut inner = Inner::new(MAX_CACHE_BYTES);
+        let mut inner = Inner::new(CAP);
         inner.window = win(&[1, 2]);
         inner.entries.insert(1, bytes(1024));
         inner.entries.insert(2, bytes(1024));
@@ -644,13 +729,13 @@ mod tests {
         entries.insert(1, bytes(big));
         entries.insert(2, bytes(big)); // 1 + 2 = 200 MB > 150 MB cap
         entries.insert(3, bytes(1024));
-        let keep = retain_within_cap(&window, &entries, MAX_CACHE_BYTES);
+        let keep = retain_within_cap(&window, &entries, CAP);
         assert_eq!(keep, HashSet::from([1]), "only the nearest entry fits");
     }
 
     #[test]
     fn an_offered_track_in_the_window_becomes_resident() {
-        let mut inner = Inner::new(MAX_CACHE_BYTES);
+        let mut inner = Inner::new(CAP);
         inner.window = win(&[1, 2]);
 
         assert!(inner.accept(2, bytes(1024)), "membership changed");
@@ -662,7 +747,7 @@ mod tests {
         // The cue deck auditioning a track nobody queued. Keeping it would make
         // residency an LRU by the back door, and the next enforcement would
         // drop it anyway.
-        let mut inner = Inner::new(MAX_CACHE_BYTES);
+        let mut inner = Inner::new(CAP);
         inner.window = win(&[1]);
 
         assert!(!inner.accept(9, bytes(1024)));
@@ -672,7 +757,7 @@ mod tests {
     #[test]
     fn an_offered_track_beyond_the_cap_is_not_kept() {
         let big = 100 * 1024 * 1024;
-        let mut inner = Inner::new(MAX_CACHE_BYTES);
+        let mut inner = Inner::new(CAP);
         inner.window = win(&[1, 2]);
         inner.entries.insert(1, bytes(big));
 
@@ -684,7 +769,7 @@ mod tests {
 
     #[test]
     fn re_offering_a_resident_track_changes_nothing() {
-        let mut inner = Inner::new(MAX_CACHE_BYTES);
+        let mut inner = Inner::new(CAP);
         inner.window = win(&[1]);
         inner.entries.insert(1, bytes(1024));
 
@@ -697,7 +782,7 @@ mod tests {
 
     #[test]
     fn a_second_reader_is_turned_away_while_a_read_is_in_flight() {
-        let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
+        let shared = Arc::new(Shared::new(CAP));
         let first = shared.claim(7, &fresh_progress());
         assert!(first.is_some(), "nobody was reading it");
         assert!(
@@ -712,7 +797,7 @@ mod tests {
 
     #[test]
     fn releasing_a_claim_lets_the_next_reader_in() {
-        let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
+        let shared = Arc::new(Shared::new(CAP));
         drop(shared.claim(7, &fresh_progress()));
         assert!(
             shared.claim(7, &fresh_progress()).is_some(),
@@ -725,7 +810,7 @@ mod tests {
     /// itself (#504).
     #[test]
     fn a_claim_publishes_the_holders_progress_to_whoever_waits() {
-        let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
+        let shared = Arc::new(Shared::new(CAP));
         let holder = fresh_progress();
         let claim = shared.claim(7, &holder).expect("nobody was reading it");
 
@@ -742,7 +827,7 @@ mod tests {
 
     #[test]
     fn prefetch_waits_out_a_track_a_deck_is_already_reading() {
-        let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
+        let shared = Arc::new(Shared::new(CAP));
         let _claim = shared.claim(7, &fresh_progress());
         assert!(matches!(
             shared.prefetch_step(7, &fresh_progress()),
@@ -752,7 +837,7 @@ mod tests {
 
     #[test]
     fn prefetch_claims_the_track_it_decides_to_read() {
-        let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
+        let shared = Arc::new(Shared::new(CAP));
         let claim = shared.prefetch_step(7, &fresh_progress());
         assert!(matches!(claim, Step::Read(_)));
         // Deciding and claiming are one lock: nothing can slip a read in
@@ -765,7 +850,7 @@ mod tests {
 
     #[test]
     fn prefetch_counts_a_track_that_is_already_resident() {
-        let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
+        let shared = Arc::new(Shared::new(CAP));
         shared.inner.lock().entries.insert(7, bytes(1024));
         assert!(matches!(
             shared.prefetch_step(7, &fresh_progress()),
@@ -779,7 +864,7 @@ mod tests {
 
     #[test]
     fn a_deck_takes_the_resident_copy() {
-        let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
+        let shared = Arc::new(Shared::new(CAP));
         shared.inner.lock().entries.insert(7, bytes(1024));
         assert!(
             matches!(shared.deck_step(7, &fresh_progress()), DeckStep::Take(b) if b.len() == 1024)
@@ -788,7 +873,7 @@ mod tests {
 
     #[test]
     fn a_deck_reads_a_track_nobody_is_reading() {
-        let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
+        let shared = Arc::new(Shared::new(CAP));
         shared.inner.lock().window = win(&[7]);
         assert!(matches!(
             shared.deck_step(7, &fresh_progress()),
@@ -798,7 +883,7 @@ mod tests {
 
     #[test]
     fn a_deck_waits_for_a_read_already_in_flight() {
-        let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
+        let shared = Arc::new(Shared::new(CAP));
         shared.inner.lock().window = win(&[7]);
         let _claim = shared.claim(7, &fresh_progress());
         assert!(matches!(
@@ -812,7 +897,7 @@ mod tests {
     /// used to overlap — and the editor reloads the audition on every edit.
     #[test]
     fn a_deck_outside_the_window_reads_rather_than_waiting() {
-        let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
+        let shared = Arc::new(Shared::new(CAP));
         shared.inner.lock().window = win(&[1]);
         let _held = shared.claim(7, &fresh_progress());
         assert!(matches!(
@@ -823,7 +908,7 @@ mod tests {
 
     #[test]
     fn a_deck_outside_the_window_does_not_hold_the_id() {
-        let shared = Arc::new(Shared::new(MAX_CACHE_BYTES));
+        let shared = Arc::new(Shared::new(CAP));
         assert!(matches!(
             shared.deck_step(7, &fresh_progress()),
             DeckStep::Read(None)
