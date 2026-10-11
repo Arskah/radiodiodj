@@ -5,6 +5,8 @@ CREATE INDEX saved_playlist_entries_list
 
 CREATE UNIQUE INDEX saved_playlists_uid ON saved_playlists(uid);
 
+CREATE INDEX sync_parked_track ON sync_parked(track_id);
+
 CREATE INDEX tracks_fingerprint ON tracks(fingerprint) WHERE fingerprint IS NOT NULL;
 
 CREATE UNIQUE INDEX tracks_path_present ON tracks(root_id, path) WHERE missing_since IS NULL;
@@ -56,6 +58,17 @@ CREATE TABLE sync_local (
   library_id TEXT,
   pulled_rev INTEGER NOT NULL DEFAULT 0
 , replica INTEGER NOT NULL DEFAULT 0);
+
+CREATE TABLE sync_parked (
+  kind      TEXT NOT NULL,
+  key       TEXT NOT NULL,
+  track_id  INTEGER NOT NULL,
+  edited_at INTEGER NOT NULL,
+  machine   TEXT NOT NULL,
+  deleted   INTEGER NOT NULL,
+  doc       TEXT,
+  PRIMARY KEY (kind, key)
+) WITHOUT ROWID;
 
 CREATE TABLE sync_rows (
   kind      TEXT NOT NULL,

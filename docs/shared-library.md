@@ -1,11 +1,10 @@
 # Shared library
 
-**Partly built.** An owner [publishes its library to the hub](#the-hub) and a
-studio [copies it](#applying-a-pull), which is what takes the scan and the
-decode off the studio machine. Not built: the outbox, so cue points, metadata
-edits, hidden tracks, saved playlists and dismissals made on one machine stay
-on it — the owner included, whose own edits in the app reach no studio yet; the owner's automatic cue settings reaching a studio; the catalogue.
-Each is marked where it is described. This is the design of the variant [external-library.md](./external-library.md) settles on, B3: every
+**Partly built.** An owner [publishes its library to the hub](#the-hub), a
+studio [copies it](#applying-a-pull), and operator work — cue points, metadata
+edits, hidden tracks, saved playlists, dismissals — made on any of them reaches
+the rest. Not built: the owner's automatic cue settings reaching a studio, and
+the catalogue. Each is marked where it is described. This is the design of the variant [external-library.md](./external-library.md) settles on, B3: every
 machine keeps its own SQLite library, one of them owns the scan, and a Postgres
 **hub** sits between them. That page argues why; this one says what gets built.
 Tracked as [#505](https://github.com/Arskah/radiodiodj/issues/505).
@@ -281,11 +280,17 @@ connects, claims, checks in to `hub_machines`, and publishes what `sync_rows`
 owes in transactions of 200 groups. Whether the connection is encrypted is the
 URL's `sslmode` to say. Every hub call has a timeout, and none holds the `Db`
 mutex. What it finds goes to the log, once per change and not once per visit.
-Waking it when `sync_rows` gains a row is left for the outbox, where a cue save
-should not wait half a minute.
+Between visits it looks at its own `sync_rows` every two seconds and visits at
+once when something is waiting, so an operator's save does not wait half a
+minute — unless the last visit failed, when the hub is left alone until the
+next one is due.
 
-**What the owner publishes so far is `root` and `track`.** The other kinds are
-captured and wait in `sync_rows` for the outbox.
+**Both roles send, then take.** The owner sends the library and its own operator
+work, then takes what studios sent — leaving out its own rows, which would
+otherwise be the whole library handed back. A studio sends its operator work
+and takes everything. The protocol number is 2 from here: a build that knew
+only `root` and `track` would step over the other kinds and never see them
+again, so it has to stop instead.
 
 **The hub's address is a connection URL in `config.json`, password included, in
 plain text.** It is the only secret there that is not a hash, and the README's
@@ -353,9 +358,34 @@ tested against two in-memory SQLite databases with no Postgres in sight.
 | `playlist`  | the list replaced whole, found by `uid`. Entries are bound by track id, then by fingerprint as an import does.        |
 | `dismissal` | upserted, or deleted by a tombstone.                                                                                  |
 
-**A pull never overwrites a group with an edit waiting to go out.** The pending
-edit is pushed first and the hub decides. Where the hub prefers the other
-machine's, the next pull applies it.
+**A pull never overwrites a later save waiting to go out.** A visit sends
+before it takes, and a group that arrives while this machine has its own
+version waiting is compared with it the way the hub compares: the later
+`edited_at` stands, and the machine id settles a tie. Ours later — the incoming
+one is passed over, and the hub takes ours next. Theirs later — it is applied
+and ours is no longer owed. Every machine and the hub reach the same answer
+from the same two stamps, which is what makes the order of arrival not matter.
+
+**Work that arrives before its track waits for it.** The hub holds each group as
+it reads now and hands them out in the order they last changed, so a cue set can
+come a page ahead of a track that was updated after it. A `cue`, `edit` or
+`hidden` group for a track this library does not hold is kept in `sync_parked`
+and applied when the track is; a purge of the track drops it. The owner removes
+a purged track's groups from the hub with the tombstone.
+
+**What applying changed is passed on**, since the library is not the only place
+it lives: the playlist re-reads the cue points of what it holds, the list of
+saved playlists is emitted again, and on the owner a track another machine
+edited is handed to the tag writer, which writes it to the file if _Write edits
+to file tags_ is on.
+
+**A reverted edit says what it went back to.** Only the owner reverts, since
+the file is its to read, and the `edit` tombstone it sends carries the column's
+value after the revert — so a studio needs nothing but the tombstone to follow.
+
+**Two saved playlists may share a name.** A name is checked on create and
+rename on one machine, and two machines can each make _Friday_. Both arrive and
+both stay; they are different lists by `uid`, and either can be renamed.
 
 **A purge on the owner reaches a studio as a delete.** It runs the same cleanup
 `purge_tracks` does — `play_log.track_id` nulled, saved-playlist entries
@@ -408,6 +438,10 @@ are listed and cannot be loaded.
 says so. Setting the role to _Not shared_, restarting, and setting it back
 joins from the start.
 
+**A studio owes the hub what it does, and nothing it was given.** Capture
+starts with an empty outbox on a copy: everything in it came from the hub, and
+sent back stamped with today it would beat the saves it came from.
+
 **Leaving** keeps the copy and turns capture off. The machine is a standalone
 station with the library it last pulled.
 
@@ -421,9 +455,9 @@ The role gates the jobs, not only their buttons.
   with the reason, as admin mode refuses a locked one: the list is
   `hub::OWNER_COMMANDS`, checked by the same wrapper. Their controls are
   disabled with that reason as the tooltip.
-- The tag writer. A metadata edit made on a studio is to reach the owner as an
+- The tag writer. A metadata edit made on a studio reaches the owner as an
   `edit` group, and the owner writes it to the file if _Write edits to file
-  tags_ is on there. Until the outbox exists the edit stays on the studio.
+  tags_ is on there.
 - Reverting a metadata edit to the file's tags. The file is the owner's to
   read: a studio whose path is located at the wrong folder, or at a stale copy,
   would send another file's tags to every machine. A studio undoes an edit by
@@ -433,8 +467,10 @@ The role gates the jobs, not only their buttons.
   `root_id` and `path` are the owner's columns.
 - Forgetting a dismissal whose finding is gone, which `health::build` does on
   every report. A studio that is behind would otherwise delete a dismissal the
-  owner still needs and send the tombstone to everyone. Not gated yet: nothing
-  a studio does is sent anywhere until the outbox.
+  owner still needs and send the tombstone to everyone.
+- Reclassifying a track. Its content type follows its library path, so a
+  change made here would be put back by the owner's next scan; the command
+  drops it on a studio.
 
 **Automatic cue settings are the station's.** Not built: a studio still uses
 its own. The thresholds shape what is
@@ -487,16 +523,3 @@ Increment 1 is merged. The rest, as B3 makes them:
 
 Option A's catalogue file and W2 are as
 [external-library.md](./external-library.md) leaves them.
-
-## Open
-
-Each has a proposal; none is decided.
-
-1. **Saved playlists with the same name.** Uniqueness is checked in Rust on
-   create and rename, and two machines can each make _Friday_. Proposed: applied
-   as they come, so both exist; renaming either works as it does now.
-2. **Reclassifying a track's content type on a studio.** It is not an edited
-   field — the next rescan overwrites it from the library path. Proposed: an
-   owner control.
-3. **Reverting a metadata edit on a studio** re-reads the file's tags there.
-   Proposed: allowed — it is a read, and the tombstone is what travels.

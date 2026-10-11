@@ -2,17 +2,17 @@
 //! slow, away or wrong costs the library freshness and nothing else.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 use parking_lot::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
-use super::client::{Claim, Link, Machine};
+use super::client::{Claim, Hub, Link, Machine};
 use super::schema::PROTOCOL;
 use super::{OWNER_COMMANDS, STUDIO_ERROR};
-use crate::library::db::Db;
+use crate::library::db::{Applied, Db, OPERATOR_KINDS};
 use crate::library::health::Health;
 use crate::library::scanner::now_ms;
 use crate::persist::config::{Config, LibraryRole};
@@ -22,16 +22,31 @@ const INTERVAL: Duration = Duration::from_secs(30);
 /// Groups per transaction. A track carries its waveform, so this bounds what
 /// one statement batch holds in memory.
 const BATCH: usize = 200;
-/// What the owner publishes. Operator work goes with the outbox.
-const OWNER_KINDS: &[&str] = &["root", "track"];
+/// How often the local outbox is looked at. An operator's save should not
+/// wait for the next visit, and looking costs one read of a small table.
+const GLANCE: Duration = Duration::from_secs(2);
+/// What the owner sends: the library, and operator work done on this machine.
+const OWNER_SENDS: &[&str] = &[
+    "root",
+    "track",
+    "cue",
+    "edit",
+    "hidden",
+    "playlist",
+    "dismissal",
+];
+/// What a studio sends: operator work, which is all that is a studio's.
+const STUDIO_SENDS: &[&str] = OPERATOR_KINDS;
 
 /// What one visit to the hub came to.
 #[derive(Debug, PartialEq, Eq)]
 enum Visit {
     /// The owner sent this many groups.
     Published(usize),
-    /// A studio took this many rows, and this many of them changed its copy.
+    /// A studio sent this many groups, took this many rows, and this many of
+    /// them changed its copy.
     Pulled {
+        sent: usize,
         rows: usize,
         applied: usize,
         owner: OwnerSeen,
@@ -117,6 +132,10 @@ pub struct Service {
     role: LibraryRole,
     status: Mutex<Status>,
     app: AppHandle,
+    /// Told what a pull changed, for the copies of it held outside the
+    /// library: the playlist's cue points, the saved-playlist list, the files
+    /// a metadata edit is written to.
+    on_applied: Box<dyn Fn(&Applied) + Send + Sync>,
 }
 
 impl Service {
@@ -128,8 +147,10 @@ impl Service {
         db: Arc<Db>,
         config: &Config,
         health: Arc<Health>,
+        on_applied: Box<dyn Fn(&Applied) + Send + Sync>,
     ) -> Arc<Self> {
         let service = Arc::new(Self {
+            on_applied,
             role,
             status: Mutex::new(Status {
                 role,
@@ -153,10 +174,7 @@ impl Service {
         }
         let hub = Link::new(&config.external_library())?;
         let (id, name) = config.machine()?;
-        match self.role {
-            LibraryRole::Owner => db.start_capture(now_ms())?,
-            _ => db.stop_capture()?,
-        }
+        db.start_capture(now_ms())?;
         log::info!("shared library: this machine ({name}) is {:?}", self.role);
         tauri::async_runtime::spawn(self.run(db, hub, Machine { id, name }, health));
         Ok(())
@@ -202,77 +220,167 @@ impl Service {
     }
 
     async fn run(self: Arc<Self>, db: Arc<Db>, hub: Link, machine: Machine, health: Arc<Health>) {
+        let sends = match self.role {
+            LibraryRole::Owner => OWNER_SENDS,
+            _ => STUDIO_SENDS,
+        };
         let mut prepared = false;
+        // A visit is due at once, then every `INTERVAL` — or as soon as this
+        // machine has something to send, unless the last visit failed: a hub
+        // that is away is not asked again every two seconds.
+        let mut due = Instant::now();
+        let mut failed = false;
         loop {
+            let waiting = !failed
+                && on(&db, move |db| db.has_outgoing(sends))
+                    .await
+                    .unwrap_or(false);
+            if Instant::now() < due && !waiting {
+                tokio::time::sleep(GLANCE).await;
+                continue;
+            }
             let visit = match self.role {
-                LibraryRole::Owner => publish(&db, &hub, &machine, &mut prepared).await,
-                _ => pull(&db, &hub, &machine).await,
+                LibraryRole::Owner => owner_visit(&db, &hub, &machine, &mut prepared).await,
+                _ => studio_visit(&db, &hub, &machine).await,
             };
+            due = Instant::now() + INTERVAL;
+            failed = visit.is_err();
             self.status.lock().encrypted = hub.encrypted();
-            match visit {
-                Ok(Visit::Published(0)) => self.report(true, "The hub is up to date.".into(), true),
-                Ok(Visit::Published(n)) => {
-                    self.report(true, format!("Published {n} changes."), true)
+            let taken = match visit {
+                Ok((visit, taken)) => {
+                    self.say(visit, &taken);
+                    taken
                 }
-                Ok(Visit::Pulled {
-                    rows,
-                    applied,
-                    owner,
-                }) => {
-                    if applied > 0 {
-                        // Entries that were waiting for these tracks, then
-                        // everything that lists what the library holds.
-                        let _ = on(&db, Db::bind_saved_entries).await;
-                        // A pass over the whole library, so not on one of
-                        // the async runtime's own threads.
-                        let report = Arc::clone(&health);
-                        let _ =
-                            tauri::async_runtime::spawn_blocking(move || report.refresh()).await;
-                        let _ = self.app.emit(LIBRARY_EVENT, ());
-                    }
-                    let mut message = match rows {
-                        0 => "This copy is up to date.".to_owned(),
-                        n => format!("Took {n} changes from the library owner."),
-                    };
-                    match owner {
-                        OwnerSeen::Lately => {}
-                        OwnerSeen::Quiet { name, secs } => message.push_str(&format!(
-                            " The library owner, {name}, was last seen {}.",
-                            ago(secs)
-                        )),
-                        OwnerSeen::Nobody => message.push_str(
-                            " No computer is the library owner now, so nothing new will arrive.",
-                        ),
-                    }
-                    self.report(true, message, true);
-                }
-                Ok(Visit::NotTheOwner { owner }) => self.report(
-                    false,
-                    format!("{owner} is the library owner, so nothing is published from here."),
-                    true,
-                ),
-                Ok(Visit::NothingToCopy) => self.report(
-                    false,
-                    "The hub holds no library yet: no owner has published to it.".into(),
-                    true,
-                ),
                 Err(e) => {
                     prepared = false;
                     self.report(false, sentence(&format!("{e:#}")), false);
+                    Applied::default()
                 }
+            };
+            if taken.changed > 0 {
+                // Entries that were waiting for these tracks, then everything
+                // that lists or holds a copy of what the library holds.
+                let _ = on(&db, Db::bind_saved_entries).await;
+                // Both read the library, the second all of it: not on one of
+                // the async runtime's own threads.
+                let (me, report) = (Arc::clone(&self), Arc::clone(&health));
+                let _ = tauri::async_runtime::spawn_blocking(move || {
+                    (me.on_applied)(&taken);
+                    report.refresh();
+                })
+                .await;
+                let _ = self.app.emit(LIBRARY_EVENT, ());
             }
-            tokio::time::sleep(INTERVAL).await;
+            tokio::time::sleep(GLANCE).await;
+        }
+    }
+
+    /// Report what a visit came to.
+    fn say(&self, visit: Visit, taken: &Applied) {
+        let also_took = |message: &mut String| {
+            if taken.changed > 0 {
+                message.push_str(&format!(" Took {} from other computers.", taken.changed));
+            }
+        };
+        match visit {
+            Visit::Published(sent) => {
+                let mut message = match sent {
+                    0 => "The hub is up to date.".to_owned(),
+                    n => format!("Published {n} changes."),
+                };
+                also_took(&mut message);
+                self.report(true, message, true);
+            }
+            Visit::Pulled {
+                sent,
+                rows,
+                applied: _,
+                owner,
+            } => {
+                let mut message = match rows {
+                    0 => "This copy is up to date.".to_owned(),
+                    n => format!("Took {n} changes from the hub."),
+                };
+                if sent > 0 {
+                    message.push_str(&format!(" Sent {sent}."));
+                }
+                match owner {
+                    OwnerSeen::Lately => {}
+                    OwnerSeen::Quiet { name, secs } => message.push_str(&format!(
+                        " The library owner, {name}, was last seen {}.",
+                        ago(secs)
+                    )),
+                    OwnerSeen::Nobody => message.push_str(
+                        " No computer is the library owner now, so nothing new will arrive.",
+                    ),
+                }
+                self.report(true, message, true);
+            }
+            Visit::NotTheOwner { owner } => self.report(
+                false,
+                format!("{owner} is the library owner, so nothing is published from here."),
+                true,
+            ),
+            Visit::NothingToCopy => self.report(
+                false,
+                "The hub holds no library yet: no owner has published to it.".into(),
+                true,
+            ),
         }
     }
 }
 
-/// The owner's visit: claim the role and publish what is owed.
-async fn publish(
+/// Send what this machine owes, a transaction at a time.
+async fn send(
+    db: &Arc<Db>,
+    hub: &mut Hub,
+    machine: &Machine,
+    kinds: &'static [&'static str],
+    owner: bool,
+) -> Result<usize> {
+    let mut sent = 0;
+    loop {
+        let batch = on(db, move |db| db.outgoing(kinds, BATCH)).await?;
+        if batch.is_empty() {
+            return Ok(sent);
+        }
+        hub.send(machine, &batch, owner).await?;
+        sent += batch.len();
+        on(db, move |db| db.mark_sent(&batch)).await?;
+    }
+}
+
+/// Take what the hub has that this library does not, a page at a time.
+/// Returns how many rows came and what they changed.
+async fn take(
+    db: &Arc<Db>,
+    hub: &Hub,
+    machine: &Machine,
+    skip_own: bool,
+) -> Result<(usize, Applied)> {
+    let (mut rows, mut taken) = (0, Applied::default());
+    loop {
+        let after = on(db, Db::pulled_rev).await?;
+        let page = hub
+            .fetch(after, BATCH as i64, skip_own.then_some(machine))
+            .await?;
+        if page.is_empty() {
+            return Ok((rows, taken));
+        }
+        rows += page.len();
+        let me = machine.id.clone();
+        taken.absorb(on(db, move |db| db.apply(&page, &me, now_ms())).await?);
+    }
+}
+
+/// The owner's visit: claim the role, publish what is owed, and take the
+/// operator work the studios have sent.
+async fn owner_visit(
     db: &Arc<Db>,
     link: &Link,
     machine: &Machine,
     prepared: &mut bool,
-) -> Result<Visit> {
+) -> Result<(Visit, Applied)> {
     let mut hub = link.connect().await?;
     if !*prepared {
         hub.create_tables().await?;
@@ -280,30 +388,26 @@ async fn publish(
     }
     let known = on(db, Db::library_id).await?;
     match hub.claim(machine, known.as_deref()).await? {
-        Claim::Taken { by } => return Ok(Visit::NotTheOwner { owner: by }),
+        Claim::Taken { by } => return Ok((Visit::NotTheOwner { owner: by }, Applied::default())),
         Claim::Replaced { library_id } => {
             on(db, move |db| db.publish_as(&library_id, now_ms())).await?;
         }
         Claim::Held { .. } => {}
     }
     hub.check_in(machine).await?;
-    let mut published = 0;
-    loop {
-        let batch = on(db, |db| db.outgoing(OWNER_KINDS, BATCH)).await?;
-        if batch.is_empty() {
-            return Ok(Visit::Published(published));
-        }
-        hub.publish(machine, &batch).await?;
-        published += batch.len();
-        on(db, move |db| db.mark_sent(&batch)).await?;
-    }
+    // Sent before anything is taken, so the hub has this machine's saves to
+    // compare with before a pull could write over one.
+    let sent = send(db, &mut hub, machine, OWNER_SENDS, true).await?;
+    let (_, taken) = take(db, &hub, machine, true).await?;
+    Ok((Visit::Published(sent), taken))
 }
 
-/// A studio's visit: take what the hub has that this copy does not.
-async fn pull(db: &Arc<Db>, link: &Link, machine: &Machine) -> Result<Visit> {
-    let hub = link.connect().await?;
+/// A studio's visit: send its operator work, and take what the hub has that
+/// this copy does not.
+async fn studio_visit(db: &Arc<Db>, link: &Link, machine: &Machine) -> Result<(Visit, Applied)> {
+    let mut hub = link.connect().await?;
     let Some(station) = hub.station().await? else {
-        return Ok(Visit::NothingToCopy);
+        return Ok((Visit::NothingToCopy, Applied::default()));
     };
     if station.protocol > PROTOCOL {
         bail!(
@@ -336,20 +440,15 @@ async fn pull(db: &Arc<Db>, link: &Link, machine: &Machine) -> Result<Visit> {
         Some(_) => OwnerSeen::Lately,
         None => OwnerSeen::Nobody,
     };
-    let (mut rows, mut applied) = (0, 0);
-    loop {
-        let after = on(db, Db::pulled_rev).await?;
-        let page = hub.fetch(after, BATCH as i64).await?;
-        if page.is_empty() {
-            return Ok(Visit::Pulled {
-                rows,
-                applied,
-                owner,
-            });
-        }
-        rows += page.len();
-        applied += on(db, move |db| db.apply(&page, now_ms())).await?;
-    }
+    let sent = send(db, &mut hub, machine, STUDIO_SENDS, false).await?;
+    let (rows, taken) = take(db, &hub, machine, false).await?;
+    let visit = Visit::Pulled {
+        sent,
+        rows,
+        applied: taken.changed,
+        owner,
+    };
+    Ok((visit, taken))
 }
 
 /// A library call, off the async runtime's own threads.
@@ -366,6 +465,19 @@ where
 mod tests {
     use super::*;
     use crate::library::db::TrackInsert;
+
+    async fn publish(
+        db: &Arc<Db>,
+        link: &Link,
+        machine: &Machine,
+        prepared: &mut bool,
+    ) -> Result<Visit> {
+        Ok(owner_visit(db, link, machine, prepared).await?.0)
+    }
+
+    async fn pull(db: &Arc<Db>, link: &Link, machine: &Machine) -> Result<Visit> {
+        Ok(studio_visit(db, link, machine).await?.0)
+    }
 
     /// A hub of this test's own: a schema in the database `RADIODIODJ_TEST_HUB`
     /// names. `None` without the variable, and the test passes without running.
@@ -494,7 +606,7 @@ mod tests {
         );
         assert_eq!(titles(&hub).await, ["One"]);
         assert_eq!(
-            other.outgoing(OWNER_KINDS, 10).unwrap().len(),
+            other.outgoing(OWNER_SENDS, 10).unwrap().len(),
             1,
             "still owed"
         );
@@ -569,6 +681,7 @@ mod tests {
         assert_eq!(
             visit,
             Visit::Pulled {
+                sent: 0,
                 rows: 2,
                 applied: 2,
                 owner: OwnerSeen::Lately
@@ -592,6 +705,7 @@ mod tests {
         assert_eq!(
             pull(&studio, &hub, &machine("studio")).await.unwrap(),
             Visit::Pulled {
+                sent: 0,
                 rows: 0,
                 applied: 0,
                 owner: OwnerSeen::Lately
@@ -737,5 +851,170 @@ mod tests {
         );
         assert_eq!(sentence("Done."), "Done.");
         assert_eq!(sentence(""), "");
+    }
+
+    /// A studio that has joined `hub` and captures, as one in a shared
+    /// library does.
+    async fn studio(hub: &Link, name: &str) -> Arc<Db> {
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        db.become_replica().unwrap();
+        pull(&db, hub, &machine(name)).await.unwrap();
+        db.start_capture(1).unwrap();
+        db
+    }
+
+    fn only_track(db: &Db) -> crate::library::db::Track {
+        db.search("", None, None, None).unwrap().remove(0)
+    }
+
+    fn fade_in(db: &Db, ms: i64) {
+        let id = only_track(db).id;
+        db.set_cue_points(
+            id,
+            crate::audio::cue_points::CuePoints {
+                fade_in_ms: Some(ms),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_edit_made_on_a_studio_reaches_the_owner_and_the_other_studio() {
+        let Some(hub) = test_hub().await else { return };
+        let owner = library(&["One"]);
+        let office = machine("office");
+        publish(&owner, &hub, &office, &mut false).await.unwrap();
+        let a = studio(&hub, "a").await;
+        let b = studio(&hub, "b").await;
+        let id = only_track(&a).id;
+        a.update_track_metadata(&crate::library::db::TrackMetadataUpdate {
+            id,
+            title: Some("Fixed in studio A".into()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let sent = pull(&a, &hub, &machine("a")).await.unwrap();
+        assert!(matches!(sent, Visit::Pulled { sent: 1, .. }), "{sent:?}");
+
+        let (_, taken) = owner_visit(&owner, &hub, &office, &mut true).await.unwrap();
+        assert_eq!(taken.edited_tracks, [id], "the owner writes it to the file");
+        assert_eq!(only_track(&owner).title, "Fixed in studio A");
+
+        pull(&b, &hub, &machine("b")).await.unwrap();
+        assert_eq!(only_track(&b).title, "Fixed in studio A");
+    }
+
+    #[tokio::test]
+    async fn an_edit_made_on_the_owner_reaches_a_studio() {
+        let Some(hub) = test_hub().await else { return };
+        let owner = library(&["One"]);
+        let office = machine("office");
+        publish(&owner, &hub, &office, &mut false).await.unwrap();
+        let a = studio(&hub, "a").await;
+        owner.hide_tracks(&[only_track(&owner).id], 5).unwrap();
+
+        publish(&owner, &hub, &office, &mut true).await.unwrap();
+        pull(&a, &hub, &machine("a")).await.unwrap();
+
+        assert_eq!(a.hidden_tracks().unwrap().len(), 1);
+    }
+
+    /// Whichever of the two reaches the hub first.
+    #[tokio::test]
+    async fn the_later_of_two_saves_stands_on_every_machine() {
+        for later_first in [false, true] {
+            let Some(hub) = test_hub().await else { return };
+            let owner = library(&["One"]);
+            let office = machine("office");
+            publish(&owner, &hub, &office, &mut false).await.unwrap();
+            let a = studio(&hub, "a").await;
+            let b = studio(&hub, "b").await;
+            fade_in(&a, 1000);
+            a.restamp_pending(100);
+            fade_in(&b, 2000);
+            b.restamp_pending(200);
+
+            let order: [(&Arc<Db>, &str); 2] = if later_first {
+                [(&b, "b"), (&a, "a")]
+            } else {
+                [(&a, "a"), (&b, "b")]
+            };
+            for (db, name) in order {
+                pull(db, &hub, &machine(name)).await.unwrap();
+            }
+            for (db, name) in [(&a, "a"), (&b, "b")] {
+                pull(db, &hub, &machine(name)).await.unwrap();
+            }
+            owner_visit(&owner, &hub, &office, &mut true).await.unwrap();
+
+            for db in [&a, &b, &owner] {
+                assert_eq!(
+                    only_track(db).cue_points.fade_in_ms,
+                    Some(2000),
+                    "later first: {later_first}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_purge_takes_the_tracks_operator_work_out_of_the_hub() {
+        let Some(hub) = test_hub().await else { return };
+        let owner = library(&["One"]);
+        let office = machine("office");
+        publish(&owner, &hub, &office, &mut false).await.unwrap();
+        let a = studio(&hub, "a").await;
+        fade_in(&a, 1000);
+        pull(&a, &hub, &machine("a")).await.unwrap();
+        let id = only_track(&owner).id;
+        owner
+            .reconcile(&crate::library::db::Reconcile {
+                gone: vec![id],
+                now_ms: 5,
+                ..Default::default()
+            })
+            .unwrap();
+        owner.purge_tracks(&[id]).unwrap();
+
+        publish(&owner, &hub, &office, &mut true).await.unwrap();
+
+        let left = query(&hub, "SELECT kind FROM hub_rows WHERE kind <> 'track'").await;
+        assert!(left.is_empty(), "{} rows", left.len());
+    }
+
+    #[tokio::test]
+    async fn the_owner_is_not_handed_back_what_it_published() {
+        let Some(hub) = test_hub().await else { return };
+        let owner = library(&["One", "Two"]);
+
+        let (_, taken) = owner_visit(&owner, &hub, &machine("office"), &mut false)
+            .await
+            .unwrap();
+
+        assert_eq!(taken, Applied::default());
+        assert_eq!(owner.pulled_rev().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_studio_cannot_send_what_is_the_owners() {
+        let Some(hub) = test_hub().await else { return };
+        let owner = library(&["One"]);
+        publish(&owner, &hub, &machine("office"), &mut false)
+            .await
+            .unwrap();
+        owner.publish_as("again", 1).unwrap();
+        let forged = owner.outgoing(&["track"], 10).unwrap();
+        assert_eq!(forged.len(), 1);
+
+        let refused = hub
+            .connect()
+            .await
+            .unwrap()
+            .send(&machine("a"), &forged, false)
+            .await;
+
+        assert!(refused.is_err());
     }
 }

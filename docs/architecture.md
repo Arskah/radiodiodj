@@ -79,7 +79,8 @@ Grouped by domain.
   tables and protocol number), `client.rs` (every statement run against
   Postgres) and `worker.rs` (the role this launch took up, the one task that
   visits the hub, and the commands a studio refuses). What is owed to the
-  hub is `library/db/sync.rs`. See [shared-library.md](./shared-library.md).
+  hub and what is taken from it is `library/db/sync.rs`, with operator work —
+  each kind as a document out and a write in — in `library/db/operator.rs`. See [shared-library.md](./shared-library.md).
 - **`appearance/`** — `theme.rs` (the `Theme` model, `THEMEABLE_TOKENS`, the
   colour-value grammar and `validate`) and `store.rs` (enumerating
   `{app_data_dir}/themes`, first-run seeding of the copy-me `example/`,
