@@ -164,6 +164,10 @@ library that was reset).
 - Linux: `~/.local/share/com.radiodiodj/` (or `$XDG_DATA_HOME/com.radiodiodj/`)
 - Windows: `%APPDATA%\com.radiodiodj\` (typically `C:\Users\<you>\AppData\Roaming\com.radiodiodj\`)
 
+A station that shares its library keeps the hub's connection URL, password
+included, in the `externalLibrary` section of `config.json` in plain text. See
+[docs/shared-library.md](docs/shared-library.md).
+
 Forgot the admin password: quit the app, delete `passwordHash` from the `admin`
 section of `config.json`, and relaunch. See [docs/admin-mode.md](docs/admin-mode.md).
 

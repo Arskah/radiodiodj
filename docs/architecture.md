@@ -29,6 +29,7 @@ own.
 | themes and station identity       | `appearance/`                                                 | `shared/appearance.ts`                   | [theming.md](./theming.md)                             |
 | admin mode                        | `admin.rs`                                                    | `features/admin/`                        | [admin-mode.md](./admin-mode.md)                       |
 | updates and About                 | `update.rs`                                                   | `features/settings/AboutTab.svelte`      | [updates.md](./updates.md)                             |
+| the shared library                | `hub/`, `library/db/sync.rs`                                  | —                                        | [shared-library.md](./shared-library.md)               |
 | schema and migrations             | `library/db.rs`                                               | —                                        | [database.md](./database.md)                           |
 
 ## Rust backend (`src-tauri/src/`)
@@ -74,6 +75,10 @@ Grouped by domain.
 - **`broadcast/`** — the now-playing output: `state.rs` (what is currently on
   air), `payload.rs` (the template substitution), `webhook.rs`, `file_sink.rs`
   (atomic write) and `service.rs`.
+- **`hub/`** — the shared library's connection out: `schema.rs` (the hub's
+  tables and protocol number), `client.rs` (every statement run against
+  Postgres) and `worker.rs` (the one task that visits it). What is owed to the
+  hub is `library/db/sync.rs`. See [shared-library.md](./shared-library.md).
 - **`appearance/`** — `theme.rs` (the `Theme` model, `THEMEABLE_TOKENS`, the
   colour-value grammar and `validate`) and `store.rs` (enumerating
   `{app_data_dir}/themes`, first-run seeding of the copy-me `example/`,

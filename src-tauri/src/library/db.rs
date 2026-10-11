@@ -20,6 +20,7 @@ use crate::library::scanner;
 mod saved_playlists;
 mod sync;
 pub use saved_playlists::{SavedPlaylist, SavedPlaylistFile, SavedPlaylistSummary};
+pub use sync::Outgoing;
 
 /// `Default` exists for test fixtures, which would otherwise have to name every
 /// column each time one is added. Nothing in the app builds a `Track` that way —
