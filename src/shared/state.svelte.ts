@@ -24,6 +24,8 @@ import type {
   TrackMetadataInput,
   TuningConfig,
   UpdateState,
+  LibraryRole,
+  SharedLibrary,
 } from "./types";
 import { METADATA_KEYS } from "./types";
 import { isStopMarker, isTrackItem } from "./types";
@@ -56,6 +58,7 @@ import { isStrictNever } from "./isStrictNever";
 import { APP_NAME } from "./appName";
 import { savePaintHint } from "./appearance";
 import { healthAttention as attentionOf } from "./health";
+import { needsAttention } from "./sharedLibrary";
 import { appendMessage, importMessage, sizeLabel } from "./savedPlaylists";
 
 const logger = {
@@ -128,6 +131,7 @@ export type PlaylistTab = "playlist" | "history";
 export type SettingsTab =
   | "audio"
   | "library"
+  | "shared"
   | "playlist"
   | "now-playing"
   | "appearance"
@@ -310,6 +314,19 @@ export class AppState {
    * that repopulates it finishes.
    */
   libraryReset = $state(false);
+
+  /**
+   * True from a launch that replaced this machine's library to join a shared
+   * one until the hub has answered, so an empty library is explained.
+   */
+  libraryJoined = $state(false);
+  /** The shared-library settings, and how the role this launch took stands. */
+  sharedLibrary = $state<SharedLibrary>({
+    role: "standalone",
+    url: null,
+    machineName: null,
+    status: { role: "standalone", ok: true, message: "", reachedAt: null },
+  });
   /** Missing tracks, duplicates and disk changes, from `library-health`. */
   health = $state<HealthReport>(structuredClone(EMPTY_HEALTH));
 
@@ -326,6 +343,8 @@ export class AppState {
   );
   /** Findings that want attention; badges the Settings button. */
   healthAttention = $derived(attentionOf(this.health));
+  /** The hub cannot be reached, or this computer cannot play its role. */
+  hubAttention = $derived(needsAttention(this.sharedLibrary.status));
 
   /** The updater, mirrored whole from `update:state`. */
   update = $state<UpdateState>({
@@ -540,6 +559,16 @@ export class AppState {
     void api.onSavedPlaylists((list) => void this.applySavedPlaylists(list));
     void api.onAdminStateChanged((status) => this.applyAdmin(status));
     void api.onUpdateState((state) => (this.update = state));
+    void api.onHubState((status) => {
+      this.sharedLibrary = { ...this.sharedLibrary, status };
+      if (status.reachedAt !== null) this.libraryJoined = false;
+    });
+    // A studio's library changes under it, as a scan changes an owner's.
+    void api.onHubLibraryChanged(() => {
+      void this.search();
+      void this.loadStats();
+      if (this.libraryPathsLoaded) void this.loadLibraryPaths();
+    });
 
     api.onScanProgress(({ processed, total }) => {
       if (this.scanStatus.status === "running") {
@@ -1728,6 +1757,7 @@ export class AppState {
     }
     const { state } = result;
     if (result.libraryReset) void this.noteLibraryReset();
+    if (result.libraryJoined) this.libraryJoined = true;
     // Master level is fixed at unity: the volume slider left the operator UI,
     // so a persisted value from an older session would be unrecoverable.
     this.setVolume(1);
@@ -2002,6 +2032,32 @@ export class AppState {
       // The backend has already put the failure in `update:state`.
       logger.error("Update install failed:", err);
     }
+  }
+
+  /**
+   * Whether this machine is a studio right now. The scan, the analysis pass
+   * and what else changes the library's shape are the owner's, and the backend
+   * refuses them here.
+   */
+  get isStudio(): boolean {
+    return this.sharedLibrary.status.role === "studio";
+  }
+
+  async loadSharedLibrary(): Promise<void> {
+    try {
+      this.sharedLibrary = await api.getSharedLibrary();
+    } catch (err) {
+      logger.error("Shared library lookup failed:", err);
+    }
+  }
+
+  /** Save the shared-library settings. They apply at the next launch. */
+  async saveSharedLibrary(
+    role: LibraryRole,
+    url: string | null,
+    machineName: string | null,
+  ): Promise<void> {
+    this.sharedLibrary = await api.setSharedLibrary(role, url, machineName);
   }
 
   async loadAdmin(): Promise<void> {

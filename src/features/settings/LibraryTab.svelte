@@ -3,6 +3,7 @@
   import LibraryHealth from "../health/LibraryHealth.svelte";
   import type { ContentType, TuningConfig } from "../../shared/types";
   import { numInput, rememberField } from "./numericInput";
+  import { OWNER_ONLY } from "../../shared/sharedLibrary";
 
   interface Props {
     /**
@@ -45,6 +46,13 @@
     picked up yet. Nothing here changes an audio file — delete an unwanted copy
     in the file manager, then scan.
   </p>
+  {#if app.isStudio}
+    <p class="settings-section-desc" role="note">
+      <strong>This computer is a studio of a shared library.</strong> Scanning, purging
+      and the list of directories are the library owner's. Here you say where each
+      directory is on this computer, with Locate.
+    </p>
+  {/if}
   <div id="paths-list">
     {#each sections as { type, label } (type)}
       <div class="path-section">
@@ -52,7 +60,8 @@
           <span>{label}</span>
           <button
             class="btn-add-section"
-            title="Add {label} folder"
+            title={app.isStudio ? OWNER_ONLY : `Add ${label} folder`}
+            disabled={app.isStudio}
             onclick={() => app.addPath(type)}
           >
             <span class="material-symbols-outlined">add_circle</span>
@@ -87,8 +96,9 @@
               </button>
               <button
                 class="btn-remove"
-                title="Remove"
+                title={app.isStudio ? OWNER_ONLY : "Remove"}
                 aria-label="Remove directory"
+                disabled={app.isStudio}
                 onclick={() => app.removePath(p.id)}
               >
                 <span class="material-symbols-outlined">close</span>
@@ -99,7 +109,10 @@
       </div>
     {/each}
   </div>
-  <div class="np-group" class:disabled={!tuning.library.scanOnChanges}>
+  <div
+    class="np-group"
+    class:disabled={!tuning.library.scanOnChanges || app.isStudio}
+  >
     <div class="np-group-header">
       <span class="material-symbols-outlined" aria-hidden="true">autorenew</span
       >
@@ -111,6 +124,7 @@
         <input
           id="setting-scan-on-changes"
           type="checkbox"
+          disabled={app.isStudio}
           bind:checked={tuning.library.scanOnChanges}
           onchange={saveTuning}
         />
@@ -134,6 +148,7 @@
       id="tune-check-interval"
       type="number"
       min="0"
+      disabled={app.isStudio}
       value={tuning.library.checkIntervalMin}
       oninput={(e) => numInput(e, (v) => (tuning.library.checkIntervalMin = v))}
       onchange={saveTuning}
@@ -148,7 +163,8 @@
     <button
       id="btn-scan-now"
       class="btn-scan-now"
-      title="Scan all configured paths"
+      title={app.isStudio ? OWNER_ONLY : "Scan all configured paths"}
+      disabled={app.isStudio}
       onclick={onScan}
     >
       <span class="material-symbols-outlined">sync</span>

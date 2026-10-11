@@ -1998,7 +1998,7 @@ body {
   font-size: 16px;
 }
 
-.btn-remove:hover {
+.btn-remove:hover:not(:disabled) {
   color: var(--error);
 }
 
@@ -2497,7 +2497,7 @@ body {
   font-size: 16px;
 }
 
-.btn-add-section:hover {
+.btn-add-section:hover:not(:disabled) {
   background: color-mix(in srgb, var(--primary) 12%, transparent);
 }
 
@@ -2594,12 +2594,22 @@ body {
   font-size: 13px;
 }
 
-.btn-scan-now:hover {
+.btn-scan-now:hover:not(:disabled) {
   background: color-mix(in srgb, var(--primary) 20%, transparent);
 }
 
-.btn-scan-now:active {
+.btn-scan-now:active:not(:disabled) {
   transform: translateY(1px);
+}
+
+/* Unavailable: the library owner's control on a studio, or a button with
+   nothing to act on yet. The tooltip says which. */
+.btn-remove:disabled,
+.btn-add-section:disabled,
+.btn-scan-now:disabled,
+.settings-section--tuning .device-row input:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .missing-tracks-confirm {

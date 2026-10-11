@@ -48,6 +48,7 @@ void app.loadHealth();
 void app.loadSavedPlaylists();
 void app.loadAudioConfig();
 void app.loadAdmin();
+void app.loadSharedLibrary();
 void app.loadUpdate();
 
 const win = getCurrentWindow();

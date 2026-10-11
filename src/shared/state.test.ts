@@ -118,6 +118,10 @@ const { api } = vi.hoisted(() => {
     updateCheck: vi.fn(),
     updateInstall: vi.fn(),
     onUpdateState: vi.fn(),
+    getSharedLibrary: vi.fn(),
+    setSharedLibrary: vi.fn(),
+    onHubState: vi.fn(),
+    onHubLibraryChanged: vi.fn(),
     openLink: vi.fn(),
   };
   return { api };
@@ -1961,6 +1965,93 @@ describe("AppState session persistence", () => {
 
     emitScanState({ status: "idle", lastResult: { total: 1, added: 1 } });
     expect(app.libraryReset).toBe(false);
+  });
+
+  it("says a launch joined a shared library until the hub answers", async () => {
+    api.loadSession.mockResolvedValueOnce({
+      state: {
+        playlistIds: [],
+        playlistItems: [],
+        currentTrackId: null,
+        currentTime: 0,
+        autoPlaylistActive: false,
+        autoAdvance: true,
+        volume: 1,
+        cueVolume: 1,
+      },
+      tracks: [],
+      libraryReset: false,
+      libraryJoined: true,
+    });
+    ({ app } = makeApp());
+    await app.loadSession();
+    await flushAsync();
+    expect(app.libraryJoined).toBe(true);
+
+    const onState = api.onHubState.mock.calls[0][0];
+    onState({
+      role: "studio",
+      ok: false,
+      message: "no route",
+      reachedAt: null,
+    });
+    expect(app.libraryJoined).toBe(true);
+    expect(app.isStudio).toBe(true);
+
+    onState({
+      role: "studio",
+      ok: true,
+      message: "Took 2 changes",
+      reachedAt: 5,
+    });
+    expect(app.libraryJoined).toBe(false);
+    expect(app.sharedLibrary.status.message).toBe("Took 2 changes");
+  });
+
+  it("flags the shared library when the hub cannot be reached", async () => {
+    ({ app } = makeApp());
+    expect(app.hubAttention).toBe(false);
+    const onState = api.onHubState.mock.calls[0][0];
+
+    onState({ role: "owner", ok: false, message: "No route.", reachedAt: 5 });
+    expect(app.hubAttention).toBe(true);
+
+    onState({ role: "owner", ok: true, message: "Up to date.", reachedAt: 9 });
+    expect(app.hubAttention).toBe(false);
+  });
+
+  it("re-reads the library when a pull from the hub changed it", async () => {
+    ({ app } = makeApp());
+    await flushAsync();
+    api.search.mockClear();
+    api.getStats.mockClear();
+
+    api.onHubLibraryChanged.mock.calls[0][0]();
+    await flushAsync();
+
+    expect(api.search).toHaveBeenCalled();
+    expect(api.getStats).toHaveBeenCalled();
+  });
+
+  it("keeps the running role when new settings are saved", async () => {
+    ({ app } = makeApp());
+    const status = {
+      role: "standalone",
+      ok: true,
+      message: "",
+      reachedAt: null,
+    };
+    api.setSharedLibrary.mockResolvedValueOnce({
+      role: "studio",
+      url: "postgresql://hub/x",
+      machineName: null,
+      status,
+    });
+
+    await app.saveSharedLibrary("studio", "postgresql://hub/x", null);
+
+    expect(app.sharedLibrary.role).toBe("studio");
+    expect(app.isStudio).toBe(false);
   });
 
   it("loadSession skips the rebuild notice when the rescan already ended", async () => {

@@ -24,6 +24,8 @@ pub enum LibraryRole {
     Standalone,
     /// This machine runs the scan and publishes the library to the hub.
     Owner,
+    /// This machine plays from a copy of the owner's library and never scans.
+    Studio,
 }
 
 /// A role this build does not know reads as standalone: the alternative is the
@@ -32,6 +34,7 @@ fn lenient_role<'de, D: serde::Deserializer<'de>>(d: D) -> Result<LibraryRole, D
     let word = Option::<String>::deserialize(d)?;
     Ok(match word.as_deref() {
         Some("owner") => LibraryRole::Owner,
+        Some("studio") => LibraryRole::Studio,
         _ => LibraryRole::Standalone,
     })
 }
@@ -698,6 +701,24 @@ impl Config {
         self.inner.lock().external_library.clone()
     }
 
+    /// Store the role, the hub's address and this machine's name. The machine
+    /// id is not the caller's to change. Takes effect at the next launch.
+    pub fn set_external_library(
+        &self,
+        role: LibraryRole,
+        url: Option<String>,
+        machine_name: Option<String>,
+    ) -> Result<ExternalLibraryConfig> {
+        let tidy = |v: Option<String>| v.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+        let mut cfg = self.inner.lock();
+        cfg.external_library.role = role;
+        cfg.external_library.url = tidy(url);
+        cfg.external_library.machine_name = tidy(machine_name);
+        let stored = cfg.external_library.clone();
+        self.save_and_unlock(cfg)?;
+        Ok(stored)
+    }
+
     /// This install's id and name on the hub. The id is made and saved the
     /// first time it is asked for, and is this machine's from then on.
     pub fn machine(&self) -> Result<(String, String)> {
@@ -918,7 +939,7 @@ mod tests {
         fs::write(
             dir.path().join("config.json"),
             r#"{"libraryMounts": {"3": "/mnt/radio"},
-                "externalLibrary": {"role": "studio", "url": "postgresql://hub/x"}}"#,
+                "externalLibrary": {"role": "relay", "url": "postgresql://hub/x"}}"#,
         )
         .unwrap();
 
@@ -928,6 +949,28 @@ mod tests {
         let section = cfg.external_library();
         assert_eq!(section.role, LibraryRole::Standalone);
         assert_eq!(section.url.as_deref(), Some("postgresql://hub/x"));
+    }
+
+    #[test]
+    fn saving_the_role_keeps_the_machine_id_and_drops_blank_fields() {
+        let dir = tempdir().unwrap();
+        let cfg = Config::open(dir.path()).unwrap();
+        let (id, _) = cfg.machine().unwrap();
+
+        let stored = cfg
+            .set_external_library(
+                LibraryRole::Studio,
+                Some(" postgresql://hub/x ".into()),
+                Some("  ".into()),
+            )
+            .unwrap();
+
+        assert_eq!(stored.role, LibraryRole::Studio);
+        assert_eq!(stored.url.as_deref(), Some("postgresql://hub/x"));
+        assert_eq!(stored.machine_name, None);
+        let reopened = Config::open(dir.path()).unwrap().external_library();
+        assert_eq!(reopened.machine_id, Some(id));
+        assert_eq!(reopened.role, LibraryRole::Studio);
     }
 
     #[test]

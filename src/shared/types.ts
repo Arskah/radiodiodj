@@ -598,6 +598,29 @@ export interface ThemeListing {
   error: string | null;
 }
 
+/** What this install is to a shared library. See `docs/shared-library.md`. */
+export type LibraryRole = "standalone" | "owner" | "studio";
+
+/** Where the shared library stands, as the hub worker last found it. */
+export interface HubStatus {
+  /** The role this launch took up, which a saved change does not move. */
+  role: LibraryRole;
+  /** Whether the last visit to the hub did what the role asks. */
+  ok: boolean;
+  message: string;
+  /** When the hub last answered, unix ms. */
+  reachedAt: number | null;
+}
+
+/** The shared-library settings as saved, with the status of the running role. */
+export interface SharedLibrary {
+  role: LibraryRole;
+  /** A `postgresql://` connection URL, password included. */
+  url: string | null;
+  machineName: string | null;
+  status: HubStatus;
+}
+
 /** Admin mode as the backend reports it. See `docs/admin-mode.md`. */
 export interface AdminStatus {
   passwordSet: boolean;

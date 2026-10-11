@@ -12,6 +12,8 @@ import type {
   DeviceRef,
   FindingKind,
   HealthReport,
+  HubStatus,
+  LibraryRole,
   Recalculated,
   LibraryPath,
   LibraryStats,
@@ -20,6 +22,7 @@ import type {
   SavedPlaylist,
   SavedPlaylistSummary,
   ScanResult,
+  SharedLibrary,
   SourceInfo,
   SortColumn,
   SortDir,
@@ -57,6 +60,8 @@ export interface SessionLoadResult {
   tracks: Track[];
   /** This launch replaced a library database from an older version. */
   libraryReset: boolean;
+  /** This launch replaced the library to join a shared one as a studio. */
+  libraryJoined: boolean;
 }
 
 /**
@@ -640,6 +645,29 @@ export const api = {
     return listen<AdminStatus>("admin-state-changed", (e) =>
       callback(e.payload),
     );
+  },
+
+  getSharedLibrary(): Promise<SharedLibrary> {
+    return invoke<SharedLibrary>("get_shared_library");
+  },
+  /** Save the role, hub address and machine name. Applies at the next launch. */
+  setSharedLibrary(
+    role: LibraryRole,
+    url: string | null,
+    machineName: string | null,
+  ): Promise<SharedLibrary> {
+    return invoke<SharedLibrary>("set_shared_library", {
+      role,
+      url,
+      machineName,
+    });
+  },
+  onHubState(callback: (status: HubStatus) => void): Promise<UnlistenFn> {
+    return listen<HubStatus>("hub:state", (e) => callback(e.payload));
+  },
+  /** A pull from the hub changed this machine's copy of the library. */
+  onHubLibraryChanged(callback: () => void): Promise<UnlistenFn> {
+    return listen("hub:library-changed", () => callback());
   },
 
   /** The running version, and what the last update check found. */

@@ -2,6 +2,7 @@
   import { app } from "../../shared/state.svelte";
   import type { TuningConfig } from "../../shared/types";
   import { listInput, numInput, rememberField } from "./numericInput";
+  import { OWNER_ONLY } from "../../shared/sharedLibrary";
 
   interface Props {
     /**
@@ -325,10 +326,12 @@
     <button
       class="btn-scan-now"
       onclick={recalculateAutoCue}
-      disabled={recalculating || scanning}
-      title={scanning
-        ? "A library scan is running; recalculate when it finishes"
-        : "Apply these levels to tracks already analysed"}
+      disabled={recalculating || scanning || app.isStudio}
+      title={app.isStudio
+        ? OWNER_ONLY
+        : scanning
+          ? "A library scan is running; recalculate when it finishes"
+          : "Apply these levels to tracks already analysed"}
       >{recalculating ? "Recalculating…" : "Recalculate now"}</button
     >
     {#if recalcResult}

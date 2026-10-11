@@ -20,7 +20,7 @@ use crate::library::scanner;
 mod saved_playlists;
 mod sync;
 pub use saved_playlists::{SavedPlaylist, SavedPlaylistFile, SavedPlaylistSummary};
-pub use sync::Outgoing;
+pub use sync::{Incoming, Outgoing};
 
 /// `Default` exists for test fixtures, which would otherwise have to name every
 /// column each time one is added. Nothing in the app builds a `Track` that way —
@@ -626,6 +626,27 @@ impl Db {
         Ok(Opened { db, reset_backup })
     }
 
+    /// Move the database at `path` aside as `radiodiodj.standalone.bak.db`, so
+    /// the next [`Self::open`] starts an empty one. For a machine joining a
+    /// shared library, whose track ids are not its own to keep.
+    ///
+    /// A copy already kept under that name is never written over — it may be
+    /// the only one of a library somebody built — so a second join is kept as
+    /// `standalone.2.bak.db`, and so on.
+    pub fn set_aside(path: &Path) -> Result<PathBuf> {
+        let backup = (1..)
+            .map(|n| match n {
+                1 => sibling(path, "standalone.bak.db"),
+                n => sibling(path, &format!("standalone.{n}.bak.db")),
+            })
+            .find(|candidate| !candidate.exists())
+            .expect("an unbounded range");
+        std::fs::rename(path, &backup).context("move the library aside")?;
+        remove_wal(path);
+        log::warn!("library moved to {}; starting fresh", backup.display());
+        Ok(backup)
+    }
+
     #[cfg(test)]
     pub fn open_in_memory() -> Result<Self> {
         let mut conn = Connection::open_in_memory()?;
@@ -791,6 +812,11 @@ impl Db {
         let mut conn = self.conn.lock();
         self.roots.write().mounts.clone_from(mounts);
         self.read_roots(&conn)?;
+        // Which root a track is under is the owner's to say. A studio only
+        // says where each root is.
+        if sync::is_replica(&conn)? {
+            return Ok(0);
+        }
         let roots = self.roots();
 
         let moves = {
@@ -3061,6 +3087,7 @@ const MIGRATION_STEPS: &[M] = &[
     M::up(LIBRARY_ROOTS),
     M::up(HIDDEN_TRACKS),
     M::up(sync::CHANGE_CAPTURE),
+    M::up(sync::REPLICA),
 ];
 const MIGRATIONS: Migrations = Migrations::from_slice(MIGRATION_STEPS);
 
@@ -3612,16 +3639,21 @@ fn retire_legacy(path: &Path) -> Result<Option<PathBuf>> {
     };
     let backup = sibling(path, &format!("legacy-v{version}.bak.db"));
     std::fs::rename(path, &backup).context("move legacy library aside")?;
-    for ext in ["-wal", "-shm"] {
-        let mut side = path.as_os_str().to_owned();
-        side.push(ext);
-        let _ = std::fs::remove_file(PathBuf::from(side));
-    }
+    remove_wal(path);
     log::warn!(
         "library database from epoch {epoch:#x} (schema {version}) moved to {}; starting fresh",
         backup.display()
     );
     Ok(Some(backup))
+}
+
+/// Drop the write-ahead files of a database that has been moved away.
+fn remove_wal(path: &Path) {
+    for ext in ["-wal", "-shm"] {
+        let mut side = path.as_os_str().to_owned();
+        side.push(ext);
+        let _ = std::fs::remove_file(PathBuf::from(side));
+    }
 }
 
 /// Copy the database before migrating it, keeping the newest few copies.
@@ -3954,6 +3986,18 @@ mod tests {
                  SELECT id, 1000, artist, title, duration FROM tracks; \
                  INSERT INTO library_roots (content_type) VALUES ('music'); \
                  UPDATE tracks SET root_id = 1, path = 'seed.mp3'",
+            )
+            .unwrap();
+        },
+        |conn| {
+            seed_track(conn);
+            seed_dismissal(conn);
+            conn.execute_batch(
+                "UPDATE tracks SET edited_fields = 1; \
+                 INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
+                 SELECT id, 1000, artist, title, duration FROM tracks; \
+                 INSERT INTO saved_playlists (name, created_at, updated_at) \
+                 VALUES ('Show', 1, 1)",
             )
             .unwrap();
         },

@@ -8,6 +8,7 @@
   } from "../../shared/health";
   import { airDuration, hasCuePoints, isTrimmed } from "../../shared/cuePoints";
   import { isTrackItem } from "../../shared/types";
+  import { OWNER_ONLY } from "../../shared/sharedLibrary";
   import type {
     DuplicateGroup,
     FindingKind,
@@ -292,7 +293,8 @@
     <div class="health-buttons">
       <button
         class="btn-purge-cancel"
-        disabled={scanning || checking}
+        disabled={scanning || checking || app.isStudio}
+        title={app.isStudio ? OWNER_ONLY : undefined}
         onclick={() => app.checkLibraryNow()}
         >{checking ? "Checking…" : "Check now"}</button
       >
@@ -459,16 +461,24 @@
           <button
             id="btn-purge-selected"
             class="btn-purge"
-            disabled={scanning || selected.size === 0}
-            title={scanning ? "Wait for the scan to finish" : undefined}
+            disabled={scanning || selected.size === 0 || app.isStudio}
+            title={app.isStudio
+              ? OWNER_ONLY
+              : scanning
+                ? "Wait for the scan to finish"
+                : undefined}
             onclick={() => (confirming = [...selected])}
             >Purge selected ({selected.size})…</button
           >
           <button
             id="btn-purge-missing"
             class="btn-purge"
-            disabled={scanning}
-            title={scanning ? "Wait for the scan to finish" : undefined}
+            disabled={scanning || app.isStudio}
+            title={app.isStudio
+              ? OWNER_ONLY
+              : scanning
+                ? "Wait for the scan to finish"
+                : undefined}
             onclick={() => (confirming = report.missing.map((t) => t.id))}
             >Purge all…</button
           >

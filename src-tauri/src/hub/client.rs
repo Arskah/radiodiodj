@@ -4,12 +4,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use tokio_postgres::Config;
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 use super::schema::{PROTOCOL, STATION_LOCK, TABLES};
-use crate::library::db::Outgoing;
+use crate::library::db::{Incoming, Outgoing};
 
 /// Longer than any statement here should take, and short enough that a hub
 /// that has stopped answering is noticed within a cycle.
@@ -34,6 +34,24 @@ pub enum Claim {
     Taken { by: String },
 }
 
+/// The library the hub holds.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Station {
+    pub library_id: String,
+    pub protocol: i32,
+    /// The machine holding the owner role, if one does.
+    pub owner: Option<Owner>,
+}
+
+/// The library owner, as the hub last heard from it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Owner {
+    pub id: String,
+    pub name: String,
+    /// Seconds since it last checked in.
+    pub quiet_for: i64,
+}
+
 /// A connection to the hub.
 pub struct Hub {
     client: tokio_postgres::Client,
@@ -53,7 +71,9 @@ impl Hub {
             use rustls_platform_verifier::BuilderVerifierExt;
             tls.with_platform_verifier()?.with_no_client_auth()
         };
-        let (client, connection) = timed(config.connect(MakeRustlsConnect::new(tls))).await?;
+        let (client, connection) = timed(config.connect(MakeRustlsConnect::new(tls)))
+            .await
+            .context("the hub cannot be reached")?;
         tauri::async_runtime::spawn(async move {
             if let Err(e) = connection.await {
                 log::debug!("hub connection closed: {e}");
@@ -146,6 +166,74 @@ impl Hub {
         };
         timed(tx.commit()).await?;
         Ok(claim)
+    }
+
+    /// The library the hub holds, or `None` for a hub no owner has published
+    /// to — its tables included, which only an owner creates.
+    pub async fn station(&self) -> Result<Option<Station>> {
+        let row = match tokio::time::timeout(
+            TIMEOUT,
+            self.client.query_opt(
+                "SELECT s.library_id, s.protocol, s.owner, m.name, \
+                        extract(epoch FROM now() - m.seen_at)::bigint \
+                 FROM hub_station s LEFT JOIN hub_machines m ON m.id = s.owner",
+                &[],
+            ),
+        )
+        .await
+        {
+            Err(_) => bail!("the hub did not answer in {} s", TIMEOUT.as_secs()),
+            Ok(Err(e)) if e.code() == Some(&tokio_postgres::error::SqlState::UNDEFINED_TABLE) => {
+                return Ok(None)
+            }
+            Ok(found) => found?,
+        };
+        Ok(row.map(|r| {
+            let owner: Option<String> = r.get(2);
+            Station {
+                library_id: r.get(0),
+                protocol: r.get(1),
+                owner: owner.map(|id| Owner {
+                    name: r.get::<_, Option<String>>(3).unwrap_or_else(|| id.clone()),
+                    quiet_for: r.get::<_, Option<i64>>(4).unwrap_or(i64::MAX),
+                    id,
+                }),
+            }
+        }))
+    }
+
+    /// Give up the owner role, if this machine holds it. A machine that has
+    /// become a studio would otherwise be named as an owner that never
+    /// publishes.
+    pub async fn release(&self, machine: &Machine) -> Result<()> {
+        timed(self.client.execute(
+            "UPDATE hub_station SET owner = NULL WHERE owner = $1",
+            &[&machine.id],
+        ))
+        .await?;
+        Ok(())
+    }
+
+    /// Up to `limit` rows after revision `after`, oldest first.
+    pub async fn fetch(&self, after: i64, limit: i64) -> Result<Vec<Incoming>> {
+        let rows = timed(self.client.query(
+            "SELECT kind, key, rev, deleted, doc, waveform, levels FROM hub_rows \
+             WHERE rev > $1 ORDER BY rev LIMIT $2",
+            &[&after, &limit],
+        ))
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| Incoming {
+                kind: r.get(0),
+                key: r.get(1),
+                rev: r.get(2),
+                deleted: r.get(3),
+                doc: r.get(4),
+                waveform: r.get(5),
+                levels: r.get(6),
+            })
+            .collect())
     }
 
     /// Publish the owner's groups: all of them, or none if this machine is no

@@ -55,7 +55,7 @@ CREATE TABLE sync_local (
   applying   INTEGER NOT NULL DEFAULT 0,
   library_id TEXT,
   pulled_rev INTEGER NOT NULL DEFAULT 0
-);
+, replica INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE sync_rows (
   kind      TEXT NOT NULL,

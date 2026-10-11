@@ -29,6 +29,7 @@ pub const ADMIN_COMMANDS: &[&str] = &[
     "set_main_device",
     "set_cue_device",
     "set_now_playing_config",
+    "set_shared_library",
     "set_tuning_config",
     "set_theme",
     "set_station_name",
