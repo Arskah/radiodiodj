@@ -5,14 +5,12 @@ one of them owns the scan, and a Postgres **hub** sits between them: an owner
 [publishes its library to the hub](#the-hub), a studio
 [copies it](#applying-a-pull), and operator work — cue points, metadata edits,
 hidden tracks, saved playlists, dismissals — made on any of them reaches the
-rest. Why this shape and not another is argued in
-[external-library.md](./external-library.md), where it is variant B3.
+rest. The other shapes considered, and why not them, are in
+[#505](https://github.com/Arskah/radiodiodj/issues/505).
 
-It stands on two things: a track is stored relative to a library path whose
-folder is each machine's own setting
-([library.md](./library.md#where-a-library-path-is)), and the saved playlist
-file is the contract a web page writes
-([saved-playlists.md](./saved-playlists.md#the-file)).
+It stands on one thing already there: a track is stored relative to a library
+path whose folder is each machine's own setting
+([library.md](./library.md#where-a-library-path-is)).
 
 ## Roles
 
@@ -49,10 +47,8 @@ no machine holds the role.
 | `owner`      | yes               | its own SQLite         | publishes the library, takes work |
 | `studio`     | **no**            | its own SQLite, a copy | takes the library, sends work     |
 
-A station with one studio machine and a web page runs that machine as the
-`owner` and has no `studio` at all: the scan stays where it is and the page gets
-its catalogue. A station that wants the decode off the on-air box installs a
-second RadiodioDJ as the `owner` and makes the on-air one a `studio`.
+A station that wants the decode off the on-air box installs a second
+RadiodioDJ as the `owner` and makes the on-air one a `studio`.
 
 Nothing on the on-air path changes with the role. Search, the playlist, the
 decks and the rotation rules read the local database through today's `Db`, and
@@ -73,7 +69,6 @@ flowchart LR
   end
   OW <--> HUB
   SW <--> HUB
-  WEB["Web page backend"] -- "search" --> HUB
 ```
 
 ## What travels
@@ -115,8 +110,7 @@ column follows the `track` document again.
 about one track, and it is neither a cue set nor a tag, so it is stamped and
 settled by itself: hiding on one machine does not lose a cue save made on
 another in the same minute. Unhiding is the same group with no time in it, not
-a tombstone — the track is still there. A hidden track is left out of the
-catalogue, as it is left out of everything but a scan.
+a tombstone — the track is still there.
 
 `play_count` is in none of them, and neither is the airing log. See
 [What stays on the machine](#what-stays-on-the-machine).
@@ -205,7 +199,7 @@ CREATE TABLE hub_station (
   library_id text    NOT NULL,   -- new whenever the owner's library is replaced
   protocol   integer NOT NULL,
   owner      text,               -- the one machine that may write root and track
-  settings   jsonb   NOT NULL    -- the owner's settings that shape stored data
+  settings   jsonb   NOT NULL    -- unused
 );
 
 CREATE TABLE hub_machines (
@@ -229,16 +223,7 @@ CREATE INDEX hub_rows_rev ON hub_rows (rev);
 ```
 
 `hub_rows` is deliberately generic. The hub does not know what a track is: a
-column added to `tracks` changes a JSON document and no hub table, which is the
-line [external-library.md](./external-library.md#b2-and-b3--a-local-replica-on-every-machine)
-asks to be held.
-
-**The catalogue is not built.** What a web page searches is the exception to
-that line: a table of its own, `hub_catalogue`, published by the owner from its
-effective rows — one per present track with a fingerprint, carrying the fields
-the app's search covers and what a saved playlist file needs
-([external-library.md](./external-library.md#the-web-page)). Tracked in
-[#505](https://github.com/Arskah/radiodiodj/issues/505).
+column added to `tracks` changes a JSON document and no hub table.
 
 **A push** is one transaction. It takes `pg_advisory_xact_lock` on the station,
 then upserts each pending group with a fresh `rev` from one sequence:
@@ -265,9 +250,8 @@ cursor.
 **One owner.** A machine in the `owner` role claims `hub_station.owner` on each
 visit, and is refused while another machine holds it: it publishes nothing and
 says who the owner is. Every publish checks the claim again inside its
-transaction. Taking the role over from a machine that is gone is to be an
-admin's confirmed click, and is not built; until it is, the way is to clear
-`hub_station.owner` by hand.
+transaction. Taking the role over from a machine that is gone is done in the
+hub: clear `hub_station.owner` by hand.
 
 **A machine that becomes a studio gives the role up.** Its claim would
 otherwise name an owner that never publishes again.
@@ -420,8 +404,10 @@ nothing about what a machine put on air crosses it.
   played is not something this one avoids ([rotation.md](./rotation.md)).
 - **Play counts.** `play_count` is a local column in no group. The owner's is
   not sent, and a studio's counts what that studio aired.
-- **The playlist, the session and every device and tuning setting** but the
-  automatic cue ones, as today.
+- **The playlist, the session and every device and tuning setting.** That
+  includes the automatic cue settings: the owner's thresholds shape the cue
+  points every machine is given, and whether they are applied on air is each
+  machine's own switch.
 
 So no `Db` query changes, and `play_log` needs no column saying where an airing
 came from. A machine that joins as a studio starts its log and its counts
@@ -491,14 +477,6 @@ The role gates the jobs, not only their buttons.
   change made here would be put back by the owner's next scan; the command
   drops it on a studio.
 
-**Automatic cue settings are the station's.** Not built: a studio still uses
-its own. The thresholds shape what is
-stored, and `autoCue.apply` and `autoCue.applyNextStart` decide what airs, so
-all of them are the owner's: published in `hub_station.settings`, applied on
-every studio as they arrive, and shown there read-only. The station sounds the
-same from either studio. A studio's own values in `config.json` are kept and
-are what it goes back to when it leaves.
-
 ## What goes wrong
 
 | failure                                   | what happens                                                                                  |
@@ -511,7 +489,7 @@ are what it goes back to when it leaves.
 | A track is purged while a studio holds it | The tombstone deletes it there; an edit the studio had pending for it is dropped by the hub.  |
 | The owner's database is restored or reset | A new `library_id`. Studios stop and ask to join again.                                       |
 | A studio's build is too old               | It keeps playing from its copy, stops syncing and says so.                                    |
-| A second machine is made the owner        | Refused, until an admin takes the role over.                                                  |
+| A second machine is made the owner        | Refused, and told who the owner is.                                                           |
 
 ## Testing
 

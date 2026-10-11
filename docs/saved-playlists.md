@@ -206,12 +206,11 @@ Two authors are planned for:
 - **The app**, on the studio machine or another install pointed at the same
   library.
 - **A web page** that works from a copy of the library, so a show can be built
-  without a seat in the studio. The page does not exist, and its copy of the
-  library is [external-library.md](./external-library.md) territory
+  without a seat in the studio. The page does not exist, and neither does the
+  copy of the library it would search
   ([#505](https://github.com/Arskah/radiodiodj/issues/505)). The file is the
   contract it will be written against, and a draft the page keeps for an admin
-  to let in is that same file, not yet imported
-  ([external-library.md](./external-library.md#the-web-page)).
+  to let in is that same file, not yet imported.
 
 Both know fingerprints, which is what makes the fingerprint-only rule
 affordable. M3U is not read: its identity is a path.

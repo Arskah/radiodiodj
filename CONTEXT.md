@@ -281,24 +281,16 @@ The one install that runs the **Scan**, the **Analysis pass** and the **Library 
 _Avoid_: Server, master, primary, scanner
 
 **Studio**:
-An install that plays from its own copy of the **Library owner**'s library and never scans or decodes. Its cue points, **Metadata edits**, **Saved playlists**, **Dismissals** and **Airings** are saved locally first and sent on.
+An install that plays from its own copy of the **Library owner**'s library and never scans or decodes. Its cue points, **Metadata edits**, **Hidden tracks**, **Saved playlists** and **Dismissals** are saved locally first and sent on; what it aired stays on it.
 _Avoid_: Client, replica, slave, secondary
 
 **Hub**:
-The Postgres database every install of a shared library connects out to. It moves rows between them and holds the **Catalogue**; no feature of the app reads it.
+The Postgres database every install of a shared library connects out to. It moves rows between them; no feature of the app reads it.
 _Avoid_: Server, backend, external database, cloud
 
 **Outbox**:
 A **Studio**'s or **Library owner**'s own changes that have not reached the **Hub** yet.
 _Avoid_: Queue, pending changes, sync queue
-
-**Catalogue**:
-What a web page searches: every present **Track** with a **Fingerprint**, with the fields the app's search covers and a **Saved playlist** file needs. No path, no **Cue points**.
-_Avoid_: Index, export, library copy
-
-**Draft**:
-A **Saved playlist** file a web page keeps and no install has imported yet. An admin decides which become **Saved playlists**.
-_Avoid_: Web playlist, pending playlist, submission
 
 ### Appearance
 
