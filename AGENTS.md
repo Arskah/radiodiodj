@@ -395,7 +395,9 @@ runs `cargo doc` next to clippy because the rustdoc group only fires there.
   one), add a `SEEDS` entry, and regenerate
   `src-tauri/src/library/schema.sql` with
   `UPDATE_SCHEMA=1 cargo test schema_matches_snapshot`. Operator-work columns
-  stay out of `UPSERT_TRACK_SQL`'s `SET` list. See
+  stay out of `UPSERT_TRACK_SQL`'s `SET` list. A new `tracks` column also has
+  to be named in a sync trigger's `UPDATE OF` list or declared local, or
+  `every_tracks_column_is_claimed` fails. See
   [docs/database.md](docs/database.md).
 - pnpm `minimumReleaseAge` constraint blocks plugin versions younger than
   ~3 days; pin to a slightly older stable version when adding `tauri-plugin-*`

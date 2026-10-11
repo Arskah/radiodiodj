@@ -1,6 +1,7 @@
 # Shared library
 
-**Planned — a draft.** Nothing on this page is built. It is the design of the
+**Planned — a draft.** Only [change capture](#change-capture) is built, and it
+is switched off on every library. This is the design of the
 variant [external-library.md](./external-library.md) settles on, B3: every
 machine keeps its own SQLite library, one of them owns the scan, and a Postgres
 **hub** sits between them. That page argues why; this one says what gets built.
@@ -125,10 +126,26 @@ CREATE TABLE sync_local (
 a purged track, a deleted saved playlist and an undone dismissal leave a row
 with `deleted` set where the data used to be.
 
-Triggers write it: one per group on `tracks`, and one each on `library_roots`,
-`saved_playlists`, `saved_playlist_entries` and `health_dismissals`. Each is
+Triggers write it (`library/db/sync.rs`): one per group on `tracks`, and one
+each on `library_roots`, `saved_playlists` and `health_dismissals`. Each is
 `AFTER UPDATE OF` its group's columns, so a waveform landing does not stamp a
-cue set, and bumping a play count stamps nothing.
+cue set, and bumping a play count stamps nothing. Where two groups share a
+column the trigger compares old with new: a trio moved by hand marks `cue` and
+not `track`, an edited title marks its `edit` and not `track`.
+
+`saved_playlist_entries` needs no trigger. Every operator change to a list's
+entries already updates the list's `updated_at`, and that is what marks the
+`playlist` group; binding an entry to a track is each machine's own derivation
+and does not travel.
+
+**The stamp is SQLite's clock**, read in the trigger, since a trigger can read
+no other. It is the saving machine's wall clock either way. The merge rules are
+tested by passing stamps in documents, not by pinning this one.
+
+**The analysis commit can move a fade.** `set_auto_cue` sorts the stored fades
+against the trio it writes, and when that changes one the `cue` group is marked
+with the `track`: the stored set did change, and it travels as any other save
+does. An analysis that moves no fade marks `track` alone.
 
 Two guards sit in every trigger's `WHEN`:
 
@@ -364,12 +381,5 @@ Each has a proposal; none is decided.
 2. **Reclassifying a track's content type on a studio.** It is not an edited
    field — the next rescan overwrites it from the library path. Proposed: an
    owner control.
-3. **`set_auto_cue` sorts the fades against the new trio**, which is the owner
-   writing into a group any machine owns. Proposed: the `cue` trigger does not
-   fire for it, and every machine re-applies the same clamp when a `track`
-   document arrives, so the result is the same without being sent.
-4. **The stamp's clock.** A trigger can only read SQLite's. `Db` methods take
-   `now_ms` as an argument so tests can pin it. Proposed: SQLite's clock, and
-   the merge tests pass stamps in documents instead.
-5. **Reverting a metadata edit on a studio** re-reads the file's tags there.
+3. **Reverting a metadata edit on a studio** re-reads the file's tags there.
    Proposed: allowed — it is a read, and the tombstone is what travels.

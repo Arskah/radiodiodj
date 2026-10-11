@@ -44,7 +44,8 @@ CREATE TABLE saved_playlists (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   name       TEXT NOT NULL,
   created_at INTEGER NOT NULL,  -- unix ms UTC
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  uid        TEXT               -- what a shared library knows the list by
 );
 
 CREATE TABLE saved_playlist_entries (
