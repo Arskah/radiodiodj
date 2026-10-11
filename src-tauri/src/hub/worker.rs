@@ -229,13 +229,14 @@ impl Service {
         };
         let mut prepared = false;
         // A visit is due at once, then every `INTERVAL` — or as soon as this
-        // machine has something to send, unless the last visit failed: a hub
-        // that is away is not asked again every two seconds.
+        // machine has something to send, unless the last visit could not send:
+        // a hub that is away, or has no place for what this machine owes, is
+        // not asked again every two seconds.
         let mut due = Instant::now();
-        let mut failed = false;
+        let mut blocked = false;
         loop {
             let waiting = self.count_waiting(&db, sends).await;
-            if Instant::now() < due && (failed || waiting == 0) {
+            if Instant::now() < due && (blocked || waiting == 0) {
                 tokio::time::sleep(GLANCE).await;
                 continue;
             }
@@ -244,7 +245,7 @@ impl Service {
                 _ => studio_visit(&db, &hub, &machine).await,
             };
             due = Instant::now() + INTERVAL;
-            failed = visit.is_err();
+            blocked = !matches!(visit, Ok((Visit::Published(_) | Visit::Pulled { .. }, _)));
             self.status.lock().encrypted = hub.encrypted();
             let taken = match visit {
                 Ok((visit, taken)) => {
@@ -312,11 +313,11 @@ impl Service {
             }
             Visit::Pulled {
                 sent,
-                rows,
-                applied: _,
+                rows: _,
+                applied,
                 owner,
             } => {
-                let mut message = match rows {
+                let mut message = match applied {
                     0 => "This copy is up to date.".to_owned(),
                     n => format!("Took {n} changes from the hub."),
                 };
@@ -349,23 +350,31 @@ impl Service {
     }
 }
 
-/// Send what this machine owes, a transaction at a time.
+/// Send what this machine owes, a transaction at a time. Returns how many
+/// groups went and what the later saves some of them lost to changed here.
 async fn send(
     db: &Arc<Db>,
     hub: &mut Hub,
     machine: &Machine,
     kinds: &'static [&'static str],
     owner: bool,
-) -> Result<usize> {
-    let mut sent = 0;
+) -> Result<(usize, Applied)> {
+    let (mut sent, mut taken) = (0, Applied::default());
     loop {
         let batch = on(db, move |db| db.outgoing(kinds, BATCH)).await?;
         if batch.is_empty() {
-            return Ok(sent);
+            return Ok((sent, taken));
         }
-        hub.send(machine, &batch, owner).await?;
+        let winners = hub.send(machine, &batch, owner).await?;
         sent += batch.len();
-        on(db, move |db| db.mark_sent(&batch)).await?;
+        let me = machine.id.clone();
+        taken.absorb(
+            on(db, move |db| {
+                db.mark_sent(&batch)?;
+                db.adopt(&winners, &me, now_ms())
+            })
+            .await?,
+        );
     }
 }
 
@@ -416,8 +425,8 @@ async fn owner_visit(
     hub.check_in(machine).await?;
     // Sent before anything is taken, so the hub has this machine's saves to
     // compare with before a pull could write over one.
-    let sent = send(db, &mut hub, machine, OWNER_SENDS, true).await?;
-    let (_, taken) = take(db, &hub, machine, true).await?;
+    let (sent, mut taken) = send(db, &mut hub, machine, OWNER_SENDS, true).await?;
+    taken.absorb(take(db, &hub, machine, true).await?.1);
     Ok((Visit::Published(sent), taken))
 }
 
@@ -459,8 +468,9 @@ async fn studio_visit(db: &Arc<Db>, link: &Link, machine: &Machine) -> Result<(V
         Some(_) => OwnerSeen::Lately,
         None => OwnerSeen::Nobody,
     };
-    let sent = send(db, &mut hub, machine, STUDIO_SENDS, false).await?;
-    let (rows, taken) = take(db, &hub, machine, false).await?;
+    let (sent, mut taken) = send(db, &mut hub, machine, STUDIO_SENDS, false).await?;
+    let (rows, pulled) = take(db, &hub, machine, false).await?;
+    taken.absorb(pulled);
     let visit = Visit::Pulled {
         sent,
         rows,
@@ -644,6 +654,29 @@ mod tests {
 
         assert_eq!(titles(&hub).await, ["New"]);
         assert_ne!(after.library_id().unwrap(), before.library_id().unwrap());
+    }
+
+    /// Its revisions start over, so a cursor kept from before would step over
+    /// everything published to it.
+    #[tokio::test]
+    async fn a_hub_that_was_made_again_holds_a_new_library() {
+        let Some(hub) = test_hub().await else { return };
+        let me = machine("office");
+        let db = library(&["One"]);
+        publish(&db, &hub, &me, &mut false).await.unwrap();
+        let studio = Arc::new(Db::open_in_memory().unwrap());
+        studio.become_replica().unwrap();
+        pull(&studio, &hub, &machine("studio")).await.unwrap();
+        let before = db.library_id().unwrap();
+        query(&hub, "DROP TABLE hub_station, hub_machines, hub_rows").await;
+        query(&hub, "DROP SEQUENCE hub_rev").await;
+
+        let visit = publish(&db, &hub, &me, &mut false).await.unwrap();
+
+        assert_eq!(visit, Visit::Published(1));
+        assert_ne!(db.library_id().unwrap(), before);
+        let refused = pull(&studio, &hub, &machine("studio")).await.unwrap_err();
+        assert!(format!("{refused:#}").contains("join"), "{refused:#}");
     }
 
     #[tokio::test]
@@ -976,6 +1009,82 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Its clock is behind, so its save loses to one it had already pulled —
+    /// which no pull brings again.
+    #[tokio::test]
+    async fn a_machine_whose_save_lost_ends_up_with_the_one_that_won() {
+        let Some(hub) = test_hub().await else { return };
+        let owner = library(&["One"]);
+        publish(&owner, &hub, &machine("office"), &mut false)
+            .await
+            .unwrap();
+        let a = studio(&hub, "a").await;
+        let b = studio(&hub, "b").await;
+        fade_in(&b, 2000);
+        b.restamp_pending(200);
+        pull(&b, &hub, &machine("b")).await.unwrap();
+        pull(&a, &hub, &machine("a")).await.unwrap();
+        fade_in(&a, 1000);
+        a.restamp_pending(100);
+
+        let (_, taken) = studio_visit(&a, &hub, &machine("a")).await.unwrap();
+
+        assert!(taken.cue_points);
+        assert_eq!(only_track(&a).cue_points.fade_in_ms, Some(2000));
+        assert_eq!(a.outgoing_count(STUDIO_SENDS).unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_studio_is_not_changed_by_its_own_save_coming_back() {
+        let Some(hub) = test_hub().await else { return };
+        let owner = library(&["One"]);
+        publish(&owner, &hub, &machine("office"), &mut false)
+            .await
+            .unwrap();
+        let a = studio(&hub, "a").await;
+        fade_in(&a, 1000);
+
+        let visit = pull(&a, &hub, &machine("a")).await.unwrap();
+
+        assert!(
+            matches!(
+                visit,
+                Visit::Pulled {
+                    sent: 1,
+                    applied: 0,
+                    ..
+                }
+            ),
+            "{visit:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn work_sent_for_a_track_already_purged_is_not_kept() {
+        let Some(hub) = test_hub().await else { return };
+        let owner = library(&["One"]);
+        let office = machine("office");
+        publish(&owner, &hub, &office, &mut false).await.unwrap();
+        let a = studio(&hub, "a").await;
+        let id = only_track(&owner).id;
+        owner
+            .reconcile(&crate::library::db::Reconcile {
+                gone: vec![id],
+                now_ms: 5,
+                ..Default::default()
+            })
+            .unwrap();
+        owner.purge_tracks(&[id]).unwrap();
+        publish(&owner, &hub, &office, &mut true).await.unwrap();
+        fade_in(&a, 1000);
+
+        pull(&a, &hub, &machine("a")).await.unwrap();
+
+        let left = query(&hub, "SELECT kind FROM hub_rows WHERE kind <> 'track'").await;
+        assert!(left.is_empty(), "{} rows", left.len());
+        assert_eq!(a.outgoing_count(STUDIO_SENDS).unwrap(), 0);
     }
 
     #[tokio::test]
