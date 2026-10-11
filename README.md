@@ -122,6 +122,26 @@ browser audio pipeline, no external transcoder, no subscription.
 7. Switch the deck between **Auto** and **Manual** to choose whether it
    advances on its own
 
+## File and folder names
+
+A library read by one computer can use any name that computer allows. A
+[shared library](docs/shared-library.md) is read by several, and a name has to
+be one all of them can ask the share for. Windows is the strict one:
+
+- **Letters with accents are fine.** macOS and Windows spell `ä` differently
+  underneath, and a studio asks for a name both ways.
+- **Avoid `" * : < > ? |` and a name that ends in a space or a full stop.**
+  Windows allows none of them. Finder shows a `:` as `/`, so an album folder
+  named `Live / Studio` there is one of these. A Windows studio can still play
+  such a file when a Mac put it on the share over SMB, because the Mac stores
+  the character as a stand-in that Windows can ask for. Copied any other way —
+  over NFS, or on the NAS itself — the file cannot be played on Windows.
+- **Never `\`.** Windows reads it as the start of a new folder.
+
+A track a studio cannot read does not play there and plays everywhere else.
+Renaming the file or folder on the owner and scanning again fixes it for good.
+See [docs/library.md](docs/library.md#where-a-library-path-is).
+
 ## Prerequisites
 
 - [Node.js](https://nodejs.org/) — the version in `.tool-versions`, which is
