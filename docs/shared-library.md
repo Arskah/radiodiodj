@@ -225,6 +225,9 @@ CREATE INDEX hub_rows_rev ON hub_rows (rev);
 `hub_rows` is deliberately generic. The hub does not know what a track is: a
 column added to `tracks` changes a JSON document and no hub table.
 
+What a program other than the app may read from these tables, and what it can
+rely on, is [hub-schema.md](./hub-schema.md).
+
 **A push** is one transaction. It takes `pg_advisory_xact_lock` on the station,
 then upserts each pending group with a fresh `rev` from one sequence:
 

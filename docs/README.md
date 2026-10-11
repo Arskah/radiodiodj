@@ -36,6 +36,7 @@ Everything here describes what is built, except where a row says otherwise.
 | [library-health.md](./library-health.md) | Missing tracks, duplicates, unreadable files, and the timed library check.                                |
 | [library-search.md](./library-search.md) | **Planned.** Why search cannot forgive a typo today, and the fuzzy pass that would fix it.                |
 | [shared-library.md](./shared-library.md) | One library on several computers: an owner, studios with their own copy, and a Postgres hub between them. |
+| [hub-schema.md](./hub-schema.md)         | The hub's tables as a program other than the app reads them: a web page, a report, a script.              |
 
 ## Programming the station
 
