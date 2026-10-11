@@ -79,8 +79,14 @@ characters they are given. In a shared library that is a studio asking for a
 name its share does not have. So a file that is not found as stored is asked
 for again composed, then decomposed, before it counts as unreadable
 (`library/on_disk.rs`) — on the way to a deck, the cover art and the file
-manager. Nothing stored changes. A name with a character Windows does not allow,
-`:` among them, is not covered: such a track cannot be read there.
+manager. Nothing stored changes.
+
+A character Windows does not allow in a name, `:` among them, is the same
+problem: macOS allows it, and its SMB client writes it to the share as a
+private-use character (`:` as U+F022), which is the name a Windows studio has to
+ask for. So each of those spellings is asked for that way as well. A share that
+holds the character itself — a folder made over NFS, or on the NAS — is not
+covered: Windows has no name to ask it for.
 
 A library written before this, and a `config.json` that still lists
 `musicPaths`, `commercialPaths` or `jinglePaths`, are taken up at launch: each
