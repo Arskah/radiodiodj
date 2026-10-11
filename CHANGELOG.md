@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.32.2](https://github.com/Arskah/radiodiodj/compare/v0.32.1...v0.32.2) (2026-10-11)
+
+
+### Bug Fixes
+
+* **library:** play a file whose name has a character Windows forbids ([#655](https://github.com/Arskah/radiodiodj/issues/655)) ([f173bee](https://github.com/Arskah/radiodiodj/commit/f173beea10b88447ee26709741b3bf4403f2ebd1))
+
 ## [0.32.1](https://github.com/Arskah/radiodiodj/compare/v0.32.0...v0.32.1) (2026-10-11)
 
 
