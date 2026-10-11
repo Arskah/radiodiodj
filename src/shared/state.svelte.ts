@@ -334,6 +334,7 @@ export class AppState {
       message: "",
       reachedAt: null,
       encrypted: null,
+      waiting: 0,
     },
   });
   /** Missing tracks, duplicates and disk changes, from `library-health`. */

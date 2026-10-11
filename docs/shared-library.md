@@ -35,7 +35,9 @@ what the hub knows this install by from then on. A role with no address is
 the whole of `config.json` failing to parse over one word.
 
 The page also says where the running role stands: the last thing the worker
-found, and when the hub last answered. A hub that cannot be reached, or a role
+found, when the hub last answered, whether that connection was encrypted, and
+how many of this machine's changes have not been sent yet — on their way while
+the hub answers, held while it does not. A hub that cannot be reached, or a role
 this machine cannot play — an owner refused because another machine is the
 owner, a studio at a hub nobody has published to — puts a mark on the Settings
 button and on the tab, as a library health finding does. A studio also says

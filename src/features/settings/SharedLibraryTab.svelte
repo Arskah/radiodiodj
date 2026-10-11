@@ -1,7 +1,11 @@
 <script lang="ts">
   import { app } from "../../shared/state.svelte";
   import { formatAgo } from "../../shared/health";
-  import { replacesLibrary, roleLabel } from "../../shared/sharedLibrary";
+  import {
+    replacesLibrary,
+    roleLabel,
+    waitingLabel,
+  } from "../../shared/sharedLibrary";
   import { api } from "../../shared/api";
   import type { CaCertificate, LibraryRole } from "../../shared/types";
 
@@ -316,6 +320,7 @@
       {:else}
         It has not answered since RadiodioDJ started.
       {/if}
+      {waitingLabel(saved.status)}
     {/if}
   </p>
 </div>

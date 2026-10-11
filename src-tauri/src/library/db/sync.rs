@@ -523,14 +523,15 @@ impl Db {
             .collect()
     }
 
-    /// Whether anything of `kinds` is waiting to be sent.
-    pub fn has_outgoing(&self, kinds: &[&str]) -> Result<bool> {
+    /// How many groups of `kinds` are waiting to be sent.
+    pub fn outgoing_count(&self, kinds: &[&str]) -> Result<usize> {
         let conn = self.conn.lock();
         let sql = format!(
-            "SELECT EXISTS (SELECT 1 FROM sync_rows WHERE pending AND kind IN ({}))",
+            "SELECT COUNT(*) FROM sync_rows WHERE pending AND kind IN ({})",
             placeholders(kinds.len())
         );
-        Ok(conn.query_row(&sql, params_from_iter(kinds.iter()), |r| r.get(0))?)
+        let count: i64 = conn.query_row(&sql, params_from_iter(kinds.iter()), |r| r.get(0))?;
+        Ok(usize::try_from(count).unwrap_or(0))
     }
 
     /// Give what is waiting the stamp `at`, as if it had been saved then.
@@ -2446,6 +2447,21 @@ mod tests {
         assert_eq!(owner.dismissals().unwrap().len(), 0, "the owner tidies up");
         assert_eq!(studio.dismissals().unwrap().len(), 1);
         assert_eq!(owed(&studio), [] as [&str; 0]);
+    }
+
+    #[test]
+    fn what_is_waiting_is_counted_by_kind() {
+        let db = capturing();
+        let id = add_track(&db);
+        add_track(&db);
+        retitle(&db, id, "Edited");
+
+        assert_eq!(db.outgoing_count(&["track"]).unwrap(), 2);
+        assert_eq!(db.outgoing_count(operator::KINDS).unwrap(), 1);
+
+        let sent = db.outgoing(&["track"], 10).unwrap();
+        db.mark_sent(&sent).unwrap();
+        assert_eq!(db.outgoing_count(&["track", "edit"]).unwrap(), 1);
     }
 
     /// Columns that are this machine's own and never travel. See

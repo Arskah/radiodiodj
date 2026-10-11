@@ -9,7 +9,14 @@
     if (app.healthAttention > 0) {
       notes.push(`the library needs attention (${app.healthAttention})`);
     }
-    if (app.hubAttention) notes.push("the shared library needs attention");
+    if (app.hubAttention) {
+      const waiting = app.sharedLibrary.status.waiting;
+      notes.push(
+        waiting > 0
+          ? `the shared library needs attention (${waiting} waiting to be sent)`
+          : "the shared library needs attention",
+      );
+    }
     if (app.update.offer) {
       notes.push(`version ${app.update.offer.version} is available`);
     }

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { needsAttention, replacesLibrary, roleLabel } from "./sharedLibrary";
+import {
+  needsAttention,
+  replacesLibrary,
+  roleLabel,
+  waitingLabel,
+} from "./sharedLibrary";
 
 describe("replacesLibrary", () => {
   it("is true only for a machine becoming a studio", () => {
@@ -36,6 +41,7 @@ describe("needsAttention", () => {
     message: "",
     reachedAt: null,
     encrypted: null,
+    waiting: 0,
   };
 
   it("is quiet for a computer that shares nothing", () => {
@@ -58,5 +64,38 @@ describe("needsAttention", () => {
     expect(
       needsAttention({ ...status, role: "studio", ok: true, message: "Fine." }),
     ).toBe(false);
+  });
+});
+
+describe("waitingLabel", () => {
+  const status = {
+    role: "studio" as const,
+    ok: true,
+    message: "Fine.",
+    reachedAt: 5,
+    encrypted: true,
+    waiting: 0,
+  };
+
+  it("says nothing when nothing is waiting", () => {
+    expect(waitingLabel(status)).toBe("");
+    expect(waitingLabel({ ...status, role: "standalone", waiting: 3 })).toBe(
+      "",
+    );
+  });
+
+  it("counts what is on its way", () => {
+    expect(waitingLabel({ ...status, waiting: 1 })).toBe(
+      "1 change is on the way to the hub.",
+    );
+    expect(waitingLabel({ ...status, waiting: 4 })).toBe(
+      "4 changes are on the way to the hub.",
+    );
+  });
+
+  it("says they are held while the hub is away", () => {
+    expect(waitingLabel({ ...status, ok: false, waiting: 2 })).toBe(
+      "2 changes are waiting here until the hub can be reached.",
+    );
   });
 });
