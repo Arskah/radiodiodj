@@ -1,6 +1,7 @@
 //! The statements the app runs against the hub, and nothing else: no rule
 //! about what a row means lives here.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,7 +17,7 @@ use super::certs;
 use crate::persist::config::ExternalLibraryConfig;
 
 use super::schema::{PROTOCOL, STATION_LOCK, TABLES};
-use crate::library::db::{Incoming, Outgoing};
+use crate::library::db::{track_of, Incoming, Outgoing};
 
 /// Longer than any statement here should take, and short enough that a hub
 /// that has stopped answering is noticed within a cycle.
@@ -35,7 +36,9 @@ pub enum Claim {
     /// This machine is the owner of the library the hub holds under this id.
     Held { library_id: String },
     /// The hub held another library, or none. It was emptied and now holds
-    /// this one under a new id, so everything has to be published again.
+    /// this one under a new id, so everything has to be published again. A
+    /// hub that held none gets a new id too: it may have held this library
+    /// and been made again, and its revisions start over.
     Replaced { library_id: String },
     /// Another machine is the owner.
     Taken { by: String },
@@ -230,7 +233,7 @@ impl Hub {
         let fresh = || uuid::Uuid::new_v4().to_string();
         let claim = match station {
             None => {
-                let id = library_id.map_or_else(fresh, str::to_owned);
+                let id = fresh();
                 timed(tx.execute(
                     "INSERT INTO hub_station (library_id, protocol, owner) VALUES ($1, $2, $3)",
                     &[&id, &PROTOCOL, &machine.id],
@@ -342,26 +345,14 @@ impl Hub {
     ) -> Result<Vec<Incoming>> {
         let skip = skip.map(|m| m.id.as_str());
         let rows = timed(self.client.query(
-            "SELECT kind, key, rev, deleted, doc, waveform, levels, edited_at, machine \
-             FROM hub_rows \
-             WHERE rev > $1 AND ($3::text IS NULL OR machine <> $3) ORDER BY rev LIMIT $2",
+            &format!(
+                "SELECT {ROW} FROM hub_rows \
+                 WHERE rev > $1 AND ($3::text IS NULL OR machine <> $3) ORDER BY rev LIMIT $2"
+            ),
             &[&after, &limit, &skip],
         ))
         .await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| Incoming {
-                kind: r.get(0),
-                key: r.get(1),
-                rev: r.get(2),
-                deleted: r.get(3),
-                doc: r.get(4),
-                waveform: r.get(5),
-                levels: r.get(6),
-                edited_at: r.get(7),
-                machine: r.get(8),
-            })
-            .collect())
+        Ok(rows.iter().map(incoming).collect())
     }
 
     /// Send this machine's groups, all of them or none.
@@ -370,14 +361,15 @@ impl Hub {
     /// they come, and only while this machine holds the role. Everything else
     /// is anyone's, and is written only over an earlier save — the later one
     /// wins, by the saving machines' clocks, with the machine id to settle a
-    /// tie. A group that loses is not an error; the winner comes back with the
-    /// next pull.
+    /// tie. A group that loses is not an error, and the save it lost to is
+    /// returned: the sender may have pulled past it already. Work on a track
+    /// the owner has purged is not written at all.
     pub async fn send(
         &mut self,
         machine: &Machine,
         groups: &[Outgoing],
         owner: bool,
-    ) -> Result<()> {
+    ) -> Result<Vec<Incoming>> {
         let tx = timed(self.client.transaction()).await?;
         timed(tx.execute("SELECT pg_advisory_xact_lock($1)", &[&STATION_LOCK])).await?;
         if owner {
@@ -412,8 +404,34 @@ impl Hub {
                 OR (kind = 'edit' AND key LIKE $1 || ':%')",
         ))
         .await?;
+        let later = timed(tx.prepare(&format!(
+            "SELECT {ROW} FROM hub_rows \
+             WHERE kind = $1 AND key = $2 AND (edited_at, machine) > ($3, $4)"
+        )))
+        .await?;
+        let of_tracks: Vec<String> = groups
+            .iter()
+            .filter_map(|g| track_of(&g.kind, &g.key))
+            .map(|id| id.to_string())
+            .collect();
+        let purged: HashSet<String> = if of_tracks.is_empty() {
+            HashSet::new()
+        } else {
+            timed(tx.query(
+                "SELECT key FROM hub_rows WHERE kind = 'track' AND deleted AND key = ANY($1)",
+                &[&of_tracks],
+            ))
+            .await?
+            .iter()
+            .map(|r| r.get(0))
+            .collect()
+        };
+        let mut winners = Vec::new();
         for g in groups {
-            timed(tx.execute(
+            if track_of(&g.kind, &g.key).is_some_and(|id| purged.contains(&id.to_string())) {
+                continue;
+            }
+            let written = timed(tx.execute(
                 &upsert,
                 &[
                     &g.kind,
@@ -430,8 +448,33 @@ impl Hub {
             if g.kind == "track" && g.deleted {
                 timed(tx.execute(&forget, &[&g.key])).await?;
             }
+            if written == 0 {
+                let winner =
+                    timed(tx.query_opt(&later, &[&g.kind, &g.key, &g.edited_at, &machine.id]))
+                        .await?;
+                winners.extend(winner.as_ref().map(incoming));
+            }
         }
-        timed(tx.commit()).await
+        timed(tx.commit()).await?;
+        Ok(winners)
+    }
+}
+
+/// The columns of `hub_rows` that make an [`Incoming`], in the order
+/// [`incoming`] reads them.
+const ROW: &str = "kind, key, rev, deleted, doc, waveform, levels, edited_at, machine";
+
+fn incoming(r: &tokio_postgres::Row) -> Incoming {
+    Incoming {
+        kind: r.get(0),
+        key: r.get(1),
+        rev: r.get(2),
+        deleted: r.get(3),
+        doc: r.get(4),
+        waveform: r.get(5),
+        levels: r.get(6),
+        edited_at: r.get(7),
+        machine: r.get(8),
     }
 }
 

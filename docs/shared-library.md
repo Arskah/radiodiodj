@@ -242,7 +242,11 @@ then upserts each pending group with a fresh `rev` from one sequence:
   `hub_station.owner`, unconditionally.
 - every other kind is written only where
   `(edited_at, machine)` is greater than what the hub holds. A push that loses
-  is not an error; the next pull brings the winner back.
+  is not an error, and its answer carries the save it lost to, which the
+  pushing machine applies: it may have pulled that save already and then saved
+  over it with an earlier clock, and no pull would bring it again.
+- a `cue`, `edit` or `hidden` group for a track whose tombstone the hub holds
+  is not written at all.
 
 The lock is what makes `rev` usable as a cursor. Without it two writers can
 commit out of order, and a reader that has already passed `rev` 41 never sees a
@@ -267,7 +271,10 @@ otherwise name an owner that never publishes again.
 kept in its `sync_local`. An owner that finds the hub holding any other id —
 its own database was replaced, or it was pointed at a hub it never published
 to — **empties `hub_rows`**, stamps a new id and publishes everything again:
-the rows there carry another database's track ids. A studio whose
+the rows there carry another database's track ids. A hub with no station gets a
+new id as well, even from an owner that had one: a hub that was made again
+counts its revisions from one, and a cursor kept from the old one would step
+over everything in it. A studio whose
 `sync_local.library_id` differs stops syncing and says it has to join again.
 
 **The version rule.** `protocol` is a constant in the build, and the hub carries
@@ -284,8 +291,9 @@ URL's `sslmode` to say. Every hub call has a timeout, and none holds the `Db`
 mutex. What it finds goes to the log, once per change and not once per visit.
 Between visits it looks at its own `sync_rows` every two seconds and visits at
 once when something is waiting, so an operator's save does not wait half a
-minute — unless the last visit failed, when the hub is left alone until the
-next one is due.
+minute — unless the last visit could not send, because it failed, another
+machine is the owner or the hub holds no library, when the hub is left alone
+until the next one is due.
 
 **Both roles send, then take.** The owner sends the library and its own operator
 work, then takes what studios sent — leaving out its own rows, which would
@@ -367,6 +375,9 @@ version waiting is compared with it the way the hub compares: the later
 one is passed over, and the hub takes ours next. Theirs later — it is applied
 and ours is no longer owed. Every machine and the hub reach the same answer
 from the same two stamps, which is what makes the order of arrival not matter.
+A group that arrives with the very stamp this library holds is passed over: a
+studio is handed its own saves back, since a copy that was made again needs
+them, and they are not changes.
 
 **Work that arrives before its track waits for it.** The hub holds each group as
 it reads now and hands them out in the order they last changed, so a cue set can
@@ -376,7 +387,8 @@ and applied when the track is; a purge of the track drops it. The owner removes
 a purged track's groups from the hub with the tombstone.
 
 **What applying changed is passed on**, since the library is not the only place
-it lives: the playlist re-reads the cue points of what it holds, the list of
+it lives: the playlist re-reads the cue points of what it holds — after a
+`track` as after a `cue`, since the automatic ones travel in the track — the list of
 saved playlists is emitted again, and on the owner a track another machine
 edited is handed to the tag writer, which writes it to the file if _Write edits
 to file tags_ is on.

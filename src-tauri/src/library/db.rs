@@ -20,7 +20,7 @@ use crate::library::scanner;
 mod operator;
 mod saved_playlists;
 mod sync;
-pub use operator::KINDS as OPERATOR_KINDS;
+pub use operator::{track_of, KINDS as OPERATOR_KINDS};
 pub use saved_playlists::{SavedPlaylist, SavedPlaylistFile, SavedPlaylistSummary};
 pub use sync::{Applied, Incoming, Outgoing};
 

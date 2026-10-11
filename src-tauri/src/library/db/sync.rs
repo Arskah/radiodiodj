@@ -352,7 +352,8 @@ pub struct Applied {
     pub changed: usize,
     /// Tracks whose tag columns another machine edited or reverted.
     pub edited_tracks: Vec<i64>,
-    /// Whether a cue set moved.
+    /// Whether cue points may have moved: a cue set did, or a track came
+    /// with the owner's automatic ones.
     pub cue_points: bool,
     /// Whether a saved playlist was written or deleted.
     pub playlists: bool,
@@ -464,11 +465,15 @@ impl Db {
     }
 
     /// Take the id the hub now holds this library under, and owe it everything
-    /// again: a hub given a new id was emptied first.
+    /// again: a hub given a new id was emptied first, so its revisions are
+    /// followed from the first one too.
     pub fn publish_as(&self, library_id: &str, now_ms: i64) -> Result<()> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
-        tx.execute("UPDATE sync_local SET library_id = ?", [library_id])?;
+        tx.execute(
+            "UPDATE sync_local SET library_id = ?, pulled_rev = 0",
+            [library_id],
+        )?;
         owe_everything(&tx, now_ms)?;
         tx.commit()?;
         Ok(())
@@ -544,14 +549,15 @@ impl Db {
     }
 
     /// Note that `groups` reached the hub. One changed again since it was read
-    /// stays owed.
+    /// stays owed; one that went out as the tombstone of a row found gone is
+    /// a tombstone here from now on.
     pub fn mark_sent(&self, groups: &[Outgoing]) -> Result<()> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         {
             let mut sent = tx.prepare(
-                "UPDATE sync_rows SET pending = 0 \
-                 WHERE kind = ?1 AND key = ?2 AND edited_at = ?3 AND deleted = ?4",
+                "UPDATE sync_rows SET pending = 0, deleted = ?4 \
+                 WHERE kind = ?1 AND key = ?2 AND edited_at = ?3 AND deleted <= ?4",
             )?;
             for g in groups {
                 sent.execute(params![g.kind, g.key, g.edited_at, g.deleted])?;
@@ -654,6 +660,26 @@ impl Db {
         let Some(last) = page.iter().map(|g| g.rev).max() else {
             return Ok(Applied::default());
         };
+        self.apply_groups(page, me, now_ms, Some(last))
+    }
+
+    /// Take the hub's version of groups this machine sent and lost with. The
+    /// cursor stays where it is: a winner this library pulled once and then
+    /// saved over is behind it, and no pull would bring it back.
+    pub fn adopt(&self, winners: &[Incoming], me: &str, now_ms: i64) -> Result<Applied> {
+        if winners.is_empty() {
+            return Ok(Applied::default());
+        }
+        self.apply_groups(winners, me, now_ms, None)
+    }
+
+    fn apply_groups(
+        &self,
+        page: &[Incoming],
+        me: &str,
+        now_ms: i64,
+        cursor: Option<i64>,
+    ) -> Result<Applied> {
         let mut conn = self.conn.lock();
         let columns: Vec<String> = {
             let mut stmt = conn.prepare("SELECT name FROM pragma_table_info('tracks')")?;
@@ -686,6 +712,7 @@ impl Db {
                 ("track", false, Some(doc), Some(id)) => {
                     if apply_track(&tx, &columns, id, doc, group, now_ms)? {
                         applied.changed += 1;
+                        applied.cue_points = true;
                         unpark(&tx, id, &mut applied)?;
                     } else {
                         log::warn!(
@@ -701,7 +728,10 @@ impl Db {
             }
         }
         applied.changed += forget_tracks(&tx, &purged, now_ms)?;
-        tx.execute("UPDATE sync_local SET applying = 0, pulled_rev = ?", [last])?;
+        tx.execute(
+            "UPDATE sync_local SET applying = 0, pulled_rev = coalesce(?, pulled_rev)",
+            [cursor],
+        )?;
         tx.commit()?;
         self.read_roots(&conn)?;
         Ok(applied)
@@ -710,23 +740,27 @@ impl Db {
 
 /// Take another machine's version of a group, unless this machine has a later
 /// one of its own waiting to go out — which the hub will prefer too, by the
-/// same comparison. The later save wins; the machine id settles a tie.
+/// same comparison. The later save wins; the machine id settles a tie. A save
+/// this library already holds is passed over, which is what a studio's own
+/// comes back as.
 fn apply_operator(
     conn: &Connection,
     group: &Incoming,
     me: &str,
     applied: &mut Applied,
 ) -> Result<()> {
-    let waiting: Option<(i64, Option<String>)> = conn
+    let held: Option<(i64, Option<String>, bool, bool)> = conn
         .query_row(
-            "SELECT edited_at, machine FROM sync_rows WHERE kind = ?1 AND key = ?2 AND pending",
+            "SELECT edited_at, machine, deleted, pending FROM sync_rows \
+             WHERE kind = ?1 AND key = ?2",
             params![group.kind, group.key],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?;
-    if let Some((at, machine)) = waiting {
+    if let Some((at, machine, deleted, pending)) = held {
         let ours = (at, machine.as_deref().unwrap_or(me));
-        if ours >= (group.edited_at, group.machine.as_str()) {
+        let theirs = (group.edited_at, group.machine.as_str());
+        if (pending && ours >= theirs) || (ours == theirs && deleted == group.deleted) {
             return Ok(());
         }
     }
@@ -1612,6 +1646,26 @@ mod tests {
         assert_eq!(waiting(&db, &["track"]), [format!("track {id}")]);
     }
 
+    /// Nothing marked it deleted, so it is found gone only when it is read
+    /// to be sent.
+    #[test]
+    fn a_row_removed_while_nothing_was_captured_goes_out_once_as_a_tombstone() {
+        let db = capturing();
+        let id = db.add_root("music").unwrap();
+        db.mark_sent(&db.outgoing(&["root"], 10).unwrap()).unwrap();
+        db.stop_capture().unwrap();
+        assert!(db.remove_root(id).unwrap());
+        db.start_capture(9).unwrap();
+
+        let sent = db.outgoing(&["root"], 10).unwrap();
+        assert!(sent[0].deleted);
+        db.mark_sent(&sent).unwrap();
+
+        assert_eq!(waiting(&db, &["root"]), [] as [&str; 0]);
+        db.publish_as("lib-2", 10).unwrap();
+        assert_eq!(waiting(&db, &["root"]), [format!("root {id} -")]);
+    }
+
     #[test]
     fn a_purged_track_goes_out_as_a_tombstone() {
         let db = capturing();
@@ -1635,10 +1689,14 @@ mod tests {
         let sent = db.outgoing(&["track"], 10).unwrap();
         db.mark_sent(&sent).unwrap();
         assert_eq!(db.library_id().unwrap(), None);
+        db.apply(&[cue_from("studio", id, 50, 3000)], "owner", 1)
+            .unwrap();
+        assert_eq!(db.pulled_rev().unwrap(), 500);
 
         db.publish_as("lib-2", 99).unwrap();
 
         assert_eq!(db.library_id().unwrap().as_deref(), Some("lib-2"));
+        assert_eq!(db.pulled_rev().unwrap(), 0);
         assert_eq!(waiting(&db, &["track"]), [format!("track {id}")]);
         assert_eq!(
             db.outgoing(&["track"], 10).unwrap()[0].edited_at,
@@ -1772,6 +1830,19 @@ mod tests {
             2,
             "the copy is searchable"
         );
+    }
+
+    /// The playlist holds copies of them, and a track document is the only
+    /// thing that carries the automatic ones.
+    #[test]
+    fn a_track_that_arrives_says_cue_points_may_have_moved() {
+        let owner = capturing();
+        add_track(&owner);
+        let copy = replica();
+
+        let took = copy.apply(&published(&owner), "me", 1).unwrap();
+
+        assert!(took.cue_points);
     }
 
     #[test]
@@ -2346,6 +2417,63 @@ mod tests {
             .apply(&[cue_from("z", id, 100, 8000)], "m", 1)
             .unwrap();
         assert_eq!(higher.changed, 1);
+    }
+
+    /// A studio is handed its own rows too, since a copy made again needs
+    /// them.
+    #[test]
+    fn a_save_this_library_already_holds_changes_nothing() {
+        let owner = capturing();
+        let id = add_track(&owner);
+        let studio = studio_of(&owner);
+        studio.set_cue_points(id, fades(2000)).unwrap();
+        let sent = studio.outgoing(operator::KINDS, 10).unwrap();
+        studio.mark_sent(&sent).unwrap();
+        let own = Incoming {
+            doc: sent[0].doc.clone(),
+            ..cue_from("studio", id, sent[0].edited_at, 0)
+        };
+
+        assert_eq!(studio.apply(&[own], "studio", 1).unwrap().changed, 0);
+
+        let theirs = [cue_from("other", id, sent[0].edited_at + 1, 7000)];
+        assert_eq!(studio.apply(&theirs, "studio", 1).unwrap().changed, 1);
+        assert_eq!(studio.apply(&theirs, "studio", 1).unwrap().changed, 0);
+    }
+
+    /// It was pulled before this machine saved over it, so it is behind the
+    /// cursor, which must not go back to it.
+    #[test]
+    fn a_save_this_machine_lost_to_is_taken_without_moving_the_cursor() {
+        let owner = capturing();
+        let id = add_track(&owner);
+        let studio = studio_of(&owner);
+        studio
+            .apply(
+                &[Incoming {
+                    rev: 900,
+                    ..cue_from("other", id, 110, 7000)
+                }],
+                "studio",
+                1,
+            )
+            .unwrap();
+        studio.set_cue_points(id, fades(2000)).unwrap();
+        studio.restamp_pending(100);
+        studio
+            .mark_sent(&studio.outgoing(operator::KINDS, 10).unwrap())
+            .unwrap();
+
+        let took = studio
+            .adopt(&[cue_from("other", id, 110, 7000)], "studio", 1)
+            .unwrap();
+
+        assert!(took.cue_points);
+        assert_eq!(
+            studio.get_track(id).unwrap().unwrap().cue_points.fade_in_ms,
+            Some(7000)
+        );
+        assert_eq!(studio.pulled_rev().unwrap(), 900);
     }
 
     /// The hub hands rows out in the order they last changed, so a track that
