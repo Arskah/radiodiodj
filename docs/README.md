@@ -29,14 +29,14 @@ Everything here describes what is built, except where a row says otherwise.
 
 ## Library
 
-| doc                                          | answers                                                                                                               |
-| -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| [library.md](./library.md)                   | The whole library feature: paths, content types, scanning, tracks, editing.                                           |
-| [track-identity.md](./track-identity.md)     | Why a track survives being moved, renamed or re-added.                                                                |
-| [library-health.md](./library-health.md)     | Missing tracks, duplicates, unreadable files, and the timed library check.                                            |
-| [library-search.md](./library-search.md)     | **Planned.** Why search cannot forgive a typo today, and the fuzzy pass that would fix it.                            |
-| [external-library.md](./external-library.md) | **Planned.** Can the library be shared between machines so the scan runs elsewhere, and what does a web page search?  |
-| [shared-library.md](./shared-library.md)     | **Planned.** The design that page settles on: an owner, studios with their own copy, and a Postgres hub between them. |
+| doc                                      | answers                                                                                                   |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| [library.md](./library.md)               | The whole library feature: paths, content types, scanning, tracks, editing.                               |
+| [track-identity.md](./track-identity.md) | Why a track survives being moved, renamed or re-added.                                                    |
+| [library-health.md](./library-health.md) | Missing tracks, duplicates, unreadable files, and the timed library check.                                |
+| [library-search.md](./library-search.md) | **Planned.** Why search cannot forgive a typo today, and the fuzzy pass that would fix it.                |
+| [shared-library.md](./shared-library.md) | One library on several computers: an owner, studios with their own copy, and a Postgres hub between them. |
+| [hub-schema.md](./hub-schema.md)         | The hub's tables as a program other than the app reads them: a web page, a report, a script.              |
 
 ## Programming the station
 

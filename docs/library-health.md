@@ -176,7 +176,7 @@ change**_ (`tuning.library.scanOnChanges`) hands it that button, so music copied
 onto a library path from another computer is picked up without anyone walking to
 the studio machine. This starts the scan from elsewhere; it does not move the
 work. Running the scan on another machine is
-[external-library.md](./external-library.md).
+[shared-library.md](./shared-library.md).
 
 **An automatic scan only ever adds and updates.** It never marks a track missing
 on the strength of a listing nobody watched — a share that came back as an empty
