@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.32.0](https://github.com/Arskah/radiodiodj/compare/v0.31.0...v0.32.0) (2026-10-11)
+
+
+### Features
+
+* **library:** encrypt the connection to the hub, and say who to trust ([#626](https://github.com/Arskah/radiodiodj/issues/626)) ([68c7cb3](https://github.com/Arskah/radiodiodj/commit/68c7cb33e18a09e26c006f1c3ff79976a8ded3e5)), closes [#505](https://github.com/Arskah/radiodiodj/issues/505)
+* **library:** send operator work between the computers of a shared library ([#637](https://github.com/Arskah/radiodiodj/issues/637)) ([42bc1aa](https://github.com/Arskah/radiodiodj/commit/42bc1aab88547677d2e457430d7abb6c99f70ec8))
+* **library:** share one library between computers through a hub ([#625](https://github.com/Arskah/radiodiodj/issues/625)) ([84b1581](https://github.com/Arskah/radiodiodj/commit/84b15818e34d068f0b273fa718f7986885e3c873))
+* **library:** show how much of a shared library is still to be sent ([#638](https://github.com/Arskah/radiodiodj/issues/638)) ([ea69340](https://github.com/Arskah/radiodiodj/commit/ea69340973926b956e2092f98670083d297bf34c))
+* **library:** show the album on every library health row ([#639](https://github.com/Arskah/radiodiodj/issues/639)) ([15baf25](https://github.com/Arskah/radiodiodj/commit/15baf258f2ead99c3c8a35cf082527f0a63ac5af))
+
+
+### Bug Fixes
+
+* **library:** keep the computers of a shared library in step ([#647](https://github.com/Arskah/radiodiodj/issues/647)) ([a265763](https://github.com/Arskah/radiodiodj/commit/a265763249798d2172b9f9f453c7d27efad0891b))
+
 ## [0.31.0](https://github.com/Arskah/radiodiodj/compare/v0.30.0...v0.31.0) (2026-10-10)
 
 
