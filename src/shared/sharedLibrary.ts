@@ -21,6 +21,9 @@ export function waitingLabel(status: HubStatus): string {
   if (status.role === "standalone" || status.waiting === 0) return "";
   const what =
     status.waiting === 1 ? "1 change is" : `${status.waiting} changes are`;
+  if (status.remedy?.kind === "joinAgain") {
+    return `${what} saved here and cannot be sent.`;
+  }
   // While the hub is away they wait for it; otherwise they are on their way.
   return status.ok
     ? `${what} on the way to the hub.`
@@ -50,4 +53,17 @@ export function replacesLibrary(
   saved: LibraryRole,
 ): boolean {
   return next === "studio" && running !== "studio" && saved !== "studio";
+}
+
+/**
+ * What joining again costs in work this studio saved and never sent, for the
+ * confirmation. Empty when nothing is waiting.
+ */
+export function lostByJoiningAgain(waiting: number): string {
+  if (waiting === 0) return "";
+  const what =
+    waiting === 1
+      ? "1 change saved here was never sent and is"
+      : `${waiting} changes saved here were never sent and are`;
+  return `${what} lost with it.`;
 }
