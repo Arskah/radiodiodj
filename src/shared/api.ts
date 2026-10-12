@@ -655,6 +655,14 @@ export const api = {
   setSharedLibrary(settings: SharedLibrarySettings): Promise<SharedLibrary> {
     return invoke<SharedLibrary>("set_shared_library", { settings });
   },
+
+  /**
+   * Ask for this studio's copy to be made again at the next launch, or take
+   * the request back.
+   */
+  joinSharedLibraryAgain(pending: boolean): Promise<SharedLibrary> {
+    return invoke<SharedLibrary>("join_shared_library_again", { pending });
+  },
   /** Ask for a certificate file. Resolves `null` when the dialog is cancelled. */
   async pickCertificateFile(): Promise<string | null> {
     const file = await open({

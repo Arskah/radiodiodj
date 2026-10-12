@@ -580,10 +580,13 @@ impl Db {
     /// The library this machine had is not that, so it is set aside — here,
     /// before anything holds a track by its id. A machine that stops being a
     /// studio keeps its copy as its own.
-    pub fn open_for(path: &Path, studio: bool) -> Result<(Opened, bool)> {
+    ///
+    /// `again` joins from the start a studio that has a copy already: of a
+    /// library the hub no longer holds, so its track ids are nobody's.
+    pub fn open_for(path: &Path, studio: bool, again: bool) -> Result<(Opened, bool)> {
         let mut opened = Self::open(path)?;
         let replica = opened.db.is_replica()?;
-        if studio && !replica {
+        if studio && (again || !replica) {
             if !opened.db.holds_nothing()? {
                 drop(opened);
                 Self::set_aside(path)?;
@@ -2057,7 +2060,7 @@ mod tests {
         let path = dir.path().join("radiodiodj.db");
         add_track(&Db::open(&path).unwrap().db);
 
-        let (opened, joined) = Db::open_for(&path, true).unwrap();
+        let (opened, joined) = Db::open_for(&path, true, false).unwrap();
 
         assert!(joined);
         assert!(opened.db.is_replica().unwrap());
@@ -2071,13 +2074,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("radiodiodj.db");
         add_track(&Db::open(&path).unwrap().db);
-        let (copy, _) = Db::open_for(&path, true).unwrap();
+        let (copy, _) = Db::open_for(&path, true, false).unwrap();
         add_track(&copy.db);
         add_track(&copy.db);
         drop(copy);
-        drop(Db::open_for(&path, false).unwrap());
+        drop(Db::open_for(&path, false, false).unwrap());
 
-        let (again, joined) = Db::open_for(&path, true).unwrap();
+        let (again, joined) = Db::open_for(&path, true, false).unwrap();
 
         assert!(joined);
         assert_eq!(track_count(&again.db), 0);
@@ -2091,11 +2094,11 @@ mod tests {
     fn a_studio_keeps_its_copy_from_one_launch_to_the_next() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("radiodiodj.db");
-        let (first, _) = Db::open_for(&path, true).unwrap();
+        let (first, _) = Db::open_for(&path, true, false).unwrap();
         add_track(&first.db);
         drop(first);
 
-        let (again, joined) = Db::open_for(&path, true).unwrap();
+        let (again, joined) = Db::open_for(&path, true, false).unwrap();
 
         assert!(!joined);
         assert_eq!(track_count(&again.db), 1);
@@ -2103,14 +2106,53 @@ mod tests {
     }
 
     #[test]
+    fn a_studio_joining_again_sets_its_copy_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("radiodiodj.db");
+        add_track(&Db::open(&path).unwrap().db);
+        let (copy, _) = Db::open_for(&path, true, false).unwrap();
+        add_track(&copy.db);
+        add_track(&copy.db);
+        copy.db.follow("lib-1").unwrap();
+        drop(copy);
+
+        let (again, joined) = Db::open_for(&path, true, true).unwrap();
+
+        assert!(joined);
+        assert!(again.db.is_replica().unwrap());
+        assert_eq!(track_count(&again.db), 0);
+        assert_eq!(again.db.library_id().unwrap(), None);
+        let own = Db::open(&dir.path().join("radiodiodj.standalone.bak.db")).unwrap();
+        assert_eq!(
+            track_count(&own.db),
+            1,
+            "the first join's is not written over"
+        );
+        let copy = Db::open(&dir.path().join("radiodiodj.standalone.2.bak.db")).unwrap();
+        assert_eq!(track_count(&copy.db), 2, "the copy is kept");
+    }
+
+    #[test]
+    fn joining_again_means_nothing_to_a_machine_that_is_not_a_studio() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("radiodiodj.db");
+        add_track(&Db::open(&path).unwrap().db);
+
+        let (alone, joined) = Db::open_for(&path, false, true).unwrap();
+
+        assert!(!joined);
+        assert_eq!(track_count(&alone.db), 1);
+    }
+
+    #[test]
     fn a_machine_that_stops_being_a_studio_keeps_the_copy_as_its_own() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("radiodiodj.db");
-        let (studio, _) = Db::open_for(&path, true).unwrap();
+        let (studio, _) = Db::open_for(&path, true, false).unwrap();
         add_track(&studio.db);
         drop(studio);
 
-        let (alone, joined) = Db::open_for(&path, false).unwrap();
+        let (alone, joined) = Db::open_for(&path, false, false).unwrap();
 
         assert!(!joined);
         assert!(!alone.db.is_replica().unwrap());
