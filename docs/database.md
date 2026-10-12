@@ -130,4 +130,5 @@ Next to the database, in the app data directory:
 | ------------------------------- | ------------------------------------------------ |
 | `radiodiodj.v{N}.bak.db`        | before migrating from version `N`; newest 2 kept |
 | `radiodiodj.legacy-v{N}.bak.db` | an older epoch was reset                         |
+| `radiodiodj.hub.bak.db`         | the shared library's hub was emptied from here   |
 | `session.legacy.bak.json`       | the session was cleared by a reset               |
