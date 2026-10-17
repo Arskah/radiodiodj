@@ -290,9 +290,10 @@ until the next one is due.
 **Both roles send, then take.** The owner sends the library and its own operator
 work, then takes what studios sent — leaving out its own rows, which would
 otherwise be the whole library handed back. A studio sends its operator work
-and takes everything. The protocol number is 2 from here: a build that knew
-only `root` and `track` would step over the other kinds and never see them
-again, so it has to stop instead.
+and takes everything. Saved playlists travel with their kind and ordered
+entries, including Stop entries. Older saved-playlist documents without kind
+fields mean `playlist` and track entries. The protocol number is 3: older builds
+must stop syncing because they would read a Stop as an unmatched track.
 
 **The hub's address is a connection URL in `config.json`, password included, in
 plain text.** It is the only secret there that is not a hash, and the README's

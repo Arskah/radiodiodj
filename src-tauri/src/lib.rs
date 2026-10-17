@@ -39,8 +39,8 @@ use audio::player::{Cmd, PlayerTuning, RampDone};
 use broadcast::{service::default_now_playing_dir, BroadcastService};
 use library::check::LibraryCheck;
 use library::db::{
-    Db, LibraryStats, OpenError, Recalculated, SavedPlaylist, SavedPlaylistFile,
-    SavedPlaylistSummary, Track, TrackMetadataUpdate,
+    Db, LibraryStats, OpenError, Recalculated, SavedEntryInput, SavedPlaylist, SavedPlaylistFile,
+    SavedPlaylistKind, SavedPlaylistSummary, SavedQueueEntry, Track, TrackMetadataUpdate,
 };
 use library::health::{FindingKind, Health, HealthReport};
 use library::roots::{self, LibraryPath};
@@ -55,6 +55,7 @@ use persist::config::{
     TuningConfig,
 };
 use persist::session::{Session, SessionPlaylistItem, SessionState};
+use playlist::model::PlaylistItem;
 use playlist::{PlaylistService, Snapshot};
 use std::time::Duration;
 use update::{UpdateState, Updater};
@@ -389,7 +390,7 @@ fn playlist_add_many(app: State<'_, AppState>, ids: Vec<i64>, index: Option<usiz
 }
 
 /// What an append of a saved playlist did: how many tracks it queued, and how
-/// many entries it had to leave out for want of a track.
+/// many entries it had to leave out for want of a track. Stops count as neither.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct SavedAppend {
@@ -397,9 +398,18 @@ struct SavedAppend {
     skipped: usize,
 }
 
-/// Append a saved playlist's tracks, in order; with `weave`, brought up to the
-/// interleave cadence. Reads before it queues, which is why it alone among the
-/// `playlist_*` commands has a result. See `docs/saved-playlists.md`.
+fn saved_entries(items: &[PlaylistItem]) -> Vec<SavedEntryInput> {
+    items
+        .iter()
+        .map(|item| match item.as_track() {
+            Some(track) => SavedEntryInput::Track(track.id),
+            None => SavedEntryInput::Stop,
+        })
+        .collect()
+}
+
+/// Append a saved list's authored entries in order. The optional interleave
+/// cadence is available only for ordinary playlists.
 #[tauri::command(rename_all = "camelCase")]
 async fn playlist_add_saved(
     state: State<'_, AppState>,
@@ -410,11 +420,18 @@ async fn playlist_add_saved(
     let playlist = Arc::clone(&state.playlist);
     blocking(move || {
         let offered = db
-            .saved_playlist_tracks(id)
+            .saved_playlist_items(id)
             .map_err(err)?
             .ok_or_else(|| format!("no saved playlist {id}"))?;
-        let added = offered.tracks.len();
-        playlist.add_saved(offered.tracks, weave);
+        if weave && offered.kind != SavedPlaylistKind::Playlist {
+            return Err("a prepared show uses its authored sequence".to_owned());
+        }
+        let added = offered
+            .entries
+            .iter()
+            .filter(|entry| matches!(entry, SavedQueueEntry::Track { .. }))
+            .count();
+        playlist.add_saved(offered.entries, weave);
         Ok(SavedAppend {
             added,
             skipped: offered.unmatched,
@@ -423,25 +440,31 @@ async fn playlist_add_saved(
     .await
 }
 
-/// Keep the upcoming tracks as a new saved playlist. Stop markers and item
-/// overrides are not carried.
+/// Keep the upcoming sequence as a new saved list. Stops are retained; the
+/// current on-air track and item overrides are not carried.
 #[tauri::command(rename_all = "camelCase")]
 async fn playlist_save_as(
     handle: AppHandle,
     state: State<'_, AppState>,
     name: String,
+    kind: Option<SavedPlaylistKind>,
 ) -> Result<SavedPlaylistSummary, String> {
     let db = Arc::clone(&state.db);
-    let ids: Vec<i64> = state
-        .playlist
-        .snapshot()
-        .playlist
-        .iter()
-        .filter_map(|item| item.as_track().map(|t| t.id))
-        .collect();
+    let playlist = Arc::clone(&state.playlist);
     blocking(move || {
+        let entries = saved_entries(&playlist.queued_items()?);
+        let kind = kind.unwrap_or_else(|| {
+            if entries
+                .iter()
+                .any(|entry| matches!(entry, SavedEntryInput::Stop))
+            {
+                SavedPlaylistKind::PreparedShow
+            } else {
+                SavedPlaylistKind::Playlist
+            }
+        });
         let made = db
-            .create_saved_playlist(&name, &ids, now_ms())
+            .create_saved_playlist_with_entries(&name, kind, &entries, now_ms())
             .map_err(err)?;
         saved_playlists::emit(&handle, &db);
         Ok(made)
@@ -474,14 +497,57 @@ async fn saved_playlist_create(
     state: State<'_, AppState>,
     name: String,
     track_ids: Vec<i64>,
+    kind: Option<SavedPlaylistKind>,
 ) -> Result<SavedPlaylistSummary, String> {
     let db = Arc::clone(&state.db);
+    let entries: Vec<SavedEntryInput> = track_ids.into_iter().map(SavedEntryInput::Track).collect();
     blocking(move || {
         let made = db
-            .create_saved_playlist(&name, &track_ids, now_ms())
+            .create_saved_playlist_with_entries(
+                &name,
+                kind.unwrap_or(SavedPlaylistKind::Playlist),
+                &entries,
+                now_ms(),
+            )
             .map_err(err)?;
         saved_playlists::emit(&handle, &db);
         Ok(made)
+    })
+    .await
+}
+
+/// Change a saved list's kind. A prepared show with Stops cannot become an
+/// ordinary playlist until those markers are removed.
+#[tauri::command(rename_all = "camelCase")]
+async fn saved_playlist_set_kind(
+    handle: AppHandle,
+    app: State<'_, AppState>,
+    id: i64,
+    kind: SavedPlaylistKind,
+) -> Result<(), String> {
+    let db = Arc::clone(&app.db);
+    blocking(move || {
+        db.set_saved_playlist_kind(id, kind, now_ms())
+            .map_err(err)?;
+        saved_playlists::emit(&handle, &db);
+        Ok(())
+    })
+    .await
+}
+
+/// Insert a Stop into a prepared show's stored order; absent `index` appends.
+#[tauri::command(rename_all = "camelCase")]
+async fn saved_playlist_add_stop(
+    handle: AppHandle,
+    app: State<'_, AppState>,
+    id: i64,
+    index: Option<usize>,
+) -> Result<(), String> {
+    let db = Arc::clone(&app.db);
+    blocking(move || {
+        db.add_saved_stop(id, index, now_ms()).map_err(err)?;
+        saved_playlists::emit(&handle, &db);
+        Ok(())
     })
     .await
 }
@@ -2024,6 +2090,8 @@ pub fn run() {
             saved_playlist_export,
             saved_playlist_import,
             saved_playlist_add_entries,
+            saved_playlist_add_stop,
+            saved_playlist_set_kind,
             saved_playlist_remove_entry,
             saved_playlist_bind_entry,
             saved_playlist_move_entry,
@@ -2136,5 +2204,84 @@ pub(crate) fn shut_down(app: &AppHandle) {
         // the airing log a play.
         state.playlist.drain();
         state.broadcast.shutdown_blocking();
+    }
+}
+
+#[cfg(test)]
+mod prepared_show_tests {
+    use super::*;
+    use library::db::TrackInsert;
+
+    #[test]
+    fn save_as_entries_keep_stop_order_but_not_the_one_airing_override() {
+        let db = Db::open_in_memory().unwrap();
+        for (name, fingerprint) in [("A", "v2:a"), ("B", "v2:b")] {
+            db.insert_track(&TrackInsert {
+                path: format!("/{name}.wav"),
+                content_type: "music".into(),
+                title: Some(name.into()),
+                fingerprint: Some(fingerprint.into()),
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        let tracks = db.get_tracks_by_ids(&[1, 2]).unwrap();
+        let upcoming = vec![
+            PlaylistItem::with_override(
+                tracks[0].clone(),
+                Some(CuePoints {
+                    cue_in_ms: Some(1_000),
+                    ..Default::default()
+                }),
+            ),
+            PlaylistItem::Stop,
+            PlaylistItem::track(tracks[1].clone()),
+        ];
+        let entries = saved_entries(&upcoming);
+        assert_eq!(
+            entries,
+            vec![
+                SavedEntryInput::Track(tracks[0].id),
+                SavedEntryInput::Stop,
+                SavedEntryInput::Track(tracks[1].id),
+            ]
+        );
+
+        let made = db
+            .create_saved_playlist_with_entries(
+                "Tonight",
+                SavedPlaylistKind::PreparedShow,
+                &entries,
+                1,
+            )
+            .unwrap();
+        let file = db.export_saved_playlist(made.id).unwrap().unwrap();
+        let json = serde_json::to_string(&file).unwrap();
+        let imported = db
+            .import_saved_playlist(&SavedPlaylistFile::parse(&json).unwrap(), 2)
+            .unwrap();
+        assert_eq!(imported.kind, SavedPlaylistKind::PreparedShow);
+        assert_eq!(imported.stops, 1);
+        assert_eq!(
+            db.saved_playlist_items(imported.id)
+                .unwrap()
+                .unwrap()
+                .entries,
+            vec![
+                SavedQueueEntry::Track {
+                    id: tracks[0].id,
+                    content_type: "music".into(),
+                },
+                SavedQueueEntry::Stop,
+                SavedQueueEntry::Track {
+                    id: tracks[1].id,
+                    content_type: "music".into(),
+                },
+            ]
+        );
+        assert_eq!(
+            serde_json::to_value(&file.entries[1]).unwrap()["kind"],
+            "stop"
+        );
     }
 }

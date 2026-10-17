@@ -349,6 +349,14 @@ impl Playlist {
         Transition::default()
     }
 
+    /// Append a saved list's authored tracks and Stops in one transition.
+    /// A saved track references the station's cue points, so its override is
+    /// always `None`.
+    pub fn append_saved(&mut self, items: Vec<PlaylistItem>) -> Transition {
+        self.items.extend(items);
+        Transition::default()
+    }
+
     /// Set or clear one queued item's override. `None` drops it back to the
     /// track's radio edit; an all-`NULL` `Some` is a deliberate "whole file
     /// this once" and is kept as such.
@@ -1219,6 +1227,44 @@ mod tests {
     fn add_appends_tracks() {
         let p = with(&[Some(1), Some(2)]);
         assert_eq!(queued(&p), vec![Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn appending_a_saved_show_keeps_its_stop_barrier_without_starting_playback() {
+        let mut p = with(&[Some(9)]);
+        let transition = p.append_saved(vec![
+            PlaylistItem::track(track(1)),
+            PlaylistItem::Stop,
+            PlaylistItem::track(track(2)),
+        ]);
+
+        assert_eq!(transition, Transition::default());
+        assert_eq!(queued(&p), vec![Some(9), Some(1), None, Some(2)]);
+        assert_eq!(current_id(&p), None);
+
+        air(&mut p, 0);
+        air(&mut p, 0);
+        assert_eq!(
+            p.on_ended(&NoRefill).effects,
+            vec![Effect::CancelRetry, Effect::Stop]
+        );
+        assert_eq!(queued(&p), vec![Some(2)]);
+        assert_eq!(current_id(&p), None);
+    }
+
+    #[test]
+    fn a_trailing_saved_stop_halts_before_later_queued_material() {
+        let mut p = Playlist::new();
+        p.append_saved(vec![PlaylistItem::track(track(1)), PlaylistItem::Stop]);
+        p.add(track(2), None);
+
+        air(&mut p, 0);
+        assert_eq!(
+            p.on_ended(&NoRefill).effects,
+            vec![Effect::CancelRetry, Effect::Stop]
+        );
+        assert_eq!(queued(&p), vec![Some(2)]);
+        assert_eq!(current_id(&p), None);
     }
 
     #[test]

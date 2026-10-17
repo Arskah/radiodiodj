@@ -3,7 +3,7 @@
 //! and a write coming in. Which of two machines' versions stands is not
 //! decided here. See `docs/shared-library.md#what-travels`.
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use rusqlite::types::Value;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value as Json};
@@ -97,33 +97,35 @@ pub fn document(conn: &Connection, group: &Outgoing) -> Result<Option<Json>> {
             })
             .optional()?,
         "playlist" => {
-            let list: Option<(i64, String, i64, i64)> = conn
+            let list: Option<(i64, String, i64, i64, String)> = conn
                 .query_row(
-                    "SELECT id, name, created_at, updated_at FROM saved_playlists WHERE uid = ?",
+                    "SELECT id, name, created_at, updated_at, kind FROM saved_playlists WHERE uid = ?",
                     [key],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
                 )
                 .optional()?;
             match list {
-                Some((id, name, created_at, updated_at)) => {
+                Some((id, name, created_at, updated_at, kind)) => {
                     let mut stmt = conn.prepare(
-                        "SELECT track_id, fingerprint, artist, title, duration, content_type \
-                         FROM saved_playlist_entries WHERE playlist_id = ? ORDER BY position",
+                        "SELECT kind, track_id, fingerprint, artist, title, duration, content_type \
+                         FROM saved_playlist_entries WHERE playlist_id = ? ORDER BY position, id",
                     )?;
                     let entries = stmt
                         .query_map([id], |r| {
                             Ok(json!({
-                                "track_id": r.get::<_, Option<i64>>(0)?,
-                                "fingerprint": r.get::<_, Option<String>>(1)?,
-                                "artist": r.get::<_, Option<String>>(2)?,
-                                "title": r.get::<_, Option<String>>(3)?,
-                                "duration": r.get::<_, Option<f64>>(4)?,
-                                "content_type": r.get::<_, Option<String>>(5)?,
+                                "kind": r.get::<_, String>(0)?,
+                                "track_id": r.get::<_, Option<i64>>(1)?,
+                                "fingerprint": r.get::<_, Option<String>>(2)?,
+                                "artist": r.get::<_, Option<String>>(3)?,
+                                "title": r.get::<_, Option<String>>(4)?,
+                                "duration": r.get::<_, Option<f64>>(5)?,
+                                "content_type": r.get::<_, Option<String>>(6)?,
                             }))
                         })?
                         .collect::<rusqlite::Result<Vec<_>>>()?;
                     Some(json!({
                         "name": name,
+                        "kind": kind,
                         "created_at": created_at,
                         "updated_at": updated_at,
                         "entries": entries,
@@ -244,39 +246,81 @@ fn write_playlist(conn: &Connection, uid: &str, deleted: bool, doc: Option<&Json
     let Some(name) = doc.get("name").and_then(Json::as_str) else {
         return Ok(false);
     };
+    let kind = match doc.get("kind") {
+        None => "playlist",
+        Some(Json::String(kind)) => kind.as_str(),
+        _ => bail!("invalid synced saved playlist kind"),
+    };
+    if !matches!(kind, "playlist" | "prepared_show") {
+        bail!("unknown synced saved playlist kind {kind}");
+    }
+    let Some(entries) = doc.get("entries").and_then(Json::as_array) else {
+        bail!("synced saved playlist has no entries array");
+    };
+    for entry in entries {
+        if !entry.is_object() {
+            bail!("synced saved playlist has an invalid entry");
+        }
+        let entry_kind = match entry.get("kind") {
+            None => "track",
+            Some(Json::String(kind)) => kind.as_str(),
+            _ => bail!("invalid synced saved entry kind"),
+        };
+        if !matches!(entry_kind, "track" | "stop") {
+            bail!("unknown synced saved entry kind {entry_kind}");
+        }
+        if entry_kind == "stop" && kind != "prepared_show" {
+            bail!("a playlist cannot contain Stops");
+        }
+        if entry_kind == "stop"
+            && [
+                "track_id",
+                "fingerprint",
+                "artist",
+                "title",
+                "duration",
+                "content_type",
+            ]
+            .iter()
+            .any(|field| entry.get(*field).is_some_and(|value| !value.is_null()))
+        {
+            bail!("a Stop cannot carry audio identity");
+        }
+    }
     let time = |field: &str| doc.get(field).and_then(Json::as_i64).unwrap_or(0);
     let id = match existing {
         Some(id) => {
             conn.execute(
-                "UPDATE saved_playlists SET name = ?1, updated_at = ?2 WHERE id = ?3",
-                params![name, time("updated_at"), id],
-            )?;
-            conn.execute(
                 "DELETE FROM saved_playlist_entries WHERE playlist_id = ?",
                 [id],
+            )?;
+            conn.execute(
+                "UPDATE saved_playlists SET name = ?1, updated_at = ?2, kind = ?3 WHERE id = ?4",
+                params![name, time("updated_at"), kind, id],
             )?;
             id
         }
         None => {
             conn.execute(
-                "INSERT INTO saved_playlists (name, created_at, updated_at, uid) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![name, time("created_at"), time("updated_at"), uid],
+                "INSERT INTO saved_playlists (name, created_at, updated_at, uid, kind) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![name, time("created_at"), time("updated_at"), uid, kind],
             )?;
             conn.last_insert_rowid()
         }
     };
     let mut insert = conn.prepare_cached(
         "INSERT INTO saved_playlist_entries \
-           (playlist_id, position, track_id, fingerprint, artist, title, duration, content_type) \
-         VALUES (?1, ?2, (SELECT id FROM tracks WHERE id = ?3), ?4, ?5, ?6, ?7, ?8)",
+           (playlist_id, position, kind, track_id, fingerprint, artist, title, duration, content_type) \
+         VALUES (?1, ?2, ?3, (SELECT id FROM tracks WHERE id = ?4), ?5, ?6, ?7, ?8, ?9)",
     )?;
-    let entries = doc.get("entries").and_then(Json::as_array);
-    for (position, entry) in entries.into_iter().flatten().enumerate() {
+    for (position, entry) in entries.iter().enumerate() {
         let of = |name: &str| sql_value(entry.get(name).unwrap_or(&Json::Null));
+        let entry_kind = entry.get("kind").and_then(Json::as_str).unwrap_or("track");
         insert.execute(params![
             id,
             position as i64,
+            entry_kind,
             of("track_id"),
             of("fingerprint"),
             of("artist"),

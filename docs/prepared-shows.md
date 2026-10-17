@@ -1,6 +1,6 @@
 # Prepared shows
 
-**Specification. Not implemented.** Issue [#682](https://github.com/Arskah/radiodiodj/issues/682).
+**Implemented reference.** Issue [#682](https://github.com/Arskah/radiodiodj/issues/682).
 
 Saved playlists gain a `playlist | prepared_show` kind, shown as **Playlist**
 or **Prepared show** in one selector. Both use the same feature, explicit entry
