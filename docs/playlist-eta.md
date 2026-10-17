@@ -1,7 +1,7 @@
 # Playlist ETA and planned Stops
 
-**Implementation spec.** One feature branch above `feat/playlist-blocks`, after
-prepared shows and blocks. No implementation yet.
+**Implementation spec.** Planned Stop durations, held Stops and stable Upcoming
+ETAs, layered above prepared shows and playlist blocks.
 
 The starting base is `ebc1ed0`. Keep this as a third change; if the earlier PRs
 are squash-merged, transplant only this branch's new commits onto `main`.

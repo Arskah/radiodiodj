@@ -1,6 +1,10 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { app } from "../../shared/state.svelte";
+  import { formatClock } from "../../shared/playlistTiming";
   import ErrorBanner from "../ui/ErrorBanner.svelte";
+
+  onMount(() => app.startClock());
 
   // The version rides along because a locked desk cannot open About, and
   // whoever reports a bug from there still needs to say what they are running.
@@ -55,6 +59,9 @@
     {:else}
       <span class="brand">{app.brandName}</span>
     {/if}
+    <time class="station-clock" datetime={new Date(app.clockNow).toISOString()}>
+      {formatClock(app.clockNow)}
+    </time>
   </div>
 
   <div class="nav-center">

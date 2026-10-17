@@ -211,6 +211,14 @@ body {
   gap: var(--sp-md);
 }
 
+.station-clock {
+  color: var(--on-surface-variant);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .nav-center {
   flex: 1;
   display: flex;
@@ -464,6 +472,18 @@ body {
   font-size: 10px;
   letter-spacing: 0.05em;
   font-variant-numeric: tabular-nums;
+}
+
+.deck-status {
+  color: var(--on-surface-variant);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.stop-over-plan {
+  color: var(--error) !important;
 }
 
 #now-playing .deck-head {
@@ -1903,6 +1923,21 @@ body {
   flex-shrink: 0;
 }
 
+.pl-time-row {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: var(--sp-md);
+  white-space: nowrap;
+}
+
+.pl-eta {
+  color: var(--on-surface-variant);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Marks an item airing under cue points of its own rather than the track's.
    Tinted like the trimmed duration it usually sits above, so the two read as
    one statement about this airing. */
@@ -1962,6 +1997,20 @@ body {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: color-mix(in srgb, var(--error) 70%, transparent);
+}
+
+.stop-hold-display {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: var(--error);
+  opacity: 0.4;
+}
+
+.stop-hold-display .material-symbols-outlined {
+  font-size: 40px;
 }
 
 .pl-drag {
