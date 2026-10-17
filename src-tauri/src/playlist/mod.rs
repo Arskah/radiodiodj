@@ -15,6 +15,7 @@ pub mod engine;
 pub mod generate;
 pub mod model;
 pub mod service;
+pub mod timing;
 
 pub use generate::ContentType;
 pub use model::Snapshot;

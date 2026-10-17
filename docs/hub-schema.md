@@ -66,14 +66,19 @@ machines can disagree about — named by `kind` and `key`, with its content in
 | `edit`      | `<track id>:<column>`  | `{"value"}` — a tag an operator changed in the app                                 |
 | `cue`       | track id               | `{"fade_in_ms", "fade_out_ms", "trio"}`, `trio` being the three cue points or null |
 | `hidden`    | track id               | `{"hidden_at"}` — unix milliseconds, or null when it was shown again               |
-| `playlist`  | the list's own id      | `{"name", "created_at", "updated_at", "entries": [...]}`, entries in order         |
+| `playlist`  | the list's own id      | `{"name", "kind", "created_at", "updated_at", "entries": [...]}`, entries in order |
 | `dismissal` | `<finding kind>:<key>` | `{"value"}` — a library health finding an admin dismissed                          |
 
-A playlist entry is `{"track_id", "fingerprint", "artist", "title", "duration",
-"content_type"}`. `track_id` is null for an entry no track answers to.
+A playlist's `kind` is `playlist` or `prepared_show`; only a prepared show may
+contain Stops. An entry carries `kind` (`track` or `stop`), `track_id`,
+`fingerprint`, `artist`, `title`, `duration`, `content_type` and
+`planned_duration_seconds`. A track entry's `track_id` is null when no track
+answers to it. A Stop has no track identity or audio duration; its optional
+`planned_duration_seconds` is a non-negative whole-second estimate of the
+presenter's pause. Null means unspecified, and zero is an explicit plan.
 
 Nothing about what was played is here: no airing log, no play counts, no
-playlist on air.
+playlist on air. Active holds, elapsed hold time and ETAs never travel here.
 
 ### A track
 
@@ -168,6 +173,7 @@ of another library: throw it away with its cursor and start from zero.
 - **`hub_station.protocol`** goes up when a build changes what the rows mean:
   a new kind, a key that changes sense. A reader written for one protocol
   should refuse a hub on another rather than guess. This page describes
-  protocol 2.
+  protocol 4, which carries planned Stop durations and prevents older builds
+  from silently dropping them.
 - **The hub is not a backup.** The owner empties it when its own library is
   replaced, and can fill it again from nothing.

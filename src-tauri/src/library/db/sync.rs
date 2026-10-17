@@ -2328,13 +2328,29 @@ mod tests {
                 SavedPlaylistKind::PreparedShow,
                 &[
                     SavedEntryInput::Track(a),
-                    SavedEntryInput::Stop,
+                    SavedEntryInput::Stop {
+                        planned_duration_seconds: Some(90),
+                    },
                     SavedEntryInput::Track(b),
-                    SavedEntryInput::Stop,
+                    SavedEntryInput::Stop {
+                        planned_duration_seconds: None,
+                    },
                 ],
                 5,
             )
             .unwrap();
+
+        let outgoing = studio.outgoing(&["playlist"], 10).unwrap();
+        let playlist_doc = outgoing
+            .iter()
+            .find(|group| group.kind == "playlist")
+            .and_then(|group| group.doc.as_ref())
+            .unwrap();
+        assert_eq!(playlist_doc["entries"][1]["planned_duration_seconds"], 90);
+        let wire = playlist_doc.to_string();
+        assert!(!wire.contains("hold"));
+        assert!(!wire.contains("elapsed"));
+        assert!(!wire.contains("eta"));
 
         relay(&studio, "studio", &owner, "owner");
 
@@ -2361,6 +2377,14 @@ mod tests {
                 (SavedEntryKind::Track, Some(b)),
                 (SavedEntryKind::Stop, None),
             ]
+        );
+        assert_eq!(
+            offered
+                .entries
+                .iter()
+                .map(|entry| entry.planned_duration_seconds)
+                .collect::<Vec<_>>(),
+            [None, Some(90), None, None]
         );
         assert_eq!(
             owner.saved_playlist_pool(theirs[0].id).unwrap().unwrap().1,

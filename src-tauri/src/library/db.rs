@@ -3096,6 +3096,7 @@ const MIGRATION_STEPS: &[M] = &[
     M::up(sync::REPLICA),
     M::up(sync::PARKED),
     M::up(PREPARED_SHOWS),
+    M::up(PLANNED_STOP_DURATION),
 ];
 const MIGRATIONS: Migrations = Migrations::from_slice(MIGRATION_STEPS);
 
@@ -3586,6 +3587,14 @@ WHEN new.kind = 'playlist' AND EXISTS (
   SELECT 1 FROM saved_playlist_entries WHERE playlist_id = new.id AND kind = 'stop'
 )
 BEGIN SELECT RAISE(ABORT, 'remove Stops before changing to a playlist'); END;
+"#;
+
+/// Step 21: retain an optional estimate on each saved Stop.
+const PLANNED_STOP_DURATION: &str = r#"
+ALTER TABLE saved_playlist_entries
+  ADD COLUMN planned_duration_seconds INTEGER
+  CHECK (planned_duration_seconds IS NULL OR
+         (kind = 'stop' AND planned_duration_seconds BETWEEN 0 AND 4294967295));
 "#;
 
 /// Step 15: library paths as library data, and tracks stored relative to them.
@@ -4080,6 +4089,21 @@ mod tests {
             )
             .unwrap();
         },
+        |conn| {
+            seed_track(conn);
+            seed_dismissal(conn);
+            conn.execute_batch(
+                "UPDATE tracks SET edited_fields = 1; \
+                 INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
+                 SELECT id, 1000, artist, title, duration FROM tracks; \
+                 INSERT INTO saved_playlists (name, created_at, updated_at, kind) \
+                 VALUES ('Show', 1, 1, 'prepared_show'); \
+                 INSERT INTO saved_playlist_entries \
+                   (playlist_id, position, kind, planned_duration_seconds) \
+                 VALUES (1, 0, 'stop', 120)",
+            )
+            .unwrap();
+        },
     ];
 
     /// Step 13 rebuilds the table around its rows, so the rows have to come out
@@ -4145,6 +4169,42 @@ mod tests {
             entries,
             [("A".into(), "track".into()), ("B".into(), "track".into())]
         );
+    }
+
+    #[test]
+    fn planned_stop_duration_migration_keeps_old_stops_unspecified() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        MIGRATIONS.to_version(&mut conn, 20).unwrap();
+        conn.execute_batch(
+            "INSERT INTO saved_playlists (name, created_at, updated_at, kind) \
+             VALUES ('Old show', 1, 1, 'prepared_show'); \
+             INSERT INTO saved_playlist_entries (playlist_id, position, kind) \
+             VALUES (1, 0, 'stop')",
+        )
+        .unwrap();
+
+        MIGRATIONS.to_latest(&mut conn).unwrap();
+
+        let duration: Option<i64> = conn
+            .query_row(
+                "SELECT planned_duration_seconds FROM saved_playlist_entries WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(duration, None);
+        assert!(conn
+            .execute(
+                "UPDATE saved_playlist_entries SET planned_duration_seconds = 0 WHERE id = 1",
+                [],
+            )
+            .is_ok());
+        assert!(conn
+            .execute(
+                "UPDATE saved_playlist_entries SET planned_duration_seconds = -1 WHERE id = 1",
+                [],
+            )
+            .is_err());
     }
 
     /// Operator work written at any schema version survives every later step.

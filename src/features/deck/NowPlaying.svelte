@@ -4,6 +4,18 @@
   import Waveform from "./Waveform.svelte";
   import MissingBadge from "../track/MissingBadge.svelte";
   import defaultCover from "../../assets/radiodiodi_label.svg";
+  import { formatStopCounter, stopOverPlan } from "../../shared/playlistTiming";
+
+  const holdingStop = $derived(app.holdingStop);
+  const stopOverrun = $derived(
+    holdingStop !== null && stopOverPlan(holdingStop, app.clockNow),
+  );
+  const stopCounter = $derived(
+    holdingStop === null ? null : formatStopCounter(holdingStop, app.clockNow),
+  );
+  const displayedStopCounter = $derived(
+    stopOverrun && stopCounter === "0:00" ? "+0:00" : stopCounter,
+  );
 
   // Something to fade *to*: the next queued item is a track, or the
   // auto-playlist will produce one. A stop marker next means the show ends
@@ -13,11 +25,12 @@
       (app.playlist.length > 0 && isTrackItem(app.playlist[0])),
   );
 
-  let progressBar: HTMLDivElement;
+  let progressBar = $state<HTMLDivElement | undefined>();
   let hoverPct = $state<number | null>(null);
 
   function pctFromClientX(clientX: number): number {
-    const rect = progressBar.getBoundingClientRect();
+    const rect = progressBar?.getBoundingClientRect();
+    if (!rect) return 0;
     return ((clientX - rect.left) / rect.width) * 100;
   }
 
@@ -34,7 +47,11 @@
   }
 </script>
 
-<section id="now-playing" class="deck inner-shadow-recessed">
+<section
+  id="now-playing"
+  class="deck inner-shadow-recessed"
+  class:holding-stop={holdingStop !== null}
+>
   <div id="player-info">
     <div id="track-info">
       <div class="deck-head">
@@ -42,10 +59,17 @@
           >cell_tower</span
         >
         <span class="deck-label">Main Deck</span>
-        {#if app.currentTrack}
+        {#if !holdingStop && app.currentTrack}
           <MissingBadge trackId={app.currentTrack.id} />
         {/if}
-        {#if app.airTimeRemaining !== null}
+        {#if holdingStop}
+          <span
+            class="deck-remaining held-stop-counter"
+            class:stop-over-plan={stopOverrun}
+            aria-label={`Stop duration ${displayedStopCounter}`}
+            >{displayedStopCounter}</span
+          >
+        {:else if app.airTimeRemaining !== null}
           <span
             class="deck-remaining"
             title={app.autoAdvance
@@ -56,11 +80,28 @@
         {/if}
       </div>
       <div class="track-names">
-        <span id="np-title"
-          >{app.currentTrack ? app.currentTrack.title : "No Track Loaded"}</span
+        <span
+          id="np-title"
+          class:stop-marker-heading={holdingStop !== null}
+          class:holding-overdue={stopOverrun}
+          >{#if holdingStop}
+            <span
+              class="material-symbols-outlined stop-marker-icon"
+              aria-hidden="true">block</span
+            >
+            <span class="stop-marker-title" role="img" aria-label="Stop marker"
+              >STOP</span
+            >
+          {:else if app.currentTrack}
+            {app.currentTrack.title}
+          {:else}
+            No Track Loaded
+          {/if}</span
         >
-        <span id="np-artist">{app.currentTrack?.artist ?? ""}</span>
-        {#if app.tailTrack}
+        {#if !holdingStop}<span id="np-artist"
+            >{app.currentTrack?.artist ?? ""}</span
+          >{/if}
+        {#if !holdingStop && app.tailTrack}
           <span
             class="tail-line"
             title="Handed over — still playing out underneath, until its cue out"
@@ -81,6 +122,7 @@
           class="transport"
           title="Previous"
           aria-label="Previous track"
+          disabled={!app.currentTrack || holdingStop !== null}
           onclick={() => app.prev()}
         >
           <span class="material-symbols-outlined">skip_previous</span>
@@ -181,44 +223,46 @@
     <!-- Rotating vinyl disc: cover art in the center label, spinning while the
          deck plays (#271). Falls back to a cream-label RadiodioDJ mark (matching
          the app icon) when the track has no embedded artwork. -->
-    <div
-      class="vinyl-disc"
-      class:spin={app.spinVinyl}
-      class:spinning={app.isPlaying && app.spinVinyl}
-      aria-hidden="true"
-    >
-      <img
-        class="vinyl-art"
-        src={app.coverArt ?? app.appearance?.label ?? defaultCover}
-        alt=""
-      />
-    </div>
-    <div
-      id="progress-bar"
-      class:buffering={app.isBuffering}
-      bind:this={progressBar}
-      role="slider"
-      tabindex="0"
-      title="Double-click to seek"
-      aria-label="Seek (double-click)"
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={Math.round(app.progressPct)}
-      ondblclick={onDoubleClick}
-      onpointermove={onPointerMove}
-      onpointerleave={onPointerLeave}
-    >
-      <Waveform
-        peaks={app.waveform}
-        progressPct={app.progressPct}
-        {hoverPct}
-        crop={app.airCrop}
-        id="main"
-      />
-      <div id="progress-fill" style:width="{app.progressPct}%"></div>
-      <span class="time-pill"
-        >{formatTime(app.currentTime)} / {formatTime(app.duration)}</span
+    {#if !holdingStop}
+      <div
+        class="vinyl-disc"
+        class:spin={app.spinVinyl}
+        class:spinning={app.isPlaying && app.spinVinyl}
+        aria-hidden="true"
       >
-    </div>
+        <img
+          class="vinyl-art"
+          src={app.coverArt ?? app.appearance?.label ?? defaultCover}
+          alt=""
+        />
+      </div>
+      <div
+        id="progress-bar"
+        class:buffering={app.isBuffering}
+        bind:this={progressBar}
+        role="slider"
+        tabindex="0"
+        title="Double-click to seek"
+        aria-label="Seek (double-click)"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(app.progressPct)}
+        ondblclick={onDoubleClick}
+        onpointermove={onPointerMove}
+        onpointerleave={onPointerLeave}
+      >
+        <Waveform
+          peaks={app.waveform}
+          progressPct={app.progressPct}
+          {hoverPct}
+          crop={app.airCrop}
+          id="main"
+        />
+        <div id="progress-fill" style:width="{app.progressPct}%"></div>
+        <span class="time-pill"
+          >{formatTime(app.currentTime)} / {formatTime(app.duration)}</span
+        >
+      </div>
+    {/if}
   </div>
 </section>

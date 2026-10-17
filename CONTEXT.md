@@ -220,6 +220,23 @@ _Avoid_: Edited time, local time
 
 ### Playlist
 
+The planned timing additions are in [Playlist ETA](docs/playlist-eta.md).
+
+**Stop marker**:
+A deliberate pause in the Playlist or a Prepared show. Reaching it waits for the presenter to resume. An optional **Planned duration** estimates that pause and never resumes playback.
+_Avoid_: Stop track, timed playback
+
+**Planned duration**:
+The intended length of a Stop marker's pause. Unspecified means unknown; zero is an explicit plan with no waiting allowance.
+_Avoid_: Auto-resume timer
+
+**Holding at stop**:
+The Main deck's state after reaching a Stop marker, while waiting for the presenter. Distinct from a paused track, an empty Playlist or pressing Stop.
+
+**ETA**:
+The expected local wall-clock start time of a Playlist item. Estimates beyond an upcoming Stop marker with no Planned duration are unknown until that Stop is reached.
+_Avoid_: Remaining time, deadline
+
 **Playlist**:
 Ordered sequence of upcoming tracks that feeds the Main deck.
 _Avoid_: Queue, list
