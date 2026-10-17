@@ -47,6 +47,7 @@ Everything here describes what is built, except where a row says otherwise.
 | [saved-playlists.md](./saved-playlists.md) | Saved playlists and prepared shows: ordered entries, files, whole-list queueing and auto-playlist sources. |
 | [prepared-shows.md](./prepared-shows.md)   | The prepared-show design and acceptance scenarios.                                                         |
 | [playlist-blocks.md](./playlist-blocks.md) | Whole saved playlists as collapsible blocks in Upcoming.                                                   |
+| [playlist-eta.md](./playlist-eta.md)       | **Planned.** Planned Stop durations and stable wall-clock ETAs in Upcoming.                                |
 
 ## Operating the app
 
