@@ -257,7 +257,7 @@ _Avoid_: Repeat protection, cooldown, interleave
 See [docs/saved-playlists.md](docs/saved-playlists.md).
 
 **Saved playlist**:
-A named, stored, ordered list of **Entries**, with kind `playlist` or `prepared_show`. Never on air by itself: it is appended to the **Playlist**, or chosen as the **Auto-playlist source**.
+A named, stored, ordered list of **Entries**, with kind `playlist` or `prepared_show`. Never on air by itself: a whole-list add makes an independent **Playlist block**, or its music tracks can be chosen as the **Auto-playlist source**.
 _Avoid_: Playlist (that is the on-air one), set list, crate
 
 **Entry**:
@@ -280,12 +280,12 @@ See [Prepared shows](docs/prepared-shows.md).
 A **Saved playlist** of kind `prepared_show`, with an authored sequence of track and optional Stop entries. Only prepared shows may contain stored Stops.
 _Avoid_: Separate show feature
 
-### Playlist blocks (planned)
+### Playlist blocks
 
 The specification is [Playlist blocks](docs/playlist-blocks.md).
 
 **Playlist block**:
-One queued occurrence of a **Saved playlist**, keeping its title and ordered remaining entries together as it airs.
+An independent queued copy of a **Saved playlist**, keeping its title and ordered remaining entries together as they play. Each whole-list insertion is a separate block; individual track entries remain standalone.
 _Avoid_: Nested playlist, live link
 
 ### Shared library
@@ -379,7 +379,7 @@ _Avoid_: Persist, sync
 - **Cue point ownership** decides what may be re-derived: an `auto` **Track** yes, a `manual` one never
 - An **Airing** is written to the **Airing log** when a **Track** reaches air; the **Rotation rules** read that log to decide what the **Auto-playlist** may select next
 - A **Saved playlist** holds ordered **Entries**; a track entry is bound to a **Track** or is an **Unmatched entry**, while a Stop has no audio identity
-- A **Prepared show** is a **Saved playlist** whose authored order may include Stops; queueing it appends that sequence to the flat **Playlist** without starting playback
+- A **Prepared show** is a **Saved playlist** whose authored order may include Stops; queueing it copies that sequence into a **Playlist block** without starting playback
 - Saved track entries reference the station's **Cue points** and carry no item overrides
 - The **Auto-playlist source** is the Music library or one **Saved playlist**; only that saved playlist's music track **Entries** are the pool
 - A **Dismissal** silences a **Library health** finding without hiding it

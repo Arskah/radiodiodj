@@ -9,6 +9,8 @@ import type {
   CuePoints,
   DeckRoleEntry,
   PlaylistItem,
+  QueueDestination,
+  QueueNode,
   DeviceInfo,
   DeviceRef,
   FindingKind,
@@ -42,9 +44,28 @@ export type PersistedPlaylistItem =
   | { kind: "track"; id: number; cue_override: CuePoints | null }
   | { kind: "stop" };
 
+/** Session form of a queued item, with a track reference rather than metadata. */
+export type PersistedQueueItem =
+  | { kind: "track"; id: number; cueOverride: CuePoints | null }
+  | { kind: "stop" };
+
+/** A saved queue occurrence or independent block copy. */
+export type PersistedQueueNode =
+  | { kind: "standalone"; id: string; item: PersistedQueueItem }
+  | {
+      kind: "block";
+      id: string;
+      title: string;
+      savedKind: SavedPlaylistKind;
+      entries: { id: string; item: PersistedQueueItem }[];
+    };
+
 export interface SessionPersistState {
   playlistIds: number[];
   playlistItems: PersistedPlaylistItem[];
+  queue?: PersistedQueueNode[];
+  currentBlockId?: string | null;
+  collapsedBlockIds?: string[];
   currentTrackId: number | null;
   currentTime: number;
   /** The override the track on air is playing under, if any. */
@@ -72,7 +93,8 @@ export interface SessionLoadResult {
  * a playlist of its own. See `docs/playlist.md`.
  */
 export interface PlaylistSnapshot {
-  playlist: PlaylistItem[];
+  playlist: QueueNode[] | PlaylistItem[];
+  currentBlockId?: string | null;
   current: Track | null;
   /** What has aired, oldest first, capped by the stored `historyCap`. */
   history: Track[];
@@ -242,8 +264,56 @@ export const api = {
    * Append a saved playlist's tracks; with `weave`, brought up to the
    * interleave cadence. Resolves to what it added and what it had to skip.
    */
-  playlistAddSaved(id: number, weave: boolean): Promise<SavedAppend> {
-    return invoke<SavedAppend>("playlist_add_saved", { id, weave });
+  playlistAddSaved(
+    id: number,
+    weave: boolean,
+    beforeId: string | null = null,
+  ): Promise<SavedAppend> {
+    return invoke<SavedAppend>("playlist_add_saved", { id, weave, beforeId });
+  },
+  /** Copy tracks to a top-level or block gap as one run. */
+  playlistCopyTracks(
+    ids: number[],
+    destination: QueueDestination,
+  ): Promise<void> {
+    return invoke<void>("playlist_copy_tracks", { ids, destination });
+  },
+  /** Insert a contiguous run before the active block's remainder, or main front. */
+  playlistAddAsNext(ids: number[]): Promise<void> {
+    return invoke<void>("playlist_add_as_next", { ids });
+  },
+  /** Move one occurrence without changing its identity. */
+  playlistMoveOccurrence(
+    id: string,
+    destination: QueueDestination,
+  ): Promise<void> {
+    return invoke<void>("playlist_move_occurrence", { id, destination });
+  },
+  /** Remove one queued child or standalone occurrence. */
+  playlistRemoveOccurrence(id: string): Promise<void> {
+    return invoke<void>("playlist_remove_occurrence", { id });
+  },
+  /** Move an unstarted block among top-level occurrences. */
+  playlistMoveBlock(blockId: string, beforeId: string | null): Promise<void> {
+    return invoke<void>("playlist_move_block", { blockId, beforeId });
+  },
+  /** Remove a block's remaining entries without cutting its on-air track. */
+  playlistRemoveBlock(blockId: string): Promise<void> {
+    return invoke<void>("playlist_remove_block", { blockId });
+  },
+  /** Play the identified queued occurrence now. */
+  playlistPlayOccurrence(id: string): Promise<void> {
+    return invoke<void>("playlist_play_occurrence", { id });
+  },
+  /** Change cue points for one queued airing. */
+  playlistSetOccurrenceCuePoints(
+    id: string,
+    cuePoints: CuePoints | null,
+  ): Promise<void> {
+    return invoke<void>("playlist_set_occurrence_cue_points", {
+      id,
+      cuePoints,
+    });
   },
 
   /**

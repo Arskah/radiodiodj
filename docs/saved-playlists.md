@@ -1,12 +1,13 @@
 # Saved playlists
 
 A named, stored ordered list of track and Stop entries. A saved playlist can be
-appended to the on-air playlist or used as the auto-playlist source; a prepared
+added to the on-air playlist or used as the auto-playlist source; a prepared
 show is the kind intended to be queued as an authored sequence. Saved playlists
 can also move between machines as a file and synchronize through a shared
 library.
 
-The planned queue grouping is in [Playlist blocks](./playlist-blocks.md).
+Whole-list queueing and its Upcoming presentation are described in
+[Playlist blocks](./playlist-blocks.md).
 
 The web page that would author one away from the studio is the one part not
 built; see [Where a file comes from](#where-a-file-comes-from). The library
@@ -33,9 +34,8 @@ entry refers to one track of any content type; a Stop entry has no audio
 identity. The same track may appear more than once: a theme tune opens and
 closes a show. Only `prepared_show` lists may contain Stop entries.
 
-It is never on air by itself. It reaches air one of two ways, both described
-under [Using one](#using-one): its entries are appended to the playlist, or it
-becomes the auto-playlist's source.
+It is never on air by itself. Its entries can be added to the playlist as a
+copied block, or its music tracks can become the auto-playlist's source.
 
 Track entries reference the station’s cue points and carry no cue-point
 overrides. Stop entries remain Stops when appended, so the on-air playlist can
@@ -242,21 +242,30 @@ affordable. M3U is not read: its identity is a path.
 
 ## Using one
 
-### Appending to the playlist
+### Adding to the playlist
 
-Ordinary playlists offer two append actions; prepared shows offer only the
+The saved-list row and its open title can be used to drag the whole list into
+Upcoming. **Add playlist** does the same. The inserted block copies the saved
+title, kind and ordered entries; later edits to the saved list and other queued
+copies are independent. It remains in its authored order and does not start or
+resume playback. See [Playlist blocks](./playlist-blocks.md) for its Upcoming
+presentation and queue behavior.
+
+Ordinary playlists offer two whole-list actions; prepared shows offer only the
 authored sequence action:
 
 - **Add to playlist** — every bound track entry and each Stop, in order,
-  exactly as written.
+  exactly as written. This creates a block too.
 - **Add with jingles and commercials** — the same list brought up to the
-  station's [interleave](./playlist.md#modes) cadence.
+  station's [interleave](./playlist.md#modes) cadence, then inserted as a
+  block.
 
-Both **append**. Nothing replaces the operator's playlist. Adding a prepared
-show appends its track entries and Stops in stored order as one transition; it
-does not start or resume playback. The saved original is not consumed. Prepared
+Both actions append outside existing blocks. Adding a prepared show preserves
+its track entries and Stops in stored order as one backend transition. Prepared
 shows have only **Add to playlist**; **Add with jingles and commercials** is for
-ordinary playlists.
+ordinary playlists. Adding a single entry or selected tracks creates standalone
+queue items, not a block. **Add as next** puts tracks at the front of the active
+block's remaining entries, or at the front of Upcoming if no block is active.
 
 The woven variant is available for ordinary playlists and **tops up; it does
 not stack**. For a list with _M_ music
@@ -268,13 +277,13 @@ top and twenty songs gets four jingles, not five; a list that already meets the
 cadence gets nothing. The list's own entries stay exactly where the author put
 them, and the drawn ones are spread evenly through it by `interleave_evenly`.
 
-The append is its own block, as every refill is. Interleave keeps no counter
-between blocks, so nothing queued before it shifts what is woven into it.
+The woven result is one copied block. Interleave keeps no counter between
+generated sequences, so nothing queued before it shifts what is woven into it.
 
-Either one is a single transition and a single snapshot, through
-`Playlist::insert_many` — the bulk add the library selection already queues with
-as `playlist_add_many`. The engine needs nothing new: the woven variant
-interleaves in the service and inserts the result as one run.
+Each whole-list action is one queued transition and snapshot. The backend reads
+the saved list, resolves its entries and inserts the block; the woven variant
+first adds the station's interleave material. Ordinary entry and selection
+adds remain standalone items.
 
 Unmatched entries are skipped, and the panel reports tracks, Stops and skipped
 unmatched entries, such as "Added 2 tracks, 1 Stop, skipped 1 unmatched". A
@@ -296,12 +305,11 @@ file before its turn puts it on air. Advancement drops it otherwise —
 [playlist.md](./playlist.md#outages).
 
 This is also how a saved playlist airs **in order**. There is no in-order mode
-of the auto-playlist: appending the whole show puts it in the Upcoming tab,
-where it can be seen, reordered and trimmed, and the auto-playlist takes over by
-its ordinary refill when the appended sequence runs out, unless it reaches a
-Stop first. A cursor in the engine would have
-kept the playlist short at the price of hiding the rest of the show from the
-person running it.
+of the auto-playlist: adding the whole list puts its block in Upcoming, where
+the block and its children can be seen, reordered and trimmed. The auto-playlist
+refills outside the block when the sequence runs out, unless it reaches a Stop
+first. A cursor in the engine would have kept the playlist short at the price
+of hiding the rest of the show from the person running it.
 
 ### As the auto-playlist's source
 
@@ -388,9 +396,9 @@ With a saved playlist open in the _Playlists_ tab:
   browsing view; drag reordering is available when the rows show the stored
   order with no search applied. The drop position is the playlist's.
 - **Save as** on the playlist panel: after earlier playlist edits have applied,
-  the upcoming tracks and Stop markers become a new saved playlist, in their
-  current order; Now playing is excluded. The
-  kind defaults to **Prepared show** when any Stops remain, and **Playlist**
+  the remaining Upcoming sequence is flattened from standalone items and block
+  children in playback order; Stops are preserved and Now playing is excluded.
+  The kind defaults to **Prepared show** when any Stops remain, and **Playlist**
   otherwise. Track cue overrides are not copied: saved track entries use the
   station's cue points.
 
@@ -533,7 +541,7 @@ saved_playlist_add_stop     saved_playlist_set_kind
 atomic for a guest. `saved_playlist_add_entries` takes track ids and an optional
 position, the shape of `playlist_add_many`, so a menu add, a selection and a
 drop are one command. `playlist_add_saved` returns its two counts; see
-[Appending to the playlist](#appending-to-the-playlist). The open ones join
+[Adding to the playlist](#adding-to-the-playlist). The open ones join
 `OPEN_COMMANDS`, the list the admin tests pin as deliberately ungated.
 
 The list of saved playlists — id, name, kind, total entry count, Stop count and
@@ -557,7 +565,7 @@ answer "none" on that tab rather than be handed entry ids.
   root-relative paths exist (#505).
 - **Item overrides** on a saved track entry. Saved entries use the station's current cue points.
 - **In-order as an auto-playlist source.** See
-  [Appending to the playlist](#appending-to-the-playlist).
+  [Adding to the playlist](#adding-to-the-playlist).
 - **A saved playlist's own jingles as the interleave pool.** One switch, when a
   show with its own idents asks for it.
 - **Ownership, or a protected flag.** The admin split covers the case they would

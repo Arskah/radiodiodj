@@ -1,6 +1,6 @@
 # Playlist blocks
 
-**Specification. Not implemented.** Issue [#683](https://github.com/Arskah/radiodiodj/issues/683).
+**Implemented reference.** Issue [#683](https://github.com/Arskah/radiodiodj/issues/683).
 Builds on [Prepared shows](./prepared-shows.md) (#682).
 
 A whole saved playlist enters the on-air playlist as one named, expandable

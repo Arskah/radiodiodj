@@ -40,13 +40,13 @@ Everything here describes what is built, except where a row says otherwise.
 
 ## Programming the station
 
-| doc                                        | answers                                                                                          |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------ |
-| [playlist.md](./playlist.md)               | Who owns the playlist, how it advances, and what an item override is.                            |
-| [rotation.md](./rotation.md)               | The airing log, and the rules that stop the same artist coming round again.                      |
-| [saved-playlists.md](./saved-playlists.md) | Saved playlists and prepared shows: ordered entries, files, appending and auto-playlist sources. |
-| [prepared-shows.md](./prepared-shows.md)   | The prepared-show design and acceptance scenarios.                                               |
-| [playlist-blocks.md](./playlist-blocks.md) | **Planned.** Whole saved playlists as collapsible blocks in Upcoming.                            |
+| doc                                        | answers                                                                                                    |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| [playlist.md](./playlist.md)               | Who owns the playlist, how it advances, and what an item override is.                                      |
+| [rotation.md](./rotation.md)               | The airing log, and the rules that stop the same artist coming round again.                                |
+| [saved-playlists.md](./saved-playlists.md) | Saved playlists and prepared shows: ordered entries, files, whole-list queueing and auto-playlist sources. |
+| [prepared-shows.md](./prepared-shows.md)   | The prepared-show design and acceptance scenarios.                                                         |
+| [playlist-blocks.md](./playlist-blocks.md) | Whole saved playlists as collapsible blocks in Upcoming.                                                   |
 
 ## Operating the app
 
