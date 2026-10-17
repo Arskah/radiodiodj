@@ -62,6 +62,12 @@ describe("StopDurationEditor", () => {
     expect(input.value).toBe("5:00");
   });
 
+  it("keeps the concise m:ss hint", () => {
+    const input = render(null, vi.fn());
+    expect(input.placeholder).toBe("m:ss");
+    expect(input.title).toContain("m:ss");
+  });
+
   it("rejects invalid input and restores the saved value", () => {
     const save = vi.fn();
     const input = render(125, save);

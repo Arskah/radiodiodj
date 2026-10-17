@@ -490,26 +490,37 @@ body {
   min-height: 76px;
 }
 
+.holding-stop #track-info {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: visible;
+}
+
 .holding-stop .deck-head {
+  display: flex;
+  max-width: 100%;
+  flex-wrap: wrap;
   gap: var(--sp-md);
 }
 
-.holding-stop .deck-label,
-.holding-stop .deck-status {
-  font-size: 16px;
+.holding-stop .deck-label {
+  font-size: 14px;
+  white-space: normal;
+}
+
+.holding-stop .held-stop-counter {
+  flex-shrink: 0;
+  min-width: 6ch;
+  text-align: right;
   white-space: nowrap;
 }
 
-.holding-stop .deck-status {
-  color: var(--error);
-}
-
-.holding-stop .deck-status.holding-overdue {
-  animation: holding-warning-blink 1s steps(2, start) infinite;
+.holding-stop #np-title.stop-marker-heading.holding-overdue {
+  animation: holding-warning-pulse 1.35s ease-in-out infinite;
 }
 
 .holding-stop .deck-remaining {
-  font-size: clamp(24px, 2.4vw, 36px);
+  font-size: 22px;
   letter-spacing: 0;
   line-height: 1;
 }
@@ -521,30 +532,30 @@ body {
 .holding-stop #np-title.stop-marker-heading {
   display: flex;
   align-items: center;
-  gap: var(--sp-lg);
+  gap: var(--sp-md);
   color: var(--error);
-  font-size: 40px;
+  font-size: 28px;
   line-height: 1;
 }
 
 .holding-stop .stop-marker-icon {
-  font-size: 38px;
+  font-size: 28px;
 }
 
 .holding-stop .stop-marker-title {
-  font-size: 40px;
+  font-size: 28px;
   font-weight: 800;
   letter-spacing: 0.01em;
 }
 
-@keyframes holding-warning-blink {
+@keyframes holding-warning-pulse {
   50% {
-    opacity: 0.25;
+    opacity: 0.5;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .holding-stop .deck-status.holding-overdue {
+  .holding-stop #np-title.stop-marker-heading.holding-overdue {
     animation: none;
   }
 }
@@ -2066,21 +2077,6 @@ body {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: color-mix(in srgb, var(--error) 70%, transparent);
-}
-
-.stop-hold-display {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: 1;
-  min-width: 0;
-  height: 100%;
-  color: var(--error);
-  opacity: 0.4;
-}
-
-.stop-hold-display .material-symbols-outlined {
-  font-size: 72px;
 }
 
 .pl-drag {

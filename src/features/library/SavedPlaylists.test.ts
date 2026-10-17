@@ -115,7 +115,7 @@ describe("SavedPlaylists prepared-show editor", () => {
 
   it("saves a planned duration for a Stop in the open prepared show", () => {
     const input = document.querySelector(
-      '[data-entry-id="11"] input[aria-label="Planned Stop duration (minutes or m:ss)"]',
+      '[data-entry-id="11"] input[aria-label="Planned Stop duration (m:ss)"]',
     ) as HTMLInputElement;
     input.value = "1:30";
     input.dispatchEvent(new Event("input", { bubbles: true }));

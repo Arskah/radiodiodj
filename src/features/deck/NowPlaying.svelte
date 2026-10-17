@@ -59,19 +59,14 @@
           >cell_tower</span
         >
         <span class="deck-label">Main Deck</span>
-        {#if holdingStop}
-          <span
-            class="deck-status"
-            title={stopOverrun
-              ? "Over planned Stop duration"
-              : "Holding at stop"}
-            class:holding-overdue={stopOverrun}>Holding</span
-          >
-        {:else if app.currentTrack}
+        {#if !holdingStop && app.currentTrack}
           <MissingBadge trackId={app.currentTrack.id} />
         {/if}
         {#if holdingStop}
-          <span class="deck-remaining" class:stop-over-plan={stopOverrun}
+          <span
+            class="deck-remaining held-stop-counter"
+            class:stop-over-plan={stopOverrun}
+            aria-label={`Stop duration ${displayedStopCounter}`}
             >{displayedStopCounter}</span
           >
         {:else if app.airTimeRemaining !== null}
@@ -85,7 +80,10 @@
         {/if}
       </div>
       <div class="track-names">
-        <span id="np-title" class:stop-marker-heading={holdingStop !== null}
+        <span
+          id="np-title"
+          class:stop-marker-heading={holdingStop !== null}
+          class:holding-overdue={stopOverrun}
           >{#if holdingStop}
             <span
               class="material-symbols-outlined stop-marker-icon"
@@ -225,11 +223,7 @@
     <!-- Rotating vinyl disc: cover art in the center label, spinning while the
          deck plays (#271). Falls back to a cream-label RadiodioDJ mark (matching
          the app icon) when the track has no embedded artwork. -->
-    {#if holdingStop}
-      <div class="stop-hold-display" aria-hidden="true">
-        <span class="material-symbols-outlined">block</span>
-      </div>
-    {:else}
+    {#if !holdingStop}
       <div
         class="vinyl-disc"
         class:spin={app.spinVinyl}

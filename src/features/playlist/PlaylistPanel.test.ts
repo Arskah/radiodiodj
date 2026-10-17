@@ -130,7 +130,7 @@ describe("PlaylistPanel queue blocks", () => {
     app.upcomingEta.mockReturnValue(12_345);
     render();
     const input = document.querySelector(
-      '.stop-row input[aria-label="Planned Stop duration (minutes or m:ss)"]',
+      '.stop-row input[aria-label="Planned Stop duration (m:ss)"]',
     ) as HTMLInputElement;
     input.value = "2:00";
     input.focus();

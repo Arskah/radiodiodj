@@ -52,9 +52,9 @@
   class="stop-duration-editor"
   type="text"
   inputmode="numeric"
-  aria-label="Planned Stop duration (minutes or m:ss)"
-  title="Planned pause: enter minutes or m:ss; leave blank for unspecified"
-  placeholder="min or m:ss"
+  aria-label="Planned Stop duration (m:ss)"
+  title="Planned pause (m:ss); blank leaves it unspecified"
+  placeholder="m:ss"
   bind:value={draft}
   {disabled}
   onclick={(event) => event.stopPropagation()}
@@ -64,7 +64,7 @@
 
 <style>
   .stop-duration-editor {
-    width: 7em;
+    width: 4.5em;
     padding: 2px 5px;
     border: 1px solid var(--outline-variant);
     border-radius: var(--r-sm);

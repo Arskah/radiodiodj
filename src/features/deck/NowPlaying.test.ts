@@ -73,15 +73,19 @@ describe("NowPlaying held Stop", () => {
         .querySelector("#np-title .stop-marker-title")
         ?.getAttribute("aria-label"),
     ).toBe("Stop marker");
-    expect(document.querySelector(".deck-status")?.textContent).toBe("Holding");
-    expect(document.querySelector(".deck-status")?.classList).not.toContain(
-      "holding-overdue",
-    );
-    expect(document.body.textContent).not.toContain("Holding at stop");
-    expect(document.body.textContent).not.toContain("Planned Stop");
-    expect(document.querySelector(".deck-remaining")?.textContent).toBe(
+    expect(document.querySelector(".deck-status")).toBeNull();
+    expect(document.querySelector(".held-stop-counter")?.textContent).toBe(
       "−1:30",
     );
+    expect(
+      document.querySelector("#np-title .stop-marker-icon"),
+    ).not.toBeNull();
+    expect(document.querySelector(".stop-hold-display")).toBeNull();
+    expect(
+      document.querySelector("#np-title.stop-marker-heading.holding-overdue"),
+    ).toBeNull();
+    expect(document.body.textContent).not.toContain("Holding");
+    expect(document.body.textContent).not.toContain("Planned Stop");
     expect(document.querySelector("#progress-bar")).toBeNull();
     expect(document.querySelector(".stop-duration-editor")).toBeNull();
     expect(
@@ -111,8 +115,12 @@ describe("NowPlaying held Stop", () => {
       "stop-over-plan",
     );
     expect(
-      document.querySelector(".deck-status.holding-overdue")?.textContent,
-    ).toBe("Holding");
+      document.querySelector("#np-title.stop-marker-heading.holding-overdue"),
+    ).not.toBeNull();
+    expect(
+      document.querySelector(".held-stop-counter")?.classList,
+    ).not.toContain("holding-overdue");
+    expect(document.querySelector(".deck-status")).toBeNull();
     expect(document.body.textContent).not.toContain("Over plan");
   });
 
@@ -126,7 +134,9 @@ describe("NowPlaying held Stop", () => {
     component = mount(NowPlaying as Component, { target: document.body });
     flushSync();
     expect(document.querySelector(".deck-remaining")?.textContent).toBe("0:00");
-    expect(document.querySelector(".deck-status.holding-overdue")).toBeNull();
+    expect(
+      document.querySelector("#np-title.stop-marker-heading.holding-overdue"),
+    ).toBeNull();
 
     await unmount(component);
     document.body.replaceChildren();
@@ -142,7 +152,25 @@ describe("NowPlaying held Stop", () => {
       "+0:00",
     );
     expect(
-      document.querySelector(".deck-status.holding-overdue")?.textContent,
-    ).toBe("Holding");
+      document.querySelector("#np-title.stop-marker-heading.holding-overdue"),
+    ).not.toBeNull();
+  });
+
+  it("shows elapsed time for an unplanned Stop without blinking the title", () => {
+    app.holdingStop = {
+      plannedDurationSeconds: null,
+      elapsedSeconds: 90,
+      capturedAtUnixMs: 0,
+      blockId: null,
+    };
+    component = mount(NowPlaying as Component, { target: document.body });
+    flushSync();
+    expect(document.querySelector(".held-stop-counter")?.textContent).toBe(
+      "1:30",
+    );
+    expect(
+      document.querySelector("#np-title.stop-marker-heading.holding-overdue"),
+    ).toBeNull();
+    expect(document.body.textContent).not.toContain("Holding");
   });
 });
