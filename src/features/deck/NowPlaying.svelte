@@ -47,7 +47,11 @@
   }
 </script>
 
-<section id="now-playing" class="deck inner-shadow-recessed">
+<section
+  id="now-playing"
+  class="deck inner-shadow-recessed"
+  class:holding-stop={holdingStop !== null}
+>
   <div id="player-info">
     <div id="track-info">
       <div class="deck-head">
@@ -56,7 +60,13 @@
         >
         <span class="deck-label">Main Deck</span>
         {#if holdingStop}
-          <span class="deck-status">Holding at stop</span>
+          <span
+            class="deck-status"
+            title={stopOverrun
+              ? "Over planned Stop duration"
+              : "Holding at stop"}
+            class:holding-overdue={stopOverrun}>Holding</span
+          >
         {:else if app.currentTrack}
           <MissingBadge trackId={app.currentTrack.id} />
         {/if}
@@ -64,9 +74,6 @@
           <span class="deck-remaining" class:stop-over-plan={stopOverrun}
             >{displayedStopCounter}</span
           >
-          {#if stopOverrun}
-            <span class="deck-status stop-over-plan">Over plan</span>
-          {/if}
         {:else if app.airTimeRemaining !== null}
           <span
             class="deck-remaining"
@@ -78,16 +85,24 @@
         {/if}
       </div>
       <div class="track-names">
-        <span id="np-title"
-          >{holdingStop
-            ? "Stop marker"
-            : app.currentTrack
-              ? app.currentTrack.title
-              : "No Track Loaded"}</span
+        <span id="np-title" class:stop-marker-heading={holdingStop !== null}
+          >{#if holdingStop}
+            <span
+              class="material-symbols-outlined stop-marker-icon"
+              aria-hidden="true">block</span
+            >
+            <span class="stop-marker-title" role="img" aria-label="Stop marker"
+              >STOP</span
+            >
+          {:else if app.currentTrack}
+            {app.currentTrack.title}
+          {:else}
+            No Track Loaded
+          {/if}</span
         >
-        <span id="np-artist"
-          >{holdingStop ? "" : (app.currentTrack?.artist ?? "")}</span
-        >
+        {#if !holdingStop}<span id="np-artist"
+            >{app.currentTrack?.artist ?? ""}</span
+          >{/if}
         {#if !holdingStop && app.tailTrack}
           <span
             class="tail-line"
@@ -212,7 +227,7 @@
          the app icon) when the track has no embedded artwork. -->
     {#if holdingStop}
       <div class="stop-hold-display" aria-hidden="true">
-        <span class="material-symbols-outlined" aria-hidden="true">block</span>
+        <span class="material-symbols-outlined">block</span>
       </div>
     {:else}
       <div

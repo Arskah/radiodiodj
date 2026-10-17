@@ -68,12 +68,17 @@ describe("NowPlaying held Stop", () => {
     component = mount(NowPlaying as Component, { target: document.body });
     flushSync();
 
-    expect(document.querySelector("#np-title")?.textContent).toBe(
-      "Stop marker",
+    expect(
+      document
+        .querySelector("#np-title .stop-marker-title")
+        ?.getAttribute("aria-label"),
+    ).toBe("Stop marker");
+    expect(document.querySelector(".deck-status")?.textContent).toBe("Holding");
+    expect(document.querySelector(".deck-status")?.classList).not.toContain(
+      "holding-overdue",
     );
-    expect(document.querySelector(".deck-status")?.textContent).toBe(
-      "Holding at stop",
-    );
+    expect(document.body.textContent).not.toContain("Holding at stop");
+    expect(document.body.textContent).not.toContain("Planned Stop");
     expect(document.querySelector(".deck-remaining")?.textContent).toBe(
       "−1:30",
     );
@@ -106,8 +111,9 @@ describe("NowPlaying held Stop", () => {
       "stop-over-plan",
     );
     expect(
-      document.querySelector(".deck-status.stop-over-plan")?.textContent,
-    ).toBe("Over plan");
+      document.querySelector(".deck-status.holding-overdue")?.textContent,
+    ).toBe("Holding");
+    expect(document.body.textContent).not.toContain("Over plan");
   });
 
   it("shows zero at the deadline and a signed zero counter for fractional overtime", async () => {
@@ -120,7 +126,7 @@ describe("NowPlaying held Stop", () => {
     component = mount(NowPlaying as Component, { target: document.body });
     flushSync();
     expect(document.querySelector(".deck-remaining")?.textContent).toBe("0:00");
-    expect(document.querySelector(".deck-status.stop-over-plan")).toBeNull();
+    expect(document.querySelector(".deck-status.holding-overdue")).toBeNull();
 
     await unmount(component);
     document.body.replaceChildren();
@@ -136,7 +142,7 @@ describe("NowPlaying held Stop", () => {
       "+0:00",
     );
     expect(
-      document.querySelector(".deck-status.stop-over-plan")?.textContent,
-    ).toBe("Over plan");
+      document.querySelector(".deck-status.holding-overdue")?.textContent,
+    ).toBe("Holding");
   });
 });

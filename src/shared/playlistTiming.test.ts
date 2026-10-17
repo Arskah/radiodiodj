@@ -76,13 +76,26 @@ describe("shared playlist display timing", () => {
     ).toBe("0:00");
   });
 
-  it("accepts a blank or whole-second m:ss plan with unbounded minutes", () => {
+  it("accepts blank, whole-minute or m:ss plans with unbounded minutes", () => {
     expect(parseStopDuration(" ")).toBeNull();
+    expect(parseStopDuration("5")).toBe(300);
+    expect(parseStopDuration("0")).toBe(0);
     expect(parseStopDuration("0:00")).toBe(0);
     expect(parseStopDuration(" 120:03 ")).toBe(7203);
+    expect(parseStopDuration("71582788")).toBe(4294967280);
+    expect(parseStopDuration("71582788:15")).toBe(0xffff_ffff);
     expect(formatStopDuration(7203)).toBe("120:03");
     expect(formatStopDuration(null)).toBe("");
-    for (const invalid of ["1", "-1:00", "1:60", "1:1", "1:00.5", "1:00:00"])
+    for (const invalid of [
+      "-1:00",
+      "1:60",
+      "1:1",
+      "1:00.5",
+      "1:00:00",
+      "999999999999999999999",
+      "71582789",
+      "71582788:16",
+    ])
       expect(parseStopDuration(invalid)).toBeUndefined();
   });
 

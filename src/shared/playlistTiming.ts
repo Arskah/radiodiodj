@@ -79,6 +79,7 @@ export function formatEta(unixSeconds: number | null): string {
 
 const minutesSeconds = (seconds: number): string =>
   `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+const maxPlannedStopSeconds = 0xffff_ffff;
 
 /** The editable plan uses minutes without an upper bound. */
 export function formatStopDuration(seconds: number | null | undefined): string {
@@ -89,10 +90,18 @@ export function formatStopDuration(seconds: number | null | undefined): string {
 export function parseStopDuration(text: string): number | null | undefined {
   const value = text.trim();
   if (value === "") return null;
+  if (/^\d+$/.test(value)) {
+    const seconds = Number(value) * 60;
+    return Number.isSafeInteger(seconds) && seconds <= maxPlannedStopSeconds
+      ? seconds
+      : undefined;
+  }
   const match = /^(\d+):([0-5]\d)$/.exec(value);
   if (!match) return undefined;
   const seconds = Number(match[1]) * 60 + Number(match[2]);
-  return Number.isSafeInteger(seconds) ? seconds : undefined;
+  return Number.isSafeInteger(seconds) && seconds <= maxPlannedStopSeconds
+    ? seconds
+    : undefined;
 }
 
 /** Continue the captured hold using monotonic-anchored display time. */

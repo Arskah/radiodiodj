@@ -52,10 +52,30 @@ describe("StopDurationEditor", () => {
     expect(clear).toHaveBeenCalledWith(null);
   });
 
+  it("accepts plain digits as minutes and formats them as m:ss", () => {
+    const save = vi.fn();
+    const input = render(null, save);
+    input.value = "5";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    blur(input);
+    expect(save).toHaveBeenCalledWith(300);
+    expect(input.value).toBe("5:00");
+  });
+
   it("rejects invalid input and restores the saved value", () => {
     const save = vi.fn();
     const input = render(125, save);
     input.value = "2:75";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    blur(input);
+    expect(save).not.toHaveBeenCalled();
+    expect(input.value).toBe("2:05");
+  });
+
+  it("rejects a duration above the backend's supported range", () => {
+    const save = vi.fn();
+    const input = render(125, save);
+    input.value = "71582789";
     input.dispatchEvent(new Event("input", { bubbles: true }));
     blur(input);
     expect(save).not.toHaveBeenCalled();

@@ -338,8 +338,12 @@
             />
           </div>
           <div class="pl-right">
-            <span class="pl-eta">{formatEta(app.upcomingEta(id))}</span>
+            <span class="pl-time-row">
+              <span class="pl-eta">{formatEta(app.upcomingEta(id))}</span>
+              <span class="pl-duration" aria-hidden="true"></span>
+            </span>
           </div>
+          <span class="pl-play-action-spacer" aria-hidden="true"></span>
           <button
             class="btn-remove"
             title="Remove"

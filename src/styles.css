@@ -486,6 +486,69 @@ body {
   color: var(--error) !important;
 }
 
+.holding-stop #player-info {
+  min-height: 76px;
+}
+
+.holding-stop .deck-head {
+  gap: var(--sp-md);
+}
+
+.holding-stop .deck-label,
+.holding-stop .deck-status {
+  font-size: 16px;
+  white-space: nowrap;
+}
+
+.holding-stop .deck-status {
+  color: var(--error);
+}
+
+.holding-stop .deck-status.holding-overdue {
+  animation: holding-warning-blink 1s steps(2, start) infinite;
+}
+
+.holding-stop .deck-remaining {
+  font-size: clamp(24px, 2.4vw, 36px);
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+.holding-stop .deck-remaining.stop-over-plan {
+  color: var(--error);
+}
+
+.holding-stop #np-title.stop-marker-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-lg);
+  color: var(--error);
+  font-size: 40px;
+  line-height: 1;
+}
+
+.holding-stop .stop-marker-icon {
+  font-size: 38px;
+}
+
+.holding-stop .stop-marker-title {
+  font-size: 40px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+@keyframes holding-warning-blink {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .holding-stop .deck-status.holding-overdue {
+    animation: none;
+  }
+}
+
 #now-playing .deck-head {
   color: var(--primary);
 }
@@ -1931,6 +1994,12 @@ body {
   white-space: nowrap;
 }
 
+.pl-play-action-spacer {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+}
+
 .pl-eta {
   color: var(--on-surface-variant);
   font-family: var(--font-mono);
@@ -2003,14 +2072,15 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   height: 100%;
   color: var(--error);
   opacity: 0.4;
 }
 
 .stop-hold-display .material-symbols-outlined {
-  font-size: 40px;
+  font-size: 72px;
 }
 
 .pl-drag {

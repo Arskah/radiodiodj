@@ -130,7 +130,7 @@ describe("PlaylistPanel queue blocks", () => {
     app.upcomingEta.mockReturnValue(12_345);
     render();
     const input = document.querySelector(
-      '.stop-row input[aria-label="Planned Stop duration (m:ss)"]',
+      '.stop-row input[aria-label="Planned Stop duration (minutes or m:ss)"]',
     ) as HTMLInputElement;
     input.value = "2:00";
     input.focus();
@@ -140,6 +140,9 @@ describe("PlaylistPanel queue blocks", () => {
     expect(document.querySelector(".stop-row .pl-eta")?.textContent).toBe(
       "12345",
     );
+    expect(
+      document.querySelector(".stop-row .pl-play-action-spacer"),
+    ).not.toBeNull();
   });
 
   it("shows an active named header, indented children, and a labelled disclosure", () => {
