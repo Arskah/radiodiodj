@@ -203,10 +203,12 @@ rows accept whole-second `m:ss` values, including minutes above 59. Editing a
 queued copy does not change its saved original. A plan never resumes playback.
 
 Consuming a Stop enters **Holding at stop**, retaining its plan and active block
-after its row leaves Upcoming. The deck shows elapsed minus planned time, then
-steady **Over plan** overtime; an unplanned hold shows elapsed time alone. The
-consumed Stop is read-only. Play and Next retain their transport meanings, while
-Stop clears the hold. Upcoming edits do not end it.
+after its row leaves Upcoming. The deck shows **STOP** and a counter: elapsed
+minus planned time for a planned Stop, then signed overtime with a warning-coloured
+counter and pulsing heading. Reduced motion disables the pulse. An unplanned
+hold shows elapsed time alone. The consumed Stop is read-only. Play and Next
+retain their transport meanings, while Stop clears the hold. Upcoming edits do
+not end it.
 
 ## Start-time estimates
 

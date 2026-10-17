@@ -26,13 +26,14 @@ Consuming a Stop records **Holding at stop** separately from a cleared deck,
 an exhausted Playlist or a paused track. Keep its planned duration, elapsed
 hold time and block association after removing its row from Upcoming.
 
-The main deck shows the row's existing `block` icon, **Stop marker** as its
-title and **Holding at stop** as its status. Where it normally shows remaining
-time, it shows:
+The main deck shows the row's existing `block` icon, a **STOP** heading and the
+hold counter where remaining time normally appears. It has no separate status
+label. The counter shows:
 
 - Planned Stop: elapsed minus planned duration, starting at `−m:ss`, passing
   through `0:00`, then counting upward with a `+` sign. After the deadline, a
-  steady **Over plan** label and warning colour indicate the overrun; no flash.
+  warning-coloured counter and pulsing heading indicate the overrun. Reduced
+  motion disables the pulse; there is no separate overtime label.
 - Unplanned Stop: elapsed time from `0:00` upward, without an overrun signal.
 
 The consumed Stop is read-only. No duration editor on the deck. Hide its audio
