@@ -4,6 +4,9 @@ A named, stored list of tracks: built before a show or kept as a curated pool,
 moved between machines as a file, appended to the on-air playlist, or used as
 what the auto-playlist draws from.
 
+This page describes the current implementation. The planned prepared-show
+kind and stored Stop markers are in [Prepared shows](./prepared-shows.md).
+
 The web page that would author one away from the studio is the one part not
 built; see [Where a file comes from](#where-a-file-comes-from). The library
 **selection** and dragging library rows into the playlist, which this stands

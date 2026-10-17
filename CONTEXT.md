@@ -272,6 +272,14 @@ _Avoid_: Missing entry, broken, orphan
 Where the **Auto-playlist** draws music from: the Music library, or one **Saved playlist**. Narrows the pool and nothing else; **Rotation rules** and **Interleave** apply as before.
 _Avoid_: Pool, mode, curated mode
 
+### Prepared shows (planned)
+
+The specification is [Prepared shows](docs/prepared-shows.md).
+
+**Prepared show**:
+A **Saved playlist** tagged `prepared_show`. Only prepared shows may contain stored Stop markers.
+_Avoid_: Separate show feature
+
 ### Shared library
 
 See [docs/shared-library.md](docs/shared-library.md).

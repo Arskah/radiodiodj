@@ -45,6 +45,7 @@ Everything here describes what is built, except where a row says otherwise.
 | [playlist.md](./playlist.md)               | Who owns the playlist, how it advances, and what an item override is.                                 |
 | [rotation.md](./rotation.md)               | The airing log, and the rules that stop the same artist coming round again.                           |
 | [saved-playlists.md](./saved-playlists.md) | **Partly built.** A show kept for later, carried as a file, and a curated pool for the auto-playlist. |
+| [prepared-shows.md](./prepared-shows.md)   | **Planned.** Saved playlists distinguished as prepared shows, with stored Stop markers.               |
 
 ## Operating the app
 
