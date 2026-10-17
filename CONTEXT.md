@@ -280,6 +280,14 @@ See [Prepared shows](docs/prepared-shows.md).
 A **Saved playlist** of kind `prepared_show`, with an authored sequence of track and optional Stop entries. Only prepared shows may contain stored Stops.
 _Avoid_: Separate show feature
 
+### Playlist blocks (planned)
+
+The specification is [Playlist blocks](docs/playlist-blocks.md).
+
+**Playlist block**:
+One queued occurrence of a **Saved playlist**, keeping its title and ordered remaining entries together as it airs.
+_Avoid_: Nested playlist, live link
+
 ### Shared library
 
 See [docs/shared-library.md](docs/shared-library.md).

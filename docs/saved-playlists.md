@@ -6,6 +6,8 @@ show is the kind intended to be queued as an authored sequence. Saved playlists
 can also move between machines as a file and synchronize through a shared
 library.
 
+The planned queue grouping is in [Playlist blocks](./playlist-blocks.md).
+
 The web page that would author one away from the studio is the one part not
 built; see [Where a file comes from](#where-a-file-comes-from). The library
 **selection** and dragging library rows into the playlist, which this stands
