@@ -107,7 +107,8 @@ pub fn document(conn: &Connection, group: &Outgoing) -> Result<Option<Json>> {
             match list {
                 Some((id, name, created_at, updated_at, kind)) => {
                     let mut stmt = conn.prepare(
-                        "SELECT kind, track_id, fingerprint, artist, title, duration, content_type \
+                        "SELECT kind, track_id, fingerprint, artist, title, duration, content_type, \
+                                planned_duration_seconds \
                          FROM saved_playlist_entries WHERE playlist_id = ? ORDER BY position, id",
                     )?;
                     let entries = stmt
@@ -120,6 +121,7 @@ pub fn document(conn: &Connection, group: &Outgoing) -> Result<Option<Json>> {
                                 "title": r.get::<_, Option<String>>(4)?,
                                 "duration": r.get::<_, Option<f64>>(5)?,
                                 "content_type": r.get::<_, Option<String>>(6)?,
+                                "planned_duration_seconds": r.get::<_, Option<i64>>(7)?,
                             }))
                         })?
                         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -286,6 +288,18 @@ fn write_playlist(conn: &Connection, uid: &str, deleted: bool, doc: Option<&Json
         {
             bail!("a Stop cannot carry audio identity");
         }
+        let planned = entry.get("planned_duration_seconds");
+        if entry_kind == "track" && planned.is_some_and(|value| !value.is_null()) {
+            bail!("a track entry cannot carry a planned Stop duration");
+        }
+        if planned.is_some_and(|value| {
+            !value.is_null()
+                && !value
+                    .as_u64()
+                    .is_some_and(|seconds| seconds <= u64::from(u32::MAX))
+        }) {
+            bail!("invalid planned Stop duration");
+        }
     }
     let time = |field: &str| doc.get(field).and_then(Json::as_i64).unwrap_or(0);
     let id = match existing {
@@ -311,8 +325,8 @@ fn write_playlist(conn: &Connection, uid: &str, deleted: bool, doc: Option<&Json
     };
     let mut insert = conn.prepare_cached(
         "INSERT INTO saved_playlist_entries \
-           (playlist_id, position, kind, track_id, fingerprint, artist, title, duration, content_type) \
-         VALUES (?1, ?2, ?3, (SELECT id FROM tracks WHERE id = ?4), ?5, ?6, ?7, ?8, ?9)",
+           (playlist_id, position, kind, track_id, fingerprint, artist, title, duration, content_type, planned_duration_seconds) \
+         VALUES (?1, ?2, ?3, (SELECT id FROM tracks WHERE id = ?4), ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;
     for (position, entry) in entries.iter().enumerate() {
         let of = |name: &str| sql_value(entry.get(name).unwrap_or(&Json::Null));
@@ -327,6 +341,7 @@ fn write_playlist(conn: &Connection, uid: &str, deleted: bool, doc: Option<&Json
             of("title"),
             of("duration"),
             of("content_type"),
+            of("planned_duration_seconds"),
         ])?;
     }
     Ok(true)
