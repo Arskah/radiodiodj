@@ -13,6 +13,38 @@ beforeEach(() => {
   invoke.mockResolvedValue({});
 });
 
+describe("prepared show commands", () => {
+  it("passes the chosen kind when saving the remaining queue", async () => {
+    await api.playlistSaveAs("Friday", "prepared_show");
+    expect(invoke).toHaveBeenCalledWith("playlist_save_as", {
+      name: "Friday",
+      kind: "prepared_show",
+    });
+  });
+
+  it("passes kind when creating a list and keeps track-only creation compatible", async () => {
+    await api.savedPlaylistCreate("Friday", [3, 1], "prepared_show");
+    await api.savedPlaylistCreate("Pool", [2]);
+    expect(invoke.mock.calls[0]).toEqual([
+      "saved_playlist_create",
+      { name: "Friday", trackIds: [3, 1], kind: "prepared_show" },
+    ]);
+    expect(invoke.mock.calls[1]).toEqual([
+      "saved_playlist_create",
+      { name: "Pool", trackIds: [2], kind: "playlist" },
+    ]);
+  });
+
+  it("adds a Stop at an authored position and changes kind", async () => {
+    await api.savedPlaylistAddStop(9, 2);
+    await api.savedPlaylistSetKind(9, "playlist");
+    expect(invoke.mock.calls).toEqual([
+      ["saved_playlist_add_stop", { id: 9, index: 2 }],
+      ["saved_playlist_set_kind", { id: 9, kind: "playlist" }],
+    ]);
+  });
+});
+
 describe("api.updateTrackMetadata", () => {
   it("omits absent keys entirely (leave unchanged)", async () => {
     // Only genre is set — the other fields must not appear in the payload, so
