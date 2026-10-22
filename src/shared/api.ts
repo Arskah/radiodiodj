@@ -663,6 +663,14 @@ export const api = {
   joinSharedLibraryAgain(pending: boolean): Promise<SharedLibrary> {
     return invoke<SharedLibrary>("join_shared_library_again", { pending });
   },
+
+  /**
+   * Take the library owner role from the computer that holds it. What came of
+   * it arrives as `hub:state`.
+   */
+  takeOverSharedLibrary(): Promise<void> {
+    return invoke("take_over_shared_library");
+  },
   /** Ask for a certificate file. Resolves `null` when the dialog is cancelled. */
   async pickCertificateFile(): Promise<string | null> {
     const file = await open({

@@ -8,6 +8,7 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use std::path::Path;
 
 use super::{operator, placeholders, Db, EditedFields, Opened, ID_CHUNK};
+use crate::persist::config::LibraryRole;
 
 /// Step 17: the change log, and the triggers that write it.
 ///
@@ -573,17 +574,19 @@ pub(super) fn is_replica(conn: &Connection) -> Result<bool> {
 }
 
 impl Db {
-    /// Open the library for a machine that is a studio, or is not. Returns
-    /// whether this launch joined: the database was made a copy just now.
+    /// Open the library for the part this machine plays. Returns whether this
+    /// launch joined: the database was made a copy just now.
     ///
     /// A studio plays from the owner's library under the owner's track ids.
     /// The library this machine had is not that, so it is set aside — here,
     /// before anything holds a track by its id. A machine that stops being a
-    /// studio keeps its copy as its own.
+    /// studio keeps its copy as its own, and one that becomes the owner keeps
+    /// it as the library the hub holds: the ids in it are the station's.
     ///
     /// `again` joins from the start a studio that has a copy already: of a
     /// library the hub no longer holds, so its track ids are nobody's.
-    pub fn open_for(path: &Path, studio: bool, again: bool) -> Result<(Opened, bool)> {
+    pub fn open_for(path: &Path, role: LibraryRole, again: bool) -> Result<(Opened, bool)> {
+        let studio = role == LibraryRole::Studio;
         let mut opened = Self::open(path)?;
         let replica = opened.db.is_replica()?;
         if studio && (again || !replica) {
@@ -596,7 +599,10 @@ impl Db {
             return Ok((opened, true));
         }
         if !studio && replica {
-            opened.db.leave_replica()?;
+            match role {
+                LibraryRole::Owner => opened.db.promote_replica()?,
+                _ => opened.db.leave_replica()?,
+            }
         }
         Ok((opened, false))
     }
@@ -636,6 +642,15 @@ impl Db {
             "UPDATE sync_local SET replica = 0, library_id = NULL, pulled_rev = 0",
             [],
         )?;
+        Ok(())
+    }
+
+    /// Keep the copy as the library this machine now owns, under the id the
+    /// hub holds it by and from the revision it was copied to: claiming the
+    /// role with it empties nothing, and the other studios go on as they were.
+    pub fn promote_replica(&self) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute("UPDATE sync_local SET replica = 0", [])?;
         Ok(())
     }
 
@@ -1092,6 +1107,7 @@ mod tests {
     use crate::audio::cue_points::CuePoints;
     use crate::audio_measure::level_envelope::RmsWindows;
     use crate::library::auto_cue::{Analysed, AutoCue, Thresholds};
+    use crate::persist::config::LibraryRole;
 
     /// A library that captures, as one that has taken a role will.
     fn capturing() -> Db {
@@ -2060,7 +2076,7 @@ mod tests {
         let path = dir.path().join("radiodiodj.db");
         add_track(&Db::open(&path).unwrap().db);
 
-        let (opened, joined) = Db::open_for(&path, true, false).unwrap();
+        let (opened, joined) = Db::open_for(&path, LibraryRole::Studio, false).unwrap();
 
         assert!(joined);
         assert!(opened.db.is_replica().unwrap());
@@ -2074,13 +2090,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("radiodiodj.db");
         add_track(&Db::open(&path).unwrap().db);
-        let (copy, _) = Db::open_for(&path, true, false).unwrap();
+        let (copy, _) = Db::open_for(&path, LibraryRole::Studio, false).unwrap();
         add_track(&copy.db);
         add_track(&copy.db);
         drop(copy);
-        drop(Db::open_for(&path, false, false).unwrap());
+        drop(Db::open_for(&path, LibraryRole::Standalone, false).unwrap());
 
-        let (again, joined) = Db::open_for(&path, true, false).unwrap();
+        let (again, joined) = Db::open_for(&path, LibraryRole::Studio, false).unwrap();
 
         assert!(joined);
         assert_eq!(track_count(&again.db), 0);
@@ -2094,11 +2110,11 @@ mod tests {
     fn a_studio_keeps_its_copy_from_one_launch_to_the_next() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("radiodiodj.db");
-        let (first, _) = Db::open_for(&path, true, false).unwrap();
+        let (first, _) = Db::open_for(&path, LibraryRole::Studio, false).unwrap();
         add_track(&first.db);
         drop(first);
 
-        let (again, joined) = Db::open_for(&path, true, false).unwrap();
+        let (again, joined) = Db::open_for(&path, LibraryRole::Studio, false).unwrap();
 
         assert!(!joined);
         assert_eq!(track_count(&again.db), 1);
@@ -2106,17 +2122,41 @@ mod tests {
     }
 
     #[test]
+    fn a_studio_made_the_owner_keeps_the_library_the_hub_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("radiodiodj.db");
+        let (studio, _) = Db::open_for(&path, LibraryRole::Studio, false).unwrap();
+        add_track(&studio.db);
+        studio.db.follow("lib-1").unwrap();
+        studio
+            .db
+            .conn
+            .lock()
+            .execute("UPDATE sync_local SET pulled_rev = 41", [])
+            .unwrap();
+        drop(studio);
+
+        let (owner, joined) = Db::open_for(&path, LibraryRole::Owner, false).unwrap();
+
+        assert!(!joined);
+        assert!(!owner.db.is_replica().unwrap());
+        assert_eq!(track_count(&owner.db), 1);
+        assert_eq!(owner.db.library_id().unwrap().as_deref(), Some("lib-1"));
+        assert_eq!(owner.db.pulled_rev().unwrap(), 41);
+    }
+
+    #[test]
     fn a_studio_joining_again_sets_its_copy_aside() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("radiodiodj.db");
         add_track(&Db::open(&path).unwrap().db);
-        let (copy, _) = Db::open_for(&path, true, false).unwrap();
+        let (copy, _) = Db::open_for(&path, LibraryRole::Studio, false).unwrap();
         add_track(&copy.db);
         add_track(&copy.db);
         copy.db.follow("lib-1").unwrap();
         drop(copy);
 
-        let (again, joined) = Db::open_for(&path, true, true).unwrap();
+        let (again, joined) = Db::open_for(&path, LibraryRole::Studio, true).unwrap();
 
         assert!(joined);
         assert!(again.db.is_replica().unwrap());
@@ -2138,7 +2178,7 @@ mod tests {
         let path = dir.path().join("radiodiodj.db");
         add_track(&Db::open(&path).unwrap().db);
 
-        let (alone, joined) = Db::open_for(&path, false, true).unwrap();
+        let (alone, joined) = Db::open_for(&path, LibraryRole::Standalone, true).unwrap();
 
         assert!(!joined);
         assert_eq!(track_count(&alone.db), 1);
@@ -2148,11 +2188,11 @@ mod tests {
     fn a_machine_that_stops_being_a_studio_keeps_the_copy_as_its_own() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("radiodiodj.db");
-        let (studio, _) = Db::open_for(&path, true, false).unwrap();
+        let (studio, _) = Db::open_for(&path, LibraryRole::Studio, false).unwrap();
         add_track(&studio.db);
         drop(studio);
 
-        let (alone, joined) = Db::open_for(&path, false, false).unwrap();
+        let (alone, joined) = Db::open_for(&path, LibraryRole::Standalone, false).unwrap();
 
         assert!(!joined);
         assert!(!alone.db.is_replica().unwrap());

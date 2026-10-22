@@ -253,8 +253,27 @@ cursor.
 **One owner.** A machine in the `owner` role claims `hub_station.owner` on each
 visit, and is refused while another machine holds it: it publishes nothing and
 says who the owner is. Every publish checks the claim again inside its
-transaction. Taking the role over from a machine that is gone is done in the
-hub: clear `hub_station.owner` by hand.
+transaction.
+
+**Taking the role over** is for an owner that is gone: a failed disk, a
+replaced computer, a reinstall that made a new machine id. The refused machine
+offers it where the refusal is said, to an admin, with when the owner last
+checked in — nothing tells a dead owner from one switched off for the weekend,
+so the click stays the admin's. It is the `takeOver` remedy in `hub:state`, and
+unlike a role it takes effect at once, on a visit the click brings on: nothing
+on this machine changes but what it may publish. It is tried once. A hub that
+is away at that moment keeps its owner, and the offer comes back with it.
+
+What it costs the studios is one comparison, and the confirmation says which
+side of it this is. A machine whose `library_id` is the hub's takes the role
+and nothing else: the rows stay, and the studios notice nothing. That is a
+studio made the owner, and a machine the old owner's database was copied to. A
+machine with a library of its own empties the hub as below, and every studio
+has to [join again](#joining-and-leaving).
+
+**The owner that comes back** finds another machine holding the role and is
+refused like any second owner: it publishes nothing and says who the owner is.
+A publish it had under way fails inside its transaction, on the same check.
 
 **A machine that becomes a studio gives the role up.** Its claim would
 otherwise name an owner that never publishes again.
@@ -263,7 +282,13 @@ otherwise name an owner that never publishes again.
 kept in its `sync_local`. An owner that finds the hub holding any other id —
 its own database was replaced, or it was pointed at a hub it never published
 to — **empties `hub_rows`**, stamps a new id and publishes everything again:
-the rows there carry another database's track ids. A hub with no station gets a
+the rows there carry another database's track ids. **They are kept first**:
+everything the hub holds is written to `radiodiodj.hub.bak.db` in this
+machine's data directory, as the hub's own three tables, inside the transaction
+that deletes them and under its lock, so the file is exactly what was removed.
+An earlier one is never written over (`hub.2.bak.db`), a hub whose rows could
+not be written is left as it was, and the page says where the file is. A hub
+with no rows leaves none. A hub with no station gets a
 new id as well, even from an owner that had one: a hub that was made again
 counts its revisions from one, and a cursor kept from the old one would step
 over everything in it. A studio whose
@@ -421,6 +446,15 @@ empty, with the library it replaces; the old file keeps the old ones.
 **Becoming the owner** keeps the library. Capture is switched on, every group
 is marked pending, and the first push publishes it.
 
+**A studio that becomes the owner** keeps more than that: its copy is the
+library the hub holds, under the hub's `library_id` and the owner's track ids,
+and it stays so — `replica` is cleared and nothing else. It claims the role
+with that id, [takes it over](#the-hub) if the old owner still holds it, and
+owes the hub nothing it was given. Its library paths have to be located before
+it can scan, and it has to reach the hub as a Postgres role that may write
+what an owner writes. Set to _Not shared_ in between, it has left: the id is
+dropped, and it comes back as a library of its own.
+
 **Becoming a studio replaces this machine's library**, because its track ids
 are its own and the owner's are the station's. It works as the baseline reset
 does ([database.md](./database.md#baseline-resets)): the old file is kept, as
@@ -502,9 +536,11 @@ The role gates the jobs, not only their buttons.
 | Two machines edit one cue set             | The later save wins, by the saving machines' clocks.                                          |
 | Analysis lands on a track cued by a hand  | The manual trio stands on every machine. Order of arrival does not matter.                    |
 | A track is purged while a studio holds it | The tombstone deletes it there; an edit the studio had pending for it is dropped by the hub.  |
-| The owner's database is restored or reset | A new `library_id`. Studios stop and ask to join again.                                       |
+| The owner's database is restored or reset | A new `library_id`. What the hub held is kept in a file there; studios ask to join again.     |
+| The owner's machine is gone               | An admin on the machine set to replace it takes the role over. A studio keeps the library.    |
 | A studio's build is too old               | It keeps playing from its copy, stops syncing and says so.                                    |
-| A second machine is made the owner        | Refused, and told who the owner is.                                                           |
+| A second machine is made the owner        | Refused, and told who the owner is, and offered the role.                                     |
+| The old owner comes back                  | Refused as a second owner. It publishes nothing.                                              |
 
 ## Testing
 
