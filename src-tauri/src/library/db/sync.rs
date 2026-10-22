@@ -2316,7 +2316,7 @@ mod tests {
 
     #[test]
     fn a_prepared_show_and_its_stops_travel_in_order() {
-        use super::super::saved_playlists::{SavedEntryInput, SavedPlaylistKind, SavedQueueEntry};
+        use super::super::saved_playlists::{SavedEntryInput, SavedEntryKind, SavedPlaylistKind};
 
         let owner = capturing();
         let a = add_track(&owner);
@@ -2348,20 +2348,18 @@ mod tests {
             ),
             (SavedPlaylistKind::PreparedShow, 4, 2, 0)
         );
-        let offered = owner.saved_playlist_items(theirs[0].id).unwrap().unwrap();
+        let offered = owner.saved_playlist(theirs[0].id).unwrap().unwrap();
         assert_eq!(
-            offered.entries,
+            offered
+                .entries
+                .iter()
+                .map(|entry| (entry.kind, entry.track.as_ref().map(|track| track.id)))
+                .collect::<Vec<_>>(),
             [
-                SavedQueueEntry::Track {
-                    id: a,
-                    content_type: "music".into()
-                },
-                SavedQueueEntry::Stop,
-                SavedQueueEntry::Track {
-                    id: b,
-                    content_type: "music".into()
-                },
-                SavedQueueEntry::Stop,
+                (SavedEntryKind::Track, Some(a)),
+                (SavedEntryKind::Stop, None),
+                (SavedEntryKind::Track, Some(b)),
+                (SavedEntryKind::Stop, None),
             ]
         );
         assert_eq!(

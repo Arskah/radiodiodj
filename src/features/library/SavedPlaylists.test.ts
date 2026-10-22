@@ -64,6 +64,8 @@ const { app } = vi.hoisted(() => ({
     moveSavedEntries: vi.fn(),
     removeSavedEntries: vi.fn(),
     startTrackDrag: vi.fn(),
+    startSavedPlaylistDrag: vi.fn(),
+    endSavedPlaylistDrag: vi.fn(),
     setAutoSource: vi.fn(),
     exportSavedPlaylist: vi.fn(),
     openSavedPlaylist: vi.fn(),
@@ -176,5 +178,43 @@ describe("SavedPlaylists prepared-show editor", () => {
     track.dispatchEvent(drag);
     expect(app.startTrackDrag).toHaveBeenCalledWith([42]);
     expect(transfer.effectAllowed).toBe("copyMove");
+  });
+
+  it("drags the open saved-list title as one block, regardless of its entries", () => {
+    const title = document.querySelector("#saved-open-name") as HTMLElement;
+    const event = new Event("dragstart", { bubbles: true });
+    const transfer = { effectAllowed: "none", setData: vi.fn() };
+    Object.defineProperty(event, "dataTransfer", { value: transfer });
+    title.dispatchEvent(event);
+    expect(app.startSavedPlaylistDrag).toHaveBeenCalledWith(5);
+    expect(transfer.effectAllowed).toBe("copy");
+    title.dispatchEvent(new Event("dragend", { bubbles: true }));
+    expect(app.endSavedPlaylistDrag).toHaveBeenCalledOnce();
+  });
+
+  it("uses a separate whole-list handle on the saved row", async () => {
+    const open = app.openSaved;
+    const saved = { ...app.savedPlaylists[0] };
+    await unmount(component);
+    (app as unknown as { openSaved: null }).openSaved = null;
+    app.savedPlaylists[0] = { ...saved, entries: 1, stops: 0 };
+    try {
+      component = mount(SavedPlaylists as Component, { target: document.body });
+      flushSync();
+      const handle = document.querySelector(
+        ".saved-whole-drag",
+      ) as HTMLButtonElement;
+      expect(handle).not.toBeNull();
+      const event = new Event("dragstart", { bubbles: true });
+      const transfer = { effectAllowed: "none", setData: vi.fn() };
+      Object.defineProperty(event, "dataTransfer", { value: transfer });
+      handle.dispatchEvent(event);
+      expect(app.startSavedPlaylistDrag).toHaveBeenCalledWith(5);
+      expect(app.startTrackDrag).not.toHaveBeenCalled();
+      expect(transfer.effectAllowed).toBe("copy");
+    } finally {
+      (app as unknown as { openSaved: typeof open }).openSaved = open;
+      app.savedPlaylists[0] = saved;
+    }
   });
 });
