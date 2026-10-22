@@ -49,8 +49,8 @@
     "material-symbols": "0.47.6"
   },
   "devDependencies": {
-    "@commitlint/cli": "21.2.3",
-    "@commitlint/config-conventional": "21.2.3",
+    "@commitlint/cli": "21.2.4",
+    "@commitlint/config-conventional": "21.2.4",
     "@commitlint/types": "21.2.3",
     "@eslint/js": "10.0.1",
     "@sveltejs/vite-plugin-svelte": "7.3.1",
