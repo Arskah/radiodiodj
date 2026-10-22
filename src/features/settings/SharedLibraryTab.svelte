@@ -2,6 +2,7 @@
   import { app } from "../../shared/state.svelte";
   import { formatAgo } from "../../shared/health";
   import {
+    lostByJoiningAgain,
     replacesLibrary,
     roleLabel,
     waitingLabel,
@@ -23,6 +24,9 @@
   let confirming = $state(false);
   let saving = $state(false);
   let error = $state<string | null>(null);
+  let confirmingRejoin = $state(false);
+  let rejoining = $state(false);
+  let rejoinError = $state<string | null>(null);
 
   const saved = $derived(app.sharedLibrary);
   const running = $derived(saved.status.role);
@@ -51,6 +55,8 @@
     ca = app.sharedLibrary.caCertificate;
     confirming = false;
     error = null;
+    confirmingRejoin = false;
+    rejoinError = null;
   }
 
   $effect(() => {
@@ -78,6 +84,19 @@
       error = e instanceof Error ? e.message : String(e);
     } finally {
       saving = false;
+    }
+  }
+
+  async function joinAgain(pending: boolean): Promise<void> {
+    rejoining = true;
+    rejoinError = null;
+    try {
+      await app.joinSharedLibraryAgain(pending);
+      confirmingRejoin = false;
+    } catch (e) {
+      rejoinError = e instanceof Error ? e.message : String(e);
+    } finally {
+      rejoining = false;
     }
   }
 
@@ -323,4 +342,55 @@
       {waitingLabel(saved.status)}
     {/if}
   </p>
+  {#if saved.joinAgain}
+    <div class="np-action-row">
+      <span class="np-test-result"
+        >This computer joins again the next time RadiodioDJ starts. Restart it
+        off air.</span
+      >
+      <button
+        id="btn-shared-rejoin-cancel"
+        class="btn-purge-cancel"
+        disabled={rejoining}
+        onclick={() => joinAgain(false)}>Do not join again</button
+      >
+    </div>
+  {:else if saved.status.remedy?.kind === "joinAgain"}
+    {#if confirmingRejoin}
+      <div class="missing-tracks-confirm" role="alert">
+        <span>
+          Joining again replaces this computer's copy the next time RadiodioDJ
+          starts, with the library the hub holds now. The copy is kept beside it
+          as a <code>.bak.db</code> file.
+          {lostByJoiningAgain(saved.status.waiting)}
+          History and play counts start empty, and each library path has to be located
+          again. Do this off air.
+        </span>
+        <button
+          id="btn-shared-rejoin-confirm"
+          class="btn-purge-confirm"
+          disabled={rejoining}
+          onclick={() => joinAgain(true)}>Join again at next start</button
+        >
+        <button
+          class="btn-purge-cancel"
+          disabled={rejoining}
+          onclick={() => (confirmingRejoin = false)}>Cancel</button
+        >
+      </div>
+    {:else}
+      <div class="np-action-row">
+        <button
+          id="btn-shared-rejoin"
+          class="btn-scan-now"
+          onclick={() => (confirmingRejoin = true)}>Join again</button
+        >
+      </div>
+    {/if}
+  {/if}
+  {#if rejoinError}
+    <div class="np-action-row">
+      <span class="np-test-result">{rejoinError}</span>
+    </div>
+  {/if}
 </div>
