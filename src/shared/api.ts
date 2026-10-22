@@ -21,6 +21,7 @@ import type {
   SavedAppend,
   SavedPlaylist,
   SavedPlaylistSummary,
+  SavedPlaylistKind,
   ScanResult,
   SharedLibrary,
   SharedLibrarySettings,
@@ -252,9 +253,12 @@ export const api = {
   playlistSetSource(id: number | null): Promise<void> {
     return invoke<void>("playlist_set_source", { id });
   },
-  /** Keep the upcoming tracks as a new saved playlist. */
-  playlistSaveAs(name: string): Promise<SavedPlaylistSummary> {
-    return invoke<SavedPlaylistSummary>("playlist_save_as", { name });
+  /** Keep the remaining upcoming items as a new saved list. */
+  playlistSaveAs(
+    name: string,
+    kind: SavedPlaylistKind,
+  ): Promise<SavedPlaylistSummary> {
+    return invoke<SavedPlaylistSummary>("playlist_save_as", { name, kind });
   },
 
   savedPlaylistList(): Promise<SavedPlaylistSummary[]> {
@@ -274,10 +278,12 @@ export const api = {
   savedPlaylistCreate(
     name: string,
     trackIds: number[],
+    kind: SavedPlaylistKind = "playlist",
   ): Promise<SavedPlaylistSummary> {
     return invoke<SavedPlaylistSummary>("saved_playlist_create", {
       name,
       trackIds,
+      kind,
     });
   },
   /** Write a saved playlist to `path`, as a file another install can import. */
@@ -309,6 +315,14 @@ export const api = {
     index: number | null,
   ): Promise<void> {
     return invoke<void>("saved_playlist_add_entries", { id, trackIds, index });
+  },
+  /** Admin only. A Stop is inserted at `index`, or appended with `null`. */
+  savedPlaylistAddStop(id: number, index: number | null = null): Promise<void> {
+    return invoke<void>("saved_playlist_add_stop", { id, index });
+  },
+  /** Admin only. The backend refuses a playlist kind while Stops remain. */
+  savedPlaylistSetKind(id: number, kind: SavedPlaylistKind): Promise<void> {
+    return invoke<void>("saved_playlist_set_kind", { id, kind });
   },
   /** Admin only. */
   savedPlaylistRemoveEntry(entryId: number): Promise<void> {

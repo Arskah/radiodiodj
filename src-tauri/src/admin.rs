@@ -51,6 +51,8 @@ pub const ADMIN_COMMANDS: &[&str] = &[
     "admin_set_idle_lock_min",
     "update_install",
     "saved_playlist_add_entries",
+    "saved_playlist_add_stop",
+    "saved_playlist_set_kind",
     "saved_playlist_remove_entry",
     "saved_playlist_bind_entry",
     "saved_playlist_move_entry",

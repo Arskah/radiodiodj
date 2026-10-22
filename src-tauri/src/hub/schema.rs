@@ -4,7 +4,9 @@
 ///
 /// 2: operator work travels. A build on 1 would step over those rows and
 /// never see them again, so it has to stop instead.
-pub const PROTOCOL: i32 = 2;
+/// 3: saved lists carry their kind and ordered Stop entries. A build on 2
+/// would treat a Stop as an unmatched track and silently lose it.
+pub const PROTOCOL: i32 = 3;
 
 /// The transaction-level advisory lock every hub writer takes, so revisions
 /// are handed out in commit order.
