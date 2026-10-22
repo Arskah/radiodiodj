@@ -211,6 +211,14 @@ body {
   gap: var(--sp-md);
 }
 
+.station-clock {
+  color: var(--on-surface-variant);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .nav-center {
   flex: 1;
   display: flex;
@@ -464,6 +472,92 @@ body {
   font-size: 10px;
   letter-spacing: 0.05em;
   font-variant-numeric: tabular-nums;
+}
+
+.deck-status {
+  color: var(--on-surface-variant);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.stop-over-plan {
+  color: var(--error) !important;
+}
+
+.holding-stop #player-info {
+  min-height: 76px;
+}
+
+.holding-stop #track-info {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: visible;
+}
+
+.holding-stop .deck-head {
+  display: flex;
+  max-width: 100%;
+  flex-wrap: wrap;
+  gap: var(--sp-md);
+}
+
+.holding-stop .deck-label {
+  font-size: 14px;
+  white-space: normal;
+}
+
+.holding-stop .held-stop-counter {
+  flex-shrink: 0;
+  min-width: 6ch;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.holding-stop #np-title.stop-marker-heading.holding-overdue {
+  animation: holding-warning-pulse 1.35s ease-in-out infinite;
+}
+
+.holding-stop .deck-remaining {
+  font-size: 22px;
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+.holding-stop .deck-remaining.stop-over-plan {
+  color: var(--error);
+}
+
+.holding-stop #np-title.stop-marker-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-md);
+  color: var(--error);
+  font-size: 28px;
+  line-height: 1;
+}
+
+.holding-stop .stop-marker-icon {
+  font-size: 28px;
+}
+
+.holding-stop .stop-marker-title {
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+@keyframes holding-warning-pulse {
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .holding-stop #np-title.stop-marker-heading.holding-overdue {
+    animation: none;
+  }
 }
 
 #now-playing .deck-head {
@@ -1901,6 +1995,27 @@ body {
   align-items: flex-end;
   gap: 4px;
   flex-shrink: 0;
+}
+
+.pl-time-row {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: var(--sp-md);
+  white-space: nowrap;
+}
+
+.pl-play-action-spacer {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+}
+
+.pl-eta {
+  color: var(--on-surface-variant);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Marks an item airing under cue points of its own rather than the track's.

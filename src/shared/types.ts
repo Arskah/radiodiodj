@@ -148,7 +148,12 @@ export type PlaylistTrackItem = {
    */
   cue_override?: CuePoints | null;
 };
-export type StopMarker = { kind: "stop" };
+/** A presenter-controlled pause; the plan never resumes playback. */
+export type StopMarker = {
+  kind: "stop";
+  /** Absent only in older fixtures; the backend always sends `null` or seconds. */
+  plannedDurationSeconds?: number | null;
+};
 export type PlaylistItem = PlaylistTrackItem | StopMarker;
 
 export const trackItem = (
@@ -159,7 +164,9 @@ export const trackItem = (
   track,
   cue_override,
 });
-export const stopMarker = (): StopMarker => ({ kind: "stop" });
+export const stopMarker = (
+  plannedDurationSeconds: number | null = null,
+): StopMarker => ({ kind: "stop", plannedDurationSeconds });
 export const isTrackItem = (i: PlaylistItem): i is PlaylistTrackItem =>
   i.kind === "track";
 export const isStopMarker = (i: PlaylistItem): i is StopMarker =>
@@ -181,6 +188,22 @@ export type QueueNode =
       savedKind: SavedPlaylistKind;
       entries: QueueOccurrence[];
     };
+
+/** A consumed Stop, sampled together with the backend's timing snapshot. */
+export interface HoldingStop {
+  occurrenceId: string;
+  plannedDurationSeconds: number | null;
+  elapsedSeconds: number;
+  capturedAtUnixMs: number;
+  blockId: string | null;
+}
+
+/** One backend-owned schedule shared by every upcoming occurrence. */
+export interface PlaylistTiming {
+  entries: { occurrenceId: string; baseSecond: number | null }[];
+  delaySeconds: number;
+  delayStartedAtUnixMs: number | null;
+}
 
 /** Where copied or moved occurrences land; `null` appends in that scope. */
 export type QueueDestination =
@@ -214,6 +237,8 @@ export interface SavedEntry {
   title: string;
   duration: number;
   contentType: string | null;
+  /** A Stop's whole-second plan; absent only in older fixtures. */
+  plannedDurationSeconds?: number | null;
 }
 
 export interface SavedPlaylist {

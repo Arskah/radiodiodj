@@ -16,6 +16,8 @@
   import { queueDropTarget, type QueueDropRow } from "./playlistDrop";
   import { sizeLabel } from "../../shared/savedPlaylists";
   import { blockTrackCount } from "../../shared/queueBlocks";
+  import { formatEta } from "../../shared/playlistTiming";
+  import StopDurationEditor from "./StopDurationEditor.svelte";
 
   let localDrag = $state<{ kind: "block" | "occurrence"; id: string } | null>(
     null,
@@ -330,7 +332,18 @@
           <div class="pl-body">
             <span class="pl-stop-label">Stop</span>
             <span class="pl-stop-sub">Auto play halts here</span>
+            <StopDurationEditor
+              plannedDurationSeconds={item.plannedDurationSeconds ?? null}
+              onSave={(seconds) => app.setStopDuration(id, seconds)}
+            />
           </div>
+          <div class="pl-right">
+            <span class="pl-time-row">
+              <span class="pl-eta">{formatEta(app.upcomingEta(id))}</span>
+              <span class="pl-duration" aria-hidden="true"></span>
+            </span>
+          </div>
+          <span class="pl-play-action-spacer" aria-hidden="true"></span>
           <button
             class="btn-remove"
             title="Remove"
@@ -394,9 +407,12 @@
                   ></button
                 >
               {/if}
-              <span class="pl-duration" class:trimmed={isTrimmed(aired)}
-                >{formatTime(airDuration(aired))}</span
-              >
+              <span class="pl-time-row">
+                <span class="pl-eta">{formatEta(app.upcomingEta(id))}</span>
+                <span class="pl-duration" class:trimmed={isTrimmed(aired)}
+                  >{formatTime(airDuration(aired))}</span
+                >
+              </span>
             </div>
           </div>
           <button
@@ -445,7 +461,9 @@
             {@render leafRow(node.id, node.item, null)}
           {:else}
             {@const collapsed = app.collapsedBlockIds.includes(node.id)}
-            {@const active = app.currentBlockId === node.id}
+            {@const active =
+              app.currentBlockId === node.id ||
+              app.holdingStop?.blockId === node.id}
             <div
               class="playlist-row queue-block"
               class:active
@@ -476,7 +494,11 @@
                 aria-hidden="true">queue_music</span
               >
               <span class="queue-block-name">{node.title}</span>
-              {#if active}<span class="pl-status next-up">Playing</span>{/if}
+              {#if active}<span class="pl-status next-up"
+                  >{app.holdingStop?.blockId === node.id
+                    ? "Holding"
+                    : "Playing"}</span
+                >{/if}
               <span class="queue-block-count"
                 >{blockTrackCount(node)}
                 {blockTrackCount(node) === 1 ? "track" : "tracks"}</span

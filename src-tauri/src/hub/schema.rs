@@ -6,7 +6,9 @@
 /// never see them again, so it has to stop instead.
 /// 3: saved lists carry their kind and ordered Stop entries. A build on 2
 /// would treat a Stop as an unmatched track and silently lose it.
-pub const PROTOCOL: i32 = 3;
+/// 4: saved Stops carry their optional planned duration. A build on 3 would
+/// silently lose that plan on a sync round trip.
+pub const PROTOCOL: i32 = 4;
 
 /// The transaction-level advisory lock every hub writer takes, so revisions
 /// are handed out in commit order.

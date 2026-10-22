@@ -19,12 +19,19 @@ use tauri::{AppHandle, Emitter, Listener};
 
 use super::engine::{Effect, LoadFailure, Playlist, Refiller, Transition};
 use super::generate;
-use super::model::{Destination, PlaylistItem, QueueChild, QueueNode, Snapshot, SourceInfo};
+use super::model::{
+    Destination, HoldingStop, PlaylistItem, QueueChild, QueueNode, Snapshot, SourceInfo,
+};
+use super::timing::{
+    ClockSample, CurrentTiming, PlaylistTiming, Schedule, TimingItem, TimingKind, TimingMode,
+    TimingTransport,
+};
 use crate::audio::bus::{ProgramBus, FADED_OUT_EVENT, HANDOVER_EVENT};
 use crate::audio::cache::Cache;
 use crate::audio::cue_points::CuePoints;
 use crate::audio::levelling;
 use crate::audio::player::{Cmd, LoadFailed};
+use crate::audio::timing::{self as audio_timing, Observation};
 use crate::broadcast::BroadcastService;
 use crate::library::db::{
     Db, SavedEntryKind, SavedPlaylist, SavedPlaylistKind, SavedQueueEntry, Track, TrackLoadInfo,
@@ -42,6 +49,14 @@ use crate::persist::session::{SessionPlaylistItem, SessionQueueNode, SessionStat
 #[derive(serde::Deserialize)]
 struct HandoverEvent {
     to: i64,
+    #[serde(default)]
+    manual: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct EndEvent {
+    #[serde(default)]
+    manual: bool,
 }
 
 /// The part of the library health report the playlist needs: the tracks it
@@ -88,7 +103,11 @@ fn authored_items(entries: Vec<SavedQueueEntry>, tracks: Vec<Track>) -> Vec<Play
         .into_iter()
         .filter_map(|entry| match entry {
             SavedQueueEntry::Track { id, .. } => by_id.get(&id).cloned().map(PlaylistItem::track),
-            SavedQueueEntry::Stop => Some(PlaylistItem::Stop),
+            SavedQueueEntry::Stop {
+                planned_duration_seconds,
+            } => Some(PlaylistItem::Stop {
+                planned_duration_seconds,
+            }),
         })
         .collect()
 }
@@ -102,7 +121,9 @@ pub(crate) fn saved_copy(
     let mut unmatched = 0;
     for entry in list.entries {
         match entry.kind {
-            SavedEntryKind::Stop => entries.push(SavedQueueEntry::Stop),
+            SavedEntryKind::Stop => entries.push(SavedQueueEntry::Stop {
+                planned_duration_seconds: entry.planned_duration_seconds,
+            }),
             SavedEntryKind::Track => match entry.track {
                 Some(track) => entries.push(SavedQueueEntry::Track {
                     id: track.id,
@@ -156,8 +177,299 @@ struct Source {
     reverted_from: Option<String>,
 }
 
+#[derive(Default)]
+struct TimingState {
+    schedule: Schedule,
+    wire: PlaylistTiming,
+    observation: Option<Observation>,
+    fresh_observation: bool,
+    revision: u64,
+    force_reanchor: bool,
+    hold: Option<(String, f64, f64)>,
+}
+
+impl TimingState {
+    fn manual_transition(&mut self, manual: bool) {
+        self.force_reanchor |= manual;
+    }
+
+    fn prepare_start(
+        &mut self,
+        playlist: &Playlist,
+        target: Option<&str>,
+        captured: audio_timing::Capture,
+    ) {
+        let Some(target) = target else {
+            return;
+        };
+        let snapshot = playlist.snapshot();
+        let upcoming = snapshot.playlist.iter().any(|node| match node {
+            QueueNode::Standalone { id, .. } => id == target,
+            QueueNode::Block { entries, .. } => entries.iter().any(|entry| entry.id == target),
+        });
+        if !upcoming {
+            return;
+        }
+        let resumes_next = playlist.next_occurrence_id() == Some(target);
+        let finished_track = self.observation.as_ref().is_some_and(|observation| {
+            observation.occurrence_id.as_deref() == playlist.current_occurrence_id()
+                && !observation.playing
+                && !observation.buffering
+                && observation
+                    .duration_seconds
+                    .is_some_and(|duration| observation.position_seconds >= duration)
+        });
+        let early_plan = snapshot.holding_stop.as_ref().is_some_and(|hold| {
+            hold.planned_duration_seconds.is_some_and(|plan| {
+                let elapsed = self
+                    .hold
+                    .as_ref()
+                    .filter(|(id, _, _)| id == &hold.occurrence_id)
+                    .map_or(hold.elapsed_seconds, |(_, elapsed, started)| {
+                        elapsed + (captured.monotonic_seconds - started).max(0.0)
+                    });
+                elapsed < f64::from(plan)
+            })
+        });
+        self.force_reanchor |=
+            !resumes_next || (snapshot.current.is_some() && !finished_track) || early_plan;
+    }
+
+    fn accept(&mut self, playlist: &Playlist, observation: Observation) -> bool {
+        if observation.occurrence_id.as_deref() != playlist.current_occurrence_id()
+            || observation.track_id != playlist.snapshot().current.as_ref().map(|track| track.id)
+            || self
+                .observation
+                .as_ref()
+                .is_some_and(|previous| previous.sequence >= observation.sequence)
+        {
+            return false;
+        }
+        if let Some(previous) = self.observation.as_ref() {
+            let seek = previous.instance_id == observation.instance_id
+                && previous.seek_revision != observation.seek_revision;
+            let interruption = observation.interrupted && !previous.interrupted;
+            self.force_reanchor |= seek || interruption;
+        }
+        self.observation = Some(observation);
+        self.fresh_observation = true;
+        true
+    }
+
+    fn project(
+        &mut self,
+        playlist: &Playlist,
+        captured: audio_timing::Capture,
+        correction: f64,
+    ) -> Snapshot {
+        let mut snapshot = playlist.snapshot();
+        let timing = self;
+        if correction != 0.0 {
+            timing.schedule.shift_wall(correction);
+        }
+        let mut clock = clock_sample(captured);
+        if std::mem::take(&mut timing.fresh_observation) {
+            if let Some(observation) = &timing.observation {
+                clock.unix_ms -=
+                    (clock.monotonic_seconds - observation.captured.monotonic_seconds) * 1000.0;
+                clock.monotonic_seconds = observation.captured.monotonic_seconds;
+            }
+        }
+        let mut items = Vec::new();
+        for node in &snapshot.playlist {
+            match node {
+                QueueNode::Standalone { id, item } => items.push(timing_item(
+                    id,
+                    item,
+                    item.as_track()
+                        .is_some_and(|track| playlist.is_unavailable(track.id)),
+                )),
+                QueueNode::Block { entries, .. } => items.extend(entries.iter().map(|entry| {
+                    timing_item(
+                        &entry.id,
+                        &entry.item,
+                        entry
+                            .item
+                            .as_track()
+                            .is_some_and(|track| playlist.is_unavailable(track.id)),
+                    )
+                })),
+            }
+        }
+        let next_is_stop = items
+            .iter()
+            .find(|item| {
+                !matches!(
+                    item.kind,
+                    TimingKind::Track {
+                        unavailable: true,
+                        ..
+                    }
+                )
+            })
+            .is_some_and(|item| matches!(item.kind, TimingKind::Stop { .. }));
+        let mut pending = false;
+        let transport = if let Some(hold) = &mut snapshot.holding_stop {
+            if timing
+                .hold
+                .as_ref()
+                .is_none_or(|(id, _, _)| id != &hold.occurrence_id)
+            {
+                timing.hold = Some((
+                    hold.occurrence_id.clone(),
+                    hold.elapsed_seconds,
+                    clock.monotonic_seconds,
+                ));
+            }
+            let (_, elapsed, started) = timing.hold.as_ref().expect("hold clock established");
+            hold.elapsed_seconds = elapsed + (clock.monotonic_seconds - started).max(0.0);
+            hold.captured_at_unix_ms = clock.unix_ms;
+            TimingTransport::Holding {
+                remaining_plan: hold.planned_duration_seconds.map_or(0.0, |plan| {
+                    (f64::from(plan) - hold.elapsed_seconds).max(0.0)
+                }),
+            }
+        } else if let Some(track) = &snapshot.current {
+            timing.hold = None;
+            let current_id = playlist.current_occurrence_id().unwrap_or_default();
+            let observation = timing
+                .observation
+                .as_ref()
+                .filter(|observation| observation.occurrence_id.as_deref() == Some(current_id));
+            let cue = snapshot
+                .current_override
+                .unwrap_or(track.cue_points)
+                .resolve((track.duration > 0.0).then_some(track.duration));
+            let position = observation.map_or(0.0, |observation| {
+                observation.position_seconds
+                    + if observation.playing {
+                        (clock.monotonic_seconds - observation.captured.monotonic_seconds).max(0.0)
+                    } else {
+                        0.0
+                    }
+            });
+            let duration = observation
+                .and_then(|observation| observation.duration_seconds)
+                .or(cue.air_duration());
+            let next_start = observation
+                .and_then(|observation| observation.next_start_seconds)
+                .or(cue.next_start.map(|at| cue.air_time(at)));
+            let tail = observation.map_or(0.0, |observation| {
+                (observation.tail_remaining_seconds
+                    - if observation.playing {
+                        (clock.monotonic_seconds - observation.captured.monotonic_seconds).max(0.0)
+                    } else {
+                        0.0
+                    })
+                .max(0.0)
+            });
+            let span = if snapshot.auto_advance && !next_is_stop {
+                next_start.or(duration)
+            } else {
+                duration
+            };
+            if observation.is_some_and(|observation| observation.playing) {
+                TimingTransport::Playing(CurrentTiming {
+                    occurrence_id: current_id.to_owned(),
+                    position,
+                    air_duration: duration,
+                    next_start,
+                    tail_remaining: tail,
+                })
+            } else {
+                pending = !snapshot.awaiting_network
+                    && observation.is_none_or(|observation| {
+                        observation.buffering && !observation.interrupted
+                    })
+                    && timing
+                        .wire
+                        .entries
+                        .iter()
+                        .any(|entry| entry.occurrence_id == current_id);
+                TimingTransport::Waiting {
+                    remaining: span.zip(duration).map(|(span, duration)| {
+                        (span - position)
+                            .max(0.0)
+                            .max(tail)
+                            .min((duration - position).max(0.0))
+                    }),
+                    tail_remaining: 0.0,
+                }
+            }
+        } else {
+            timing.hold = None;
+            TimingTransport::Waiting {
+                remaining: Some(0.0),
+                tail_remaining: 0.0,
+            }
+        };
+        let force = timing.force_reanchor;
+        if !pending || force {
+            timing.force_reanchor = false;
+            timing.wire = timing.schedule.update(
+                &items,
+                if snapshot.auto_advance {
+                    TimingMode::Auto
+                } else {
+                    TimingMode::Manual
+                },
+                &transport,
+                clock,
+                force,
+            );
+        }
+        let upcoming: HashSet<&str> = items
+            .iter()
+            .map(|item| item.occurrence_id.as_str())
+            .collect();
+        snapshot.timing = timing.wire.clone();
+        snapshot
+            .timing
+            .entries
+            .retain(|entry| upcoming.contains(entry.occurrence_id.as_str()));
+        timing.revision = timing.revision.wrapping_add(1);
+        snapshot.revision = timing.revision;
+        snapshot
+    }
+}
+
+fn clock_sample(capture: audio_timing::Capture) -> ClockSample {
+    ClockSample {
+        monotonic_seconds: capture.monotonic_seconds,
+        unix_ms: capture.unix_ms,
+    }
+}
+
+fn timing_item(id: &str, item: &PlaylistItem, unavailable: bool) -> TimingItem {
+    let kind = match item {
+        PlaylistItem::Stop {
+            planned_duration_seconds,
+        } => TimingKind::Stop {
+            planned_duration_seconds: planned_duration_seconds.map(f64::from),
+        },
+        PlaylistItem::Track {
+            track,
+            cue_override,
+        } => {
+            let cue = cue_override
+                .unwrap_or(track.cue_points)
+                .resolve((track.duration > 0.0).then_some(track.duration));
+            TimingKind::Track {
+                air_duration: cue.air_duration(),
+                next_start: cue.next_start.map(|at| cue.air_time(at)),
+                unavailable,
+            }
+        }
+    };
+    TimingItem {
+        occurrence_id: id.to_owned(),
+        kind,
+    }
+}
+
 struct Inner {
     playlist: Mutex<Playlist>,
+    timing: Mutex<TimingState>,
     source: Mutex<Source>,
     db: Arc<Db>,
     config: Arc<Config>,
@@ -239,6 +551,7 @@ impl PlaylistService {
     ) -> Self {
         let inner = Arc::new(Inner {
             playlist: Mutex::new(Playlist::new()),
+            timing: Mutex::new(TimingState::default()),
             source: Mutex::new(Source::default()),
             db,
             config,
@@ -298,7 +611,10 @@ impl PlaylistService {
     /// in the same process as the playlist that knows what follows it.
     pub fn attach_to_app(&self, app: &AppHandle) {
         let ended = Arc::clone(&self.inner);
-        app.listen("main-deck:ended", move |_| {
+        app.listen("main-deck:ended", move |event| {
+            ended.timing.lock().manual_transition(
+                serde_json::from_str::<EndEvent>(event.payload()).is_ok_and(|event| event.manual),
+            );
             Inner::apply(&ended, |p, r| p.on_ended(r));
         });
 
@@ -307,6 +623,7 @@ impl PlaylistService {
             let Ok(moved) = serde_json::from_str::<HandoverEvent>(event.payload()) else {
                 return;
             };
+            handover.timing.lock().manual_transition(moved.manual);
             Inner::apply(&handover, move |p, r| p.on_handover(moved.to, r));
         });
 
@@ -316,6 +633,7 @@ impl PlaylistService {
         // next Play resumes nothing.
         let faded = Arc::clone(&self.inner);
         app.listen(FADED_OUT_EVENT, move |_| {
+            faded.timing.lock().manual_transition(true);
             Inner::apply(&faded, |p, _| p.stop());
         });
 
@@ -384,6 +702,16 @@ impl PlaylistService {
             Inner::adopt_duration(&measured, ready.id, ready.duration);
         });
 
+        let transport = Arc::clone(&self.inner);
+        let commands = self.commands.jobs.clone();
+        app.listen(audio_timing::TRANSPORT_EVENT, move |event| {
+            let Ok(observation) = serde_json::from_str::<Observation>(event.payload()) else {
+                return;
+            };
+            let transport = Arc::clone(&transport);
+            let _ = commands.send(Box::new(move |_| Inner::observe(&transport, observation)));
+        });
+
         let cache_state = Arc::clone(&self.inner);
         app.listen("main-deck:cache-state", move |event| {
             let ids: Vec<i64> = serde_json::from_str(event.payload()).unwrap_or_default();
@@ -393,7 +721,8 @@ impl PlaylistService {
 
     /// Current state, for a renderer that has just (re)connected.
     pub fn snapshot(&self) -> Snapshot {
-        self.inner.playlist.lock().snapshot()
+        let playlist = self.inner.playlist.lock();
+        self.inner.project_snapshot(&playlist)
     }
 
     /// Read Upcoming after earlier commands have run, so Save as captures the
@@ -444,26 +773,53 @@ impl PlaylistService {
                 log::error!("history restore failed: {}", e);
                 vec![]
             });
-        Inner::apply(&self.inner, move |p, _| match queue {
-            Some(queue) => p.hydrate_queue(
-                queue,
-                current_block_id,
-                current,
-                current_override,
-                seconds,
-                auto_playlist,
-                auto_advance,
-                history,
-            ),
-            None => p.hydrate(
-                items.unwrap_or_default(),
-                current,
-                current_override,
-                seconds,
-                auto_playlist,
-                auto_advance,
-                history,
-            ),
+        let restored_hold = state.holding_stop.clone();
+        let held_block = restored_hold.as_ref().and_then(|hold| queue.as_ref().and_then(|nodes| nodes.iter().find(|node| matches!(node, QueueNode::Block { id, .. } if Some(id) == hold.block_id.as_ref())).cloned()));
+        Inner::apply(&self.inner, move |p, _| {
+            let transition = match queue {
+                Some(queue) => p.hydrate_queue(
+                    queue,
+                    current_block_id,
+                    current,
+                    current_override,
+                    seconds,
+                    auto_playlist,
+                    auto_advance,
+                    history,
+                ),
+                None => p.hydrate(
+                    items.unwrap_or_default(),
+                    current,
+                    current_override,
+                    seconds,
+                    auto_playlist,
+                    auto_advance,
+                    history,
+                ),
+            };
+            if let Some(hold) = restored_hold {
+                p.restore_hold(
+                    HoldingStop {
+                        occurrence_id: if hold.occurrence_id.is_empty() {
+                            uuid::Uuid::new_v4().to_string()
+                        } else {
+                            hold.occurrence_id
+                        },
+                        planned_duration_seconds: hold.planned_duration_seconds,
+                        elapsed_seconds: if hold.elapsed_seconds.is_finite() {
+                            hold.elapsed_seconds.max(0.0)
+                        } else {
+                            0.0
+                        },
+                        captured_at_unix_ms: 0.0,
+                        block_id: hold.block_id,
+                    },
+                    held_block,
+                );
+                Transition::default()
+            } else {
+                transition
+            }
         });
     }
 
@@ -571,7 +927,7 @@ impl PlaylistService {
                 .iter()
                 .filter_map(|entry| match entry {
                     SavedQueueEntry::Track { id, .. } => Some(*id),
-                    SavedQueueEntry::Stop => None,
+                    SavedQueueEntry::Stop { .. } => None,
                 })
                 .collect();
             let tracks = match inner.db.get_tracks_by_ids(&ids) {
@@ -593,7 +949,7 @@ impl PlaylistService {
                     .into_iter()
                     .filter_map(|entry| match entry {
                         SavedQueueEntry::Track { id, content_type } => Some((id, content_type)),
-                        SavedQueueEntry::Stop => None,
+                        SavedQueueEntry::Stop { .. } => None,
                     })
                     .collect();
                 let list = tracks
@@ -675,6 +1031,15 @@ impl PlaylistService {
         });
     }
 
+    /// Set only an upcoming Stop’s plan, leaving its saved source untouched.
+    pub fn set_stop_duration(&self, occurrence_id: String, planned_duration_seconds: Option<u32>) {
+        self.queue(move |inner| {
+            Inner::apply(inner, move |playlist, _| {
+                playlist.set_stop_duration(&occurrence_id, planned_duration_seconds)
+            })
+        });
+    }
+
     pub fn add_stop(&self) {
         self.queue(|inner| Inner::apply(inner, |p, _| p.add_stop()));
     }
@@ -743,6 +1108,14 @@ impl PlaylistService {
                 );
                 return;
             }
+            {
+                let playlist = inner.playlist.lock();
+                inner.timing.lock().prepare_start(
+                    &playlist,
+                    playlist.occurrence_id_at(index),
+                    audio_timing::capture(),
+                );
+            }
             Inner::apply(inner, move |p, r| p.play_index(index, r));
         });
     }
@@ -750,26 +1123,54 @@ impl PlaylistService {
     /// Put a particular queued child or standalone track on air.
     pub fn play_occurrence(&self, id: String) {
         self.queue(move |inner| {
+            {
+                let playlist = inner.playlist.lock();
+                inner
+                    .timing
+                    .lock()
+                    .prepare_start(&playlist, Some(&id), audio_timing::capture());
+            }
             Inner::apply(inner, move |p, r| p.play_occurrence(&id, r));
         });
     }
 
     pub fn play_now(&self, id: i64) {
-        self.queue(move |inner| Inner::with_track(inner, id, |p, r, track| p.play_now(track, r)));
+        self.queue(move |inner| {
+            inner.timing.lock().force_reanchor = true;
+            Inner::with_track(inner, id, |p, r, track| p.play_now(track, r));
+        });
     }
 
     pub fn next(&self) {
-        self.queue(|inner| Inner::apply(inner, |p, r| p.next(r)));
+        self.queue(|inner| {
+            {
+                let playlist = inner.playlist.lock();
+                inner.timing.lock().prepare_start(
+                    &playlist,
+                    playlist
+                        .next_occurrence_id()
+                        .or_else(|| playlist.occurrence_id_at(0)),
+                    audio_timing::capture(),
+                );
+            }
+            Inner::apply(inner, |p, r| p.next(r));
+        });
     }
 
     /// Step back to the last track that aired, which the playlist reads off its
     /// own history.
     pub fn prev(&self) {
-        self.queue(|inner| Inner::apply(inner, |p, r| p.prev(r)));
+        self.queue(|inner| {
+            inner.timing.lock().force_reanchor = true;
+            Inner::apply(inner, |p, r| p.prev(r));
+        });
     }
 
     pub fn stop(&self) {
-        self.queue(|inner| Inner::apply(inner, |p, _| p.stop()));
+        self.queue(|inner| {
+            inner.timing.lock().force_reanchor = true;
+            Inner::apply(inner, |p, _| p.stop());
+        });
     }
 
     pub fn set_auto_advance(&self, active: bool) {
@@ -820,7 +1221,11 @@ impl Inner {
 
     fn resolve_session_item(&self, item: &SessionPlaylistItem) -> Option<PlaylistItem> {
         match item {
-            SessionPlaylistItem::Stop => Some(PlaylistItem::Stop),
+            SessionPlaylistItem::Stop {
+                planned_duration_seconds,
+            } => Some(PlaylistItem::Stop {
+                planned_duration_seconds: *planned_duration_seconds,
+            }),
             SessionPlaylistItem::Track { id, cue_override } => self
                 .lookup(*id)
                 .ok()
@@ -939,6 +1344,22 @@ impl Inner {
         Inner::apply(inner, move |p, _| p.on_duration_measured(id, duration));
     }
 
+    fn observe(inner: &Arc<Inner>, observation: Observation) {
+        let playlist = inner.playlist.lock();
+        if !inner.timing.lock().accept(&playlist, observation) {
+            return;
+        }
+        let snapshot = inner.project_snapshot(&playlist);
+        let _ = inner.app.emit(PLAYLIST_STATE_EVENT, &snapshot);
+    }
+
+    fn project_snapshot(&self, playlist: &Playlist) -> Snapshot {
+        let correction = audio_timing::correct_host_clock();
+        self.timing
+            .lock()
+            .project(playlist, audio_timing::capture(), correction)
+    }
+
     /// Run one transition and settle its consequences.
     ///
     /// Two ordering rules, both about re-entrancy. Tauri dispatches to backend
@@ -970,7 +1391,7 @@ impl Inner {
             // prefetch window does: a queue mutation, a track change and a
             // refill all move what comes next.
             transition.effects.extend(playlist.reconcile_arm());
-            let snapshot = playlist.snapshot();
+            let snapshot = inner.project_snapshot(&playlist);
             let window = playlist.prefetch_window();
             (transition, snapshot, window)
         };
@@ -1047,8 +1468,15 @@ impl Inner {
         let gain = self.replay_gain(&info);
         // Arming is not air: the outgoing track is still playing, which is
         // exactly the slack the stall watchdog is there to use.
-        self.bus
-            .send_arm(Self::load_cmd(&info, 0.0, false, false, gain));
+        let occurrence_id = self.playlist.lock().next_occurrence_id().map(str::to_owned);
+        self.bus.send_arm(Self::load_cmd(
+            &info,
+            0.0,
+            false,
+            false,
+            gain,
+            occurrence_id,
+        ));
     }
 
     /// Resolve a track's row and fold in the markers this airing plays under.
@@ -1088,9 +1516,11 @@ impl Inner {
         autoplay: bool,
         bound_dead_air: bool,
         gain: f32,
+        occurrence_id: Option<String>,
     ) -> Cmd {
         Cmd::Load {
             id: info.id,
+            occurrence_id,
             path: PathBuf::from(info.path.clone()),
             duration: (info.duration > 0.0).then_some(info.duration),
             cue_points: info.cue_points,
@@ -1130,6 +1560,10 @@ impl Inner {
             autoplay,
             bound_dead_air,
             self.replay_gain(&info),
+            self.playlist
+                .lock()
+                .current_occurrence_id()
+                .map(str::to_owned),
         );
         self.broadcast.set_pending_track(info.into());
         self.bus.send_main(cmd);
@@ -1177,6 +1611,304 @@ mod tests {
     use super::*;
     use crate::library::db::{SavedEntryInput, TrackInsert};
 
+    struct NoTimingRefill;
+
+    impl Refiller for NoTimingRefill {
+        fn generate(&self, _: i64, _: &[&Track]) -> Vec<Track> {
+            vec![]
+        }
+        fn buffer(&self) -> i64 {
+            0
+        }
+        fn threshold(&self) -> i64 {
+            0
+        }
+        fn history_cap(&self) -> usize {
+            100
+        }
+    }
+
+    fn timing_track(id: i64, duration: f64) -> Track {
+        Track {
+            id,
+            duration,
+            ..Default::default()
+        }
+    }
+
+    fn capture(seconds: f64) -> audio_timing::Capture {
+        audio_timing::Capture {
+            monotonic_seconds: seconds,
+            unix_ms: 1_000_000.0 + seconds * 1000.0,
+        }
+    }
+
+    fn observation(
+        playlist: &Playlist,
+        sequence: u64,
+        seconds: f64,
+        position: f64,
+        playing: bool,
+    ) -> Observation {
+        Observation {
+            sequence,
+            instance_id: format!(
+                "instance-{}",
+                playlist.current_occurrence_id().unwrap_or_default()
+            ),
+            occurrence_id: playlist.current_occurrence_id().map(str::to_owned),
+            track_id: playlist.snapshot().current.as_ref().map(|track| track.id),
+            captured: capture(seconds),
+            position_seconds: position,
+            duration_seconds: Some(10.4),
+            next_start_seconds: Some(10.4),
+            playing,
+            buffering: false,
+            interrupted: false,
+            tail_remaining_seconds: 0.0,
+            seek_revision: 0,
+        }
+    }
+
+    fn displayed(snapshot: &Snapshot, seconds: f64) -> Vec<Option<i64>> {
+        let delay = (snapshot.timing.delay_seconds
+            + snapshot.timing.delay_started_at_unix_ms.map_or(0.0, |at| {
+                ((capture(seconds).unix_ms - at) / 1000.0).max(0.0)
+            }))
+        .floor() as i64;
+        snapshot
+            .timing
+            .entries
+            .iter()
+            .map(|entry| entry.base_second.map(|base| base + delay))
+            .collect()
+    }
+
+    #[test]
+    fn operator_fade_completions_revise_the_schedule_at_the_actual_transition() {
+        for action in ["handover", "end", "stop"] {
+            let mut playlist = Playlist::new();
+            let mut current = timing_track(1, 100.0);
+            current.cue_points.next_start_ms = Some(90_000);
+            playlist.add(current, None);
+            playlist.add(timing_track(2, 10.0), None);
+            playlist.add(timing_track(3, 10.0), None);
+            playlist.next(&NoTimingRefill);
+            playlist.on_loaded(1);
+            let mut timing = TimingState::default();
+            let mut started = observation(&playlist, 1, 0.0, 0.0, true);
+            started.duration_seconds = Some(100.0);
+            started.next_start_seconds = Some(90.0);
+            timing.accept(&playlist, started);
+            let initial = timing.project(&playlist, capture(0.0), 0.0);
+            assert_eq!(displayed(&initial, 0.0), vec![Some(1090), Some(1100)]);
+            match action {
+                "handover" => {
+                    let event: HandoverEvent =
+                        serde_json::from_str(r#"{"to":2,"manual":true}"#).unwrap();
+                    timing.manual_transition(event.manual);
+                    playlist.on_handover(event.to, &NoTimingRefill);
+                }
+                "end" => {
+                    let event: EndEvent = serde_json::from_str(r#"{"manual":true}"#).unwrap();
+                    timing.manual_transition(event.manual);
+                    playlist.on_ended(&NoTimingRefill);
+                }
+                _ => {
+                    timing.manual_transition(true);
+                    playlist.stop();
+                }
+            }
+            let revised = timing.project(&playlist, capture(10.0), 0.0);
+            let expected = if action == "stop" {
+                vec![Some(1010), Some(1020)]
+            } else {
+                vec![Some(1020)]
+            };
+            assert_eq!(displayed(&revised, 10.0), expected, "{action}");
+        }
+    }
+
+    #[test]
+    fn transport_start_after_an_unplanned_hold_freezes_fractional_delay_without_a_jump() {
+        let mut playlist = Playlist::new();
+        playlist.restore_hold(
+            HoldingStop {
+                occurrence_id: "hold".into(),
+                planned_duration_seconds: None,
+                elapsed_seconds: 0.0,
+                captured_at_unix_ms: 0.0,
+                block_id: None,
+            },
+            None,
+        );
+        playlist.add(timing_track(1, 2.6), None);
+        playlist.add(timing_track(2, 2.6), None);
+        let mut timing = TimingState::default();
+        timing.project(&playlist, capture(0.6), 0.0);
+        let before = timing.project(&playlist, capture(4.4), 0.0);
+        let target = playlist.next_occurrence_id().unwrap().to_owned();
+        timing.prepare_start(&playlist, Some(&target), capture(4.4));
+        assert!(!timing.force_reanchor);
+        playlist.next(&NoTimingRefill);
+        timing.project(&playlist, capture(4.4), 0.0);
+        let mut started = observation(&playlist, 1, 4.45, 0.0, true);
+        started.duration_seconds = Some(2.6);
+        started.next_start_seconds = Some(2.6);
+        timing.accept(&playlist, started);
+        let after = timing.project(&playlist, capture(8.0), 0.0);
+        assert_eq!(displayed(&before, 4.4)[1..], displayed(&after, 8.0));
+        assert_eq!(displayed(&after, 8.0), vec![Some(1006)]);
+    }
+
+    #[test]
+    fn starting_before_a_planned_hold_deadline_revises_the_schedule() {
+        let mut playlist = Playlist::new();
+        playlist.restore_hold(
+            HoldingStop {
+                occurrence_id: "hold".into(),
+                planned_duration_seconds: Some(120),
+                elapsed_seconds: 0.0,
+                captured_at_unix_ms: 0.0,
+                block_id: None,
+            },
+            None,
+        );
+        playlist.add(timing_track(1, 2.6), None);
+        let mut timing = TimingState::default();
+        timing.project(&playlist, capture(0.0), 0.0);
+        timing.prepare_start(&playlist, playlist.next_occurrence_id(), capture(5.0));
+        assert!(timing.force_reanchor);
+    }
+
+    #[test]
+    fn coherent_parked_restore_revises_the_preload_estimate_to_its_saved_position() {
+        let mut playlist = Playlist::new();
+        playlist.hydrate(
+            vec![PlaylistItem::track(timing_track(2, 10.0))],
+            Some(timing_track(1, 100.0)),
+            None,
+            50.0,
+            false,
+            true,
+            vec![],
+        );
+        let mut timing = TimingState::default();
+        timing.project(&playlist, capture(0.0), 0.0);
+        let mut parked = observation(&playlist, 1, 0.05, 50.0, false);
+        parked.duration_seconds = Some(100.0);
+        parked.next_start_seconds = Some(100.0);
+        timing.accept(&playlist, parked);
+        let restored = timing.project(&playlist, capture(0.5), 0.0);
+        assert_eq!(displayed(&restored, 0.5), vec![Some(1050)]);
+    }
+
+    #[test]
+    fn captured_pause_and_resume_ignore_delivery_latency_and_stale_observations() {
+        let mut playlist = Playlist::new();
+        playlist.add(timing_track(1, 10.4), None);
+        playlist.add(timing_track(2, 10.4), None);
+        playlist.next(&NoTimingRefill);
+        let mut timing = TimingState::default();
+        assert!(timing.accept(&playlist, observation(&playlist, 1, 0.0, 0.0, true)));
+        let initial = timing.project(&playlist, capture(3.0), 0.0);
+        assert_eq!(displayed(&initial, 3.0), vec![Some(1010)]);
+
+        assert!(timing.accept(&playlist, observation(&playlist, 2, 2.0, 2.0, false)));
+        let paused = timing.project(&playlist, capture(5.0), 0.0);
+        assert_eq!(displayed(&paused, 5.0), vec![Some(1013)]);
+        assert!(!timing.accept(&playlist, observation(&playlist, 1, 1.0, 1.0, true)));
+        assert!(timing.accept(&playlist, observation(&playlist, 3, 5.4, 2.0, true)));
+        let resumed = timing.project(&playlist, capture(8.0), 0.0);
+        assert_eq!(displayed(&resumed, 8.0), vec![Some(1013)]);
+        assert_eq!(
+            displayed(&timing.project(&playlist, capture(9.0), 0.0), 9.0),
+            vec![Some(1013)]
+        );
+    }
+
+    #[test]
+    fn normal_consumption_and_late_actual_start_keep_the_same_schedule() {
+        let mut playlist = Playlist::new();
+        for id in 1..=4 {
+            playlist.add(timing_track(id, 10.4), None);
+        }
+        playlist.next(&NoTimingRefill);
+        let mut timing = TimingState::default();
+        timing.accept(&playlist, observation(&playlist, 1, 0.0, 0.0, true));
+        let initial = timing.project(&playlist, capture(0.0), 0.0);
+        playlist.on_loaded(1);
+        playlist.on_ended(&NoTimingRefill);
+        let pending = timing.project(&playlist, capture(10.45), 0.0);
+        assert_eq!(displayed(&pending, 10.45), displayed(&initial, 10.45)[1..]);
+        let mut loading = observation(&playlist, 2, 10.45, 0.0, false);
+        loading.buffering = true;
+        timing.accept(&playlist, loading);
+        timing.project(&playlist, capture(13.0), 0.0);
+        timing.accept(&playlist, observation(&playlist, 3, 10.5, 0.0, true));
+        let started = timing.project(&playlist, capture(15.0), 0.0);
+        assert_eq!(displayed(&started, 15.0), displayed(&initial, 15.0)[1..]);
+        assert!(!timing.force_reanchor);
+    }
+
+    #[test]
+    fn a_late_observation_for_a_previous_airing_of_the_same_track_is_rejected() {
+        let mut playlist = Playlist::new();
+        playlist.add(timing_track(1, 10.4), None);
+        playlist.add(timing_track(1, 10.4), None);
+        playlist.next(&NoTimingRefill);
+        let old = observation(&playlist, 5, 0.0, 0.0, true);
+        playlist.next(&NoTimingRefill);
+        let mut timing = TimingState::default();
+        assert!(!timing.accept(&playlist, old));
+        assert!(timing.accept(&playlist, observation(&playlist, 6, 1.0, 0.0, true)));
+    }
+
+    #[test]
+    fn held_stop_restores_saved_elapsed_without_counting_time_closed() {
+        let mut playlist = Playlist::new();
+        playlist.add(timing_track(2, 10.4), None);
+        playlist.restore_hold(
+            HoldingStop {
+                occurrence_id: "hold".into(),
+                planned_duration_seconds: Some(120),
+                elapsed_seconds: 53.0,
+                captured_at_unix_ms: 0.0,
+                block_id: None,
+            },
+            None,
+        );
+        let mut timing = TimingState::default();
+        let opened = timing.project(&playlist, capture(1800.0), 0.0);
+        assert_eq!(opened.holding_stop.unwrap().elapsed_seconds, 53.0);
+        let later = timing.project(&playlist, capture(1802.5), 0.0);
+        assert_eq!(later.holding_stop.as_ref().unwrap().elapsed_seconds, 55.5);
+        assert_eq!(displayed(&later, 1802.5), vec![Some(2867)]);
+    }
+
+    #[test]
+    fn planned_hold_deadline_does_not_move_when_upcoming_is_edited() {
+        let mut playlist = Playlist::new();
+        playlist.restore_hold(
+            HoldingStop {
+                occurrence_id: "hold".into(),
+                planned_duration_seconds: Some(120),
+                elapsed_seconds: 0.0,
+                captured_at_unix_ms: 0.0,
+                block_id: None,
+            },
+            None,
+        );
+        playlist.add(timing_track(1, 10.4), None);
+        let mut timing = TimingState::default();
+        let initial = timing.project(&playlist, capture(0.0), 0.0);
+        playlist.add(timing_track(2, 10.4), None);
+        let edited = timing.project(&playlist, capture(60.5), 0.0);
+        assert_eq!(displayed(&initial, 60.5)[0], displayed(&edited, 60.5)[0]);
+        assert_eq!(displayed(&edited, 125.5), vec![Some(1125), Some(1135)]);
+        assert_eq!(edited.holding_stop.unwrap().elapsed_seconds, 60.5);
+    }
+
     #[test]
     fn a_queued_copy_keeps_its_title_kind_and_entries_after_the_saved_original_changes() {
         let db = Db::open_in_memory().unwrap();
@@ -1195,7 +1927,9 @@ mod tests {
                 SavedPlaylistKind::PreparedShow,
                 &[
                     SavedEntryInput::Track(1),
-                    SavedEntryInput::Stop,
+                    SavedEntryInput::Stop {
+                        planned_duration_seconds: None,
+                    },
                     SavedEntryInput::Track(2),
                 ],
                 1,
@@ -1214,7 +1948,9 @@ mod tests {
                     id: 1,
                     content_type: "music".into()
                 },
-                SavedQueueEntry::Stop,
+                SavedQueueEntry::Stop {
+                    planned_duration_seconds: None
+                },
                 SavedQueueEntry::Track {
                     id: 2,
                     content_type: "music".into()
@@ -1235,7 +1971,9 @@ mod tests {
                 id: 99,
                 content_type: "music".into(),
             },
-            SavedQueueEntry::Stop,
+            SavedQueueEntry::Stop {
+                planned_duration_seconds: None,
+            },
             SavedQueueEntry::Track {
                 id: 1,
                 content_type: "music".into(),

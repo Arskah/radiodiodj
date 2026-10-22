@@ -18,6 +18,8 @@ import type {
   LibraryPath,
   LibraryStats,
   PlaylistItem,
+  HoldingStop,
+  PlaylistTiming,
   QueueDestination,
   QueueNode,
   Recalculated,
@@ -69,6 +71,12 @@ import {
   sizeLabel,
 } from "./savedPlaylists";
 import { flattenQueue, occurrenceAt, presentCollapsedIds } from "./queueBlocks";
+import {
+  occurrenceEta,
+  PlaylistClock,
+  stopElapsedSeconds,
+  type ClockSource,
+} from "./playlistTiming";
 
 const logger = {
   error: (...args: unknown[]) => console.error(...args),
@@ -246,6 +254,21 @@ export class AppState {
   queue = $state<QueueNode[]>([]);
   /** Block whose child is on air or waiting behind a Stop. */
   currentBlockId = $state<string | null>(null);
+  /** Consumed Stop, distinct from a stopped or empty deck. */
+  holdingStop = $state<HoldingStop | null>(null);
+  /** Backend schedule; playhead events never replace or recalculate it. */
+  playlistTiming = $state<PlaylistTiming>({
+    entries: [],
+    delaySeconds: 0,
+    delayStartedAtUnixMs: null,
+  });
+  /** Shared monotonic-anchored Unix milliseconds for the clock, hold and ETAs. */
+  clockNow = $state(0);
+  private playlistRevision = -1;
+  private clock: PlaylistClock;
+  private clockUsers = 0;
+  private clockTimer: ReturnType<typeof setInterval> | null = null;
+  private clockSyncPending = false;
   /** Disclosure is presentation-only and survives snapshots and restart. */
   /** Renderer-only presentation state, saved with the session. */
   collapsedBlockIds = $state<string[]>([]);
@@ -477,7 +500,13 @@ export class AppState {
   private throttledSave: Throttled;
   private sessionLoaded = false;
 
-  constructor(backend?: DeckTransport, cueBackend?: DeckBackend) {
+  constructor(
+    backend?: DeckTransport,
+    cueBackend?: DeckBackend,
+    clockSource?: ClockSource,
+  ) {
+    this.clock = new PlaylistClock(clockSource);
+    this.clockNow = this.clock.now();
     this.backend = backend ?? new NativeBackend("main");
     this.cueBackend = cueBackend ?? new NativeBackend("cue");
     this.throttledSave = throttle(
@@ -1115,6 +1144,27 @@ export class AppState {
     });
   }
 
+  /** Change the plan of one queued Stop copy. */
+  setStopDuration(
+    occurrenceId: string,
+    plannedDurationSeconds: number | null,
+  ): void {
+    this.send(
+      api.playlistSetStopDuration(occurrenceId, plannedDurationSeconds),
+    );
+  }
+
+  /** Saved-list permissions apply to a stored Stop's plan. */
+  setSavedStopDuration(
+    entryId: number,
+    plannedDurationSeconds: number | null,
+  ): void {
+    if (!this.isAdmin) return;
+    this.send(
+      api.savedPlaylistSetStopDuration(entryId, plannedDurationSeconds),
+    );
+  }
+
   addStopMarker(): void {
     this.send(api.playlistAddStopMarker());
   }
@@ -1163,6 +1213,49 @@ export class AppState {
     void call.catch((err) => logger.error("Playlist command failed:", err));
   }
 
+  /** Share one timer between all clock consumers, stopping it after the last. */
+  startClock(): () => void {
+    this.clockUsers += 1;
+    if (this.clockTimer === null) {
+      this.sampleClock();
+      this.clockTimer = setInterval(() => this.sampleClock(), 100);
+    }
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      this.clockUsers -= 1;
+      if (this.clockUsers === 0 && this.clockTimer !== null) {
+        clearInterval(this.clockTimer);
+        this.clockTimer = null;
+      }
+    };
+  }
+
+  /** A late timer catches up every display using the same elapsed-time sample. */
+  sampleClock(): void {
+    this.clockNow = this.clock.now();
+    if (!this.clock.needsReanchor() || this.clockSyncPending) return;
+    this.clockSyncPending = true;
+    void api
+      .playlistSync()
+      .then((snapshot) => {
+        this.clockNow = this.clock.reanchor();
+        this.applySnapshot(snapshot);
+      })
+      .catch((err) => {
+        logger.error("Playlist clock sync failed:", err);
+      })
+      .finally(() => {
+        this.clockSyncPending = false;
+      });
+  }
+
+  /** Display only the backend's occurrence schedule and its one shared delay. */
+  upcomingEta(occurrenceId: string): number | null {
+    return occurrenceEta(this.playlistTiming, occurrenceId, this.clockNow);
+  }
+
   get historyDisplay(): Track[] {
     return this.history.slice().reverse();
   }
@@ -1179,6 +1272,10 @@ export class AppState {
    * queue, what is on air, and the auto flags are all projections of it.
    */
   private applySnapshot(snapshot: PlaylistSnapshot): void {
+    if (snapshot.revision < this.playlistRevision) return;
+    this.playlistRevision = snapshot.revision;
+    this.playlistTiming = snapshot.timing;
+    this.holdingStop = snapshot.holdingStop;
     // Older flat snapshots are still used by the renderer's mock backend.
     // The native backend sends stable occurrence IDs on every node.
     this.queue = snapshot.playlist.map((node, index) =>
@@ -2011,7 +2108,10 @@ export class AppState {
   private async persistSession(): Promise<void> {
     const persistedItem = (item: PlaylistItem) =>
       isStopMarker(item)
-        ? ({ kind: "stop" } as const)
+        ? ({
+            kind: "stop",
+            plannedDurationSeconds: item.plannedDurationSeconds ?? null,
+          } as const)
         : ({
             kind: "track" as const,
             id: item.track.id,
@@ -2022,7 +2122,10 @@ export class AppState {
         playlistIds: this.playlist.filter(isTrackItem).map((i) => i.track.id),
         playlistItems: this.playlist.map((i) =>
           isStopMarker(i)
-            ? { kind: "stop" as const }
+            ? {
+                kind: "stop" as const,
+                plannedDurationSeconds: i.plannedDurationSeconds ?? null,
+              }
             : {
                 kind: "track" as const,
                 id: i.track.id,
@@ -2048,6 +2151,17 @@ export class AppState {
               },
         ),
         currentBlockId: this.currentBlockId,
+        holdingStop: this.holdingStop
+          ? {
+              occurrenceId: this.holdingStop.occurrenceId,
+              plannedDurationSeconds: this.holdingStop.plannedDurationSeconds,
+              elapsedSeconds: stopElapsedSeconds(
+                this.holdingStop,
+                this.clock.now(),
+              ),
+              blockId: this.holdingStop.blockId,
+            }
+          : null,
         collapsedBlockIds: this.collapsedBlockIds,
         currentTrackId: this.currentTrack?.id ?? null,
         currentTime: this.currentTime,

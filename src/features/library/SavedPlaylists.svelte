@@ -22,6 +22,7 @@
   } from "../../shared/selection";
   import ContextMenu from "../ui/ContextMenu.svelte";
   import type { MenuItem } from "../ui/contextMenu";
+  import StopDurationEditor from "../playlist/StopDurationEditor.svelte";
 
   const shown = $derived.by<SavedPlaylistSummary[]>(() => {
     const query = app.searchQuery.trim().toLowerCase();
@@ -880,8 +881,16 @@
                 class="material-symbols-outlined saved-stop-icon"
                 aria-hidden="true">block</span
               >
+              <span>Stop</span>
+              <StopDurationEditor
+                plannedDurationSeconds={entry.plannedDurationSeconds ?? null}
+                disabled={!app.isAdmin}
+                onSave={(seconds) =>
+                  app.setSavedStopDuration(entry.id, seconds)}
+              />
             {:else if entry.track}
               <MissingBadge trackId={entry.track.id} />
+              {title(entry)}
             {:else}
               <span
                 class="missing-badge"
@@ -889,8 +898,8 @@
                 aria-label="Unmatched entry"
                 ><span class="material-symbols-outlined">link_off</span></span
               >
+              {title(entry)}
             {/if}
-            {title(entry)}
           </span>
           <span class="track-artist">{artist(entry)}</span>
           <span class="track-album">{album(entry)}</span>
