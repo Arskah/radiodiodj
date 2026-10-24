@@ -1,5 +1,5 @@
 # ── base ───────────────────────────────────────────────────────────────
-FROM node:24.21.0-trixie@sha256:33397c740200dc823a0b3e6ea71fb3b4173ad6fc7bdebad62b2c7a5bd37f5dc5 AS base
+FROM node:24.22.0-trixie@sha256:03795b45b3153ccaf7459e36c09d4e7ad6bdc08c5c2c2df1fce7e9f465c9103f AS base
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
