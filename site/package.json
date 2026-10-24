@@ -11,11 +11,11 @@
   },
   "packageManager": "pnpm@12.10.1+sha512.ba40a37eb1a370d60fea8c4cf1d364c13bcccef518e98ad2bcee954f539d38da37458e58261a3fa55e06523450ea0ffff9f497b135be41f2c15c1642bacace6c",
   "dependencies": {
-    "@astrojs/check": "0.9.10",
+    "@astrojs/check": "0.9.12",
     "@fontsource/inter": "5.3.0",
     "@fontsource/jetbrains-mono": "5.3.0",
     "@types/node": "25.9.9",
-    "astro": "7.3.8",
+    "astro": "7.4.2",
     "sharp": "0.35.5",
     "typescript": "6.0.3"
   }
