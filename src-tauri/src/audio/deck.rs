@@ -116,6 +116,18 @@ fn ramp_gain(from: f32, to: f32, elapsed: Duration, ms: u64) -> (f32, bool) {
     (from + (to - from) * t, false)
 }
 
+/// A live tail fade releases its deck before the stored Cue Out.
+fn remaining_with_stop_ramp(remaining: f64, ramp: Option<Ramp>, now: Instant) -> f64 {
+    ramp.filter(|ramp| ramp.on_complete == Some(RampDone::Stop))
+        .map_or(remaining, |ramp| {
+            remaining.min(
+                (ramp.ms as f64 / 1000.0
+                    - now.saturating_duration_since(ramp.started).as_secs_f64())
+                .max(0.0),
+            )
+        })
+}
+
 /// Whether the deck holding `main` should hand over on this tick: it has
 /// reached the outgoing track's next start, and there is a deck armed and
 /// decoded to hand over to.
@@ -189,6 +201,8 @@ pub(super) struct Deck {
     sink_generation: u64,
     /// Track id of the most recent `Load`, reported in `:load-failed`.
     current_id: Option<i64>,
+    occurrence_id: Option<String>,
+    seek_revision: u64,
     current_path: Option<PathBuf>,
     current_duration: Option<f64>,
     /// The loaded track's cue points, resolved against the duration the decoder
@@ -254,6 +268,8 @@ impl Deck {
             sink: None,
             sink_generation: 0,
             current_id: None,
+            occurrence_id: None,
+            seek_revision: 0,
             current_path: None,
             current_duration: None,
             cue: Resolved::default(),
@@ -403,6 +419,7 @@ impl Deck {
         self.load_issued = None;
         self.load_bounds_air = false;
         self.current_id = None;
+        self.occurrence_id = None;
         self.current_path = None;
         self.current_duration = None;
         self.cue = Resolved::default();
@@ -420,6 +437,7 @@ impl Deck {
 struct Handover {
     from: Option<i64>,
     to: i64,
+    manual: bool,
 }
 
 /// One entry of the `program:roles` snapshot: which slot holds which role, and
@@ -669,6 +687,7 @@ fn apply(
     match cmd {
         Cmd::Load {
             id,
+            occurrence_id,
             path,
             duration,
             cue_points,
@@ -677,6 +696,8 @@ fn apply(
             bound_dead_air,
             gain,
         } => {
+            deck.occurrence_id = occurrence_id;
+            deck.seek_revision = 0;
             start_load(
                 app,
                 output,
@@ -720,6 +741,7 @@ fn apply(
         }
         Cmd::Stop => stop_deck(app, output, deck, events),
         Cmd::Seek(s) => {
+            deck.seek_revision = deck.seek_revision.wrapping_add(1);
             // Air seconds in, absolute file position out — the caller neither
             // knows nor needs to know where the track's audio really starts.
             let target = deck.cue.file_pos(s);
@@ -1071,6 +1093,7 @@ fn hand_over(
     topic: Option<&'static str>,
     main: usize,
     arm: usize,
+    manual: bool,
 ) {
     let from = decks[main].current_id;
     let Some(to) = decks[arm].current_id else {
@@ -1102,7 +1125,7 @@ fn hand_over(
 
     log::info!("program bus: handover {:?} -> {}", from, to);
     if let Some(topic) = topic {
-        let _ = app.emit(topic, Handover { from, to });
+        let _ = app.emit(topic, Handover { from, to, manual });
     }
 }
 
@@ -1164,7 +1187,7 @@ fn hand_over_now(
     let arm_ready = armed.is_some_and(|a| decks[a].active && !decks[a].loading);
     match armed.filter(|_| hand_over_now_allowed(arm_ready, tail_present)) {
         Some(arm) => {
-            hand_over(app, decks, events, topic, m, arm);
+            hand_over(app, decks, events, topic, m, arm, true);
             // `hand_over` has just made this deck the tail.
             decks[m].start_ramp(0.0, fade_ms, Some(RampDone::Stop));
         }
@@ -1221,6 +1244,8 @@ pub(super) fn run(
         let _ = app.emit(topic, &roles);
     }
 
+    let mut timing_sequence = 0_u64;
+    let mut last_timing_state = None;
     loop {
         loop {
             match rx.try_recv() {
@@ -1402,7 +1427,10 @@ pub(super) fn run(
             let role_index = deck.role as usize;
             let announce = announces_faded_out(done, deck.role);
             if ends_the_track(done, deck.role) {
-                let _ = app.emit(&events[role_index].topics.ended, ());
+                let _ = app.emit(
+                    &events[role_index].topics.ended,
+                    serde_json::json!({ "manual": true }),
+                );
                 main_ended = true;
             }
             stop_deck(&app, &mut output, deck, &events[role_index]);
@@ -1429,7 +1457,7 @@ pub(super) fn run(
                     decks[m].active && !decks[m].loading,
                     decks[arm].active && !decks[arm].loading,
                 ) {
-                    hand_over(&app, &mut decks, &events, handover_topic, m, arm);
+                    hand_over(&app, &mut decks, &events, handover_topic, m, arm, false);
                 }
             }
         }
@@ -1489,6 +1517,69 @@ pub(super) fn run(
             }
         }
 
+        if on_air {
+            if let Some(main) = decks.iter().find(|deck| deck.role == DeckRole::Main) {
+                let tail = decks.iter().find(|deck| deck.role == DeckRole::Tail);
+                let state = (
+                    main.slot,
+                    main.generation,
+                    main.current_id,
+                    main.active,
+                    main.loading || main.pending_load.is_some(),
+                    main.sink.as_ref().is_none_or(|sink| sink.is_paused()),
+                    main.seek_revision,
+                    main.pending_load.is_some()
+                        || (main.loading
+                            && main
+                                .load_issued
+                                .is_some_and(|issued| issued.elapsed() > TICK_INTERVAL * 2)),
+                    tail.map(|deck| (deck.slot, deck.generation, deck.active)),
+                );
+                if last_timing_state.as_ref() != Some(&state) {
+                    last_timing_state = Some(state);
+                    timing_sequence = timing_sequence.wrapping_add(1);
+                    let position = main
+                        .sink
+                        .as_ref()
+                        .map_or(0.0, |sink| sink.get_pos().as_secs_f64());
+                    let tail_remaining = tail
+                        .filter(|deck| deck.active)
+                        .and_then(|deck| {
+                            let position = deck.sink.as_ref()?.get_pos().as_secs_f64();
+                            deck.cue.cue_out.map(|out| {
+                                let remaining = (out - deck.seek_offset - position).max(0.0);
+                                remaining_with_stop_ramp(remaining, deck.ramp, Instant::now())
+                            })
+                        })
+                        .unwrap_or(0.0);
+                    let observation = super::timing::Observation {
+                        sequence: timing_sequence,
+                        instance_id: format!("{:?}:{}", main.slot, main.generation),
+                        occurrence_id: main.occurrence_id.clone(),
+                        track_id: main.current_id,
+                        captured: super::timing::capture(),
+                        position_seconds: main.cue.air_time(main.seek_offset + position),
+                        duration_seconds: main.cue.air_duration(),
+                        next_start_seconds: main.cue.next_start.map(|at| main.cue.air_time(at)),
+                        playing: main.active
+                            && !main.loading
+                            && main
+                                .sink
+                                .as_ref()
+                                .is_some_and(|sink| !sink.is_paused() && !sink.empty()),
+                        buffering: main.loading || main.pending_load.is_some(),
+                        interrupted: main.pending_load.is_some()
+                            || (main.loading
+                                && main
+                                    .load_issued
+                                    .is_some_and(|issued| issued.elapsed() > TICK_INTERVAL * 2)),
+                        tail_remaining_seconds: tail_remaining,
+                        seek_revision: main.seek_revision,
+                    };
+                    let _ = app.emit(super::timing::TRANSPORT_EVENT, observation);
+                }
+            }
+        }
         thread::sleep(TICK_INTERVAL);
     }
 }
@@ -1500,6 +1591,28 @@ mod tests {
 
     /// The worker only applies a background read if its generation still matches
     /// the latest intent. This mirrors the guard in `apply_load`.
+    #[test]
+    fn captured_tail_timing_uses_the_live_fade_deadline_before_stored_cue_out() {
+        let started = Instant::now();
+        let ramp = Ramp {
+            from: 1.0,
+            to: 0.0,
+            started,
+            ms: 3_000,
+            on_complete: Some(RampDone::Stop),
+        };
+        assert_eq!(remaining_with_stop_ramp(90.0, Some(ramp), started), 3.0);
+        assert_eq!(
+            remaining_with_stop_ramp(89.5, Some(ramp), started + Duration::from_millis(500)),
+            2.5
+        );
+        assert_eq!(remaining_with_stop_ramp(1.0, Some(ramp), started), 1.0);
+        assert_eq!(
+            remaining_with_stop_ramp(87.0, Some(ramp), started + Duration::from_secs(3)),
+            0.0
+        );
+    }
+
     #[test]
     fn stale_generation_is_discarded() {
         let latest = 5u64;
@@ -1812,6 +1925,7 @@ mod tests {
         assert_eq!(tail_companion(&Cmd::Stop), Some(TailAction::Cut));
         assert_eq!(
             tail_companion(&Cmd::Load {
+                occurrence_id: None,
                 id: 1,
                 path: PathBuf::new(),
                 duration: None,
@@ -1891,6 +2005,7 @@ mod tests {
         assert!(cancels_ramp(&Cmd::Stop));
         assert!(cancels_ramp(&Cmd::Seek(3.0)));
         assert!(cancels_ramp(&Cmd::Load {
+            occurrence_id: None,
             id: 1,
             path: PathBuf::new(),
             duration: None,

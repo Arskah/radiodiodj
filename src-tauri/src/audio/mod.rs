@@ -8,3 +8,5 @@ pub mod envelope;
 pub mod levelling;
 pub mod output;
 pub mod player;
+
+pub mod timing;

@@ -270,8 +270,11 @@ over everything in it. A studio whose
 `sync_local.library_id` differs stops syncing and says it has to join again.
 
 **The version rule.** `protocol` is a constant in the build, and the hub carries
-the owner's. A machine that does not know the hub's protocol keeps its database,
-keeps playing, stops syncing and says so. Documents are keyed by column name, so
+the owner's. A studio requires the same protocol as the hub before sending or
+receiving anything. On a mismatch it keeps its database, keeps playing, stops
+syncing and says which installation needs updating. Update the owner first:
+its next claim promotes the hub to its protocol, after which updated studios
+can synchronize. Documents are keyed by column name, so
 inside one protocol a key a build does not know is ignored and one it expected
 is left at its default.
 
@@ -291,9 +294,11 @@ until the next one is due.
 work, then takes what studios sent — leaving out its own rows, which would
 otherwise be the whole library handed back. A studio sends its operator work
 and takes everything. Saved playlists travel with their kind and ordered
-entries, including Stop entries. Older saved-playlist documents without kind
-fields mean `playlist` and track entries. The protocol number is 3: older builds
-must stop syncing because they would read a Stop as an unmatched track.
+entries, including Stop entries and their optional planned duration. Older
+saved-playlist documents without kind fields mean `playlist` and track entries;
+an absent Stop plan means unspecified. The protocol number is 4: older builds
+must stop syncing because they would discard Stop plans. Active holds, elapsed
+time and ETAs belong to one station session and never travel through the hub.
 
 **The hub's address is a connection URL in `config.json`, password included, in
 plain text.** It is the only secret there that is not a hash, and the README's

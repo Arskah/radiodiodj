@@ -19,7 +19,11 @@ pub enum SessionPlaylistItem {
         #[serde(default, rename = "cueOverride", alias = "cue_override")]
         cue_override: Option<CuePoints>,
     },
-    Stop,
+    Stop {
+        /// Presenter’s planned pause in whole seconds; `None` is unspecified.
+        #[serde(default, rename = "plannedDurationSeconds")]
+        planned_duration_seconds: Option<u32>,
+    },
 }
 
 /// One queued occurrence persisted by id rather than by a stale track snapshot.
@@ -58,9 +62,27 @@ pub enum SessionQueueNode {
     },
 }
 
+/// Local consumed Stop state; no wall-clock deadline crosses a restart.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionHoldingStop {
+    /// Saved identity of this consumed occurrence.
+    #[serde(default)]
+    pub occurrence_id: String,
+    /// Presenter’s planned pause, in whole seconds.
+    pub planned_duration_seconds: Option<u32>,
+    /// Time the application spent holding before the latest save.
+    pub elapsed_seconds: f64,
+    /// Queued block whose consumed Stop remains active.
+    pub block_id: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionState {
+    /// A consumed Stop restored at saved elapsed time, excluding closed time.
+    #[serde(default)]
+    pub holding_stop: Option<SessionHoldingStop>,
     #[serde(default)]
     pub playlist_ids: Vec<i64>,
     #[serde(default)]
@@ -108,6 +130,7 @@ fn default_volume() -> f64 {
 impl Default for SessionState {
     fn default() -> Self {
         Self {
+            holding_stop: None,
             playlist_ids: vec![],
             playlist_items: vec![],
             queue: None,
@@ -194,6 +217,38 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn planned_stops_and_local_hold_round_trip_without_a_saved_deadline() {
+        let dir = tempdir().unwrap();
+        let session = Session::open(dir.path());
+        let state = SessionState {
+            playlist_items: vec![SessionPlaylistItem::Stop {
+                planned_duration_seconds: Some(0),
+            }],
+            holding_stop: Some(SessionHoldingStop {
+                occurrence_id: "consumed".into(),
+                planned_duration_seconds: Some(120),
+                elapsed_seconds: 53.25,
+                block_id: Some("show".into()),
+            }),
+            ..Default::default()
+        };
+        session.save(state.clone()).unwrap();
+        let restored = Session::open(dir.path()).load();
+        assert_eq!(restored.playlist_items, state.playlist_items);
+        assert_eq!(restored.holding_stop, state.holding_stop);
+        let json = serde_json::to_value(restored).unwrap();
+        assert_eq!(json["playlistItems"][0]["plannedDurationSeconds"], 0);
+        assert!(json["holdingStop"].get("capturedAtUnixMs").is_none());
+        let old: SessionPlaylistItem = serde_json::from_str(r#"{"kind":"stop"}"#).unwrap();
+        assert_eq!(
+            old,
+            SessionPlaylistItem::Stop {
+                planned_duration_seconds: None
+            }
+        );
+    }
+
+    #[test]
     fn defaults_when_missing_file() {
         let dir = tempdir().unwrap();
         let session = Session::open(dir.path());
@@ -227,7 +282,9 @@ mod tests {
                         },
                         SessionQueueChild {
                             id: "child-2".into(),
-                            item: SessionPlaylistItem::Stop,
+                            item: SessionPlaylistItem::Stop {
+                                planned_duration_seconds: None,
+                            },
                         },
                     ],
                 },
@@ -362,7 +419,9 @@ mod tests {
                     id: 7,
                     cue_override: None,
                 },
-                SessionPlaylistItem::Stop,
+                SessionPlaylistItem::Stop {
+                    planned_duration_seconds: None,
+                },
                 SessionPlaylistItem::Track {
                     id: 9,
                     cue_override: None,
@@ -381,7 +440,9 @@ mod tests {
                     id: 7,
                     cue_override: None,
                 },
-                SessionPlaylistItem::Stop,
+                SessionPlaylistItem::Stop {
+                    planned_duration_seconds: None
+                },
                 SessionPlaylistItem::Track {
                     id: 9,
                     cue_override: None,
@@ -412,7 +473,9 @@ mod tests {
                     id: 7,
                     cue_override: None,
                 },
-                SessionPlaylistItem::Stop
+                SessionPlaylistItem::Stop {
+                    planned_duration_seconds: None
+                }
             ]
         );
     }

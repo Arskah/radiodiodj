@@ -430,9 +430,13 @@ struct SavedAppend {
 fn saved_entries(items: &[PlaylistItem]) -> Vec<SavedEntryInput> {
     items
         .iter()
-        .map(|item| match item.as_track() {
-            Some(track) => SavedEntryInput::Track(track.id),
-            None => SavedEntryInput::Stop,
+        .map(|item| match item {
+            PlaylistItem::Track { track, .. } => SavedEntryInput::Track(track.id),
+            PlaylistItem::Stop {
+                planned_duration_seconds,
+            } => SavedEntryInput::Stop {
+                planned_duration_seconds: *planned_duration_seconds,
+            },
         })
         .collect()
 }
@@ -483,7 +487,7 @@ async fn playlist_save_as(
         let kind = kind.unwrap_or_else(|| {
             if entries
                 .iter()
-                .any(|entry| matches!(entry, SavedEntryInput::Stop))
+                .any(|entry| matches!(entry, SavedEntryInput::Stop { .. }))
             {
                 SavedPlaylistKind::PreparedShow
             } else {
@@ -573,6 +577,24 @@ async fn saved_playlist_add_stop(
     let db = Arc::clone(&app.db);
     blocking(move || {
         db.add_saved_stop(id, index, now_ms()).map_err(err)?;
+        saved_playlists::emit(&handle, &db);
+        Ok(())
+    })
+    .await
+}
+
+/// Update a prepared show's Stop plan without changing its authored order.
+#[tauri::command(rename_all = "camelCase")]
+async fn saved_playlist_set_stop_duration(
+    handle: AppHandle,
+    app: State<'_, AppState>,
+    entry_id: i64,
+    planned_duration_seconds: Option<u32>,
+) -> Result<(), String> {
+    let db = Arc::clone(&app.db);
+    blocking(move || {
+        db.set_saved_stop_duration(entry_id, planned_duration_seconds, now_ms())
+            .map_err(err)?;
         saved_playlists::emit(&handle, &db);
         Ok(())
     })
@@ -780,6 +802,17 @@ fn playlist_set_occurrence_cue_points(
 #[tauri::command(rename_all = "camelCase")]
 fn playlist_add_stop_marker(app: State<'_, AppState>) {
     app.playlist.add_stop();
+}
+
+/// Change one queued Stop plan by occurrence, leaving the saved original alone.
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_set_stop_duration(
+    app: State<'_, AppState>,
+    occurrence_id: String,
+    planned_duration_seconds: Option<u32>,
+) {
+    app.playlist
+        .set_stop_duration(occurrence_id, planned_duration_seconds);
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -1230,6 +1263,7 @@ async fn cue_load(
     with_cue(&state, |h| {
         h.send(Cmd::Load {
             id,
+            occurrence_id: None,
             path: std::path::PathBuf::from(track.path),
             duration: if track.duration > 0.0 {
                 Some(track.duration)
@@ -2154,6 +2188,7 @@ pub fn run() {
             saved_playlist_import,
             saved_playlist_add_entries,
             saved_playlist_add_stop,
+            saved_playlist_set_stop_duration,
             saved_playlist_set_kind,
             saved_playlist_remove_entry,
             saved_playlist_bind_entry,
@@ -2165,6 +2200,7 @@ pub fn run() {
             playlist_set_item_cue_points,
             playlist_set_occurrence_cue_points,
             playlist_add_stop_marker,
+            playlist_set_stop_duration,
             playlist_add_filler,
             playlist_remove,
             playlist_remove_occurrence,
@@ -2282,7 +2318,7 @@ mod prepared_show_tests {
     use library::db::TrackInsert;
 
     #[test]
-    fn save_as_entries_keep_stop_order_but_not_the_one_airing_override() {
+    fn save_as_and_file_transfer_keep_stop_plans_but_not_the_one_airing_override() {
         let db = Db::open_in_memory().unwrap();
         for (name, fingerprint) in [("A", "v2:a"), ("B", "v2:b")] {
             db.insert_track(&TrackInsert {
@@ -2303,16 +2339,32 @@ mod prepared_show_tests {
                     ..Default::default()
                 }),
             ),
-            PlaylistItem::Stop,
+            PlaylistItem::Stop {
+                planned_duration_seconds: Some(120),
+            },
             PlaylistItem::track(tracks[1].clone()),
+            PlaylistItem::Stop {
+                planned_duration_seconds: Some(0),
+            },
+            PlaylistItem::Stop {
+                planned_duration_seconds: None,
+            },
         ];
         let entries = saved_entries(&upcoming);
         assert_eq!(
             entries,
             vec![
                 SavedEntryInput::Track(tracks[0].id),
-                SavedEntryInput::Stop,
+                SavedEntryInput::Stop {
+                    planned_duration_seconds: Some(120),
+                },
                 SavedEntryInput::Track(tracks[1].id),
+                SavedEntryInput::Stop {
+                    planned_duration_seconds: Some(0),
+                },
+                SavedEntryInput::Stop {
+                    planned_duration_seconds: None,
+                },
             ]
         );
 
@@ -2330,7 +2382,7 @@ mod prepared_show_tests {
             .import_saved_playlist(&SavedPlaylistFile::parse(&json).unwrap(), 2)
             .unwrap();
         assert_eq!(imported.kind, SavedPlaylistKind::PreparedShow);
-        assert_eq!(imported.stops, 1);
+        assert_eq!(imported.stops, 3);
         let (_, _, offered, unmatched) =
             playlist::service::saved_copy(db.saved_playlist(imported.id).unwrap().unwrap());
         assert_eq!(unmatched, 0);
@@ -2341,16 +2393,53 @@ mod prepared_show_tests {
                     id: tracks[0].id,
                     content_type: "music".into(),
                 },
-                SavedQueueEntry::Stop,
+                SavedQueueEntry::Stop {
+                    planned_duration_seconds: Some(120),
+                },
                 SavedQueueEntry::Track {
                     id: tracks[1].id,
                     content_type: "music".into(),
+                },
+                SavedQueueEntry::Stop {
+                    planned_duration_seconds: Some(0),
+                },
+                SavedQueueEntry::Stop {
+                    planned_duration_seconds: None,
                 },
             ]
         );
         assert_eq!(
             serde_json::to_value(&file.entries[1]).unwrap()["kind"],
             "stop"
+        );
+        assert_eq!(
+            serde_json::to_value(&file.entries[1]).unwrap()["plannedDurationSeconds"],
+            120
+        );
+        assert_eq!(
+            serde_json::to_value(&file.entries[3]).unwrap()["plannedDurationSeconds"],
+            0
+        );
+
+        let mut queued_copy = upcoming;
+        queued_copy[1] = PlaylistItem::Stop {
+            planned_duration_seconds: Some(45),
+        };
+        let edited = db
+            .create_saved_playlist_with_entries(
+                "Edited queue",
+                SavedPlaylistKind::PreparedShow,
+                &saved_entries(&queued_copy),
+                3,
+            )
+            .unwrap();
+        assert_eq!(
+            db.saved_playlist(edited.id).unwrap().unwrap().entries[1].planned_duration_seconds,
+            Some(45)
+        );
+        assert_eq!(
+            db.saved_playlist(made.id).unwrap().unwrap().entries[1].planned_duration_seconds,
+            Some(120)
         );
     }
 }
