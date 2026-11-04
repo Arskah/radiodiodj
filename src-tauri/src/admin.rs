@@ -30,6 +30,7 @@ pub const ADMIN_COMMANDS: &[&str] = &[
     "set_cue_device",
     "set_now_playing_config",
     "set_shared_library",
+    "join_shared_library_again",
     "read_ca_certificate",
     "set_tuning_config",
     "set_theme",

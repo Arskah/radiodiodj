@@ -442,9 +442,21 @@ Library_, as for any path whose folder this computer has not been told
 ([library.md](./library.md#where-a-library-path-is)). Until then its tracks
 are listed and cannot be loaded.
 
-**Joining again.** A studio whose hub now holds a different library stops and
-says so. Setting the role to _Not shared_, restarting, and setting it back
-joins from the start.
+**Joining again.** A studio whose hub now holds a different library — the
+owner's database was restored or reset, or another machine became the owner
+with its own — stops syncing, says so, and keeps playing from the copy it has.
+_Join again_ is offered where that is said, to an admin, and is a join like the
+first: it is confirmed, it is saved as `externalLibrary.joinAgain` and happens
+at the next launch, the copy is set aside under the next free `standalone`
+name, the airing log and the play counts start empty, and every library path is
+to be located again, since its id is now another owner's. What this studio
+saved and never sent goes with the copy — its track ids belong to a library
+that is gone — and the confirmation says how much that is. Until the restart
+the request can be taken back, and saving any role but _Studio_ drops it.
+
+The button is there only while the worker reports that refusal, as
+`remedy` in `hub:state`: what an admin can do about a role this machine cannot
+play is said by the backend, never read out of the message.
 
 **A studio owes the hub what it does, and nothing it was given.** Capture
 starts with an empty outbox on a copy: everything in it came from the hub, and

@@ -56,6 +56,8 @@ enum Visit {
     },
     /// A studio found a hub no owner has published to.
     NothingToCopy,
+    /// A studio found the hub holding another library than its copy is of.
+    DifferentLibrary,
 }
 
 /// Whether anything is feeding the library a studio copies.
@@ -113,6 +115,17 @@ pub struct Status {
     pub encrypted: Option<bool>,
     /// How many of this machine's changes the hub has not been sent yet.
     pub waiting: usize,
+    /// What an admin can do about a role this machine cannot play.
+    pub remedy: Option<Remedy>,
+}
+
+/// A way out of a role the hub refuses, offered where the refusal is shown.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Remedy {
+    /// Set this studio's copy aside and copy the library the hub holds now.
+    /// See `docs/shared-library.md#joining-and-leaving`.
+    JoinAgain,
 }
 
 /// Emitted with a [`Status`] whenever it changes.
@@ -161,12 +174,13 @@ impl Service {
                 reached_at: None,
                 encrypted: None,
                 waiting: 0,
+                remedy: None,
             }),
             app,
         });
         if let Err(e) = Arc::clone(&service).spawn(db, config, health) {
             log::error!("shared library: not started: {e:#}");
-            service.report(false, sentence(&format!("{e:#}")), false);
+            service.report(false, sentence(&format!("{e:#}")), false, None);
         }
         service
     }
@@ -202,7 +216,7 @@ impl Service {
     /// Store and announce where things stand. Logged once per change, not once
     /// per visit: an unreachable hub would otherwise write the same line every
     /// half minute for as long as it is away.
-    fn report(&self, ok: bool, message: String, reached: bool) {
+    fn report(&self, ok: bool, message: String, reached: bool, remedy: Option<Remedy>) {
         let next = {
             let mut status = self.status.lock();
             if status.message != message {
@@ -214,6 +228,7 @@ impl Service {
             }
             status.ok = ok;
             status.message = message;
+            status.remedy = remedy;
             if reached {
                 status.reached_at = Some(now_ms());
             }
@@ -254,7 +269,7 @@ impl Service {
                 }
                 Err(e) => {
                     prepared = false;
-                    self.report(false, sentence(&format!("{e:#}")), false);
+                    self.report(false, sentence(&format!("{e:#}")), false, None);
                     Applied::default()
                 }
             };
@@ -309,7 +324,7 @@ impl Service {
                     n => format!("Published {n} changes."),
                 };
                 also_took(&mut message);
-                self.report(true, message, true);
+                self.report(true, message, true, None);
             }
             Visit::Pulled {
                 sent,
@@ -334,17 +349,27 @@ impl Service {
                         " No computer is the library owner now, so nothing new will arrive.",
                     ),
                 }
-                self.report(true, message, true);
+                self.report(true, message, true, None);
             }
             Visit::NotTheOwner { owner } => self.report(
                 false,
                 format!("{owner} is the library owner, so nothing is published from here."),
                 true,
+                None,
             ),
             Visit::NothingToCopy => self.report(
                 false,
                 "The hub holds no library yet: no owner has published to it.".into(),
                 true,
+                None,
+            ),
+            Visit::DifferentLibrary => self.report(
+                false,
+                "The hub now holds a different library than this copy was made from, \
+                 so nothing is sent or taken until this computer joins again."
+                    .into(),
+                true,
+                Some(Remedy::JoinAgain),
             ),
         }
     }
@@ -450,10 +475,7 @@ async fn studio_visit(db: &Arc<Db>, link: &Link, machine: &Machine) -> Result<(V
             on(db, move |db| db.follow(&id)).await?;
         }
         Some(held) if held == station.library_id => {}
-        Some(_) => bail!(
-            "the hub now holds a different library than this copy was made from: \
-             join the shared library again"
-        ),
+        Some(_) => return Ok((Visit::DifferentLibrary, Applied::default())),
     }
     hub.check_in(machine).await?;
     let owner = match station.owner {
@@ -675,8 +697,8 @@ mod tests {
 
         assert_eq!(visit, Visit::Published(1));
         assert_ne!(db.library_id().unwrap(), before);
-        let refused = pull(&studio, &hub, &machine("studio")).await.unwrap_err();
-        assert!(format!("{refused:#}").contains("join"), "{refused:#}");
+        let refused = pull(&studio, &hub, &machine("studio")).await.unwrap();
+        assert_eq!(refused, Visit::DifferentLibrary);
     }
 
     #[tokio::test]
@@ -833,9 +855,9 @@ mod tests {
             .await
             .unwrap();
 
-        let refused = pull(&studio, &hub, &machine("studio")).await.unwrap_err();
+        let refused = pull(&studio, &hub, &machine("studio")).await.unwrap();
 
-        assert!(format!("{refused:#}").contains("join"), "{refused:#}");
+        assert_eq!(refused, Visit::DifferentLibrary);
         assert_eq!(studio.search("", None, None, None).unwrap()[0].title, "Old");
     }
 
