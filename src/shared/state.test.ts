@@ -37,6 +37,8 @@ const { api } = vi.hoisted(() => {
     pickSavedPlaylistFile: vi.fn(),
     pickSavedPlaylistTarget: vi.fn(),
     savedPlaylistAddEntries: vi.fn(),
+    savedPlaylistAddStop: vi.fn(),
+    savedPlaylistSetKind: vi.fn(),
     savedPlaylistRemoveEntry: vi.fn(),
     savedPlaylistBindEntry: vi.fn(),
     savedPlaylistMoveEntry: vi.fn(),
@@ -300,6 +302,8 @@ function resetApi(): void {
   api.savedPlaylistList.mockResolvedValue([]);
   api.savedPlaylistGet.mockResolvedValue(null);
   api.savedPlaylistRemoveEntry.mockResolvedValue(undefined);
+  api.savedPlaylistAddStop.mockResolvedValue(undefined);
+  api.savedPlaylistSetKind.mockResolvedValue(undefined);
   api.savedPlaylistBindEntry.mockResolvedValue(undefined);
   api.savedPlaylistMoveEntry.mockResolvedValue(undefined);
   api.savedPlaylistRemoveEntries.mockResolvedValue(undefined);
@@ -3312,12 +3316,21 @@ describe("updates", () => {
 describe("AppState saved playlists", () => {
   let app: AppState;
 
-  const summary = { id: 5, name: "Show", entries: 2, missing: 0 };
+  const summary = {
+    id: 5,
+    name: "Show",
+    kind: "playlist" as const,
+    entries: 2,
+    stops: 0,
+    missing: 0,
+  };
   const show = (titles: string[]) => ({
     id: 5,
     name: "Show",
+    kind: "playlist" as const,
     entries: titles.map((title, i) => ({
       id: i + 1,
+      kind: "track" as const,
       track: null,
       artist: "a",
       title,
@@ -3392,6 +3405,58 @@ describe("AppState saved playlists", () => {
     await app.addSavedToPlaylist(5, true);
     expect(api.playlistAddSaved).toHaveBeenCalledWith(5, true);
     expect(app.savedNotice).toBe("Added 31 tracks, skipped 2 unmatched");
+  });
+
+  it("keeps a Stop distinct when reporting a prepared-show append", async () => {
+    app.savedPlaylists = [
+      { ...summary, kind: "prepared_show", stops: 1, entries: 3 },
+    ];
+    api.playlistAddSaved.mockResolvedValue({ added: 2, skipped: 0 });
+    await app.addSavedToPlaylist(5, false);
+    expect(app.savedNotice).toBe("Added 2 tracks, 1 Stop");
+  });
+
+  it("refuses a downgrade with Stops without sending it, then allows it after removal", async () => {
+    api.savedPlaylistGet.mockResolvedValue({
+      ...show(["A"]),
+      kind: "prepared_show",
+      entries: [
+        ...show(["A"]).entries,
+        {
+          id: 2,
+          kind: "stop",
+          track: null,
+          artist: "",
+          title: "",
+          duration: 0,
+          contentType: null,
+        },
+      ],
+    });
+    await app.openSavedPlaylist(5);
+    await app.setSavedPlaylistKind("playlist");
+    expect(api.savedPlaylistSetKind).not.toHaveBeenCalled();
+    expect(app.savedNotice).toContain("Remove the Stops");
+
+    api.savedPlaylistGet.mockResolvedValue({
+      ...show(["A"]),
+      kind: "prepared_show",
+    });
+    await app.openSavedPlaylist(5);
+    await app.setSavedPlaylistKind("playlist");
+    expect(api.savedPlaylistSetKind).toHaveBeenCalledWith(5, "playlist");
+  });
+
+  it("adds a Stop only to an open prepared show", async () => {
+    await app.addSavedStop();
+    api.savedPlaylistGet.mockResolvedValue({
+      ...show(["A"]),
+      kind: "prepared_show",
+    });
+    await app.openSavedPlaylist(5);
+    await app.addSavedStop();
+    expect(api.savedPlaylistAddStop).toHaveBeenCalledOnce();
+    expect(api.savedPlaylistAddStop).toHaveBeenCalledWith(5, null);
   });
 
   it("moves an entry of the open saved playlist", async () => {
@@ -3474,7 +3539,11 @@ describe("AppState saved playlists", () => {
       missing: 0,
     });
     await app.createSavedPlaylist("Show", [2, 1]);
-    expect(api.savedPlaylistCreate).toHaveBeenCalledWith("Show", [2, 1]);
+    expect(api.savedPlaylistCreate).toHaveBeenCalledWith(
+      "Show",
+      [2, 1],
+      "playlist",
+    );
     expect(app.savedNotice).toBe("Saved “Show (2)”: 2 tracks");
   });
 

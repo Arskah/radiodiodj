@@ -4,6 +4,7 @@
   import { airDuration, isTrimmed } from "../../shared/cuePoints";
   import {
     matchesSearch,
+    kindLabel,
     sizeLabel,
     sortEntries,
     type EntrySort,
@@ -125,18 +126,18 @@
       },
     ];
     if (saved.entries > 0) {
-      items.push(
-        {
-          label: "Add to playlist",
-          icon: "add",
-          onselect: () => append(saved.id, false),
-        },
-        {
+      items.push({
+        label: "Add to playlist",
+        icon: "add",
+        onselect: () => append(saved.id, false),
+      });
+      if (saved.kind === "playlist") {
+        items.push({
           label: "Add with jingles and commercials",
           icon: "playlist_add",
           onselect: () => append(saved.id, true),
-        },
-      );
+        });
+      }
     }
     items.push(
       {
@@ -170,6 +171,16 @@
   function entryItems(entry: SavedEntry): MenuItem[] {
     const track = entry.track;
     const items: MenuItem[] = [];
+    if (entry.kind === "stop") {
+      if (app.isAdmin) {
+        items.push({
+          label: "Remove Stop",
+          icon: "close",
+          onselect: () => app.removeSavedEntry(entry.id),
+        });
+      }
+      return items;
+    }
     if (track) {
       items.push(
         {
@@ -246,7 +257,7 @@
   function pickedItems(): MenuItem[] {
     const tracks = pickedTrackIds.length;
     const items: MenuItem[] = [];
-    if (tracks > 0) {
+    if (tracks > 0 && !pickedHasStops) {
       items.push(
         {
           label: `Add ${tracks} to playlist`,
@@ -265,7 +276,7 @@
         label: `Remove ${pickedCount} from saved playlist`,
         icon: "close",
         onselect: removePicked,
-        separated: tracks > 0,
+        separated: tracks > 0 && !pickedHasStops,
       });
     }
     return items;
@@ -317,11 +328,17 @@
   }
 
   const title = (entry: SavedEntry): string =>
-    entry.track?.title ?? entry.title;
+    entry.kind === "stop" ? "Stop" : (entry.track?.title ?? entry.title);
   const artist = (entry: SavedEntry): string =>
-    entry.track?.artist ?? entry.artist;
+    entry.kind === "stop"
+      ? "Auto play halts here"
+      : (entry.track?.artist ?? entry.artist);
   const duration = (entry: SavedEntry): number =>
-    entry.track ? airDuration(entry.track) : entry.duration;
+    entry.kind === "stop"
+      ? 0
+      : entry.track
+        ? airDuration(entry.track)
+        : entry.duration;
 
   const album = (entry: SavedEntry): string => entry.track?.album ?? "";
 
@@ -445,10 +462,18 @@
   /** The picked entries that have a track, as track ids in pick order. */
   const pickedTrackIds = $derived.by(() => {
     const tracks = new Map(
-      (open?.entries ?? []).map((entry) => [entry.id, entry.track?.id]),
+      (open?.entries ?? []).map((entry) => [
+        entry.id,
+        entry.kind === "track" ? entry.track?.id : undefined,
+      ]),
     );
     return picked.flatMap((id) => tracks.get(id) ?? []);
   });
+  const pickedHasStops = $derived(
+    (open?.entries ?? []).some(
+      (entry) => entry.kind === "stop" && picked.includes(entry.id),
+    ),
+  );
   const selectAllLabel = $derived(
     allShown ? "Deselect shown" : `Select all (${shownIds.length})`,
   );
@@ -494,6 +519,7 @@
   }
 
   function queuePicked(asNext = false): void {
+    if (pickedHasStops) return;
     app.queueTracks(pickedTrackIds, asNext);
     clearPicked();
   }
@@ -566,17 +592,21 @@
     const canReorder = app.isAdmin && inOwnOrder;
     // A drag of a picked row carries the selection; of any other, that row.
     const block = pickedCount > 1 && ordinals.has(entry.id);
+    const draggedTracks = block
+      ? pickedTrackIds
+      : entry.track
+        ? [entry.track.id]
+        : [];
+    const copyable = draggedTracks.length > 0 && !(block && pickedHasStops);
     draggingPicked = block;
     dragBlock = block && canReorder ? [...picked] : null;
     dragFrom = !block && canReorder ? i : -1;
-    app.startTrackDrag(
-      block ? pickedTrackIds : entry.track ? [entry.track.id] : [],
-    );
+    app.startTrackDrag(copyable ? draggedTracks : []);
     if (e.dataTransfer) {
-      e.dataTransfer.effectAllowed = "copyMove";
+      e.dataTransfer.effectAllowed = copyable ? "copyMove" : "move";
       e.dataTransfer.setData(
         "text/plain",
-        block ? `${pickedCount} entries` : `${artist(entry)} – ${title(entry)}`,
+        block ? `${pickedCount} entries` : title(entry),
       );
     }
   }
@@ -638,23 +668,54 @@
       <span class="material-symbols-outlined">arrow_back</span>
     </button>
     <span id="saved-open-name">{open.name}</span>
+    {#if app.isAdmin}
+      <select
+        id="saved-open-kind"
+        aria-label="Saved list kind"
+        value={open.kind}
+        onchange={(e) => {
+          const kind = e.currentTarget.value as typeof open.kind;
+          e.currentTarget.value = open.kind;
+          void app.setSavedPlaylistKind(kind);
+        }}
+      >
+        <option value="playlist">Playlist</option>
+        <option value="prepared_show">Prepared show</option>
+      </select>
+    {:else}
+      <span class="saved-kind">{kindLabel(open.kind)}</span>
+    {/if}
     <span id="saved-open-size"
-      >{sizeLabel(open.entries.length, openSummary?.missing ?? 0)}</span
+      >{sizeLabel(
+        open.entries.length,
+        openSummary?.missing ?? 0,
+        open.entries.filter((entry) => entry.kind === "stop").length,
+      )}</span
     >
     <button
       id="btn-saved-add"
       class="btn-filler"
-      title="Add every track to the playlist, as written"
+      title="Add every entry to the playlist, as written"
       disabled={open.entries.length === 0}
       onclick={() => append(open.id, false)}>Add to playlist</button
     >
-    <button
-      id="btn-saved-weave"
-      class="btn-filler"
-      title="Add to the playlist, with jingles and commercials woven in"
-      disabled={open.entries.length === 0}
-      onclick={() => append(open.id, true)}>+ Jingles &amp; comm</button
-    >
+    {#if open.kind === "playlist"}
+      <button
+        id="btn-saved-weave"
+        class="btn-filler"
+        title="Add to the playlist, with jingles and commercials woven in"
+        disabled={open.entries.length === 0}
+        onclick={() => append(open.id, true)}>+ Jingles &amp; comm</button
+      >
+    {/if}
+    {#if app.isAdmin && open.kind === "prepared_show"}
+      <button
+        id="btn-saved-stop"
+        class="btn-filler btn-filler-stop"
+        title="Append a Stop to this prepared show"
+        onclick={() => void app.addSavedStop()}>+ Stop</button
+      >
+    {/if}
     <button
       id="btn-saved-source"
       class="btn-filler"
@@ -741,7 +802,7 @@
         <span class="empty-icon"
           ><span class="material-symbols-outlined">playlist_add</span></span
         >
-        <span class="empty-title">Nothing In This Playlist</span>
+        <span class="empty-title">Nothing In This {kindLabel(open.kind)}</span>
         <span class="empty-body"
           >Add tracks from a library row's menu, while admin mode is unlocked.</span
         >
@@ -751,14 +812,15 @@
         <span class="empty-icon"
           ><span class="material-symbols-outlined">search_off</span></span
         >
-        <span class="empty-title">No Match In This Playlist</span>
+        <span class="empty-title">No Match In This {kindLabel(open.kind)}</span>
       </div>
     {:else}
       {#each listed as { entry, position: i } (entry.id)}
         {@const ordinal = ordinals.get(entry.id)}
         <div
           class="track-row saved-entry"
-          class:unmatched={entry.track === null}
+          class:unmatched={entry.kind === "track" && entry.track === null}
+          class:saved-stop={entry.kind === "stop"}
           class:selected={ordinal !== undefined}
           class:dragging={i === dragFrom ||
             (dragBlock !== null && ordinal !== undefined)}
@@ -776,7 +838,9 @@
           onmouseleave={() => app.clearHover()}
           onkeydown={(e) => onEntryKeyDown(entry, e)}
           role="button"
-          aria-label={`Entry ${i + 1}: ${title(entry)} by ${artist(entry)}`}
+          aria-label={entry.kind === "stop"
+            ? `Entry ${i + 1}: Stop`
+            : `Entry ${i + 1}: ${title(entry)} by ${artist(entry)}`}
           aria-haspopup="menu"
           aria-pressed={ordinal !== undefined}
           tabindex="0"
@@ -787,7 +851,12 @@
             <span class="track-check" aria-hidden="true">{ordinal ?? ""}</span>
           </span>
           <span class="track-title saved-entry-title">
-            {#if entry.track}
+            {#if entry.kind === "stop"}
+              <span
+                class="material-symbols-outlined saved-stop-icon"
+                aria-hidden="true">block</span
+              >
+            {:else if entry.track}
               <MissingBadge trackId={entry.track.id} />
             {:else}
               <span
@@ -805,7 +874,7 @@
           <span
             class="track-duration"
             class:trimmed={entry.track !== null && isTrimmed(entry.track)}
-            >{formatTime(duration(entry))}</span
+            >{entry.kind === "stop" ? "" : formatTime(duration(entry))}</span
           >
           {#if entry.track}
             {@const track = entry.track}
@@ -846,8 +915,12 @@
           {#if app.isAdmin}
             <button
               class="btn-edit btn-saved-remove"
-              title="Remove from saved playlist"
-              aria-label="Remove from saved playlist"
+              title={entry.kind === "stop"
+                ? "Remove Stop"
+                : "Remove from saved playlist"}
+              aria-label={entry.kind === "stop"
+                ? "Remove Stop"
+                : "Remove from saved playlist"}
               onclick={() => app.removeSavedEntry(entry.id)}
             >
               <span class="material-symbols-outlined">close</span>
@@ -872,7 +945,7 @@
         <span class="empty-icon"
           ><span class="material-symbols-outlined">queue_music</span></span
         >
-        <span class="empty-title">No Saved Playlists</span>
+        <span class="empty-title">No Saved Lists</span>
         <span class="empty-body"
           >Queue a show, then Save As in the playlist panel to keep it for
           later, or import one from a file.</span
@@ -888,7 +961,7 @@
           role="button"
           aria-haspopup="menu"
           tabindex="0"
-          aria-label={`Saved playlist: ${saved.name}`}
+          aria-label={`${kindLabel(saved.kind)}: ${saved.name}`}
           data-saved-id={saved.id}
         >
           <span class="track-no" aria-hidden="true"
@@ -897,6 +970,7 @@
             ></span
           >
           <span class="track-title saved-row-name">{saved.name}</span>
+          <span class="saved-kind">{kindLabel(saved.kind)}</span>
           {#if app.autoSource?.id === saved.id}
             <span
               class="material-symbols-outlined saved-row-source"
@@ -905,7 +979,7 @@
             >
           {/if}
           <span class="saved-row-size" class:has-missing={saved.missing > 0}
-            >{sizeLabel(saved.entries, saved.missing)}</span
+            >{sizeLabel(saved.entries, saved.missing, saved.stops)}</span
           >
           {#if app.isAdmin}
             <button
@@ -949,14 +1023,20 @@
     <button
       class="btn-filler"
       id="btn-add-selection"
-      disabled={pickedTrackIds.length === 0}
+      title={pickedHasStops
+        ? "Use Add to playlist to keep the prepared show's Stops"
+        : "Add selected tracks to the playlist"}
+      disabled={pickedTrackIds.length === 0 || pickedHasStops}
       onclick={() => queuePicked()}
       >Add {pickedTrackIds.length} to playlist</button
     >
     <button
       class="btn-filler"
       id="btn-add-selection-next"
-      disabled={pickedTrackIds.length === 0}
+      title={pickedHasStops
+        ? "Use Add to playlist to keep the prepared show's Stops"
+        : "Add selected tracks as next"}
+      disabled={pickedTrackIds.length === 0 || pickedHasStops}
       onclick={() => queuePicked(true)}
       >Add {pickedTrackIds.length} as next</button
     >
@@ -1032,6 +1112,31 @@
     font-size: 11px;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
+  }
+
+  .saved-kind,
+  #saved-open-kind {
+    color: var(--on-surface-variant);
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  #saved-open-kind {
+    background: var(--surface-container);
+    border: 1px solid var(--outline-variant);
+    border-radius: var(--r-lg);
+    padding: 4px 6px;
+    cursor: pointer;
+  }
+
+  .saved-stop-icon {
+    color: var(--error);
+    font-size: 16px;
+    vertical-align: middle;
+  }
+
+  .saved-stop .track-title {
+    color: var(--error);
   }
 
   .saved-row-size.has-missing {
@@ -1110,6 +1215,7 @@
   #saved-open-header {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: var(--sp-sm);
     padding: var(--sp-xs) var(--sp-md);
     border-bottom: 1px solid var(--outline-variant);
