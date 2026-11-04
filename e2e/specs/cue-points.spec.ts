@@ -388,7 +388,7 @@ describe("cue points", () => {
 
     // The badge hands one item back to the track's own cue points, which for an
     // unedited track means the whole file.
-    await browser.$(`${sel.playlist} ${sel.playlistRowOverride}`).click();
+    await browser.$$(`${sel.playlist} ${sel.playlistRowOverride}`)[0].click();
     await browser.waitUntil(async () => (await playlistRowSeconds(0)) === 30, {
       timeout: 5_000,
       timeoutMsg: "clearing the override did not restore the track's duration",
