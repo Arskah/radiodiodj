@@ -15964,7 +15964,7 @@ carrying such notice may not be copied, modified, or distributed except
 according to those terms.
 
 ================================================================================
-unicode-ident
+unicode-ident, unicode-normalization
 ================================================================================
 
 UNICODE LICENSE V3
