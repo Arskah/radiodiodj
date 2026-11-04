@@ -136,7 +136,7 @@ describe("library", () => {
   it("adds a track through the row context menu", async () => {
     await bootAndScan();
 
-    await browser.$(sel.trackRow).click({ button: "right" });
+    await browser.$$(sel.trackRow)[0].click({ button: "right" });
     const menu = browser.$(sel.contextMenu);
     await menu.waitForDisplayed({ timeout: 5_000 });
 
@@ -299,7 +299,7 @@ describe("library", () => {
   it("dismisses the context menu on Escape", async () => {
     await bootAndScan();
 
-    await browser.$(sel.trackRow).click({ button: "right" });
+    await browser.$$(sel.trackRow)[0].click({ button: "right" });
     const menu = browser.$(sel.contextMenu);
     await menu.waitForDisplayed({ timeout: 5_000 });
 
