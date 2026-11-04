@@ -19,11 +19,11 @@ End-to-end tests for RadiodioDJ via `tauri-driver` + WebdriverIO.
 ## One-time local setup (Linux)
 
 ```bash
-# System packages (Ubuntu 24.04 names; adjust per distro)
+# System packages (Ubuntu 26.04 names; adjust per distro)
 sudo apt-get install -y \
   libwebkit2gtk-4.1-dev \
   libgtk-3-dev \
-  webkit2gtk-driver \
+  webkitgtk-webdriver \
   xvfb \
   libasound2-dev
 

@@ -66,7 +66,7 @@ jobs:
     # build does not hold back the bundles that did. The release already exists by
     # then, as a draft: release-please creates it before any build starts.
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     steps:
