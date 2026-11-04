@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.32.3](https://github.com/Arskah/radiodiodj/compare/v0.32.2...v0.32.3) (2026-11-04)
+
+
+### Bug Fixes
+
+* **deps:** update dependency material-symbols to v0.48.2 ([#663](https://github.com/Arskah/radiodiodj/issues/663)) ([0f65ab1](https://github.com/Arskah/radiodiodj/commit/0f65ab1f51694cd346e83b61e82fe3ec5e5b0ac9))
+* **deps:** update rust crate ebur128 to v0.1.11 ([#709](https://github.com/Arskah/radiodiodj/issues/709)) ([50b1f4c](https://github.com/Arskah/radiodiodj/commit/50b1f4c09ef716c05627a530ab7b141a1386c655))
+* **deps:** update rust crate lofty to v0.25.5 ([#708](https://github.com/Arskah/radiodiodj/issues/708)) ([efdfafb](https://github.com/Arskah/radiodiodj/commit/efdfafb19f7f6627d2355a7fd1085e3e892936dd))
+* **deps:** update rust crate log to v0.4.35 ([#713](https://github.com/Arskah/radiodiodj/issues/713)) ([4628896](https://github.com/Arskah/radiodiodj/commit/462889692320c3062d82c9e51bfcf7973a586a03))
+* **deps:** update rust crate parking_lot to v0.13.0 ([#702](https://github.com/Arskah/radiodiodj/issues/702)) ([51f82cd](https://github.com/Arskah/radiodiodj/commit/51f82cdda3195245286d07a33ab10c0175ad439e))
+* **deps:** update rust crate realfft to v3.5.1 ([#711](https://github.com/Arskah/radiodiodj/issues/711)) ([6e01bb3](https://github.com/Arskah/radiodiodj/commit/6e01bb3db2fff13f56ec6bfd28ec577e096fc572))
+* **deps:** update rust crate rustls to v0.23.46 [security] ([#712](https://github.com/Arskah/radiodiodj/issues/712)) ([9269644](https://github.com/Arskah/radiodiodj/commit/9269644f329e3a856444792eea117aa0757ff3ca))
+* **deps:** update rust crate serde_json to v1.0.154 ([#668](https://github.com/Arskah/radiodiodj/issues/668)) ([001f106](https://github.com/Arskah/radiodiodj/commit/001f106a673eff3e27f7f180ad8da62ca9ddafa8))
+* **deps:** update rust crate sha2 to v0.11.1 ([#677](https://github.com/Arskah/radiodiodj/issues/677)) ([828b02e](https://github.com/Arskah/radiodiodj/commit/828b02ee5b186b60c6d6e4ec07900a04d5e163cc))
+* **deps:** update rust crate tauri-plugin-opener to v2.7.2 ([#669](https://github.com/Arskah/radiodiodj/issues/669)) ([e898db1](https://github.com/Arskah/radiodiodj/commit/e898db112abba34b5d4afd0a5539ac201c2ed9db))
+* **deps:** update rust crate tauri-plugin-updater to v2.14.1 ([#670](https://github.com/Arskah/radiodiodj/issues/670)) ([1bff687](https://github.com/Arskah/radiodiodj/commit/1bff6871cd71d218331ce32e20ca407e1fc74df4))
+* **deps:** update rust crate tokio to v1.54.1 ([#679](https://github.com/Arskah/radiodiodj/issues/679)) ([a4b4edb](https://github.com/Arskah/radiodiodj/commit/a4b4edb933809b40fd9dabc4a43e4505c63bcf3f))
+* **deps:** update rust crate unicode-normalization to v0.1.26 ([#695](https://github.com/Arskah/radiodiodj/issues/695)) ([ec594b1](https://github.com/Arskah/radiodiodj/commit/ec594b1fad9a40fbca94a627e231b7ea500b01cb))
+* **deps:** update rust crate uuid to v1.29.0 ([#674](https://github.com/Arskah/radiodiodj/issues/674)) ([ae0cfc1](https://github.com/Arskah/radiodiodj/commit/ae0cfc1bd650f29cd19b3e181f94192a1e5c2532))
+* **deps:** update tauri monorepo ([#660](https://github.com/Arskah/radiodiodj/issues/660)) ([bc3c90d](https://github.com/Arskah/radiodiodj/commit/bc3c90d0abfe85ef8aedd6216418b4f0324c7a82))
+* **deps:** update tauri-plugin-dialog to v2.8.4 ([#671](https://github.com/Arskah/radiodiodj/issues/671)) ([1de8b19](https://github.com/Arskah/radiodiodj/commit/1de8b195ae01939024fc8a1acb114ea3ab4e3fa4))
+* **deps:** update tauri-plugin-log to v2.10.1 ([#672](https://github.com/Arskah/radiodiodj/issues/672)) ([7de3a9a](https://github.com/Arskah/radiodiodj/commit/7de3a9ac141e635f48a5c7368f9d917f52bbf77d))
+
 ## [0.32.2](https://github.com/Arskah/radiodiodj/compare/v0.32.1...v0.32.2) (2026-10-11)
 
 
