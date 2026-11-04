@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use super::atomic_write;
 use crate::audio::cue_points::CuePoints;
+use crate::library::db::SavedPlaylistKind;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -15,10 +16,46 @@ pub enum SessionPlaylistItem {
         /// The item's cue-point override, so a custom airing survives a
         /// restart. Additive and defaulted: a session file written before
         /// overrides existed loads with none, as does a stop marker.
-        #[serde(default)]
+        #[serde(default, rename = "cueOverride", alias = "cue_override")]
         cue_override: Option<CuePoints>,
     },
     Stop,
+}
+
+/// One queued occurrence persisted by id rather than by a stale track snapshot.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionQueueChild {
+    /// This occurrence's stable id, distinct from the library track id.
+    pub id: String,
+    /// The track reference or Stop marker in this position.
+    pub item: SessionPlaylistItem,
+}
+
+/// The top-level queue structure. A block is a copy of a saved list, with no
+/// link back to the saved original after insertion.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SessionQueueNode {
+    /// One standalone track or Stop marker.
+    Standalone {
+        /// This occurrence's stable id.
+        id: String,
+        /// The item at this position.
+        item: SessionPlaylistItem,
+    },
+    /// One independently queued copy of a saved playlist or prepared show.
+    Block {
+        /// This block occurrence's stable id.
+        id: String,
+        /// Title copied when the block was queued.
+        title: String,
+        /// Saved-list kind copied when the block was queued.
+        #[serde(rename = "savedKind")]
+        saved_kind: SavedPlaylistKind,
+        /// Remaining children in authored or locally edited order.
+        entries: Vec<SessionQueueChild>,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -28,6 +65,17 @@ pub struct SessionState {
     pub playlist_ids: Vec<i64>,
     #[serde(default)]
     pub playlist_items: Vec<SessionPlaylistItem>,
+    /// Structured queue. `None` means a legacy flat session; `Some([])` is an
+    /// intentionally empty queue and must not fall back to `playlist_items`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue: Option<Vec<SessionQueueNode>>,
+    /// Active block, also retained while an interior Stop waits with no track
+    /// on air. The engine clears it when that block finishes.
+    #[serde(default)]
+    pub current_block_id: Option<String>,
+    /// Renderer-owned disclosure state; it has no effect on advancement.
+    #[serde(default)]
+    pub collapsed_block_ids: Vec<String>,
     #[serde(default)]
     pub current_track_id: Option<i64>,
     #[serde(default)]
@@ -62,6 +110,9 @@ impl Default for SessionState {
         Self {
             playlist_ids: vec![],
             playlist_items: vec![],
+            queue: None,
+            current_block_id: None,
+            collapsed_block_ids: vec![],
             current_track_id: None,
             current_time: 0.0,
             current_cue_override: None,
@@ -150,6 +201,84 @@ mod tests {
         assert!(s.playlist_ids.is_empty());
         assert_eq!(s.volume, 1.0);
         assert!(s.auto_advance);
+    }
+
+    #[test]
+    fn blocks_and_occurrence_ids_survive_a_session_round_trip() {
+        let dir = tempdir().unwrap();
+        let session = Session::open(dir.path());
+        let track = |id| SessionPlaylistItem::Track {
+            id,
+            cue_override: Some(CuePoints {
+                cue_in_ms: Some(1_000),
+                ..CuePoints::default()
+            }),
+        };
+        let state = SessionState {
+            queue: Some(vec![
+                SessionQueueNode::Block {
+                    id: "block-1".into(),
+                    title: "Friday".into(),
+                    saved_kind: SavedPlaylistKind::PreparedShow,
+                    entries: vec![
+                        SessionQueueChild {
+                            id: "child-1".into(),
+                            item: track(7),
+                        },
+                        SessionQueueChild {
+                            id: "child-2".into(),
+                            item: SessionPlaylistItem::Stop,
+                        },
+                    ],
+                },
+                SessionQueueNode::Block {
+                    id: "block-2".into(),
+                    title: "Friday".into(),
+                    saved_kind: SavedPlaylistKind::PreparedShow,
+                    entries: vec![SessionQueueChild {
+                        id: "child-3".into(),
+                        item: track(7),
+                    }],
+                },
+            ]),
+            current_track_id: Some(7),
+            current_time: 33.5,
+            current_block_id: Some("block-1".into()),
+            collapsed_block_ids: vec!["block-2".into()],
+            ..SessionState::default()
+        };
+        session.save(state.clone()).unwrap();
+        let reloaded = Session::open(dir.path()).load();
+        assert_eq!(reloaded.queue, state.queue);
+        assert_eq!(reloaded.current_block_id, state.current_block_id);
+        assert_eq!(reloaded.collapsed_block_ids, state.collapsed_block_ids);
+        assert_eq!(reloaded.current_track_id, Some(7));
+        assert_eq!(reloaded.current_time, 33.5);
+        let json = serde_json::to_value(&reloaded).unwrap();
+        assert_eq!(json["queue"][0]["savedKind"], "prepared_show");
+        assert_eq!(
+            json["queue"][0]["entries"][0]["item"]["cueOverride"]["cue_in_ms"],
+            1_000
+        );
+        assert_eq!(json["currentBlockId"], "block-1");
+        assert_eq!(json["collapsedBlockIds"][0], "block-2");
+    }
+
+    #[test]
+    fn absent_structured_queue_keeps_legacy_flat_session_distinct_from_empty_queue() {
+        let old: SessionState = serde_json::from_str(
+            r#"{"playlistItems":[{"kind":"track","id":3},{"kind":"stop"}],"currentTrackId":3}"#,
+        )
+        .unwrap();
+        assert!(old.queue.is_none());
+        assert!(old.current_block_id.is_none());
+        assert!(old.collapsed_block_ids.is_empty());
+        assert_eq!(old.playlist_items.len(), 2);
+
+        let empty: SessionState =
+            serde_json::from_str(r#"{"queue":[],"playlistItems":[{"kind":"track","id":3}]}"#)
+                .unwrap();
+        assert_eq!(empty.queue, Some(Vec::new()));
     }
 
     #[test]
@@ -318,6 +447,22 @@ mod tests {
             }]
         );
         assert_eq!(loaded.current_cue_override, Some(override_points));
+        let json = serde_json::to_value(&loaded).unwrap();
+        assert_eq!(json["playlistItems"][0]["cueOverride"]["cue_in_ms"], 2_000);
+
+        let legacy: SessionPlaylistItem = serde_json::from_value(serde_json::json!({
+            "kind": "track",
+            "id": 7,
+            "cue_override": override_points,
+        }))
+        .unwrap();
+        assert_eq!(
+            legacy,
+            SessionPlaylistItem::Track {
+                id: 7,
+                cue_override: Some(override_points),
+            }
+        );
     }
 
     #[test]

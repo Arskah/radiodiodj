@@ -127,7 +127,7 @@
     ];
     if (saved.entries > 0) {
       items.push({
-        label: "Add to playlist",
+        label: "Add playlist",
         icon: "add",
         onselect: () => append(saved.id, false),
       });
@@ -315,6 +315,15 @@
   function append(id: number, weave: boolean, e?: MouseEvent): void {
     e?.stopPropagation();
     void app.addSavedToPlaylist(id, weave);
+  }
+
+  function startWholeDrag(e: DragEvent, id: number, name: string): void {
+    e.stopPropagation();
+    app.startSavedPlaylistDrag(id);
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "copy";
+      e.dataTransfer.setData("text/plain", name);
+    }
   }
 
   function rename(saved: { id: number; name: string }, e?: MouseEvent): void {
@@ -667,7 +676,22 @@
     >
       <span class="material-symbols-outlined">arrow_back</span>
     </button>
-    <span id="saved-open-name">{open.name}</span>
+    <span
+      id="saved-open-name"
+      role="button"
+      tabindex="0"
+      aria-label={`Add ${open.name} playlist`}
+      draggable="true"
+      title="Drag this whole saved list into Upcoming as a block"
+      ondragstart={(e) => startWholeDrag(e, open.id, open.name)}
+      ondragend={() => app.endSavedPlaylistDrag()}
+      onkeydown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          void app.addSavedToPlaylist(open.id, false);
+        }
+      }}>{open.name}</span
+    >
     {#if app.isAdmin}
       <select
         id="saved-open-kind"
@@ -697,7 +721,7 @@
       class="btn-filler"
       title="Add every entry to the playlist, as written"
       disabled={open.entries.length === 0}
-      onclick={() => append(open.id, false)}>Add to playlist</button
+      onclick={() => append(open.id, false)}>Add playlist</button
     >
     {#if open.kind === "playlist"}
       <button
@@ -964,10 +988,18 @@
           aria-label={`${kindLabel(saved.kind)}: ${saved.name}`}
           data-saved-id={saved.id}
         >
-          <span class="track-no" aria-hidden="true"
+          <button
+            type="button"
+            class="track-no saved-whole-drag"
+            draggable="true"
+            aria-label={`Drag ${saved.name} as a whole playlist`}
+            title="Drag this whole saved list into Upcoming as a block"
+            onclick={(e) => e.stopPropagation()}
+            ondragstart={(e) => startWholeDrag(e, saved.id, saved.name)}
+            ondragend={() => app.endSavedPlaylistDrag()}
             ><span class="material-symbols-outlined saved-row-icon"
               >queue_music</span
-            ></span
+            ></button
           >
           <span class="track-title saved-row-name">{saved.name}</span>
           <span class="saved-kind">{kindLabel(saved.kind)}</span>
@@ -1001,8 +1033,8 @@
           {/if}
           <button
             class="btn-add"
-            title="Add to playlist"
-            aria-label="Add saved playlist to playlist"
+            title="Add playlist"
+            aria-label="Add playlist"
             disabled={saved.entries === 0}
             onclick={(e) => append(saved.id, false, e)}
           >
@@ -1093,6 +1125,16 @@
   .saved-row-icon {
     font-size: 16px;
     vertical-align: middle;
+  }
+
+  .saved-whole-drag {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: grab;
   }
 
   .saved-row-source {
@@ -1230,6 +1272,7 @@
     font-size: 13px;
     font-weight: 600;
     color: var(--on-surface);
+    cursor: grab;
   }
 
   .btn-add:disabled {

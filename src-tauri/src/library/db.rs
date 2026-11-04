@@ -22,8 +22,8 @@ mod saved_playlists;
 mod sync;
 pub use operator::{track_of, KINDS as OPERATOR_KINDS};
 pub use saved_playlists::{
-    SavedEntryInput, SavedPlaylist, SavedPlaylistFile, SavedPlaylistKind, SavedPlaylistSummary,
-    SavedQueueEntry,
+    SavedEntryInput, SavedEntryKind, SavedPlaylist, SavedPlaylistFile, SavedPlaylistKind,
+    SavedPlaylistSummary, SavedQueueEntry,
 };
 pub use sync::{Applied, Incoming, Outgoing};
 

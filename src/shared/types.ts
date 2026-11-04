@@ -165,6 +165,28 @@ export const isTrackItem = (i: PlaylistItem): i is PlaylistTrackItem =>
 export const isStopMarker = (i: PlaylistItem): i is StopMarker =>
   i.kind === "stop";
 
+/** One queued child, identified independently of its track or Stop content. */
+export interface QueueOccurrence {
+  id: string;
+  item: PlaylistItem;
+}
+
+/** The top-level on-air queue. Blocks are independent copies of saved lists. */
+export type QueueNode =
+  | { kind: "standalone"; id: string; item: PlaylistItem }
+  | {
+      kind: "block";
+      id: string;
+      title: string;
+      savedKind: SavedPlaylistKind;
+      entries: QueueOccurrence[];
+    };
+
+/** Where copied or moved occurrences land; `null` appends in that scope. */
+export type QueueDestination =
+  | { scope: "main"; beforeId: string | null }
+  | { scope: "block"; blockId: string; beforeId: string | null };
+
 /** A stored list with Stops is a prepared show. */
 export type SavedPlaylistKind = "playlist" | "prepared_show";
 
