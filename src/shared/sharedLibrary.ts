@@ -1,4 +1,5 @@
-import type { HubStatus, LibraryRole } from "./types";
+import { formatAgo } from "./health";
+import type { HubStatus, HubTakeOver, LibraryRole } from "./types";
 
 /** Why an owner control is disabled on a studio. Shown as its tooltip. */
 export const OWNER_ONLY =
@@ -66,4 +67,27 @@ export function lostByJoiningAgain(waiting: number): string {
       ? "1 change saved here was never sent and is"
       : `${waiting} changes saved here were never sent and are`;
   return `${what} lost with it.`;
+}
+
+/** When the computer holding the owner role last visited the hub. */
+export function ownerLastSeen(
+  remedy: Pick<HubTakeOver, "owner" | "quietFor">,
+  now = Date.now(),
+): string {
+  return remedy.quietFor === null
+    ? `${remedy.owner} has never visited the hub.`
+    : `${remedy.owner} last visited the hub ${formatAgo(now - remedy.quietFor * 1000, now)}.`;
+}
+
+/**
+ * What taking the owner role does to the hub and to the studios, for the
+ * confirmation: nothing where the hub holds this computer's library, and
+ * everything where it holds another.
+ */
+export function takeOverEffect(
+  remedy: Pick<HubTakeOver, "sameLibrary">,
+): string {
+  return remedy.sameLibrary
+    ? "The hub holds this computer's library, so it keeps what it has and the studios are not affected."
+    : "The hub holds a different library than this computer's. It is emptied and this library is published in its place, and every studio has to join again.";
 }

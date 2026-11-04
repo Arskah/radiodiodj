@@ -1,6 +1,8 @@
 //! The one task that talks to the hub. Nothing waits on it: a hub that is
 //! slow, away or wrong costs the library freshness and nothing else.
 
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -9,7 +11,7 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
-use super::client::{Claim, Hub, Link, Machine};
+use super::client::{Claim, Hub, Link, Machine, Terms};
 use super::schema::PROTOCOL;
 use super::{OWNER_COMMANDS, STUDIO_ERROR};
 use crate::library::db::{Applied, Db, OPERATOR_KINDS};
@@ -53,6 +55,10 @@ enum Visit {
     },
     NotTheOwner {
         owner: String,
+        /// Seconds since the owner last checked in, if it ever did.
+        quiet_for: Option<i64>,
+        /// Whether the hub holds this machine's library.
+        same_library: bool,
     },
     /// A studio found a hub no owner has published to.
     NothingToCopy,
@@ -117,15 +123,32 @@ pub struct Status {
     pub waiting: usize,
     /// What an admin can do about a role this machine cannot play.
     pub remedy: Option<Remedy>,
+    /// The file that holds what the hub held before this machine emptied it,
+    /// since this launch.
+    pub kept: Option<String>,
 }
 
 /// A way out of a role the hub refuses, offered where the refusal is shown.
-#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum Remedy {
     /// Set this studio's copy aside and copy the library the hub holds now.
     /// See `docs/shared-library.md#joining-and-leaving`.
     JoinAgain,
+    /// Take the owner role from the machine that holds it. See
+    /// `docs/shared-library.md#the-hub`.
+    TakeOver {
+        owner: String,
+        /// Seconds since the owner last checked in, if it ever did.
+        quiet_for: Option<i64>,
+        /// Whether the hub holds this machine's library. Otherwise taking the
+        /// role empties the hub, and every studio has to join again.
+        same_library: bool,
+    },
 }
 
 /// Emitted with a [`Status`] whenever it changes.
@@ -146,6 +169,10 @@ pub fn role_in_effect(config: &Config) -> LibraryRole {
 pub struct Service {
     role: LibraryRole,
     status: Mutex<Status>,
+    /// An admin asked for the owner role to be taken at the next visit.
+    take_over: AtomicBool,
+    /// Where what the hub held is written before this machine empties it.
+    keep_in: PathBuf,
     app: AppHandle,
     /// Told what a pull changed, for the copies of it held outside the
     /// library: the playlist's cue points, the saved-playlist list, the files
@@ -162,10 +189,13 @@ impl Service {
         db: Arc<Db>,
         config: &Config,
         health: Arc<Health>,
+        keep_in: PathBuf,
         on_applied: Box<dyn Fn(&Applied) + Send + Sync>,
     ) -> Arc<Self> {
         let service = Arc::new(Self {
             on_applied,
+            take_over: AtomicBool::new(false),
+            keep_in,
             role,
             status: Mutex::new(Status {
                 role,
@@ -175,6 +205,7 @@ impl Service {
                 encrypted: None,
                 waiting: 0,
                 remedy: None,
+                kept: None,
             }),
             app,
         });
@@ -203,6 +234,22 @@ impl Service {
 
     pub fn status(&self) -> Status {
         self.status.lock().clone()
+    }
+
+    /// Take the owner role from the machine that holds it, at the visit this
+    /// brings on. Refused unless the last visit found one holding it.
+    pub fn take_over(&self) -> Result<()> {
+        let Some(Remedy::TakeOver { owner, .. }) = self.status.lock().remedy.clone() else {
+            bail!("no other computer holds the library owner role");
+        };
+        self.take_over.store(true, Ordering::Relaxed);
+        self.report(
+            false,
+            format!("Taking the library owner role from {owner}."),
+            false,
+            None,
+        );
+        Ok(())
     }
 
     /// Refuse a command that is the owner's while this machine is a studio.
@@ -251,12 +298,27 @@ impl Service {
         let mut blocked = false;
         loop {
             let waiting = self.count_waiting(&db, sends).await;
-            if Instant::now() < due && (blocked || waiting == 0) {
+            // Asked for once and tried once: a hub that is away when an admin
+            // takes the role over does not lose its owner hours later.
+            let take_over = self.take_over.swap(false, Ordering::Relaxed);
+            if Instant::now() < due && (blocked || waiting == 0) && !take_over {
                 tokio::time::sleep(GLANCE).await;
                 continue;
             }
             let visit = match self.role {
-                LibraryRole::Owner => owner_visit(&db, &hub, &machine, &mut prepared).await,
+                LibraryRole::Owner => {
+                    let terms = Terms {
+                        take_over,
+                        keep_in: &self.keep_in,
+                    };
+                    let mut kept = None;
+                    let visit = owner_visit(&db, &hub, &machine, &mut prepared, terms, &mut kept);
+                    let visit = visit.await;
+                    if let Some(kept) = kept {
+                        self.status.lock().kept = Some(kept.display().to_string());
+                    }
+                    visit
+                }
                 _ => studio_visit(&db, &hub, &machine).await,
             };
             due = Instant::now() + INTERVAL;
@@ -351,11 +413,19 @@ impl Service {
                 }
                 self.report(true, message, true, None);
             }
-            Visit::NotTheOwner { owner } => self.report(
+            Visit::NotTheOwner {
+                owner,
+                quiet_for,
+                same_library,
+            } => self.report(
                 false,
                 format!("{owner} is the library owner, so nothing is published from here."),
                 true,
-                None,
+                Some(Remedy::TakeOver {
+                    owner,
+                    quiet_for,
+                    same_library,
+                }),
             ),
             Visit::NothingToCopy => self.report(
                 false,
@@ -427,12 +497,15 @@ async fn take(
 }
 
 /// The owner's visit: claim the role, publish what is owed, and take the
-/// operator work the studios have sent.
+/// operator work the studios have sent. `kept` is set to the file a hub that
+/// had to be emptied was written to first.
 async fn owner_visit(
     db: &Arc<Db>,
     link: &Link,
     machine: &Machine,
     prepared: &mut bool,
+    terms: Terms<'_>,
+    kept: &mut Option<PathBuf>,
 ) -> Result<(Visit, Applied)> {
     let mut hub = link.connect().await?;
     if !*prepared {
@@ -440,9 +513,24 @@ async fn owner_visit(
         *prepared = true;
     }
     let known = on(db, Db::library_id).await?;
-    match hub.claim(machine, known.as_deref()).await? {
-        Claim::Taken { by } => return Ok((Visit::NotTheOwner { owner: by }, Applied::default())),
-        Claim::Replaced { library_id } => {
+    match hub.claim(machine, known.as_deref(), terms).await? {
+        Claim::Taken {
+            by,
+            quiet_for,
+            same_library,
+        } => {
+            let visit = Visit::NotTheOwner {
+                owner: by,
+                quiet_for,
+                same_library,
+            };
+            return Ok((visit, Applied::default()));
+        }
+        Claim::Replaced {
+            library_id,
+            kept: file,
+        } => {
+            *kept = file;
             on(db, move |db| db.publish_as(&library_id, now_ms())).await?;
         }
         Claim::Held { .. } => {}
@@ -514,6 +602,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
     use crate::library::db::TrackInsert;
 
@@ -523,7 +613,43 @@ mod tests {
         machine: &Machine,
         prepared: &mut bool,
     ) -> Result<Visit> {
-        Ok(owner_visit(db, link, machine, prepared).await?.0)
+        let dir = tempfile::tempdir().unwrap();
+        Ok(owner_visit(
+            db,
+            link,
+            machine,
+            prepared,
+            terms(dir.path(), false),
+            &mut None,
+        )
+        .await?
+        .0)
+    }
+
+    fn terms(keep_in: &Path, take_over: bool) -> Terms<'_> {
+        Terms { take_over, keep_in }
+    }
+
+    /// An owner's visit that takes the role over. Returns the visit and the
+    /// file the hub's rows were kept in, if it was emptied.
+    async fn take_over(
+        db: &Arc<Db>,
+        link: &Link,
+        machine: &Machine,
+        keep_in: &Path,
+    ) -> (Visit, Option<PathBuf>) {
+        let mut kept = None;
+        let (visit, _) = owner_visit(
+            db,
+            link,
+            machine,
+            &mut true,
+            terms(keep_in, true),
+            &mut kept,
+        )
+        .await
+        .unwrap();
+        (visit, kept)
     }
 
     async fn pull(db: &Arc<Db>, link: &Link, machine: &Machine) -> Result<Visit> {
@@ -652,9 +778,12 @@ mod tests {
         assert_eq!(
             visit,
             Visit::NotTheOwner {
-                owner: "office".into()
+                owner: "office".into(),
+                quiet_for: quiet_for(&visit),
+                same_library: false,
             }
         );
+        assert!(quiet_for(&visit).is_some_and(|secs| secs < 60));
         assert_eq!(titles(&hub).await, ["One"]);
         assert_eq!(
             other.outgoing(OWNER_SENDS, 10).unwrap().len(),
@@ -663,7 +792,147 @@ mod tests {
         );
     }
 
-    /// Its ids are another database's, so nothing the hub held can be kept.
+    fn quiet_for(visit: &Visit) -> Option<i64> {
+        match visit {
+            Visit::NotTheOwner { quiet_for, .. } => *quiet_for,
+            other => panic!("not a refusal: {other:?}"),
+        }
+    }
+
+    /// A studio that has copied `hub` and is then made the owner.
+    async fn promoted_studio(hub: &Link, name: &str) -> Arc<Db> {
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        db.become_replica().unwrap();
+        pull(&db, hub, &machine(name)).await.unwrap();
+        db.start_capture(1).unwrap();
+        db.promote_replica().unwrap();
+        db
+    }
+
+    fn kept_titles(file: &Path) -> Vec<String> {
+        let kept = rusqlite::Connection::open(file).unwrap();
+        let mut stmt = kept
+            .prepare("SELECT doc ->> 'title' FROM hub_rows WHERE kind = 'track' ORDER BY rev")
+            .unwrap();
+        let rows = stmt.query_map([], |r| r.get(0)).unwrap();
+        rows.map(Result::unwrap).collect()
+    }
+
+    #[tokio::test]
+    async fn a_studio_made_the_owner_takes_the_role_and_the_hub_keeps_its_library() {
+        let Some(hub) = test_hub().await else { return };
+        let office = library(&["One", "Two"]);
+        publish(&office, &hub, &machine("office"), &mut false)
+            .await
+            .unwrap();
+        let other = studio(&hub, "b").await;
+        let promoted = promoted_studio(&hub, "a").await;
+        let dir = tempfile::tempdir().unwrap();
+
+        let refused = publish(&promoted, &hub, &machine("a"), &mut true)
+            .await
+            .unwrap();
+        assert!(
+            matches!(&refused, Visit::NotTheOwner { owner, same_library: true, .. } if owner == "office"),
+            "{refused:?}"
+        );
+
+        let (visit, kept) = take_over(&promoted, &hub, &machine("a"), dir.path()).await;
+
+        assert_eq!(visit, Visit::Published(0));
+        assert_eq!(kept, None, "nothing was emptied");
+        assert_eq!(titles(&hub).await, ["One", "Two"]);
+        let station = query(&hub, "SELECT owner, library_id FROM hub_station").await;
+        assert_eq!(station[0].get::<_, String>(0), "id-a");
+        assert_eq!(
+            Some(station[0].get::<_, String>(1)),
+            office.library_id().unwrap()
+        );
+        let after = pull(&other, &hub, &machine("b")).await.unwrap();
+        assert!(matches!(after, Visit::Pulled { .. }), "{after:?}");
+    }
+
+    #[tokio::test]
+    async fn taking_over_with_another_library_keeps_what_the_hub_held_in_a_file() {
+        let Some(hub) = test_hub().await else { return };
+        let office = library(&["Old", "Older"]);
+        publish(&office, &hub, &machine("office"), &mut false)
+            .await
+            .unwrap();
+        let studio = studio(&hub, "b").await;
+        let laptop = library(&["New"]);
+        let dir = tempfile::tempdir().unwrap();
+
+        let (visit, kept) = take_over(&laptop, &hub, &machine("laptop"), dir.path()).await;
+
+        assert_eq!(visit, Visit::Published(1));
+        assert_eq!(titles(&hub).await, ["New"]);
+        let file = kept.expect("the hub was emptied");
+        assert_eq!(file, dir.path().join("radiodiodj.hub.bak.db"));
+        assert_eq!(kept_titles(&file), ["Old", "Older"]);
+        let was: (String, String) = rusqlite::Connection::open(&file)
+            .unwrap()
+            .query_row("SELECT library_id, owner FROM hub_station", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(Some(was.0), office.library_id().unwrap());
+        assert_eq!(was.1, "id-office");
+        assert_eq!(
+            pull(&studio, &hub, &machine("b")).await.unwrap(),
+            Visit::DifferentLibrary
+        );
+    }
+
+    #[tokio::test]
+    async fn a_hub_that_cannot_be_kept_is_not_emptied() {
+        let Some(hub) = test_hub().await else { return };
+        publish(&library(&["Old"]), &hub, &machine("office"), &mut false)
+            .await
+            .unwrap();
+        let laptop = library(&["New"]);
+        let dir = tempfile::tempdir().unwrap();
+        let nowhere = dir.path().join("gone");
+
+        let failed = owner_visit(
+            &laptop,
+            &hub,
+            &machine("laptop"),
+            &mut true,
+            terms(&nowhere, true),
+            &mut None,
+        )
+        .await;
+
+        assert!(failed.is_err());
+        assert_eq!(titles(&hub).await, ["Old"]);
+        let owner = query(&hub, "SELECT owner FROM hub_station").await;
+        assert_eq!(owner[0].get::<_, String>(0), "id-office");
+    }
+
+    #[tokio::test]
+    async fn an_owner_that_comes_back_is_refused_like_any_second_owner() {
+        let Some(hub) = test_hub().await else { return };
+        let office = library(&["Old"]);
+        publish(&office, &hub, &machine("office"), &mut false)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        take_over(&library(&["New"]), &hub, &machine("laptop"), dir.path()).await;
+
+        let visit = publish(&office, &hub, &machine("office"), &mut true)
+            .await
+            .unwrap();
+
+        assert!(
+            matches!(&visit, Visit::NotTheOwner { owner, same_library: false, .. } if owner == "laptop"),
+            "{visit:?}"
+        );
+        assert_eq!(titles(&hub).await, ["New"]);
+    }
+
+    /// Its ids are another database's, so nothing the hub held can stay in
+    /// it. Nobody was asked, and what it held is kept in a file all the same.
     #[tokio::test]
     async fn an_owner_whose_database_was_replaced_starts_the_hub_again() {
         let Some(hub) = test_hub().await else { return };
@@ -672,10 +941,23 @@ mod tests {
         publish(&before, &hub, &me, &mut false).await.unwrap();
         let after = library(&["New"]);
 
-        publish(&after, &hub, &me, &mut true).await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut kept = None;
+
+        owner_visit(
+            &after,
+            &hub,
+            &me,
+            &mut true,
+            terms(dir.path(), false),
+            &mut kept,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(titles(&hub).await, ["New"]);
         assert_ne!(after.library_id().unwrap(), before.library_id().unwrap());
+        assert_eq!(kept_titles(&kept.unwrap()), ["Old one", "Old two"]);
     }
 
     /// Its revisions start over, so a cursor kept from before would step over
@@ -972,7 +1254,16 @@ mod tests {
         let sent = pull(&a, &hub, &machine("a")).await.unwrap();
         assert!(matches!(sent, Visit::Pulled { sent: 1, .. }), "{sent:?}");
 
-        let (_, taken) = owner_visit(&owner, &hub, &office, &mut true).await.unwrap();
+        let (_, taken) = owner_visit(
+            &owner,
+            &hub,
+            &office,
+            &mut true,
+            terms(Path::new("."), false),
+            &mut None,
+        )
+        .await
+        .unwrap();
         assert_eq!(taken.edited_tracks, [id], "the owner writes it to the file");
         assert_eq!(only_track(&owner).title, "Fixed in studio A");
 
@@ -1021,7 +1312,16 @@ mod tests {
             for (db, name) in [(&a, "a"), (&b, "b")] {
                 pull(db, &hub, &machine(name)).await.unwrap();
             }
-            owner_visit(&owner, &hub, &office, &mut true).await.unwrap();
+            owner_visit(
+                &owner,
+                &hub,
+                &office,
+                &mut true,
+                terms(Path::new("."), false),
+                &mut None,
+            )
+            .await
+            .unwrap();
 
             for db in [&a, &b, &owner] {
                 assert_eq!(
@@ -1139,9 +1439,16 @@ mod tests {
         let Some(hub) = test_hub().await else { return };
         let owner = library(&["One", "Two"]);
 
-        let (_, taken) = owner_visit(&owner, &hub, &machine("office"), &mut false)
-            .await
-            .unwrap();
+        let (_, taken) = owner_visit(
+            &owner,
+            &hub,
+            &machine("office"),
+            &mut false,
+            terms(Path::new("."), false),
+            &mut None,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(taken, Applied::default());
         assert_eq!(owner.pulled_rev().unwrap(), 0);

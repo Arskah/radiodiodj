@@ -2071,6 +2071,7 @@ describe("AppState session persistence", () => {
         encrypted: null,
         waiting: 0,
         remedy: null,
+        kept: null,
       },
     });
 

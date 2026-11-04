@@ -616,14 +616,34 @@ export interface HubStatus {
   waiting: number;
   /** What an admin can do about a role this computer cannot play. */
   remedy: HubRemedy | null;
+
+  /**
+   * The file holding what the hub held before this computer emptied it, since
+   * this launch.
+   */
+  kept: string | null;
 }
 
 /**
  * A way out of a role the hub refuses. `joinAgain`: this studio's copy is of a
- * library the hub no longer holds, and has to be made again.
+ * library the hub no longer holds, and has to be made again. `takeOver`:
+ * another computer holds the owner role this one is set to.
  */
-export interface HubRemedy {
-  kind: "joinAgain";
+export type HubRemedy = { kind: "joinAgain" } | HubTakeOver;
+
+/** What taking the owner role from the computer that holds it would do. */
+export interface HubTakeOver {
+  kind: "takeOver";
+  /** The name of the computer that holds the role. */
+  owner: string;
+  /** Seconds since it last visited the hub. `null` if it never has. */
+  quietFor: number | null;
+
+  /**
+   * Whether the hub holds this computer's library. Otherwise taking the role
+   * empties the hub, and every studio has to join again.
+   */
+  sameLibrary: boolean;
 }
 
 /** A certificate authority trusted for the hub beside the system's own. */
