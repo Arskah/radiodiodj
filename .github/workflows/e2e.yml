@@ -31,7 +31,7 @@ jobs:
             libasound2-plugins \
             pulseaudio \
             pulseaudio-utils \
-            webkit2gtk-driver \
+            webkitgtk-webdriver \
             xvfb
 
       - name: Start PulseAudio with null sink
