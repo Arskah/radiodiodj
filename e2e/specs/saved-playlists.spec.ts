@@ -186,14 +186,35 @@ describe("saved playlists", () => {
     await waitForText(sel.savedRow, "from selection");
     await waitForText(sel.savedRow, "2 tracks");
 
-    await saved.click({ button: "right" });
+    await saved.click();
+    await browser.waitUntil(async () => (await entryTitles()).length === 2, {
+      timeout: 5_000,
+      timeoutMsg: "the saved playlist did not open with its two entries",
+    });
+    const sourceOrder = await entryTitles();
+    expect([...sourceOrder].sort()).toEqual([...picked].sort());
+
+    await browser.$(sel.savedBack).click();
+    await browser.$(sel.savedRow).waitForDisplayed({ timeout: 5_000 });
+
+    await browser.$(sel.savedRow).click({ button: "right" });
     const menu = browser.$(sel.contextMenu);
     await menu.waitForDisplayed({ timeout: 5_000 });
-    await menu.$(sel.contextMenuItem("Add to playlist")).click();
+    await menu.$(sel.contextMenuItem("Add playlist")).click();
     await waitForQueue(2);
-    // Two rows were picked, so both are queued; which was first is the
-    // selection spec's to assert.
-    expect((await queuedTitles()).sort()).toEqual([...picked].sort());
+
+    const blockDisclosure = browser.$(
+      `${sel.playlist} button[aria-label="Collapse from selection"]`,
+    );
+    await blockDisclosure.waitForDisplayed({ timeout: 5_000 });
+    await expect(blockDisclosure).toHaveAttribute("aria-expanded", "true");
+    await expect(
+      browser.$$(`${sel.playlist} button[aria-label^="Collapse "]`),
+    ).toBeElementsArrayOfSize(1);
+    expect(await queuedTitles()).toEqual(sourceOrder);
+    await expect(
+      browser.$$(`${sel.playlist} [data-queue-kind="standalone"]`),
+    ).toBeElementsArrayOfSize(0);
   });
 
   it("picks entries of a saved playlist and removes them together", async () => {

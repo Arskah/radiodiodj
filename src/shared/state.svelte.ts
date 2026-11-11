@@ -18,6 +18,8 @@ import type {
   LibraryPath,
   LibraryStats,
   PlaylistItem,
+  QueueDestination,
+  QueueNode,
   Recalculated,
   SortColumn,
   SortDir,
@@ -66,6 +68,7 @@ import {
   importMessage,
   sizeLabel,
 } from "./savedPlaylists";
+import { flattenQueue, occurrenceAt, presentCollapsedIds } from "./queueBlocks";
 
 const logger = {
   error: (...args: unknown[]) => console.error(...args),
@@ -187,6 +190,9 @@ export class AppState {
    * one row, or the whole selection when the row under the pointer is in it.
    */
   draggedTrackIds = $state<number[] | null>(null);
+  /** A whole saved list in flight, distinct from its entry rows. */
+  /** Whole saved-list drag source, distinct from dragging its entry rows. */
+  draggedSavedPlaylistId = $state<number | null>(null);
   /** What is being dragged is the library selection, which a drop then uses up. */
   private draggedLibrarySelection = false;
 
@@ -235,6 +241,14 @@ export class AppState {
    * commands do. The same holds for every mirrored field below.
    */
   playlist = $state<PlaylistItem[]>([]);
+  /** Top-level queue nodes, mirrored from the backend's whole snapshot. */
+  /** Backend-owned queue structure with stable occurrence identities. */
+  queue = $state<QueueNode[]>([]);
+  /** Block whose child is on air or waiting behind a Stop. */
+  currentBlockId = $state<string | null>(null);
+  /** Disclosure is presentation-only and survives snapshots and restart. */
+  /** Renderer-only presentation state, saved with the session. */
+  collapsedBlockIds = $state<string[]>([]);
   upcomingAirTime = $derived(queueAirTime(this.playlist));
 
   /**
@@ -754,12 +768,21 @@ export class AppState {
   }
 
   /** Append a saved playlist to the playlist and say what that did. */
-  async addSavedToPlaylist(id: number, weave: boolean): Promise<void> {
+  async addSavedToPlaylist(
+    id: number,
+    weave: boolean,
+    beforeId: string | null = null,
+  ): Promise<void> {
     try {
-      const { added, skipped } = await api.playlistAddSaved(id, weave);
+      const { added, skipped } = await api.playlistAddSaved(
+        id,
+        weave,
+        beforeId,
+      );
       const stops =
         this.savedPlaylists.find((saved) => saved.id === id)?.stops ?? 0;
-      this.savedNotice = appendMessage(added, skipped, stops);
+      if (beforeId === null)
+        this.savedNotice = appendMessage(added, skipped, stops);
     } catch (err) {
       logger.error("Adding a saved playlist failed:", err);
     }
@@ -884,7 +907,9 @@ export class AppState {
   /** Queue tracks in the order given, at the end or as next-up. */
   queueTracks(ids: number[], asNext = false): void {
     if (ids.length === 0) return;
-    this.send(api.playlistAddMany(ids, asNext ? 0 : null));
+    this.send(
+      asNext ? api.playlistAddAsNext(ids) : api.playlistAddMany(ids, null),
+    );
   }
 
   removeSavedEntries(entryIds: number[]): void {
@@ -939,7 +964,7 @@ export class AppState {
 
   /** Queue a track as next-up, ahead of everything already queued. */
   addNextToPlaylist(track: Track): void {
-    this.send(api.playlistAddFront(track.id));
+    this.send(api.playlistAddAsNext([track.id]));
   }
 
   /** The rows a selection gesture can reach: none on the Playlists tab. */
@@ -980,12 +1005,17 @@ export class AppState {
   /** Queue the selection in pick order, at the end or as next-up, and clear it. */
   addSelectionToPlaylist(asNext = false): void {
     if (this.selectedIds.length === 0) return;
-    this.send(api.playlistAddMany([...this.selectedIds], asNext ? 0 : null));
+    this.send(
+      asNext
+        ? api.playlistAddAsNext([...this.selectedIds])
+        : api.playlistAddMany([...this.selectedIds], null),
+    );
     this.clearSelection();
   }
 
   /** A drag of a selected row carries the selection; of any other, that row. */
   startLibraryDrag(track: Track): void {
+    this.draggedSavedPlaylistId = null;
     this.draggedLibrarySelection = this.selectedIds.includes(track.id);
     this.draggedTrackIds = this.draggedLibrarySelection
       ? [...this.selectedIds]
@@ -997,8 +1027,75 @@ export class AppState {
    * of a saved playlist. An empty list is a drag that carries no track.
    */
   startTrackDrag(ids: number[]): void {
+    this.draggedSavedPlaylistId = null;
     this.draggedLibrarySelection = false;
     this.draggedTrackIds = ids.length > 0 ? ids : null;
+  }
+
+  /** Start a drag of a whole saved list, including a one-track list. */
+  startSavedPlaylistDrag(id: number): void {
+    this.draggedTrackIds = null;
+    this.draggedSavedPlaylistId = id;
+  }
+
+  /** Clear a whole-list drag that was not dropped into Upcoming. */
+  endSavedPlaylistDrag(): void {
+    this.draggedSavedPlaylistId = null;
+  }
+
+  /** Copy an external drag into its top-level or block destination. */
+  dropDraggedInQueue(destination: QueueDestination): void {
+    const savedId = this.draggedSavedPlaylistId;
+    this.draggedSavedPlaylistId = null;
+    if (savedId !== null) {
+      if (destination.scope === "main") {
+        void this.addSavedToPlaylist(savedId, false, destination.beforeId);
+      }
+      return;
+    }
+    const ids = this.draggedTrackIds;
+    this.draggedTrackIds = null;
+    if (!ids || ids.length === 0) return;
+    this.send(api.playlistCopyTracks(ids, destination));
+    if (this.draggedLibrarySelection) this.clearSelection();
+  }
+
+  /** Move one queued occurrence; its id distinguishes repeated tracks. */
+  moveQueueOccurrence(id: string, destination: QueueDestination): void {
+    this.send(api.playlistMoveOccurrence(id, destination));
+  }
+
+  /** Move an unstarted block among the top-level occurrences. */
+  moveQueueBlock(blockId: string, beforeId: string | null): void {
+    this.send(api.playlistMoveBlock(blockId, beforeId));
+  }
+
+  /** Remove a child or standalone entry by occurrence identity. */
+  removeQueueOccurrence(id: string): void {
+    this.send(api.playlistRemoveOccurrence(id));
+  }
+
+  /** Remove a queued block's remaining entries. */
+  removeQueueBlock(blockId: string): void {
+    this.send(api.playlistRemoveBlock(blockId));
+  }
+
+  /** Play the identified queued airing now. */
+  playQueueOccurrence(id: string): void {
+    this.send(api.playlistPlayOccurrence(id));
+  }
+
+  /** Set a cue override for one queued airing. */
+  setQueueOccurrenceCuePoints(id: string, points: CuePoints | null): void {
+    this.send(api.playlistSetOccurrenceCuePoints(id, points));
+  }
+
+  /** Change one header's expansion without altering playback order. */
+  toggleBlockCollapsed(id: string): void {
+    this.collapsedBlockIds = this.collapsedBlockIds.includes(id)
+      ? this.collapsedBlockIds.filter((collapsed) => collapsed !== id)
+      : [...this.collapsedBlockIds, id];
+    this.scheduleSave();
   }
 
   /** Queue what is being dragged ahead of the item at `index`. */
@@ -1053,7 +1150,12 @@ export class AppState {
 
   playIndex(index: number): void {
     if (index < 0 || index >= this.playlist.length) return;
-    this.send(api.playlistPlayIndex(index));
+    const occurrence = occurrenceAt(this.queue, index);
+    this.send(
+      occurrence && !occurrence.startsWith("legacy-")
+        ? api.playlistPlayOccurrence(occurrence)
+        : api.playlistPlayIndex(index),
+    );
   }
 
   /** Fire a playlist command; the snapshot it produces is what updates the UI. */
@@ -1077,7 +1179,23 @@ export class AppState {
    * queue, what is on air, and the auto flags are all projections of it.
    */
   private applySnapshot(snapshot: PlaylistSnapshot): void {
-    this.playlist = snapshot.playlist;
+    // Older flat snapshots are still used by the renderer's mock backend.
+    // The native backend sends stable occurrence IDs on every node.
+    this.queue = snapshot.playlist.map((node, index) =>
+      node.kind === "block" || node.kind === "standalone"
+        ? node
+        : {
+            kind: "standalone" as const,
+            id: `legacy-${index}`,
+            item: node as PlaylistItem,
+          },
+    );
+    this.playlist = flattenQueue(this.queue);
+    this.currentBlockId = snapshot.currentBlockId ?? null;
+    this.collapsedBlockIds = presentCollapsedIds(
+      this.collapsedBlockIds,
+      this.queue,
+    );
     this.currentCueOverride = snapshot.currentOverride ?? null;
     this.autoPlaylistActive = snapshot.autoPlaylistActive;
     this.autoSource = snapshot.source ?? null;
@@ -1466,11 +1584,26 @@ export class AppState {
       );
     }
     if (this.playlist.some((i) => isTrackItem(i) && i.track.id === id)) {
-      this.playlist = this.playlist.map((i) =>
-        isTrackItem(i) && i.track.id === id
-          ? { ...i, track: { ...i.track, cue_points: points } }
-          : i,
-      );
+      const adopt = (item: PlaylistItem): PlaylistItem =>
+        isTrackItem(item) && item.track.id === id
+          ? { ...item, track: { ...item.track, cue_points: points } }
+          : item;
+      if (this.queue.length === 0) {
+        this.playlist = this.playlist.map(adopt);
+      } else {
+        this.queue = this.queue.map((node) =>
+          node.kind === "standalone"
+            ? { ...node, item: adopt(node.item) }
+            : {
+                ...node,
+                entries: node.entries.map((entry) => ({
+                  ...entry,
+                  item: adopt(entry.item),
+                })),
+              },
+        );
+        this.playlist = flattenQueue(this.queue);
+      }
     }
     this.cueTrack = this.applyCuePoints(this.cueTrack, id, points);
     // A result landing for the track being edited refreshes a pristine editor.
@@ -1507,11 +1640,26 @@ export class AppState {
       this.tracks = this.tracks.map(apply);
     }
     if (this.playlist.some((i) => isTrackItem(i) && stale(i.track))) {
-      this.playlist = this.playlist.map((i) =>
-        isTrackItem(i) && stale(i.track)
-          ? { ...i, track: { ...i.track, duration } }
-          : i,
-      );
+      const adopt = (item: PlaylistItem): PlaylistItem =>
+        isTrackItem(item) && stale(item.track)
+          ? { ...item, track: { ...item.track, duration } }
+          : item;
+      if (this.queue.length === 0) {
+        this.playlist = this.playlist.map(adopt);
+      } else {
+        this.queue = this.queue.map((node) =>
+          node.kind === "standalone"
+            ? { ...node, item: adopt(node.item) }
+            : {
+                ...node,
+                entries: node.entries.map((entry) => ({
+                  ...entry,
+                  item: adopt(entry.item),
+                })),
+              },
+        );
+        this.playlist = flattenQueue(this.queue);
+      }
     }
     this.cueTrack = apply(this.cueTrack);
     if (!this.cueEditorDirty) {
@@ -1602,7 +1750,12 @@ export class AppState {
    */
   setItemCuePoints(index: number, points: CuePoints | null): void {
     if (index < 0 || index >= this.playlist.length) return;
-    this.send(api.playlistSetItemCuePoints(index, points));
+    const occurrence = occurrenceAt(this.queue, index);
+    this.send(
+      occurrence && !occurrence.startsWith("legacy-")
+        ? api.playlistSetOccurrenceCuePoints(occurrence, points)
+        : api.playlistSetItemCuePoints(index, points),
+    );
   }
 
   // ----- Audio device config -----
@@ -1811,6 +1964,7 @@ export class AppState {
       return;
     }
     const { state } = result;
+    this.collapsedBlockIds = state.collapsedBlockIds ?? [];
     if (result.libraryReset) void this.noteLibraryReset();
     if (result.libraryJoined) this.libraryJoined = true;
     // Master level is fixed at unity: the volume slider left the operator UI,
@@ -1855,6 +2009,14 @@ export class AppState {
   }
 
   private async persistSession(): Promise<void> {
+    const persistedItem = (item: PlaylistItem) =>
+      isStopMarker(item)
+        ? ({ kind: "stop" } as const)
+        : ({
+            kind: "track" as const,
+            id: item.track.id,
+            cueOverride: item.cue_override ?? null,
+          } as const);
     await api
       .saveSession({
         playlistIds: this.playlist.filter(isTrackItem).map((i) => i.track.id),
@@ -1867,6 +2029,26 @@ export class AppState {
                 cue_override: i.cue_override ?? null,
               },
         ),
+        queue: this.queue.map((node) =>
+          node.kind === "standalone"
+            ? {
+                kind: "standalone",
+                id: node.id,
+                item: persistedItem(node.item),
+              }
+            : {
+                kind: "block",
+                id: node.id,
+                title: node.title,
+                savedKind: node.savedKind,
+                entries: node.entries.map((entry) => ({
+                  id: entry.id,
+                  item: persistedItem(entry.item),
+                })),
+              },
+        ),
+        currentBlockId: this.currentBlockId,
+        collapsedBlockIds: this.collapsedBlockIds,
         currentTrackId: this.currentTrack?.id ?? null,
         currentTime: this.currentTime,
         currentCueOverride: this.currentCueOverride,

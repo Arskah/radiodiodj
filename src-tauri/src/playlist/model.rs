@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::audio::cue_points::CuePoints;
-use crate::library::db::Track;
+use crate::library::db::{SavedPlaylistKind, Track};
 use crate::persist::session::SessionPlaylistItem;
 
 /// One entry in the playlist.
@@ -93,6 +93,71 @@ impl PlaylistItem {
     }
 }
 
+/// One queued occurrence inside a copied saved-playlist block.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueChild {
+    /// Identity of this airing, independent of its track id.
+    pub id: String,
+    /// Track or Stop at this position.
+    pub item: PlaylistItem,
+}
+
+/// A top-level queue occurrence: one item or a copied saved list.
+// A standalone node carries a whole Track for the renderer. Boxing that one
+// case would allocate every ordinary queued row to shrink a small queue enum.
+#[allow(clippy::large_enum_variant)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum QueueNode {
+    /// An ordinary track or Stop outside any block.
+    Standalone {
+        /// Identity of this occurrence.
+        id: String,
+        /// Queued content.
+        item: PlaylistItem,
+    },
+    /// An independent queued copy of a saved playlist or prepared show.
+    Block {
+        /// Identity of this queued copy.
+        id: String,
+        /// Title copied when the block was queued.
+        title: String,
+        /// Saved kind copied when the block was queued.
+        saved_kind: SavedPlaylistKind,
+        /// Remaining children in authored or operator-edited order.
+        entries: Vec<QueueChild>,
+    },
+}
+
+/// A gap in the queue, addressed by occurrence identity rather than row index.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(
+    tag = "scope",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum Destination {
+    /// A gap between top-level nodes; `None` appends.
+    Main {
+        /// Top-level occurrence immediately after the gap.
+        #[serde(default)]
+        before_id: Option<String>,
+    },
+    /// A gap among one block's remaining children; `None` appends inside it.
+    Block {
+        /// Block receiving the item.
+        block_id: String,
+        /// Child occurrence immediately after the gap.
+        #[serde(default)]
+        before_id: Option<String>,
+    },
+}
+
 /// Whole-playlist snapshot, emitted on `program:playlist-state` after every
 /// mutation and every advance.
 ///
@@ -102,8 +167,12 @@ impl PlaylistItem {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
-    /// Upcoming items in order, stop markers included.
-    pub playlist: Vec<PlaylistItem>,
+    /// Upcoming top-level items and copied blocks in order.
+    pub playlist: Vec<QueueNode>,
+    /// Block whose child is on air, or whose remaining children are waiting
+    /// behind an interior Stop. Its header stays visible while active.
+    #[serde(default)]
+    pub current_block_id: Option<String>,
     /// The track on the main deck.
     pub current: Option<Track>,
     /// What has aired, oldest first, capped by the stored tuning's
@@ -251,5 +320,36 @@ mod tests {
     #[test]
     fn from_session_of_an_empty_file_is_empty() {
         assert!(PlaylistItem::from_session(&[], &[], library).is_empty());
+    }
+
+    #[test]
+    fn block_and_destination_wire_use_camel_case_fields() {
+        let node = QueueNode::Block {
+            id: "block-1".into(),
+            title: "Show".into(),
+            saved_kind: SavedPlaylistKind::PreparedShow,
+            entries: vec![QueueChild {
+                id: "child-1".into(),
+                item: PlaylistItem::Stop,
+            }],
+        };
+        let value = serde_json::to_value(&node).unwrap();
+        assert_eq!(value["kind"], "block");
+        assert_eq!(value["savedKind"], "prepared_show");
+        assert_eq!(value["entries"][0]["id"], "child-1");
+        assert_eq!(serde_json::from_value::<QueueNode>(value).unwrap(), node);
+
+        let destination = Destination::Block {
+            block_id: "block-1".into(),
+            before_id: Some("child-1".into()),
+        };
+        let value = serde_json::to_value(&destination).unwrap();
+        assert_eq!(value["scope"], "block");
+        assert_eq!(value["blockId"], "block-1");
+        assert_eq!(value["beforeId"], "child-1");
+        assert_eq!(
+            serde_json::from_value::<Destination>(value).unwrap(),
+            destination
+        );
     }
 }

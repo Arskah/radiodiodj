@@ -54,8 +54,8 @@ use persist::config::{
     AppearanceConfig, Config, DeviceRef, LibraryRole, NowPlayingConfig, SharedLibrarySettings,
     TuningConfig,
 };
-use persist::session::{Session, SessionPlaylistItem, SessionState};
-use playlist::model::PlaylistItem;
+use persist::session::{Session, SessionPlaylistItem, SessionQueueNode, SessionState};
+use playlist::model::{Destination, PlaylistItem};
 use playlist::{PlaylistService, Snapshot};
 use std::time::Duration;
 use update::{UpdateState, Updater};
@@ -312,22 +312,38 @@ async fn load_session(app: State<'_, AppState>) -> Result<SessionLoadResult, Str
     let library_joined = app.library_joined;
     blocking(move || {
         let s = session.load();
-        let mut ids: Vec<i64> = Vec::new();
-        let mut seen: HashSet<i64> = HashSet::new();
-        let item_ids = s.playlist_items.iter().filter_map(|item| match item {
-            SessionPlaylistItem::Track { id, .. } => Some(id),
-            SessionPlaylistItem::Stop => None,
-        });
-        for id in s
-            .playlist_ids
-            .iter()
-            .chain(item_ids)
-            .chain(s.current_track_id.iter())
-        {
-            if seen.insert(*id) {
-                ids.push(*id);
+        let mut candidates = Vec::new();
+        if let Some(queue) = &s.queue {
+            for node in queue {
+                match node {
+                    SessionQueueNode::Standalone { item, .. } => {
+                        if let SessionPlaylistItem::Track { id, .. } = item {
+                            candidates.push(*id);
+                        }
+                    }
+                    SessionQueueNode::Block { entries, .. } => {
+                        for child in entries {
+                            if let SessionPlaylistItem::Track { id, .. } = &child.item {
+                                candidates.push(*id);
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            candidates.extend_from_slice(&s.playlist_ids);
+            for item in &s.playlist_items {
+                if let SessionPlaylistItem::Track { id, .. } = item {
+                    candidates.push(*id);
+                }
             }
         }
+        let mut seen: HashSet<i64> = HashSet::new();
+        let ids: Vec<i64> = candidates
+            .into_iter()
+            .chain(s.current_track_id)
+            .filter(|id| seen.insert(*id))
+            .collect();
         let tracks = db.get_tracks_by_ids(&ids).map_err(err)?;
         Ok(SessionLoadResult {
             state: s,
@@ -389,8 +405,21 @@ fn playlist_add_many(app: State<'_, AppState>, ids: Vec<i64>, index: Option<usiz
     app.playlist.add_many(ids, index);
 }
 
-/// What an append of a saved playlist did: how many tracks it queued, and how
-/// many entries it had to leave out for want of a track. Stops count as neither.
+/// Copy tracks into a top-level or block gap named by occurrence ids.
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_copy_tracks(app: State<'_, AppState>, ids: Vec<i64>, destination: Destination) {
+    app.playlist.copy_tracks(ids, destination);
+}
+
+/// Add a selection just after the current block child, or at main front.
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_add_as_next(app: State<'_, AppState>, ids: Vec<i64>) {
+    app.playlist.add_as_next(ids);
+}
+
+/// What the saved list offered for a queued block: bound track entries and
+/// unmatched entries. Stops count as neither; the queue snapshot confirms the
+/// later serial insertion.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct SavedAppend {
@@ -408,34 +437,32 @@ fn saved_entries(items: &[PlaylistItem]) -> Vec<SavedEntryInput> {
         .collect()
 }
 
-/// Append a saved list's authored entries in order. The optional interleave
-/// cadence is available only for ordinary playlists.
+/// Copy a saved list as a named block at a top-level gap. The optional
+/// interleave cadence is available only for ordinary playlists.
 #[tauri::command(rename_all = "camelCase")]
 async fn playlist_add_saved(
     state: State<'_, AppState>,
     id: i64,
     weave: bool,
+    before_id: Option<String>,
 ) -> Result<SavedAppend, String> {
     let db = Arc::clone(&state.db);
     let playlist = Arc::clone(&state.playlist);
     blocking(move || {
-        let offered = db
-            .saved_playlist_items(id)
+        let saved = db
+            .saved_playlist(id)
             .map_err(err)?
             .ok_or_else(|| format!("no saved playlist {id}"))?;
-        if weave && offered.kind != SavedPlaylistKind::Playlist {
+        let (title, kind, entries, skipped) = playlist::service::saved_copy(saved);
+        if weave && kind != SavedPlaylistKind::Playlist {
             return Err("a prepared show uses its authored sequence".to_owned());
         }
-        let added = offered
-            .entries
+        let added = entries
             .iter()
             .filter(|entry| matches!(entry, SavedQueueEntry::Track { .. }))
             .count();
-        playlist.add_saved(offered.entries, weave);
-        Ok(SavedAppend {
-            added,
-            skipped: offered.unmatched,
-        })
+        playlist.add_saved(title, kind, entries, weave, before_id);
+        Ok(SavedAppend { added, skipped })
     })
     .await
 }
@@ -742,6 +769,15 @@ fn playlist_set_item_cue_points(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+fn playlist_set_occurrence_cue_points(
+    app: State<'_, AppState>,
+    id: String,
+    cue_points: Option<CuePoints>,
+) {
+    app.playlist.set_occurrence_cue_points(id, cue_points);
+}
+
+#[tauri::command(rename_all = "camelCase")]
 fn playlist_add_stop_marker(app: State<'_, AppState>) {
     app.playlist.add_stop();
 }
@@ -757,6 +793,26 @@ fn playlist_remove(app: State<'_, AppState>, index: usize) {
 }
 
 #[tauri::command(rename_all = "camelCase")]
+fn playlist_remove_occurrence(app: State<'_, AppState>, id: String) {
+    app.playlist.remove_occurrence(id);
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_move_occurrence(app: State<'_, AppState>, id: String, destination: Destination) {
+    app.playlist.move_occurrence(id, destination);
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_move_block(app: State<'_, AppState>, block_id: String, before_id: Option<String>) {
+    app.playlist.move_block(block_id, before_id);
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_remove_block(app: State<'_, AppState>, block_id: String) {
+    app.playlist.remove_block(block_id);
+}
+
+#[tauri::command(rename_all = "camelCase")]
 fn playlist_move(app: State<'_, AppState>, from: usize, to: usize) {
     app.playlist.move_item(from, to);
 }
@@ -769,6 +825,11 @@ fn playlist_clear(app: State<'_, AppState>) {
 #[tauri::command(rename_all = "camelCase")]
 fn playlist_play_index(app: State<'_, AppState>, index: usize) {
     app.playlist.play_index(index);
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_play_occurrence(app: State<'_, AppState>, id: String) {
+    app.playlist.play_occurrence(id);
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -2082,6 +2143,8 @@ pub fn run() {
             playlist_add_front,
             playlist_insert,
             playlist_add_many,
+            playlist_copy_tracks,
+            playlist_add_as_next,
             playlist_add_saved,
             playlist_save_as,
             saved_playlist_list,
@@ -2100,12 +2163,18 @@ pub fn run() {
             saved_playlist_rename,
             saved_playlist_delete,
             playlist_set_item_cue_points,
+            playlist_set_occurrence_cue_points,
             playlist_add_stop_marker,
             playlist_add_filler,
             playlist_remove,
+            playlist_remove_occurrence,
+            playlist_move_occurrence,
+            playlist_move_block,
+            playlist_remove_block,
             playlist_move,
             playlist_clear,
             playlist_play_index,
+            playlist_play_occurrence,
             playlist_play_now,
             playlist_next,
             playlist_prev,
@@ -2262,11 +2331,11 @@ mod prepared_show_tests {
             .unwrap();
         assert_eq!(imported.kind, SavedPlaylistKind::PreparedShow);
         assert_eq!(imported.stops, 1);
+        let (_, _, offered, unmatched) =
+            playlist::service::saved_copy(db.saved_playlist(imported.id).unwrap().unwrap());
+        assert_eq!(unmatched, 0);
         assert_eq!(
-            db.saved_playlist_items(imported.id)
-                .unwrap()
-                .unwrap()
-                .entries,
+            offered,
             vec![
                 SavedQueueEntry::Track {
                     id: tracks[0].id,
