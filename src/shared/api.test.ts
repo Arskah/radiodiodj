@@ -175,3 +175,20 @@ describe("api appearance commands", () => {
     ).toBe(true);
   });
 });
+
+describe("planned Stop commands", () => {
+  it("addresses queued copies by occurrence and saved entries by entry id", async () => {
+    await api.playlistSetStopDuration("stop-copy", 0);
+    await api.savedPlaylistSetStopDuration(7, null);
+    expect(invoke.mock.calls).toEqual([
+      [
+        "playlist_set_stop_duration",
+        { occurrenceId: "stop-copy", plannedDurationSeconds: 0 },
+      ],
+      [
+        "saved_playlist_set_stop_duration",
+        { entryId: 7, plannedDurationSeconds: null },
+      ],
+    ]);
+  });
+});

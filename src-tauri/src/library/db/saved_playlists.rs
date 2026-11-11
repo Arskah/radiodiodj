@@ -43,7 +43,10 @@ pub enum SavedEntryInput {
     /// Add the track with this library id.
     Track(i64),
     /// Add a deliberate Stop marker.
-    Stop,
+    Stop {
+        /// The planned hold length in whole seconds, if known.
+        planned_duration_seconds: Option<u32>,
+    },
 }
 
 /// A saved entry ready to append to the on-air queue.
@@ -57,7 +60,10 @@ pub enum SavedQueueEntry {
         content_type: String,
     },
     /// A deliberate Stop marker.
-    Stop,
+    Stop {
+        /// The planned hold length in whole seconds, if known.
+        planned_duration_seconds: Option<u32>,
+    },
 }
 
 /// Whether one saved entry names audio or marks a pause.
@@ -109,6 +115,8 @@ pub struct SavedEntry {
     pub title: String,
     pub duration: f64,
     pub content_type: Option<String>,
+    /// Planned hold length for a Stop, in whole seconds.
+    pub planned_duration_seconds: Option<u32>,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -132,8 +140,8 @@ pub struct SavedTracks {
 
 /// The `format` every saved playlist file carries.
 pub const FILE_FORMAT: &str = "radiodiodj-playlist";
-/// The file version this build writes. Version 1 track-only files remain readable.
-pub const FILE_VERSION: u32 = 2;
+/// The file version this build writes. Versions 1 and 2 remain readable.
+pub const FILE_VERSION: u32 = 3;
 
 /// A saved playlist as it travels between installs: no track ids and no paths,
 /// only what identifies a recording anywhere. See `docs/saved-playlists.md`.
@@ -165,6 +173,9 @@ pub struct FileEntry {
     pub duration: Option<f64>,
     #[serde(default)]
     pub content_type: Option<String>,
+    /// Planned hold length for a Stop, in whole seconds.
+    #[serde(default)]
+    pub planned_duration_seconds: Option<u32>,
 }
 
 impl SavedPlaylistFile {
@@ -182,7 +193,7 @@ impl SavedPlaylistFile {
             bail!("not a saved playlist file");
         }
         match header.version {
-            Some(1 | FILE_VERSION) => {}
+            Some(1 | 2 | FILE_VERSION) => {}
             Some(v) => bail!(
                 "this saved playlist file is version {v}, and this build reads version \
                  {FILE_VERSION}"
@@ -206,6 +217,12 @@ fn validate_entries(kind: SavedPlaylistKind, entries: &[FileEntry]) -> Result<()
     if kind == SavedPlaylistKind::Playlist && entries.iter().any(|e| e.kind == SavedEntryKind::Stop)
     {
         bail!("a playlist cannot contain Stops");
+    }
+    if entries
+        .iter()
+        .any(|e| e.kind == SavedEntryKind::Track && e.planned_duration_seconds.is_some())
+    {
+        bail!("a track entry cannot carry a planned Stop duration");
     }
     if entries.iter().any(|e| {
         e.kind == SavedEntryKind::Stop
@@ -356,6 +373,7 @@ impl Db {
             String,
             f64,
             Option<String>,
+            Option<u32>,
         );
         let (name, kind, rows): (String, SavedPlaylistKind, Vec<Row>) = {
             let conn = self.conn.lock();
@@ -372,7 +390,7 @@ impl Db {
             let mut stmt = conn.prepare(
                 "SELECT e.id, e.kind, e.track_id, COALESCE(e.artist, ''), \
                         COALESCE(e.title, ''), COALESCE(e.duration, 0), \
-                        COALESCE(t.content_type, e.content_type) \
+                        COALESCE(t.content_type, e.content_type), e.planned_duration_seconds \
                  FROM saved_playlist_entries e LEFT JOIN tracks t ON t.id = e.track_id \
                  WHERE e.playlist_id = ? ORDER BY e.position, e.id",
             )?;
@@ -390,6 +408,7 @@ impl Db {
                         r.get(4)?,
                         r.get(5)?,
                         r.get(6)?,
+                        r.get(7)?,
                     ))
                 })?
                 .collect::<rusqlite::Result<_>>()?;
@@ -413,7 +432,16 @@ impl Db {
         let entries = rows
             .into_iter()
             .map(
-                |(id, kind, track_id, artist, title, duration, content_type)| SavedEntry {
+                |(
+                    id,
+                    kind,
+                    track_id,
+                    artist,
+                    title,
+                    duration,
+                    content_type,
+                    planned_duration_seconds,
+                )| SavedEntry {
                     id,
                     kind,
                     track: track_id.and_then(|t| tracks.get(&t).cloned()),
@@ -421,6 +449,7 @@ impl Db {
                     title,
                     duration,
                     content_type,
+                    planned_duration_seconds,
                 },
             )
             .collect();
@@ -457,7 +486,11 @@ impl Db {
         entries: &[SavedEntryInput],
         now_ms: i64,
     ) -> Result<SavedPlaylistSummary> {
-        if kind == SavedPlaylistKind::Playlist && entries.contains(&SavedEntryInput::Stop) {
+        if kind == SavedPlaylistKind::Playlist
+            && entries
+                .iter()
+                .any(|entry| matches!(entry, SavedEntryInput::Stop { .. }))
+        {
             bail!("a playlist cannot contain Stops");
         }
         let mut conn = self.conn.lock();
@@ -475,10 +508,14 @@ impl Db {
                 SavedEntryInput::Track(track_id) => {
                     added.extend(insert_entries(&tx, id, &[*track_id])?);
                 }
-                SavedEntryInput::Stop => {
+                SavedEntryInput::Stop {
+                    planned_duration_seconds,
+                } => {
                     tx.execute(
-                        "INSERT INTO saved_playlist_entries (playlist_id, position, kind) VALUES (?, -1, 'stop')",
-                        [id],
+                        "INSERT INTO saved_playlist_entries \
+                           (playlist_id, position, kind, planned_duration_seconds) \
+                         VALUES (?, -1, 'stop', ?)",
+                        params![id, planned_duration_seconds],
                     )?;
                     added.push(tx.last_insert_rowid());
                     stops += 1;
@@ -547,6 +584,34 @@ impl Db {
         let at = index.map_or(order.len(), |i| i.min(order.len()));
         order.insert(at, tx.last_insert_rowid());
         write_order(&tx, &order)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Change the planned hold length of a saved Stop, in whole seconds.
+    pub fn set_saved_stop_duration(
+        &self,
+        entry_id: i64,
+        planned_duration_seconds: Option<u32>,
+        now_ms: i64,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let playlist_id: Option<i64> = tx
+            .query_row(
+                "SELECT playlist_id FROM saved_playlist_entries WHERE id = ? AND kind = 'stop'",
+                [entry_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(playlist_id) = playlist_id else {
+            bail!("no saved Stop entry {entry_id}");
+        };
+        tx.execute(
+            "UPDATE saved_playlist_entries SET planned_duration_seconds = ? WHERE id = ?",
+            params![planned_duration_seconds, entry_id],
+        )?;
+        touch(&tx, playlist_id, now_ms)?;
         tx.commit()?;
         Ok(())
     }
@@ -773,7 +838,7 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT e.kind, COALESCE(t.fingerprint, e.fingerprint), COALESCE(t.artist, e.artist), \
                     COALESCE(t.title, e.title), COALESCE(t.duration, e.duration), \
-                    COALESCE(t.content_type, e.content_type) \
+                    COALESCE(t.content_type, e.content_type), e.planned_duration_seconds \
              FROM saved_playlist_entries e LEFT JOIN tracks t ON t.id = e.track_id \
              WHERE e.playlist_id = ? ORDER BY e.position, e.id",
         )?;
@@ -790,6 +855,7 @@ impl Db {
                     title: r.get(3)?,
                     duration: r.get(4)?,
                     content_type: r.get(5)?,
+                    planned_duration_seconds: r.get(6)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -810,7 +876,7 @@ impl Db {
         file: &SavedPlaylistFile,
         now_ms: i64,
     ) -> Result<SavedPlaylistSummary> {
-        if file.version != 1 && file.version != FILE_VERSION {
+        if !matches!(file.version, 1 | 2 | FILE_VERSION) {
             bail!("unsupported saved playlist file version {}", file.version);
         }
         if file.version == 1
@@ -831,8 +897,8 @@ impl Db {
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO saved_playlist_entries \
-                   (playlist_id, position, kind, fingerprint, artist, title, duration, content_type) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                   (playlist_id, position, kind, fingerprint, artist, title, duration, content_type, planned_duration_seconds) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )?;
             for (position, entry) in file.entries.iter().enumerate() {
                 stmt.execute(params![
@@ -844,6 +910,7 @@ impl Db {
                     entry.title,
                     entry.duration,
                     entry.content_type,
+                    entry.planned_duration_seconds,
                 ])?;
             }
         }
@@ -1214,6 +1281,7 @@ mod tests {
                     title: Some(format!("from {fp}")),
                     duration: Some(100.0),
                     content_type: Some("music".into()),
+                    planned_duration_seconds: None,
                 })
                 .collect(),
         }
@@ -1345,9 +1413,13 @@ mod tests {
                 SavedPlaylistKind::PreparedShow,
                 &[
                     SavedEntryInput::Track(ids[0]),
-                    SavedEntryInput::Stop,
+                    SavedEntryInput::Stop {
+                        planned_duration_seconds: Some(120),
+                    },
                     SavedEntryInput::Track(ids[1]),
-                    SavedEntryInput::Stop,
+                    SavedEntryInput::Stop {
+                        planned_duration_seconds: None,
+                    },
                 ],
                 1,
             )
@@ -1367,8 +1439,17 @@ mod tests {
                 (SavedEntryKind::Stop, None),
             ]
         );
+        assert_eq!(
+            detail
+                .entries
+                .iter()
+                .map(|entry| entry.planned_duration_seconds)
+                .collect::<Vec<_>>(),
+            [None, Some(120), None, None]
+        );
         let file = db.export_saved_playlist(made.id).unwrap().unwrap();
         let json = serde_json::to_string(&file).unwrap();
+        assert!(json.contains("\"plannedDurationSeconds\":120"));
         let imported = db
             .import_saved_playlist(&SavedPlaylistFile::parse(&json).unwrap(), 2)
             .unwrap();
@@ -1395,6 +1476,19 @@ mod tests {
                 .map(|e| (e.kind, e.track.as_ref().map(|track| track.id)))
                 .collect::<Vec<_>>()
         );
+        let copy = db.saved_playlist(imported.id).unwrap().unwrap();
+        assert_eq!(copy.entries[1].planned_duration_seconds, Some(120));
+        db.set_saved_stop_duration(copy.entries[1].id, Some(0), 3)
+            .unwrap();
+        assert_eq!(
+            db.saved_playlist(imported.id).unwrap().unwrap().entries[1].planned_duration_seconds,
+            Some(0)
+        );
+        assert_eq!(
+            db.saved_playlist(made.id).unwrap().unwrap().entries[1].planned_duration_seconds,
+            Some(120),
+            "editing the imported copy leaves its saved original unchanged"
+        );
     }
 
     #[test]
@@ -1404,7 +1498,12 @@ mod tests {
             .create_saved_playlist_with_entries(
                 "Bad",
                 SavedPlaylistKind::Playlist,
-                &[SavedEntryInput::Track(ids[0]), SavedEntryInput::Stop],
+                &[
+                    SavedEntryInput::Track(ids[0]),
+                    SavedEntryInput::Stop {
+                        planned_duration_seconds: None,
+                    },
+                ],
                 1
             )
             .is_err());
@@ -1413,7 +1512,12 @@ mod tests {
             .create_saved_playlist_with_entries(
                 "Show",
                 SavedPlaylistKind::PreparedShow,
-                &[SavedEntryInput::Track(ids[0]), SavedEntryInput::Stop],
+                &[
+                    SavedEntryInput::Track(ids[0]),
+                    SavedEntryInput::Stop {
+                        planned_duration_seconds: None,
+                    },
+                ],
                 1,
             )
             .unwrap();
@@ -1452,7 +1556,29 @@ mod tests {
         );
         let invalid = r#"{"format":"radiodiodj-playlist","version":2,"name":"Bad","kind":"playlist","entries":[{"kind":"stop"}]}"#;
         assert!(SavedPlaylistFile::parse(invalid).is_err());
-        assert_eq!(db.saved_playlists().unwrap().len(), 1);
+        let old_show = r#"{"format":"radiodiodj-playlist","version":2,"name":"Old show","kind":"prepared_show","entries":[{"kind":"stop"}]}"#;
+        let old_show = SavedPlaylistFile::parse(old_show).unwrap();
+        assert_eq!(old_show.entries[0].planned_duration_seconds, None);
+        let imported_show = db.import_saved_playlist(&old_show, 2).unwrap();
+        assert_eq!(imported_show.stops, 1);
+        assert_eq!(
+            db.saved_playlist(imported_show.id)
+                .unwrap()
+                .unwrap()
+                .entries[0]
+                .planned_duration_seconds,
+            None
+        );
+        let planned = r#"{"format":"radiodiodj-playlist","version":3,"name":"Planned","kind":"prepared_show","entries":[{"kind":"stop","plannedDurationSeconds":0}]}"#;
+        assert_eq!(
+            SavedPlaylistFile::parse(planned).unwrap().entries[0].planned_duration_seconds,
+            Some(0)
+        );
+        let duration_on_track = r#"{"format":"radiodiodj-playlist","version":3,"name":"Bad","entries":[{"kind":"track","plannedDurationSeconds":1}]}"#;
+        assert!(SavedPlaylistFile::parse(duration_on_track).is_err());
+        let future = r#"{"format":"radiodiodj-playlist","version":4,"name":"Future","entries":[]}"#;
+        assert!(SavedPlaylistFile::parse(future).is_err());
+        assert_eq!(db.saved_playlists().unwrap().len(), 2);
     }
 
     #[test]
@@ -1471,6 +1597,7 @@ mod tests {
                     title: Some("A".into()),
                     duration: Some(100.0),
                     content_type: Some("music".into()),
+                    planned_duration_seconds: None,
                 },
                 FileEntry {
                     kind: SavedEntryKind::Stop,
@@ -1479,6 +1606,7 @@ mod tests {
                     title: None,
                     duration: None,
                     content_type: None,
+                    planned_duration_seconds: Some(0),
                 },
                 FileEntry {
                     kind: SavedEntryKind::Track,
@@ -1487,6 +1615,7 @@ mod tests {
                     title: Some("B".into()),
                     duration: Some(100.0),
                     content_type: Some("music".into()),
+                    planned_duration_seconds: None,
                 },
             ],
         };
@@ -1517,11 +1646,11 @@ mod tests {
 
     #[test]
     fn a_file_this_build_does_not_know_is_refused_whole() {
-        let newer = r#"{"format":"radiodiodj-playlist","version":3,"name":"X","entries":[]}"#;
+        let newer = r#"{"format":"radiodiodj-playlist","version":4,"name":"X","entries":[]}"#;
         assert!(SavedPlaylistFile::parse(newer)
             .unwrap_err()
             .to_string()
-            .contains("version 3"));
+            .contains("version 4"));
         let other = r#"{"format":"m3u","version":1,"name":"X","entries":[]}"#;
         assert!(SavedPlaylistFile::parse(other).is_err());
         assert!(SavedPlaylistFile::parse("#EXTM3U").is_err());

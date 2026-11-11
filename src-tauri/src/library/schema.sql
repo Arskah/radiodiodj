@@ -43,7 +43,9 @@ CREATE TABLE saved_playlist_entries (
   duration     REAL,
   content_type TEXT
 , kind TEXT NOT NULL DEFAULT 'track'
-  CHECK (kind IN ('track', 'stop')));
+  CHECK (kind IN ('track', 'stop')), planned_duration_seconds INTEGER
+  CHECK (planned_duration_seconds IS NULL OR
+         (kind = 'stop' AND planned_duration_seconds BETWEEN 0 AND 4294967295)));
 
 CREATE TABLE saved_playlists (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,

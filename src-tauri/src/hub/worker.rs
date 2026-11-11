@@ -437,13 +437,7 @@ async fn studio_visit(db: &Arc<Db>, link: &Link, machine: &Machine) -> Result<(V
     let Some(station) = hub.station().await? else {
         return Ok((Visit::NothingToCopy, Applied::default()));
     };
-    if station.protocol > PROTOCOL {
-        bail!(
-            "the hub speaks protocol {} and this version speaks {PROTOCOL}: \
-             update RadiodioDJ on this machine",
-            station.protocol
-        );
-    }
+    require_studio_protocol(station.protocol)?;
     match on(db, Db::library_id).await? {
         None => {
             let id = station.library_id.clone();
@@ -480,6 +474,22 @@ async fn studio_visit(db: &Arc<Db>, link: &Link, machine: &Machine) -> Result<(V
     Ok((visit, taken))
 }
 
+fn require_studio_protocol(protocol: i32) -> Result<()> {
+    if protocol > PROTOCOL {
+        bail!(
+            "the hub speaks protocol {protocol} and this version speaks {PROTOCOL}: \
+             update RadiodioDJ on this machine"
+        );
+    }
+    if protocol < PROTOCOL {
+        bail!(
+            "the hub speaks protocol {protocol} and this version speaks {PROTOCOL}: \
+             update RadiodioDJ on the owner machine before this studio can sync"
+        );
+    }
+    Ok(())
+}
+
 /// A library call, off the async runtime's own threads.
 async fn on<T, F>(db: &Arc<Db>, call: F) -> Result<T>
 where
@@ -494,6 +504,15 @@ where
 mod tests {
     use super::*;
     use crate::library::db::TrackInsert;
+
+    #[test]
+    fn a_studio_requires_the_exact_hub_protocol() {
+        assert!(require_studio_protocol(PROTOCOL).is_ok());
+        let older = require_studio_protocol(PROTOCOL - 1).unwrap_err();
+        assert!(format!("{older:#}").contains("owner machine"));
+        let newer = require_studio_protocol(PROTOCOL + 1).unwrap_err();
+        assert!(format!("{newer:#}").contains("update RadiodioDJ on this machine"));
+    }
 
     async fn publish(
         db: &Arc<Db>,

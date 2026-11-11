@@ -57,6 +57,7 @@ const { app } = vi.hoisted(() => ({
     draggedTrackIds: null,
     clearHover: vi.fn(),
     setSavedPlaylistKind: vi.fn().mockResolvedValue(undefined),
+    setSavedStopDuration: vi.fn(),
     addSavedStop: vi.fn().mockResolvedValue(undefined),
     addSavedToPlaylist: vi.fn().mockResolvedValue(undefined),
     removeSavedEntry: vi.fn(),
@@ -110,6 +111,17 @@ describe("SavedPlaylists prepared-show editor", () => {
     expect(
       document.querySelector('[data-entry-id="10"] .missing-badge'),
     ).not.toBeNull();
+  });
+
+  it("saves a planned duration for a Stop in the open prepared show", () => {
+    const input = document.querySelector(
+      '[data-entry-id="11"] input[aria-label="Planned Stop duration (m:ss)"]',
+    ) as HTMLInputElement;
+    input.value = "1:30";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new FocusEvent("blur"));
+    flushSync();
+    expect(app.setSavedStopDuration).toHaveBeenCalledWith(11, 90);
   });
 
   it("adds, selects, reorders, and removes a Stop through the stored-order view", () => {

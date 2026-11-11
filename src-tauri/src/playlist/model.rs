@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::timing::PlaylistTiming;
 use crate::audio::cue_points::CuePoints;
 use crate::library::db::{SavedPlaylistKind, Track};
 use crate::persist::session::SessionPlaylistItem;
@@ -30,7 +31,11 @@ pub enum PlaylistItem {
         cue_override: Option<CuePoints>,
     },
     /// Barrier that halts auto-advance when playback reaches it.
-    Stop,
+    Stop {
+        /// Presenter’s planned pause in whole seconds; `None` is unspecified.
+        #[serde(default, rename = "plannedDurationSeconds")]
+        planned_duration_seconds: Option<u32>,
+    },
 }
 
 impl PlaylistItem {
@@ -51,12 +56,12 @@ impl PlaylistItem {
     pub fn as_track(&self) -> Option<&Track> {
         match self {
             Self::Track { track, .. } => Some(track),
-            Self::Stop => None,
+            Self::Stop { .. } => None,
         }
     }
 
     pub fn is_stop(&self) -> bool {
-        matches!(self, Self::Stop)
+        matches!(self, Self::Stop { .. })
     }
 
     /// Rebuild a persisted playlist, resolving ids through `lookup`.
@@ -84,7 +89,11 @@ impl PlaylistItem {
         items
             .iter()
             .filter_map(|item| match item {
-                SessionPlaylistItem::Stop => Some(Self::Stop),
+                SessionPlaylistItem::Stop {
+                    planned_duration_seconds,
+                } => Some(Self::Stop {
+                    planned_duration_seconds: *planned_duration_seconds,
+                }),
                 SessionPlaylistItem::Track { id, cue_override } => {
                     lookup(*id).map(|track| Self::with_override(track, *cue_override))
                 }
@@ -167,6 +176,12 @@ pub enum Destination {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
+    /// Whole-snapshot generation, including schedule changes.
+    pub revision: u64,
+    /// The consumed Stop, distinct from an ordinary cleared deck.
+    pub holding_stop: Option<HoldingStop>,
+    /// One schedule for all upcoming occurrences.
+    pub timing: PlaylistTiming,
     /// Upcoming top-level items and copied blocks in order.
     pub playlist: Vec<QueueNode>,
     /// Block whose child is on air, or whose remaining children are waiting
@@ -198,6 +213,22 @@ pub struct Snapshot {
     /// library, by name, until the operator chooses a source again.
     #[serde(default)]
     pub reverted_from: Option<String>,
+}
+
+/// A consumed Stop and a coherent sample of its local elapsed time.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HoldingStop {
+    /// Consumed occurrence, so consecutive Stops start distinct holds.
+    pub occurrence_id: String,
+    /// Intended pause; an explicit zero differs from an unspecified plan.
+    pub planned_duration_seconds: Option<u32>,
+    /// Monotonic elapsed time at `captured_at_unix_ms`.
+    pub elapsed_seconds: f64,
+    /// Wall-clock anchor of this elapsed sample.
+    pub captured_at_unix_ms: f64,
+    /// Copied block association, including a trailing Stop.
+    pub block_id: Option<String>,
 }
 
 /// An auto-playlist source as the panel shows it.
@@ -248,7 +279,7 @@ mod tests {
     fn cue_override(item: &PlaylistItem) -> Option<CuePoints> {
         match item {
             PlaylistItem::Track { cue_override, .. } => *cue_override,
-            PlaylistItem::Stop => None,
+            PlaylistItem::Stop { .. } => None,
         }
     }
 
@@ -260,7 +291,9 @@ mod tests {
     fn from_session_rebuilds_items_including_stop_markers() {
         let items = vec![
             session_track(1),
-            SessionPlaylistItem::Stop,
+            SessionPlaylistItem::Stop {
+                planned_duration_seconds: None,
+            },
             session_track(2),
         ];
         let rebuilt = PlaylistItem::from_session(&items, &[], library);
@@ -330,7 +363,9 @@ mod tests {
             saved_kind: SavedPlaylistKind::PreparedShow,
             entries: vec![QueueChild {
                 id: "child-1".into(),
-                item: PlaylistItem::Stop,
+                item: PlaylistItem::Stop {
+                    planned_duration_seconds: None,
+                },
             }],
         };
         let value = serde_json::to_value(&node).unwrap();
