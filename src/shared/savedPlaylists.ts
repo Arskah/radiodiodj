@@ -1,14 +1,41 @@
-import type { SavedEntry } from "./types";
+import type { PlaylistItem, SavedEntry, SavedPlaylistKind } from "./types";
+
+/** The kind shown when saving the remaining queue. */
+export function kindForQueue(
+  items: readonly PlaylistItem[],
+): SavedPlaylistKind {
+  return items.some((item) => item.kind === "stop")
+    ? "prepared_show"
+    : "playlist";
+}
+
+/** Stops must be removed before a prepared show becomes a playlist. */
+export function canSetKind(kind: SavedPlaylistKind, stops: number): boolean {
+  return kind === "prepared_show" || stops === 0;
+}
+
+/** The label used in the shared saved-list selector and rows. */
+export function kindLabel(kind: SavedPlaylistKind): string {
+  return kind === "prepared_show" ? "Prepared show" : "Playlist";
+}
 
 /**
  * What the panel says after a saved playlist is appended to the playlist. Only
  * an unmatched entry is ever skipped. See `docs/saved-playlists.md`.
  */
-export function appendMessage(added: number, skipped: number): string {
+export function appendMessage(
+  added: number,
+  skipped: number,
+  stops = 0,
+): string {
   const tracks = `${added} ${added === 1 ? "track" : "tracks"}`;
-  if (skipped === 0) return `Added ${tracks}`;
-  if (added === 0) return `Nothing to add: ${skipped} unmatched`;
-  return `Added ${tracks}, skipped ${skipped} unmatched`;
+  const included =
+    stops > 0
+      ? `${tracks}, ${stops} ${stops === 1 ? "Stop" : "Stops"}`
+      : tracks;
+  if (skipped === 0) return `Added ${included}`;
+  if (added === 0 && stops === 0) return `Nothing to add: ${skipped} unmatched`;
+  return `Added ${included}, skipped ${skipped} unmatched`;
 }
 
 const words = (text: string): string[] =>
@@ -71,6 +98,7 @@ export function sortEntries<T extends EntryRow>(
  * `(Radio Edit)` or `[2011 Remaster]` is what two copies of a song differ by.
  */
 export function findQuery(entry: SavedEntry): string {
+  if (entry.kind === "stop") return "";
   const artist = entry.track?.artist ?? entry.artist;
   const title = entry.track?.title ?? entry.title;
   return `${artist} ${title}`
@@ -85,12 +113,17 @@ export function importMessage(
   name: string,
   entries: number,
   missing: number,
+  stops = 0,
 ): string {
-  return `Imported “${name}”: ${sizeLabel(entries, missing)}`;
+  return `Imported “${name}”: ${sizeLabel(entries, missing, stops)}`;
 }
 
-/** How a saved playlist's size reads in the list: `12 tracks · 2 missing`. */
-export function sizeLabel(entries: number, missing: number): string {
-  const tracks = `${entries} ${entries === 1 ? "track" : "tracks"}`;
-  return missing > 0 ? `${tracks} · ${missing} missing` : tracks;
+/** How a saved list's size reads, with Stops distinct from tracks. */
+export function sizeLabel(entries: number, missing: number, stops = 0): string {
+  const trackCount = entries - stops;
+  const tracks = `${trackCount} ${trackCount === 1 ? "track" : "tracks"}`;
+  const parts = [tracks];
+  if (stops > 0) parts.push(`${stops} ${stops === 1 ? "Stop" : "Stops"}`);
+  if (missing > 0) parts.push(`${missing} missing`);
+  return parts.join(" · ");
 }

@@ -136,8 +136,8 @@
         <button
           id="btn-save-playlist"
           class="btn-filler"
-          title="Keep the upcoming tracks as a saved playlist"
-          disabled={!app.playlist.some(isTrackItem)}
+          title="Keep the remaining upcoming entries as a saved list"
+          disabled={app.playlist.length === 0}
           onclick={() => (app.savedDialog = { kind: "saveAs" })}>Save as</button
         >
         <button

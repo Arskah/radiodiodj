@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   appendMessage,
+  canSetKind,
   findQuery,
   importMessage,
+  kindForQueue,
+  kindLabel,
   matchesSearch,
   sortEntries,
   sizeLabel,
@@ -21,6 +24,35 @@ describe("appendMessage", () => {
   it("says so when there was nothing it could add", () => {
     expect(appendMessage(0, 3)).toBe("Nothing to add: 3 unmatched");
     expect(appendMessage(0, 0)).toBe("Added 0 tracks");
+  });
+
+  it("reports queued Stops separately from tracks and unmatched entries", () => {
+    expect(appendMessage(2, 1, 1)).toBe(
+      "Added 2 tracks, 1 Stop, skipped 1 unmatched",
+    );
+    expect(appendMessage(0, 0, 2)).toBe("Added 0 tracks, 2 Stops");
+    expect(appendMessage(0, 1, 1)).toBe(
+      "Added 0 tracks, 1 Stop, skipped 1 unmatched",
+    );
+  });
+});
+
+describe("prepared show kind", () => {
+  it("defaults Save as from the remaining queued items, including a Stop-only queue", () => {
+    expect(kindForQueue([{ kind: "track", track: {} as never }])).toBe(
+      "playlist",
+    );
+    expect(kindForQueue([{ kind: "stop" }])).toBe("prepared_show");
+    expect(
+      kindForQueue([{ kind: "stop" }, { kind: "track", track: {} as never }]),
+    ).toBe("prepared_show");
+  });
+
+  it("refuses conversion while any Stop remains", () => {
+    expect(canSetKind("playlist", 1)).toBe(false);
+    expect(canSetKind("playlist", 0)).toBe(true);
+    expect(canSetKind("prepared_show", 2)).toBe(true);
+    expect(kindLabel("prepared_show")).toBe("Prepared show");
   });
 });
 
@@ -101,12 +133,15 @@ describe("sizeLabel", () => {
     expect(sizeLabel(12, 0)).toBe("12 tracks");
     expect(sizeLabel(1, 0)).toBe("1 track");
     expect(sizeLabel(12, 2)).toBe("12 tracks · 2 missing");
+    expect(sizeLabel(12, 2, 1)).toBe("11 tracks · 1 Stop · 2 missing");
+    expect(sizeLabel(2, 0, 2)).toBe("0 tracks · 2 Stops");
   });
 });
 
 describe("findQuery", () => {
   const entry = (artist: string, title: string) => ({
     id: 1,
+    kind: "track" as const,
     track: null,
     artist,
     title,
@@ -146,5 +181,9 @@ describe("findQuery", () => {
       },
     };
     expect(findQuery(bound)).toBe("Them Now");
+  });
+
+  it("never searches for a Stop as an unmatched track", () => {
+    expect(findQuery({ ...entry("", ""), kind: "stop" })).toBe("");
   });
 });
