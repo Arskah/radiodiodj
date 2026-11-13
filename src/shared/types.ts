@@ -614,6 +614,16 @@ export interface HubStatus {
   encrypted: boolean | null;
   /** How many of this computer's changes the hub has not been sent yet. */
   waiting: number;
+  /** What an admin can do about a role this computer cannot play. */
+  remedy: HubRemedy | null;
+}
+
+/**
+ * A way out of a role the hub refuses. `joinAgain`: this studio's copy is of a
+ * library the hub no longer holds, and has to be made again.
+ */
+export interface HubRemedy {
+  kind: "joinAgain";
 }
 
 /** A certificate authority trusted for the hub beside the system's own. */
@@ -652,6 +662,8 @@ export interface SharedLibrary {
   allowUnencrypted: boolean;
   directTls: boolean;
   caCertificate: CaCertificate | null;
+  /** Whether the next launch sets this studio's copy aside and joins again. */
+  joinAgain: boolean;
   status: HubStatus;
 }
 

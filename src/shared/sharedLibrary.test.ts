@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  lostByJoiningAgain,
   needsAttention,
   replacesLibrary,
   roleLabel,
@@ -42,6 +43,7 @@ describe("needsAttention", () => {
     reachedAt: null,
     encrypted: null,
     waiting: 0,
+    remedy: null,
   };
 
   it("is quiet for a computer that shares nothing", () => {
@@ -75,6 +77,7 @@ describe("waitingLabel", () => {
     reachedAt: 5,
     encrypted: true,
     waiting: 0,
+    remedy: null,
   };
 
   it("says nothing when nothing is waiting", () => {
@@ -96,6 +99,32 @@ describe("waitingLabel", () => {
   it("says they are held while the hub is away", () => {
     expect(waitingLabel({ ...status, ok: false, waiting: 2 })).toBe(
       "2 changes are waiting here until the hub can be reached.",
+    );
+  });
+
+  it("says they cannot be sent from a copy the hub refuses", () => {
+    const refused = {
+      ...status,
+      ok: false,
+      remedy: { kind: "joinAgain" as const },
+    };
+    expect(waitingLabel({ ...refused, waiting: 2 })).toBe(
+      "2 changes are saved here and cannot be sent.",
+    );
+  });
+});
+
+describe("lostByJoiningAgain", () => {
+  it("says nothing when nothing is waiting", () => {
+    expect(lostByJoiningAgain(0)).toBe("");
+  });
+
+  it("counts what the old copy takes with it", () => {
+    expect(lostByJoiningAgain(1)).toBe(
+      "1 change saved here was never sent and is lost with it.",
+    );
+    expect(lostByJoiningAgain(7)).toBe(
+      "7 changes saved here were never sent and are lost with it.",
     );
   });
 });
