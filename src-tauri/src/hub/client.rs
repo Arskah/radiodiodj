@@ -2,6 +2,7 @@
 //! about what a row means lives here.
 
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,7 +14,7 @@ use tokio_postgres::config::{SslMode, SslNegotiation};
 use tokio_postgres::{Config, Socket};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
-use super::certs;
+use super::{backup, certs};
 use crate::persist::config::ExternalLibraryConfig;
 
 use super::schema::{PROTOCOL, STATION_LOCK, TABLES};
@@ -39,9 +40,31 @@ pub enum Claim {
     /// this one under a new id, so everything has to be published again. A
     /// hub that held none gets a new id too: it may have held this library
     /// and been made again, and its revisions start over.
-    Replaced { library_id: String },
+    Replaced {
+        library_id: String,
+        /// Where what the hub held was written before it was emptied.
+        kept: Option<PathBuf>,
+    },
     /// Another machine is the owner.
-    Taken { by: String },
+    Taken {
+        by: String,
+        /// Seconds since that machine last checked in, if it ever did.
+        quiet_for: Option<i64>,
+        /// Whether the hub holds the library this machine claimed with, so
+        /// taking the role over would empty nothing.
+        same_library: bool,
+    },
+}
+
+/// How far a claim may go.
+#[derive(Clone, Copy, Debug)]
+pub struct Terms<'a> {
+    /// Take the role from the machine that holds it. An admin's decision,
+    /// for an owner that is gone.
+    pub take_over: bool,
+    /// The directory a copy of the hub's rows is written to before they are
+    /// deleted.
+    pub keep_in: &'a Path,
 }
 
 /// The library the hub holds.
@@ -224,8 +247,14 @@ impl Hub {
     ///
     /// A hub that holds a different library than this machine last published —
     /// or holds one this machine never published to — is emptied: its rows
-    /// carry another database's track ids.
-    pub async fn claim(&mut self, machine: &Machine, library_id: Option<&str>) -> Result<Claim> {
+    /// carry another database's track ids. They are written to a file on this
+    /// machine first, and a hub whose rows could not be kept is left as it is.
+    pub async fn claim(
+        &mut self,
+        machine: &Machine,
+        library_id: Option<&str>,
+        terms: Terms<'_>,
+    ) -> Result<Claim> {
         let tx = timed(self.client.transaction()).await?;
         timed(tx.execute("SELECT pg_advisory_xact_lock($1)", &[&STATION_LOCK])).await?;
         let station =
@@ -234,13 +263,17 @@ impl Hub {
         let claim = match station {
             None => {
                 let id = fresh();
+                let kept = backup::keep(&tx, terms.keep_in).await?;
                 timed(tx.execute(
                     "INSERT INTO hub_station (library_id, protocol, owner) VALUES ($1, $2, $3)",
                     &[&id, &PROTOCOL, &machine.id],
                 ))
                 .await?;
                 timed(tx.execute("DELETE FROM hub_rows", &[])).await?;
-                Claim::Replaced { library_id: id }
+                Claim::Replaced {
+                    library_id: id,
+                    kept,
+                }
             }
             Some(row) => {
                 let held: String = row.get(0);
@@ -253,14 +286,17 @@ impl Hub {
                     );
                 }
                 match owner {
-                    Some(other) if other != machine.id => {
-                        let by: Option<String> = timed(
-                            tx.query_opt("SELECT name FROM hub_machines WHERE id = $1", &[&other]),
-                        )
-                        .await?
-                        .map(|r| r.get(0));
+                    Some(other) if other != machine.id && !terms.take_over => {
+                        let seen = timed(tx.query_opt(
+                            "SELECT name, extract(epoch FROM now() - seen_at)::bigint \
+                             FROM hub_machines WHERE id = $1",
+                            &[&other],
+                        ))
+                        .await?;
                         return Ok(Claim::Taken {
-                            by: by.unwrap_or(other),
+                            quiet_for: seen.as_ref().map(|r| r.get(1)),
+                            by: seen.map_or(other, |r| r.get(0)),
+                            same_library: library_id == Some(held.as_str()),
                         });
                     }
                     _ if library_id == Some(held.as_str()) => {
@@ -273,13 +309,17 @@ impl Hub {
                     }
                     _ => {
                         let id = fresh();
+                        let kept = backup::keep(&tx, terms.keep_in).await?;
                         timed(tx.execute(
                             "UPDATE hub_station SET owner = $1, protocol = $2, library_id = $3",
                             &[&machine.id, &PROTOCOL, &id],
                         ))
                         .await?;
                         timed(tx.execute("DELETE FROM hub_rows", &[])).await?;
-                        Claim::Replaced { library_id: id }
+                        Claim::Replaced {
+                            library_id: id,
+                            kept,
+                        }
                     }
                 }
             }
@@ -482,7 +522,7 @@ fn incoming(r: &tokio_postgres::Row) -> Incoming {
 const OWNER_KINDS: &[&str] = &["root", "track"];
 
 /// One hub call, bounded: a hub that stops answering is an error, not a wait.
-async fn timed<T, E>(call: impl std::future::Future<Output = Result<T, E>>) -> Result<T>
+pub(super) async fn timed<T, E>(call: impl std::future::Future<Output = Result<T, E>>) -> Result<T>
 where
     E: Into<anyhow::Error>,
 {

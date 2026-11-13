@@ -325,7 +325,9 @@ the same way on every machine and in the hub — `(edited_at, machine)` — so n
 machine has to be asked. The connection to the hub is encrypted and its certificate checked
 unless an operator allowed otherwise — TLS is tried first even then, so
 plaintext is never a default and never a fallback from a bad certificate. The
-hub shares
+**The hub is never emptied without its rows written to a file on the machine
+that empties it**, inside the same transaction — and a studio made the owner
+keeps the hub's library, so that is the rare case. The hub shares
 a library and not a station: the airing log, History, the rotation rules and
 play counts never cross it. See [docs/shared-library.md](docs/shared-library.md).
 

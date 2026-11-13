@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   lostByJoiningAgain,
   needsAttention,
+  ownerLastSeen,
+  takeOverEffect,
   replacesLibrary,
   roleLabel,
   waitingLabel,
@@ -44,6 +46,7 @@ describe("needsAttention", () => {
     encrypted: null,
     waiting: 0,
     remedy: null,
+    kept: null,
   };
 
   it("is quiet for a computer that shares nothing", () => {
@@ -78,6 +81,7 @@ describe("waitingLabel", () => {
     encrypted: true,
     waiting: 0,
     remedy: null,
+    kept: null,
   };
 
   it("says nothing when nothing is waiting", () => {
@@ -125,6 +129,31 @@ describe("lostByJoiningAgain", () => {
     );
     expect(lostByJoiningAgain(7)).toBe(
       "7 changes saved here were never sent and are lost with it.",
+    );
+  });
+});
+
+describe("ownerLastSeen", () => {
+  it("says how long the owner has been away", () => {
+    expect(ownerLastSeen({ owner: "Office", quietFor: 3 * 86_400 }, 1e12)).toBe(
+      "Office last visited the hub 3 d ago.",
+    );
+  });
+
+  it("says so when it never came", () => {
+    expect(ownerLastSeen({ owner: "Office", quietFor: null })).toBe(
+      "Office has never visited the hub.",
+    );
+  });
+});
+
+describe("takeOverEffect", () => {
+  it("promises the studios nothing changes only for the same library", () => {
+    expect(takeOverEffect({ sameLibrary: true })).toContain(
+      "studios are not affected",
+    );
+    expect(takeOverEffect({ sameLibrary: false })).toContain(
+      "every studio has to join again",
     );
   });
 });

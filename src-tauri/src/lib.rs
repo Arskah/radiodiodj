@@ -1253,6 +1253,14 @@ async fn join_shared_library_again(
     Ok(shared_library(&state))
 }
 
+/// Take the library owner role from the machine that holds it, for an owner
+/// that is gone. The worker does it at once and says what came of it in
+/// `hub:state`; nothing on this machine changes but what it may publish.
+#[tauri::command(rename_all = "camelCase")]
+fn take_over_shared_library(state: State<'_, AppState>) -> Result<(), String> {
+    state.hub.take_over().map_err(err)
+}
+
 #[tauri::command(rename_all = "camelCase")]
 fn get_now_playing_config(state: State<'_, AppState>) -> NowPlayingConfig {
     state.config.get_now_playing()
@@ -1845,7 +1853,7 @@ pub fn run() {
             let studio = role == LibraryRole::Studio;
             let join_again = config.external_library().join_again;
             let (opened, library_joined) =
-                match Db::open_for(&data_dir.join("radiodiodj.db"), studio, join_again) {
+                match Db::open_for(&data_dir.join("radiodiodj.db"), role, join_again) {
                     Ok(opened) => opened,
                     Err(e) => match e.downcast_ref::<OpenError>() {
                         Some(refusal) => {
@@ -2000,6 +2008,7 @@ pub fn run() {
                 Arc::clone(&db),
                 &config,
                 Arc::clone(&health),
+                data_dir.clone(),
                 on_applied,
             );
             app.manage(AppState {
@@ -2112,6 +2121,7 @@ pub fn run() {
             get_shared_library,
             set_shared_library,
             join_shared_library_again,
+            take_over_shared_library,
             read_ca_certificate,
             get_now_playing_config,
             set_now_playing_config,
