@@ -16,6 +16,7 @@
   "postUpdateOptions": ["pnpmDedupe"],
   "minimumReleaseAge": "3 days",
   "semanticCommits": "enabled",
+  "rebaseWhen": "conflicted",
   "packageRules": [
     {
       "description": "tauri build rejects a plugin's npm package and its Rust crate on different minors, and the plugins have no monorepo preset, so each plugin's two sides move in one PR. Core is left to the tauri monorepo preset",
