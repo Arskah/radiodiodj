@@ -65,7 +65,7 @@
     "@wdio/spec-reporter": "10.1.0",
     "@wdio/types": "10.1.0",
     "eslint": "10.14.0",
-    "eslint-plugin-jsdoc": "65.4.2",
+    "eslint-plugin-jsdoc": "65.4.6",
     "husky": "9.1.7",
     "jsdom": "31.0.1",
     "lint-staged": "17.6.0",
