@@ -10,7 +10,10 @@ on:
   workflow_call:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # A push to main gets a group of its own: a pending run in a shared group is
+  # replaced by the next one, and a burst of merges would leave commits untested
+  # and caches unsaved.
+  group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
   # A cancelled run saves no cache, so a run on main is left to finish.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
