@@ -104,6 +104,9 @@ export function sizeLabel(entries: number, missing: number, stops = 0): string {
   return parts.join(" · ");
 }
 
+/** The longest plan the backend stores: whole seconds in a `u32`. */
+const MAX_PLANNED_SECONDS = 4_294_967_295;
+
 /**
  * A planned duration as typed: `m:ss`, minutes past 59 allowed. Blank is no
  * plan, `null`; anything else that does not read is `undefined`, so a caller
@@ -114,5 +117,6 @@ export function parsePlannedDuration(text: string): number | null | undefined {
   if (typed === "") return null;
   const parts = /^(\d+):([0-5]\d)$/.exec(typed);
   if (!parts) return undefined;
-  return Number(parts[1]) * 60 + Number(parts[2]);
+  const seconds = Number(parts[1]) * 60 + Number(parts[2]);
+  return seconds <= MAX_PLANNED_SECONDS ? seconds : undefined;
 }

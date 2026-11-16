@@ -133,6 +133,7 @@ describe("parsePlannedDuration", () => {
       "1:00:00",
       "a:bc",
       "1.5",
+      "99999999:00",
     ]) {
       expect(parsePlannedDuration(typed)).toBeUndefined();
     }

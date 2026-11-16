@@ -2352,6 +2352,43 @@ mod tests {
     }
 
     #[test]
+    fn an_entry_no_build_writes_is_read_rather_than_refused() {
+        let studio = replica();
+        let doc = serde_json::json!({
+            "name": "Odd", "created_at": 1, "updated_at": 1,
+            "entries": [
+                { "kind": "stop", "planned_duration_seconds": -5 },
+                { "kind": "stop", "planned_duration_seconds": 1.5 },
+                { "kind": "stop", "planned_duration_seconds": 4_294_967_296_u64 },
+                { "kind": "break", "title": "Unknown" },
+                { "kind": "track", "title": "Planned", "planned_duration_seconds": 60 },
+            ],
+        });
+        let page = [Incoming {
+            key: "u1".into(),
+            ..one("playlist", 0, 1, doc)
+        }];
+        studio.apply(&page, "me", 2).unwrap();
+
+        let list = studio.saved_playlists().unwrap();
+        let entries = studio.saved_playlist(list[0].id).unwrap().unwrap().entries;
+        let read: Vec<_> = entries
+            .iter()
+            .map(|e| (e.kind, e.planned_duration_seconds))
+            .collect();
+        assert_eq!(
+            read,
+            [
+                (EntryKind::Stop, None),
+                (EntryKind::Stop, None),
+                (EntryKind::Stop, None),
+                (EntryKind::Track, None),
+                (EntryKind::Track, None),
+            ]
+        );
+    }
+
+    #[test]
     fn a_dismissal_travels_and_so_does_undoing_it() {
         let owner = capturing();
         let studio = studio_of(&owner);

@@ -703,17 +703,7 @@ impl Inner {
                 return None;
             }
         };
-        let items: Vec<PlaylistItem> = wanted
-            .iter()
-            .filter_map(|item| match item {
-                SessionPlaylistItem::Track { id, cue_override } => tracks
-                    .get(id)
-                    .map(|t| PlaylistItem::with_override(t.clone(), *cue_override)),
-                SessionPlaylistItem::Stop {
-                    planned_duration_seconds,
-                } => Some(PlaylistItem::stop(*planned_duration_seconds)),
-            })
-            .collect();
+        let items = PlaylistItem::from_session(wanted, &[], |id| tracks.get(&id).cloned());
         let found = items.iter().filter(|i| !i.is_stop()).count();
         if found < ids.len() {
             log::error!(

@@ -435,7 +435,7 @@
               class:selected={ordinal !== undefined}
               draggable="true"
               ondragstart={(e) => onDragStart(track, e)}
-              ondragend={() => (app.draggedTrackIds = null)}
+              ondragend={() => app.endDrag()}
               onclick={(e) => onRowClick(track, e)}
               ondblclick={(e) => onRowDblClick(track, e)}
               onmouseenter={(e) => onEnter(track, e)}

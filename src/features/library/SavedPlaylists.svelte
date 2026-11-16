@@ -349,8 +349,10 @@
   const openStops = $derived(
     (open?.entries ?? []).filter((entry) => entry.kind === "stop").length,
   );
-  const duration = (entry: SavedEntry): number =>
-    entry.track ? airDuration(entry.track) : entry.duration;
+  const duration = (entry: SavedEntry): number => {
+    if (entry.kind === "stop") return entry.plannedDurationSeconds ?? 0;
+    return entry.track ? airDuration(entry.track) : entry.duration;
+  };
 
   const album = (entry: SavedEntry): string => entry.track?.album ?? "";
 

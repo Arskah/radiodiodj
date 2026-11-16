@@ -273,12 +273,19 @@ fn write_playlist(conn: &Connection, uid: &str, deleted: bool, doc: Option<&Json
         "INSERT INTO saved_playlist_entries \
            (playlist_id, position, track_id, fingerprint, artist, title, duration, content_type, \
             kind, planned_duration_seconds) \
-         VALUES (?1, ?2, (SELECT id FROM tracks WHERE id = ?3), ?4, ?5, ?6, ?7, ?8, \
-                 COALESCE(?9, 'track'), ?10)",
+         VALUES (?1, ?2, (SELECT id FROM tracks WHERE id = ?3), ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;
     let entries = doc.get("entries").and_then(Json::as_array);
     for (position, entry) in entries.into_iter().flatten().enumerate() {
         let of = |name: &str| sql_value(entry.get(name).unwrap_or(&Json::Null));
+        // Read as this build reads its own rows, so a document no build of
+        // this protocol writes cannot leave a list nothing can open.
+        let stop = entry.get("kind").and_then(Json::as_str) == Some("stop");
+        let planned = entry
+            .get("planned_duration_seconds")
+            .and_then(Json::as_u64)
+            .filter(|_| stop)
+            .and_then(|seconds| u32::try_from(seconds).ok());
         insert.execute(params![
             id,
             position as i64,
@@ -288,8 +295,8 @@ fn write_playlist(conn: &Connection, uid: &str, deleted: bool, doc: Option<&Json
             of("title"),
             of("duration"),
             of("content_type"),
-            of("kind"),
-            of("planned_duration_seconds"),
+            if stop { "stop" } else { "track" },
+            planned,
         ])?;
     }
     Ok(true)
