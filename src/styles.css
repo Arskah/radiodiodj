@@ -225,6 +225,14 @@ body {
   color: var(--primary);
 }
 
+.station-clock {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--on-surface-variant);
+  white-space: nowrap;
+}
+
 /* Nav stats cluster */
 .nav-stats {
   display: flex;
