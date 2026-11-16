@@ -8,9 +8,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::model::{PlaylistItem, Snapshot, SourceInfo};
+use super::model::{Destination, PlaylistItem, QueueChild, QueueNode, Snapshot, SourceInfo};
 use crate::audio::cue_points::CuePoints;
-use crate::library::db::Track;
+use crate::library::db::{SavedPlaylistKind, Track};
+use uuid::Uuid;
 
 /// Source of auto-playlist refill material, plus the sizes that govern it and
 /// the history window.
@@ -116,11 +117,24 @@ pub enum Effect {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Transition {
     pub effects: Vec<Effect>,
+    /// Reason a queued command named a stale or invalid occurrence. The
+    /// service logs it after the pure state transition has returned.
+    pub rejection: Option<&'static str>,
 }
 
 impl Transition {
     fn effects(effects: Vec<Effect>) -> Self {
-        Self { effects }
+        Self {
+            effects,
+            rejection: None,
+        }
+    }
+
+    fn rejected(reason: &'static str) -> Self {
+        Self {
+            effects: Vec::new(),
+            rejection: Some(reason),
+        }
     }
 }
 
@@ -156,7 +170,8 @@ enum Plan {
 
 #[derive(Default)]
 pub struct Playlist {
-    items: Vec<PlaylistItem>,
+    queue: Vec<QueueNode>,
+    current_block_id: Option<String>,
     current: Option<Track>,
     /// The override the track on air is playing under. Held next to `current`
     /// rather than folded into it so `prev` can return the item to the queue
@@ -233,7 +248,8 @@ impl Playlist {
 
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
-            playlist: self.items.clone(),
+            playlist: self.queue.clone(),
+            current_block_id: self.current_block_id.clone(),
             current: self.current.clone(),
             history: self.history.clone(),
             auto_playlist_active: self.auto_playlist,
@@ -252,7 +268,7 @@ impl Playlist {
         self.current
             .iter()
             .map(|t| t.id)
-            .chain(self.items.iter().filter_map(|i| i.as_track().map(|t| t.id)))
+            .chain(self.flat_items().filter_map(|i| i.as_track().map(|t| t.id)))
             .collect()
     }
 
@@ -286,7 +302,7 @@ impl Playlist {
         if !self.auto_advance || self.current.is_none() || self.overlapping {
             return None;
         }
-        for item in &self.items {
+        for item in self.flat_items() {
             match item {
                 PlaylistItem::Stop => return None,
                 PlaylistItem::Track { track, .. } if self.missing_ids.contains(&track.id) => {}
@@ -304,12 +320,419 @@ impl Playlist {
         None
     }
 
+    fn new_id() -> String {
+        Uuid::new_v4().to_string()
+    }
+
+    fn standalone(item: PlaylistItem) -> QueueNode {
+        QueueNode::Standalone {
+            id: Self::new_id(),
+            item,
+        }
+    }
+
+    fn flat_items(&self) -> impl Iterator<Item = &PlaylistItem> {
+        self.queue.iter().flat_map(|node| {
+            let standalone = match node {
+                QueueNode::Standalone { item, .. } => Some(item),
+                QueueNode::Block { .. } => None,
+            };
+            let entries: &[QueueChild] = match node {
+                QueueNode::Block { entries, .. } => entries,
+                QueueNode::Standalone { .. } => &[],
+            };
+            standalone
+                .into_iter()
+                .chain(entries.iter().map(|child| &child.item))
+        })
+    }
+
+    fn flat_len(&self) -> usize {
+        self.flat_items().count()
+    }
+
+    fn flat_item(&self, index: usize) -> Option<&PlaylistItem> {
+        self.flat_items().nth(index)
+    }
+
+    fn top_before_flat(&self, index: usize) -> usize {
+        let pinned = usize::from(matches!(
+            self.queue.first(),
+            Some(QueueNode::Block { id, .. }) if Some(id.as_str()) == self.current_block_id.as_deref()
+        ));
+        let mut offset = 0;
+        for (top, node) in self.queue.iter().enumerate() {
+            if offset >= index {
+                return top.max(pinned);
+            }
+            let len = match node {
+                QueueNode::Standalone { .. } => 1,
+                QueueNode::Block { entries, .. } => entries.len(),
+            };
+            if index < offset + len {
+                return top.max(pinned);
+            }
+            offset += len;
+        }
+        self.queue.len()
+    }
+
+    fn each_item_mut(&mut self, mut f: impl FnMut(&mut PlaylistItem)) {
+        for node in &mut self.queue {
+            match node {
+                QueueNode::Standalone { item, .. } => f(item),
+                QueueNode::Block { entries, .. } => {
+                    for child in entries {
+                        f(&mut child.item);
+                    }
+                }
+            }
+        }
+    }
+
+    fn take_flat(&mut self, index: usize) -> Option<(String, PlaylistItem, Option<String>)> {
+        let mut offset = 0;
+        for top in 0..self.queue.len() {
+            match &mut self.queue[top] {
+                QueueNode::Standalone { .. } if offset == index => {
+                    let QueueNode::Standalone { id, item } = self.queue.remove(top) else {
+                        unreachable!()
+                    };
+                    return Some((id, item, None));
+                }
+                QueueNode::Standalone { .. } => offset += 1,
+                QueueNode::Block { id, entries, .. } if index < offset + entries.len() => {
+                    let parent = id.clone();
+                    let child = entries.remove(index - offset);
+                    return Some((child.id, child.item, Some(parent)));
+                }
+                QueueNode::Block { entries, .. } => offset += entries.len(),
+            }
+        }
+        None
+    }
+
+    fn cleanup_empty_blocks(&mut self) {
+        let active = self.current_block_id.as_deref();
+        self.queue.retain(|node| match node {
+            QueueNode::Standalone { .. } => true,
+            QueueNode::Block { id, entries, .. } => {
+                !entries.is_empty() || (active == Some(id) && self.current.is_some())
+            }
+        });
+        if !self.queue.iter().any(|node| {
+            matches!(node, QueueNode::Block { id, .. } if Some(id.as_str()) == self.current_block_id.as_deref())
+        }) {
+            self.current_block_id = None;
+        }
+    }
+
+    fn block_mut(&mut self, id: &str) -> Option<&mut Vec<QueueChild>> {
+        self.queue.iter_mut().find_map(|node| match node {
+            QueueNode::Block {
+                id: found, entries, ..
+            } if found == id => Some(entries),
+            _ => None,
+        })
+    }
+
+    fn promote_active_block(&mut self) {
+        let Some(id) = self.current_block_id.as_deref() else {
+            return;
+        };
+        if let Some(at) = self
+            .queue
+            .iter()
+            .position(|node| matches!(node, QueueNode::Block { id: found, .. } if found == id))
+        {
+            if at > 0 {
+                let block = self.queue.remove(at);
+                self.queue.insert(0, block);
+            }
+        }
+    }
+
+    fn main_gap(&self, before_id: Option<&str>) -> Option<usize> {
+        if before_id.is_some() && before_id == self.current_block_id.as_deref() {
+            return None;
+        }
+        match before_id {
+            None => Some(self.queue.len()),
+            Some(id) => self.queue.iter().position(|node| match node {
+                QueueNode::Standalone { id: found, .. } | QueueNode::Block { id: found, .. } => {
+                    found == id
+                }
+            }),
+        }
+    }
+
+    fn block_gap(&self, block_id: &str, before_id: Option<&str>) -> Option<usize> {
+        self.queue.iter().find_map(|node| match node {
+            QueueNode::Block { id, entries, .. } if id == block_id => match before_id {
+                None => Some(entries.len()),
+                Some(before) => entries.iter().position(|child| child.id == before),
+            },
+            _ => None,
+        })
+    }
+
+    fn occurrence_position(&self, id: &str) -> Option<usize> {
+        let mut offset = 0;
+        for node in &self.queue {
+            match node {
+                QueueNode::Standalone { id: found, .. } => {
+                    if found == id {
+                        return Some(offset);
+                    }
+                    offset += 1;
+                }
+                QueueNode::Block { entries, .. } => {
+                    if let Some(inner) = entries.iter().position(|child| child.id == id) {
+                        return Some(offset + inner);
+                    }
+                    offset += entries.len();
+                }
+            }
+        }
+        None
+    }
+
+    /// Remaining tracks and Stops in playback order, without block headers.
+    pub fn remaining_items(&self) -> Vec<PlaylistItem> {
+        self.flat_items().cloned().collect()
+    }
+
+    /// Copy a saved list as one top-level block, preserving its authored order.
+    pub fn insert_block(
+        &mut self,
+        title: String,
+        kind: SavedPlaylistKind,
+        items: Vec<PlaylistItem>,
+        before_id: Option<&str>,
+    ) -> Transition {
+        let Some(at) = self.main_gap(before_id) else {
+            return Transition::rejected("block destination no longer exists");
+        };
+        self.queue.insert(
+            at,
+            QueueNode::Block {
+                id: Self::new_id(),
+                title,
+                saved_kind: kind,
+                entries: items
+                    .into_iter()
+                    .map(|item| QueueChild {
+                        id: Self::new_id(),
+                        item,
+                    })
+                    .collect(),
+            },
+        );
+        Transition::default()
+    }
+
+    /// Copy tracks into a top-level or block gap as one ordered run.
+    pub fn copy_tracks(&mut self, tracks: Vec<Track>, destination: Destination) -> Transition {
+        match destination {
+            Destination::Main { before_id } => {
+                let Some(at) = self.main_gap(before_id.as_deref()) else {
+                    return Transition::rejected("main destination no longer exists");
+                };
+                self.queue.splice(
+                    at..at,
+                    tracks
+                        .into_iter()
+                        .map(|track| Self::standalone(PlaylistItem::track(track))),
+                );
+            }
+            Destination::Block {
+                block_id,
+                before_id,
+            } => {
+                let Some(at) = self.block_gap(&block_id, before_id.as_deref()) else {
+                    return Transition::rejected("block child destination no longer exists");
+                };
+                if let Some(entries) = self.block_mut(&block_id) {
+                    entries.splice(
+                        at..at,
+                        tracks.into_iter().map(|track| QueueChild {
+                            id: Self::new_id(),
+                            item: PlaylistItem::track(track),
+                        }),
+                    );
+                }
+            }
+        }
+        Transition::default()
+    }
+
+    /// Insert tracks before the active block's remaining children, or at the
+    /// front of the main queue when no block is active.
+    pub fn add_as_next(&mut self, tracks: Vec<Track>) -> Transition {
+        if tracks.is_empty() {
+            return Transition::default();
+        }
+        if let Some(id) = self.current_block_id.clone() {
+            if let Some(entries) = self.block_mut(&id) {
+                entries.splice(
+                    0..0,
+                    tracks.into_iter().map(|track| QueueChild {
+                        id: Self::new_id(),
+                        item: PlaylistItem::track(track),
+                    }),
+                );
+                return Transition::default();
+            }
+        }
+        self.queue.splice(
+            0..0,
+            tracks
+                .into_iter()
+                .map(|track| Self::standalone(PlaylistItem::track(track))),
+        );
+        Transition::default()
+    }
+
+    /// Move one queued occurrence, leaving its saved source and other copies
+    /// untouched. Stale destination identities make the move a no-op.
+    pub fn move_occurrence(&mut self, id: &str, destination: Destination) -> Transition {
+        let Some(from) = self.occurrence_position(id) else {
+            return Transition::rejected("queued occurrence no longer exists");
+        };
+        if match &destination {
+            Destination::Main { before_id } | Destination::Block { before_id, .. } => {
+                before_id.as_deref() == Some(id)
+            }
+        } {
+            return Transition::default();
+        }
+        let valid = match &destination {
+            Destination::Main { before_id } => self.main_gap(before_id.as_deref()).is_some(),
+            Destination::Block {
+                block_id,
+                before_id,
+            } => self.block_gap(block_id, before_id.as_deref()).is_some(),
+        };
+        if !valid {
+            return Transition::rejected("occurrence move destination no longer exists");
+        }
+        let Some((moved_id, item, _)) = self.take_flat(from) else {
+            return Transition::default();
+        };
+        match destination {
+            Destination::Main { before_id } => {
+                let at = self
+                    .main_gap(before_id.as_deref())
+                    .unwrap_or(self.queue.len());
+                self.queue
+                    .insert(at, QueueNode::Standalone { id: moved_id, item });
+            }
+            Destination::Block {
+                block_id,
+                before_id,
+            } => {
+                let at = self
+                    .block_gap(&block_id, before_id.as_deref())
+                    .unwrap_or_else(|| {
+                        self.block_mut(&block_id).map_or(0, |entries| entries.len())
+                    });
+                if let Some(entries) = self.block_mut(&block_id) {
+                    entries.insert(at, QueueChild { id: moved_id, item });
+                }
+            }
+        }
+        self.cleanup_empty_blocks();
+        Transition::default()
+    }
+
+    /// Remove one queued occurrence by its stable identity.
+    pub fn remove_occurrence(&mut self, id: &str) -> Transition {
+        if let Some(at) = self.occurrence_position(id) {
+            self.take_flat(at);
+            self.cleanup_empty_blocks();
+        } else {
+            return Transition::rejected("queued occurrence no longer exists");
+        }
+        Transition::default()
+    }
+
+    /// Move an unstarted block between top-level queue entries.
+    pub fn move_block(&mut self, block_id: &str, before_id: Option<&str>) -> Transition {
+        let Some(from) = self
+            .queue
+            .iter()
+            .position(|node| matches!(node, QueueNode::Block { id, .. } if id == block_id))
+        else {
+            return Transition::rejected("queued block no longer exists");
+        };
+        if before_id == Some(block_id) {
+            return Transition::default();
+        }
+        if self.current_block_id.as_deref() == Some(block_id)
+            || before_id == self.current_block_id.as_deref()
+        {
+            return Transition::rejected("active block cannot be moved or preceded");
+        }
+        if self.main_gap(before_id).is_none() {
+            return Transition::rejected("block move destination no longer exists");
+        }
+        let node = self.queue.remove(from);
+        let at = self.main_gap(before_id).unwrap_or(self.queue.len());
+        self.queue.insert(at, node);
+        Transition::default()
+    }
+
+    /// Remove a block's remaining children without cutting its on-air track.
+    pub fn remove_block(&mut self, block_id: &str) -> Transition {
+        if !self
+            .queue
+            .iter()
+            .any(|node| matches!(node, QueueNode::Block { id, .. } if id == block_id))
+        {
+            return Transition::rejected("queued block no longer exists");
+        }
+        if self.current_block_id.as_deref() == Some(block_id) && self.current.is_some() {
+            if let Some(entries) = self.block_mut(block_id) {
+                entries.clear();
+            }
+        } else {
+            self.queue
+                .retain(|node| !matches!(node, QueueNode::Block { id, .. } if id == block_id));
+        }
+        self.cleanup_empty_blocks();
+        Transition::default()
+    }
+
+    /// Play a particular standalone or child occurrence.
+    pub fn play_occurrence(&mut self, id: &str, r: &dyn Refiller) -> Transition {
+        self.occurrence_position(id).map_or_else(
+            || Transition::rejected("queued occurrence no longer exists"),
+            |at| self.play_index(at, r),
+        )
+    }
+
+    /// Set an override on one queued occurrence by identity.
+    pub fn set_occurrence_cue_points(
+        &mut self,
+        id: &str,
+        cue_override: Option<CuePoints>,
+    ) -> Transition {
+        if let Some(at) = self.occurrence_position(id) {
+            self.set_item_cue_points(at, cue_override)
+        } else {
+            Transition::rejected("queued occurrence no longer exists")
+        }
+    }
+
     // ----- queue mutations -----
 
     /// Append a track, optionally with cue points for this airing alone.
     pub fn add(&mut self, track: Track, cue_override: Option<CuePoints>) -> Transition {
-        self.items
-            .push(PlaylistItem::with_override(track, cue_override));
+        self.queue
+            .push(Self::standalone(PlaylistItem::with_override(
+                track,
+                cue_override,
+            )));
         Transition::default()
     }
 
@@ -319,8 +742,20 @@ impl Playlist {
     /// differs from the track's radio edit; `None` leaves the item referencing
     /// the track.
     pub fn add_front(&mut self, track: Track, cue_override: Option<CuePoints>) -> Transition {
-        self.items
-            .insert(0, PlaylistItem::with_override(track, cue_override));
+        let item = PlaylistItem::with_override(track, cue_override);
+        if let Some(id) = self.current_block_id.clone() {
+            if let Some(entries) = self.block_mut(&id) {
+                entries.insert(
+                    0,
+                    QueueChild {
+                        id: Self::new_id(),
+                        item,
+                    },
+                );
+                return Transition::default();
+            }
+        }
+        self.queue.insert(0, Self::standalone(item));
         Transition::default()
     }
 
@@ -328,32 +763,20 @@ impl Playlist {
     /// queued ones. An index past the end appends: it describes a snapshot the
     /// queue has since shrunk under, and the operator still named the track.
     pub fn insert(&mut self, index: usize, track: Track) -> Transition {
-        let index = index.min(self.items.len());
-        self.items
-            .insert(index, PlaylistItem::with_override(track, None));
-        Transition::default()
+        self.insert_many(Some(index), vec![track])
     }
 
     /// Insert a run of tracks, in the order given, ahead of the item at `index`
     /// — a library selection queued in one go. `None` appends, and so does an
     /// index past the end, for the reason [`Playlist::insert`] gives.
     pub fn insert_many(&mut self, index: Option<usize>, tracks: Vec<Track>) -> Transition {
-        let len = self.items.len();
-        let at = index.map_or(len, |i| i.min(len));
-        self.items.splice(
+        let at = index.map_or(self.queue.len(), |flat| self.top_before_flat(flat));
+        self.queue.splice(
             at..at,
             tracks
                 .into_iter()
-                .map(|track| PlaylistItem::with_override(track, None)),
+                .map(|track| Self::standalone(PlaylistItem::track(track))),
         );
-        Transition::default()
-    }
-
-    /// Append a saved list's authored tracks and Stops in one transition.
-    /// A saved track references the station's cue points, so its override is
-    /// always `None`.
-    pub fn append_saved(&mut self, items: Vec<PlaylistItem>) -> Transition {
-        self.items.extend(items);
         Transition::default()
     }
 
@@ -365,42 +788,75 @@ impl Playlist {
         index: usize,
         cue_override: Option<CuePoints>,
     ) -> Transition {
-        if let Some(PlaylistItem::Track { track, .. }) = self.items.get(index) {
-            self.items[index] = PlaylistItem::with_override(track.clone(), cue_override);
-        }
+        let mut at = 0;
+        self.each_item_mut(|item| {
+            if at == index {
+                if let PlaylistItem::Track { track, .. } = item {
+                    *item = PlaylistItem::with_override(track.clone(), cue_override);
+                }
+            }
+            at += 1;
+        });
         Transition::default()
     }
 
     pub fn add_stop(&mut self) -> Transition {
-        self.items.push(PlaylistItem::Stop);
+        self.queue.push(Self::standalone(PlaylistItem::Stop));
         Transition::default()
     }
 
     pub fn remove(&mut self, index: usize) -> Transition {
-        if index < self.items.len() {
-            self.items.remove(index);
-        }
+        self.take_flat(index);
+        self.cleanup_empty_blocks();
         Transition::default()
     }
 
     /// Drop every queued item for these tracks: their rows were purged.
     pub fn remove_tracks(&mut self, ids: &HashSet<i64>) -> Transition {
-        self.items
-            .retain(|item| item.as_track().is_none_or(|t| !ids.contains(&t.id)));
+        for node in &mut self.queue {
+            match node {
+                QueueNode::Standalone { .. } => {}
+                QueueNode::Block { entries, .. } => {
+                    entries
+                        .retain(|child| child.item.as_track().is_none_or(|t| !ids.contains(&t.id)));
+                }
+            }
+        }
+        self.queue.retain(|node| match node {
+            QueueNode::Standalone { item, .. } => {
+                item.as_track().is_none_or(|t| !ids.contains(&t.id))
+            }
+            QueueNode::Block { .. } => true,
+        });
+        self.cleanup_empty_blocks();
         Transition::default()
     }
 
     pub fn move_item(&mut self, from: usize, to: usize) -> Transition {
-        if from == to || from >= self.items.len() || to >= self.items.len() {
+        if from == to || from >= self.flat_len() || to >= self.flat_len() {
             return Transition::default();
         }
-        let item = self.items.remove(from);
-        self.items.insert(to, item);
+        let Some((moved_id, item, _)) = self.take_flat(from) else {
+            return Transition::default();
+        };
+        let at = self.top_before_flat(to);
+        self.queue
+            .insert(at, QueueNode::Standalone { id: moved_id, item });
+        self.cleanup_empty_blocks();
         Transition::default()
     }
 
     pub fn clear(&mut self) -> Transition {
-        self.items.clear();
+        if let Some(active) = self.current_block_id.as_deref() {
+            self.queue
+                .retain(|node| matches!(node, QueueNode::Block { id, .. } if id == active));
+            if let Some(QueueNode::Block { entries, .. }) = self.queue.first_mut() {
+                entries.clear();
+            }
+        } else {
+            self.queue.clear();
+        }
+        self.cleanup_empty_blocks();
         Transition::default()
     }
 
@@ -410,15 +866,22 @@ impl Playlist {
     /// track, or honour a stop marker by stopping (consuming it either way). A
     /// track whose file is missing is left where it is.
     pub fn play_index(&mut self, index: usize, r: &dyn Refiller) -> Transition {
-        if index >= self.items.len() || self.is_missing_at(index) {
+        if index >= self.flat_len() || self.is_missing_at(index) {
             return Transition::default();
         }
-        match self.items.remove(index) {
-            PlaylistItem::Stop => self.stop(),
+        let Some((_, item, block_id)) = self.take_flat(index) else {
+            return Transition::default();
+        };
+        match item {
+            PlaylistItem::Stop => {
+                self.current_block_id = block_id;
+                self.promote_active_block();
+                self.stop()
+            }
             PlaylistItem::Track {
                 track,
                 cue_override,
-            } => self.play_track(track, cue_override, true, r),
+            } => self.play_track(track, cue_override, block_id, true, r),
         }
     }
 
@@ -428,12 +891,12 @@ impl Playlist {
     /// named this track, and there is nothing the engine could substitute that
     /// would be the track they named.
     pub fn play_now(&mut self, track: Track, r: &dyn Refiller) -> Transition {
-        self.play_track(track, None, false, r)
+        self.play_track(track, None, None, false, r)
     }
 
     pub fn next(&mut self, r: &dyn Refiller) -> Transition {
         self.drop_missing_ahead();
-        if self.items.is_empty() {
+        if self.flat_len() == 0 {
             return Transition::default();
         }
         self.play_index(0, r)
@@ -451,14 +914,11 @@ impl Playlist {
             return Transition::default();
         };
         if let Some(current) = self.current.take() {
-            self.items.insert(
-                0,
-                PlaylistItem::with_override(current, self.current_override),
-            );
+            self.add_front(current, self.current_override);
         }
         // History stores tracks rather than items, so a custom airing replays
         // under the radio edit.
-        self.set_current(previous, None, false, r)
+        self.set_current(previous, None, None, false, r)
     }
 
     pub fn stop(&mut self) -> Transition {
@@ -468,6 +928,7 @@ impl Playlist {
         self.current_override = None;
         self.auto_playlist = false;
         self.overlapping = false;
+        self.cleanup_empty_blocks();
         Transition::effects(vec![Effect::CancelRetry, Effect::Stop])
     }
 
@@ -497,7 +958,7 @@ impl Playlist {
             return Transition::default();
         }
         self.refill(r);
-        if self.current.is_none() && !self.items.is_empty() {
+        if self.current.is_none() && self.flat_len() > 0 {
             return self.play_index(0, r);
         }
         Transition::default()
@@ -513,6 +974,9 @@ impl Playlist {
         self.retry_current = false;
         self.requeue_current = false;
         self.refill(r);
+        if self.flat_len() == 0 && self.current_block_id.is_some() {
+            return self.stop();
+        }
         self.advance(false, r)
     }
 
@@ -525,22 +989,28 @@ impl Playlist {
     /// — is ignored rather than guessed at.
     pub fn on_handover(&mut self, to: i64, r: &dyn Refiller) -> Transition {
         let Some(at) = self
-            .items
-            .iter()
+            .flat_items()
             .position(|i| i.as_track().is_some_and(|t| t.id == to))
         else {
             return Transition::default();
         };
-        let PlaylistItem::Track {
-            track,
-            cue_override,
-        } = self.items.remove(at)
+        let Some((
+            _,
+            PlaylistItem::Track {
+                track,
+                cue_override,
+            },
+            block_id,
+        )) = self.take_flat(at)
         else {
             return Transition::default();
         };
         self.clear_retry();
         let outgoing = self.current.replace(track);
         self.current_override = cue_override;
+        self.current_block_id = block_id;
+        self.promote_active_block();
+        self.cleanup_empty_blocks();
         // The incoming deck is already playing, so this airing is real the
         // moment the role moves — there is no load to wait on.
         let aired = std::mem::replace(&mut self.current_aired, true);
@@ -628,8 +1098,7 @@ impl Playlist {
     }
 
     pub fn is_missing_at(&self, index: usize) -> bool {
-        self.items
-            .get(index)
+        self.flat_item(index)
             .and_then(PlaylistItem::as_track)
             .is_some_and(|t| self.missing_ids.contains(&t.id))
     }
@@ -648,8 +1117,7 @@ impl Playlist {
     /// applying one costs a full snapshot to the renderer and an arm reconcile
     /// — so a track nobody queued is dropped before that.
     pub fn holds(&self, id: i64) -> bool {
-        self.items
-            .iter()
+        self.flat_items()
             .any(|i| matches!(i, PlaylistItem::Track { track, .. } if track.id == id))
             || self.history.iter().any(|t| t.id == id)
     }
@@ -657,8 +1125,7 @@ impl Playlist {
     /// Every track held here, queued or aired. Read when the automatic-cue
     /// policy changes and every copy held here has gone stale at once.
     pub fn held_ids(&self) -> Vec<i64> {
-        self.items
-            .iter()
+        self.flat_items()
             .filter_map(|i| match i {
                 PlaylistItem::Track { track, .. } => Some(track.id),
                 _ => None,
@@ -671,13 +1138,13 @@ impl Playlist {
     /// reports. The track on air is left alone for the same reason a radio edit
     /// leaves it alone: its numbers must not move while it is playing.
     pub fn refresh_cue_points(&mut self, fresh: &HashMap<i64, CuePoints>) -> Transition {
-        for item in &mut self.items {
+        self.each_item_mut(|item| {
             if let PlaylistItem::Track { track, .. } = item {
                 if let Some(points) = fresh.get(&track.id) {
                     track.cue_points = *points;
                 }
             }
-        }
+        });
         for track in &mut self.history {
             if let Some(points) = fresh.get(&track.id) {
                 track.cue_points = *points;
@@ -702,13 +1169,13 @@ impl Playlist {
     /// mid-broadcast applies from the next airing, so its numbers must not move
     /// under the operator while it is playing.
     pub fn on_cue_points_saved(&mut self, id: i64, points: CuePoints) -> Transition {
-        for item in &mut self.items {
+        self.each_item_mut(|item| {
             if let PlaylistItem::Track { track, .. } = item {
                 if track.id == id {
                     track.cue_points = points;
                 }
             }
-        }
+        });
         // History rows show air time, so they carry the markers too.
         for track in self.history.iter_mut().filter(|t| t.id == id) {
             track.cue_points = points;
@@ -734,14 +1201,14 @@ impl Playlist {
     /// decodes of a queued track are for something else.
     pub fn on_duration_measured(&mut self, id: i64, duration: f64) -> Transition {
         let mut moved = false;
-        for item in &mut self.items {
+        self.each_item_mut(|item| {
             if let PlaylistItem::Track { track, .. } = item {
                 if track.id == id {
                     moved |= track.duration != duration;
                     track.duration = duration;
                 }
             }
-        }
+        });
         for track in self.history.iter_mut().filter(|t| t.id == id) {
             track.duration = duration;
         }
@@ -771,7 +1238,36 @@ impl Playlist {
         auto_advance: bool,
         history: Vec<Track>,
     ) -> Transition {
-        self.items = items;
+        self.hydrate_queue(
+            items.into_iter().map(Self::standalone).collect(),
+            None,
+            current,
+            current_override,
+            seconds,
+            auto_playlist,
+            auto_advance,
+            history,
+        )
+    }
+
+    /// Restore structured queue occurrences and the current block association
+    /// without resuming audio. IDs are retained so repeated tracks remain
+    /// individually addressable after restart.
+    #[allow(clippy::too_many_arguments)]
+    pub fn hydrate_queue(
+        &mut self,
+        queue: Vec<QueueNode>,
+        current_block_id: Option<String>,
+        current: Option<Track>,
+        current_override: Option<CuePoints>,
+        seconds: f64,
+        auto_playlist: bool,
+        auto_advance: bool,
+        history: Vec<Track>,
+    ) -> Transition {
+        self.queue = queue;
+        self.current_block_id = current_block_id;
+        self.promote_active_block();
         self.auto_playlist = auto_playlist;
         self.auto_advance = auto_advance;
         self.history = history;
@@ -781,6 +1277,7 @@ impl Playlist {
         self.trim_history();
         self.current = current;
         self.current_override = current_override;
+        self.cleanup_empty_blocks();
         // The restored track aired before the restart — the log already has it,
         // and the resume load must not count it again.
         self.current_aired = true;
@@ -803,12 +1300,13 @@ impl Playlist {
         &mut self,
         track: Track,
         cue_override: Option<CuePoints>,
+        block_id: Option<String>,
         playlist_issued: bool,
         r: &dyn Refiller,
     ) -> Transition {
         let aired = self.take_aired();
         self.push_history(aired);
-        self.set_current(track, cue_override, playlist_issued, r)
+        self.set_current(track, cue_override, block_id, playlist_issued, r)
     }
 
     /// Take the track off the deck, handing it back only if it aired: a load
@@ -841,6 +1339,7 @@ impl Playlist {
         &mut self,
         track: Track,
         cue_override: Option<CuePoints>,
+        block_id: Option<String>,
         playlist_issued: bool,
         r: &dyn Refiller,
     ) -> Transition {
@@ -848,6 +1347,9 @@ impl Playlist {
         let id = track.id;
         self.current = Some(track);
         self.current_override = cue_override;
+        self.current_block_id = block_id;
+        self.promote_active_block();
+        self.cleanup_empty_blocks();
         // Nothing has aired until the deck reports the load landed; see
         // [`Playlist::on_loaded`].
         self.current_aired = false;
@@ -870,20 +1372,21 @@ impl Playlist {
     /// Drop missing tracks up to the next stop marker: advancement would pass
     /// them, and unlike an uncached track they have nothing to wait for.
     fn drop_missing_ahead(&mut self) {
-        let barrier = self
-            .items
-            .iter()
-            .position(PlaylistItem::is_stop)
-            .unwrap_or(self.items.len());
-        let mut i = 0;
-        self.items.retain(|item| {
-            let keep = i >= barrier
-                || item
-                    .as_track()
-                    .is_none_or(|t| !self.missing_ids.contains(&t.id));
-            i += 1;
-            keep
-        });
+        let mut at = 0;
+        while let Some(item) = self.flat_item(at) {
+            if item.is_stop() {
+                break;
+            }
+            if item
+                .as_track()
+                .is_some_and(|track| self.missing_ids.contains(&track.id))
+            {
+                self.take_flat(at);
+            } else {
+                at += 1;
+            }
+        }
+        self.cleanup_empty_blocks();
     }
 
     fn advance(&mut self, after_failure: bool, r: &dyn Refiller) -> Transition {
@@ -900,16 +1403,14 @@ impl Playlist {
             Plan::Fallback if after_failure => self.arm_retry(),
             Plan::Fallback => self.play_index(0, r),
             Plan::Stop(index) | Plan::Play(index) => {
-                let given_up = self
-                    .requeue_current
-                    .then(|| self.current.clone())
-                    .flatten()
-                    .map(|track| PlaylistItem::with_override(track, self.current_override));
+                let given_up = self.requeue_current.then(|| self.current.clone()).flatten();
                 // Back in the queue before the track change refills it, or the
                 // generator sees a queue without this track and may pick it
                 // again.
                 let index = index + usize::from(given_up.is_some());
-                self.items.splice(0..0, given_up);
+                if let Some(track) = given_up {
+                    self.add_front(track, self.current_override);
+                }
                 self.play_index(index, r)
             }
             Plan::Wait => self.arm_retry(),
@@ -932,17 +1433,20 @@ impl Playlist {
             }
             // Nothing queued to fall back to, so the wait *is* the plan:
             // treating it as an empty playlist would abandon the track.
-            if self.items.is_empty() {
+            if self.flat_len() == 0 {
                 return Plan::Wait;
             }
         }
-        if self.items.is_empty() {
+        if self.flat_len() == 0 {
             return Plan::Empty;
+        }
+        if self.flat_item(0).is_some_and(PlaylistItem::is_stop) {
+            return Plan::Stop(0);
         }
         if self.cached_ids.is_empty() {
             return Plan::Fallback;
         }
-        for (i, item) in self.items.iter().enumerate() {
+        for (i, item) in self.flat_items().enumerate() {
             match item {
                 PlaylistItem::Stop => return Plan::Stop(i),
                 PlaylistItem::Track { track, .. } if self.cached_ids.contains(&track.id) => {
@@ -960,23 +1464,25 @@ impl Playlist {
         }
         // A stop marker is a barrier the operator placed deliberately; topping
         // up past it would bury it under generated tracks.
-        if self.items.iter().any(PlaylistItem::is_stop) {
+        if self.flat_items().any(PlaylistItem::is_stop) {
             return;
         }
-        let queued = self.items.len() as i64;
+        let queued = self.flat_len() as i64;
         if queued >= r.threshold() {
             return;
         }
         let tracks = {
             let in_queue: Vec<&Track> = self
-                .items
-                .iter()
+                .flat_items()
                 .filter_map(PlaylistItem::as_track)
                 .collect();
             r.generate(r.buffer() - queued, &in_queue)
         };
-        self.items
-            .extend(tracks.into_iter().map(PlaylistItem::track));
+        self.queue.extend(
+            tracks
+                .into_iter()
+                .map(|track| Self::standalone(PlaylistItem::track(track))),
+        );
     }
 
     /// Load the track on air again after its read failed. The airing is
@@ -1171,8 +1677,7 @@ mod tests {
     }
 
     fn queued(p: &Playlist) -> Vec<Option<i64>> {
-        p.snapshot()
-            .playlist
+        p.remaining_items()
             .iter()
             .map(|i| i.as_track().map(|t| t.id))
             .collect()
@@ -1181,7 +1686,7 @@ mod tests {
     /// The override carried by one queued item, as the renderer would read it
     /// off the snapshot.
     fn item_override(p: &Playlist, index: usize) -> Option<CuePoints> {
-        match &p.snapshot().playlist[index] {
+        match &p.remaining_items()[index] {
             PlaylistItem::Track { cue_override, .. } => *cue_override,
             PlaylistItem::Stop => None,
         }
@@ -1230,13 +1735,18 @@ mod tests {
     }
 
     #[test]
-    fn appending_a_saved_show_keeps_its_stop_barrier_without_starting_playback() {
+    fn a_saved_show_block_keeps_its_stop_barrier_without_starting_playback() {
         let mut p = with(&[Some(9)]);
-        let transition = p.append_saved(vec![
-            PlaylistItem::track(track(1)),
-            PlaylistItem::Stop,
-            PlaylistItem::track(track(2)),
-        ]);
+        let transition = p.insert_block(
+            "show".into(),
+            SavedPlaylistKind::PreparedShow,
+            vec![
+                PlaylistItem::track(track(1)),
+                PlaylistItem::Stop,
+                PlaylistItem::track(track(2)),
+            ],
+            None,
+        );
 
         assert_eq!(transition, Transition::default());
         assert_eq!(queued(&p), vec![Some(9), Some(1), None, Some(2)]);
@@ -1255,7 +1765,12 @@ mod tests {
     #[test]
     fn a_trailing_saved_stop_halts_before_later_queued_material() {
         let mut p = Playlist::new();
-        p.append_saved(vec![PlaylistItem::track(track(1)), PlaylistItem::Stop]);
+        p.insert_block(
+            "show".into(),
+            SavedPlaylistKind::PreparedShow,
+            vec![PlaylistItem::track(track(1)), PlaylistItem::Stop],
+            None,
+        );
         p.add(track(2), None);
 
         air(&mut p, 0);
@@ -2624,7 +3139,7 @@ mod tests {
         let mut p = with(&[None, Some(1)]);
         p.set_item_cue_points(0, Some(points(3_000)));
         p.set_item_cue_points(7, Some(points(3_000)));
-        assert!(p.snapshot().playlist[0].is_stop());
+        assert!(p.remaining_items()[0].is_stop());
         assert_eq!(queued(&p), vec![None, Some(1)]);
     }
 
@@ -2633,7 +3148,7 @@ mod tests {
         let mut p = with(&[Some(1), Some(2)]);
         p.on_cue_points_saved(1, points(4_000));
         let queued_points =
-            |p: &Playlist, i: usize| p.snapshot().playlist[i].as_track().map(|t| t.cue_points);
+            |p: &Playlist, i: usize| p.remaining_items()[i].as_track().map(|t| t.cue_points);
         assert_eq!(queued_points(&p, 0), Some(points(4_000)));
         assert_eq!(queued_points(&p, 1), Some(CuePoints::default()));
     }
@@ -2658,12 +3173,12 @@ mod tests {
     #[test]
     fn a_measured_duration_refreshes_the_queued_copies_of_the_track() {
         let mut p = with(&[Some(1), Some(2)]);
-        let other = p.snapshot().playlist[1].as_track().unwrap().duration;
+        let other = p.remaining_items()[1].as_track().unwrap().duration;
 
         p.on_duration_measured(1, 238.968);
 
         let queued_duration =
-            |p: &Playlist, i: usize| p.snapshot().playlist[i].as_track().map(|t| t.duration);
+            |p: &Playlist, i: usize| p.remaining_items()[i].as_track().map(|t| t.duration);
         assert_eq!(queued_duration(&p, 0), Some(238.968));
         assert_eq!(queued_duration(&p, 1), Some(other));
     }
@@ -2713,7 +3228,7 @@ mod tests {
 
         assert!(matches!(p.reconcile_arm(), Some(Effect::Arm { id: 2, .. })));
         let queued_points =
-            |p: &Playlist, i: usize| p.snapshot().playlist[i].as_track().map(|t| t.cue_points);
+            |p: &Playlist, i: usize| p.remaining_items()[i].as_track().map(|t| t.cue_points);
         assert_eq!(queued_points(&p, 0), Some(points(4_000)));
     }
 
@@ -2724,7 +3239,7 @@ mod tests {
     fn the_playlist_knows_which_tracks_it_holds() {
         let mut p = with(&[Some(2), None]);
         p.hydrate(
-            p.snapshot().playlist,
+            p.remaining_items(),
             Some(track(9)),
             None,
             0.0,
@@ -3167,5 +3682,361 @@ mod tests {
         p.on_handover(2, &r);
 
         assert!(queued(&p).len() >= before, "the buffer was topped back up");
+    }
+
+    fn block_ids(p: &Playlist, at: usize) -> (String, Vec<String>) {
+        let QueueNode::Block { id, entries, .. } = &p.snapshot().playlist[at] else {
+            panic!("expected block");
+        };
+        (
+            id.clone(),
+            entries.iter().map(|entry| entry.id.clone()).collect(),
+        )
+    }
+
+    #[test]
+    fn two_queued_copies_have_distinct_block_and_child_occurrences() {
+        let mut p = Playlist::new();
+        let authored = vec![PlaylistItem::track(track(1)), PlaylistItem::Stop];
+        p.insert_block(
+            "Morning".into(),
+            SavedPlaylistKind::PreparedShow,
+            authored.clone(),
+            None,
+        );
+        p.insert_block(
+            "Morning".into(),
+            SavedPlaylistKind::PreparedShow,
+            authored,
+            None,
+        );
+        let (first, first_children) = block_ids(&p, 0);
+        let (second, second_children) = block_ids(&p, 1);
+        assert_ne!(first, second);
+        assert!(first_children
+            .iter()
+            .all(|id| !second_children.contains(id)));
+
+        p.remove_occurrence(&first_children[0]);
+        assert_eq!(queued(&p), vec![None, Some(1), None]);
+        assert_eq!(block_ids(&p, 1).1, second_children);
+    }
+
+    #[test]
+    fn add_as_next_stays_inside_the_active_block_before_its_stop() {
+        let mut p = Playlist::new();
+        p.insert_block(
+            "Morning".into(),
+            SavedPlaylistKind::PreparedShow,
+            vec![
+                PlaylistItem::track(track(1)),
+                PlaylistItem::track(track(2)),
+                PlaylistItem::Stop,
+                PlaylistItem::track(track(3)),
+            ],
+            None,
+        );
+        let (block_id, children) = block_ids(&p, 0);
+        p.play_occurrence(&children[0], &NoRefill);
+        p.on_loaded(1);
+        p.add_as_next(vec![track(8), track(9)]);
+
+        assert_eq!(queued(&p), vec![Some(8), Some(9), Some(2), None, Some(3)]);
+        assert_eq!(
+            p.snapshot().current_block_id.as_deref(),
+            Some(block_id.as_str())
+        );
+        assert_eq!(current_id(&p), Some(1));
+        assert_eq!(p.snapshot().playlist.len(), 1);
+    }
+
+    #[test]
+    fn last_child_on_air_keeps_empty_header_and_accepts_add_as_next() {
+        let mut p = Playlist::new();
+        p.insert_block(
+            "One song".into(),
+            SavedPlaylistKind::Playlist,
+            vec![PlaylistItem::track(track(1))],
+            None,
+        );
+        p.add(track(2), None);
+        let (block_id, children) = block_ids(&p, 0);
+        p.play_occurrence(&children[0], &NoRefill);
+        p.on_loaded(1);
+        assert_eq!(block_ids(&p, 0).1, Vec::<String>::new());
+        assert_eq!(p.snapshot().current_block_id, Some(block_id.clone()));
+
+        p.add_as_next(vec![track(8), track(9)]);
+        assert_eq!(queued(&p), vec![Some(8), Some(9), Some(2)]);
+        p.on_ended(&NoRefill);
+        assert_eq!(current_id(&p), Some(8));
+        assert_eq!(p.snapshot().current_block_id, Some(block_id.clone()));
+        p.on_ended(&NoRefill);
+        p.on_ended(&NoRefill);
+        assert_eq!(current_id(&p), Some(2));
+        assert_eq!(p.snapshot().current_block_id, None);
+        assert_eq!(p.snapshot().playlist.len(), 0);
+    }
+
+    #[test]
+    fn interior_stop_keeps_unfinished_block_but_trailing_stop_releases_it() {
+        let mut p = Playlist::new();
+        p.insert_block(
+            "Show".into(),
+            SavedPlaylistKind::PreparedShow,
+            vec![
+                PlaylistItem::track(track(1)),
+                PlaylistItem::Stop,
+                PlaylistItem::track(track(2)),
+                PlaylistItem::Stop,
+            ],
+            None,
+        );
+        p.add(track(3), None);
+        let (block_id, children) = block_ids(&p, 0);
+        p.play_occurrence(&children[0], &NoRefill);
+        p.on_loaded(1);
+        p.on_ended(&NoRefill);
+        assert_eq!(current_id(&p), None);
+        assert_eq!(p.snapshot().current_block_id, Some(block_id.clone()));
+        assert_eq!(queued(&p), vec![Some(2), None, Some(3)]);
+
+        p.next(&NoRefill);
+        p.on_loaded(2);
+        p.on_ended(&NoRefill);
+        assert_eq!(current_id(&p), None);
+        assert_eq!(p.snapshot().current_block_id, None);
+        assert_eq!(queued(&p), vec![Some(3)]);
+    }
+
+    #[test]
+    fn moving_repeated_track_occurrence_preserves_its_id_across_scopes() {
+        let mut p = with(&[Some(1), Some(1)]);
+        let second_id = match &p.snapshot().playlist[1] {
+            QueueNode::Standalone { id, .. } => id.clone(),
+            _ => unreachable!(),
+        };
+        p.insert_block(
+            "Show".into(),
+            SavedPlaylistKind::Playlist,
+            vec![PlaylistItem::track(track(2))],
+            None,
+        );
+        let (block_id, child_ids) = block_ids(&p, 2);
+        p.move_occurrence(
+            &second_id,
+            Destination::Block {
+                block_id: block_id.clone(),
+                before_id: Some(child_ids[0].clone()),
+            },
+        );
+        assert_eq!(queued(&p), vec![Some(1), Some(1), Some(2)]);
+        assert_eq!(block_ids(&p, 1).1[0], second_id);
+
+        p.move_occurrence(&second_id, Destination::Main { before_id: None });
+        let QueueNode::Standalone { id, .. } = p.snapshot().playlist.last().unwrap().clone() else {
+            panic!("moved occurrence should be standalone");
+        };
+        assert_eq!(id, second_id);
+    }
+
+    #[test]
+    fn structured_restore_keeps_child_ids_and_empty_active_header() {
+        let mut p = Playlist::new();
+        p.insert_block(
+            "Show".into(),
+            SavedPlaylistKind::PreparedShow,
+            vec![PlaylistItem::track(track(1))],
+            None,
+        );
+        let (block_id, children) = block_ids(&p, 0);
+        p.play_occurrence(&children[0], &NoRefill);
+        let queue = p.snapshot().playlist;
+
+        let mut restored = Playlist::new();
+        restored.hydrate_queue(
+            queue,
+            Some(block_id.clone()),
+            Some(track(1)),
+            None,
+            12.0,
+            false,
+            true,
+            vec![track(1)],
+        );
+        assert_eq!(restored.snapshot().current_block_id, Some(block_id));
+        assert_eq!(block_ids(&restored, 0).1, Vec::<String>::new());
+        restored.on_ended(&NoRefill);
+        assert_eq!(restored.snapshot().current_block_id, None);
+        assert!(restored.snapshot().playlist.is_empty());
+    }
+
+    #[test]
+    fn refill_counts_block_children_and_appends_outside_the_block() {
+        let mut p = Playlist::new();
+        p.insert_block(
+            "Show".into(),
+            SavedPlaylistKind::Playlist,
+            vec![PlaylistItem::track(track(1)), PlaylistItem::track(track(2))],
+            None,
+        );
+        let r = FakeRefiller::generating(4, 3);
+        p.auto_playlist = true;
+        p.on_source_changed(&r);
+        assert_eq!(r.calls(), vec![(2, vec![1, 2])]);
+        assert_eq!(queued(&p).len(), 4);
+        assert!(matches!(p.snapshot().playlist[0], QueueNode::Block { .. }));
+        assert!(matches!(
+            p.snapshot().playlist[1],
+            QueueNode::Standalone { .. }
+        ));
+    }
+
+    #[test]
+    fn playing_a_later_block_pins_its_header_and_handover_replaces_association() {
+        let mut p = Playlist::new();
+        p.add(track(9), None);
+        p.insert_block(
+            "First".into(),
+            SavedPlaylistKind::Playlist,
+            vec![PlaylistItem::track(track(1))],
+            None,
+        );
+        p.insert_block(
+            "Second".into(),
+            SavedPlaylistKind::Playlist,
+            vec![PlaylistItem::track(track(2))],
+            None,
+        );
+        let (first, first_children) = block_ids(&p, 1);
+        let (second, _) = block_ids(&p, 2);
+
+        p.play_occurrence(&first_children[0], &NoRefill);
+        p.on_loaded(1);
+        assert_eq!(block_ids(&p, 0).0, first);
+        assert_eq!(queued(&p), vec![Some(9), Some(2)]);
+
+        p.on_handover(2, &NoRefill);
+        assert_eq!(current_id(&p), Some(2));
+        assert_eq!(p.snapshot().current_block_id, Some(second.clone()));
+        assert_eq!(block_ids(&p, 0).0, second);
+        assert_eq!(queued(&p), vec![Some(9)]);
+    }
+
+    #[test]
+    fn removing_an_active_block_cuts_children_but_keeps_its_on_air_header() {
+        let mut p = Playlist::new();
+        p.insert_block(
+            "Show".into(),
+            SavedPlaylistKind::Playlist,
+            vec![PlaylistItem::track(track(1)), PlaylistItem::track(track(2))],
+            None,
+        );
+        p.add(track(3), None);
+        let (block_id, children) = block_ids(&p, 0);
+        p.play_occurrence(&children[0], &NoRefill);
+        p.on_loaded(1);
+
+        p.remove_block(&block_id);
+        assert_eq!(current_id(&p), Some(1));
+        assert_eq!(p.snapshot().current_block_id, Some(block_id));
+        assert_eq!(queued(&p), vec![Some(3)]);
+        assert!(matches!(p.snapshot().playlist[0], QueueNode::Block { .. }));
+
+        p.on_ended(&NoRefill);
+        assert_eq!(current_id(&p), Some(3));
+        assert_eq!(p.snapshot().current_block_id, None);
+        assert!(p.snapshot().playlist.is_empty());
+    }
+
+    #[test]
+    fn failed_block_track_halts_at_stop_before_cached_later_children() {
+        let mut p = Playlist::new();
+        p.insert_block(
+            "Show".into(),
+            SavedPlaylistKind::PreparedShow,
+            vec![
+                PlaylistItem::track(track(1)),
+                PlaylistItem::Stop,
+                PlaylistItem::track(track(2)),
+            ],
+            None,
+        );
+        p.add(track(3), None);
+        let (block_id, children) = block_ids(&p, 0);
+        p.play_occurrence(&children[0], &NoRefill);
+        p.on_cache_state(vec![2, 3], &NoRefill);
+
+        let effects = p
+            .on_load_failed(1, LoadFailure::Unplayable, &NoRefill)
+            .effects;
+        assert_eq!(effects, vec![Effect::CancelRetry, Effect::Stop]);
+        assert_eq!(queued(&p), vec![Some(2), Some(3)]);
+        assert_eq!(p.snapshot().current_block_id, Some(block_id));
+        assert_eq!(current_id(&p), None);
+    }
+
+    #[test]
+    fn use_once_and_bulk_add_respect_active_block_boundary() {
+        let mut p = Playlist::new();
+        p.insert_block(
+            "Show".into(),
+            SavedPlaylistKind::Playlist,
+            vec![PlaylistItem::track(track(1))],
+            None,
+        );
+        let (_, children) = block_ids(&p, 0);
+        p.play_occurrence(&children[0], &NoRefill);
+
+        p.add_front(track(4), Some(points(5_000)));
+        p.add(track(5), None);
+        assert_eq!(queued(&p), vec![Some(4), Some(5)]);
+        assert_eq!(item_override(&p, 0), Some(points(5_000)));
+        assert!(matches!(p.snapshot().playlist[0], QueueNode::Block { .. }));
+        assert!(matches!(
+            p.snapshot().playlist[1],
+            QueueNode::Standalone { .. }
+        ));
+    }
+
+    #[test]
+    fn stale_occurrence_destinations_reject_without_relocating_material() {
+        let mut p = with(&[Some(1)]);
+        let first_id = match &p.snapshot().playlist[0] {
+            QueueNode::Standalone { id, .. } => id.clone(),
+            _ => unreachable!(),
+        };
+        let before = p.snapshot();
+
+        assert!(p
+            .insert_block(
+                "Show".into(),
+                SavedPlaylistKind::Playlist,
+                vec![PlaylistItem::track(track(2))],
+                Some("gone"),
+            )
+            .rejection
+            .is_some());
+        assert!(p
+            .copy_tracks(
+                vec![track(2)],
+                Destination::Main {
+                    before_id: Some("gone".into()),
+                },
+            )
+            .rejection
+            .is_some());
+        assert!(p
+            .move_occurrence(
+                &first_id,
+                Destination::Block {
+                    block_id: "gone".into(),
+                    before_id: None,
+                },
+            )
+            .rejection
+            .is_some());
+        assert!(p.remove_occurrence("gone").rejection.is_some());
+        assert_eq!(p.snapshot(), before);
     }
 }

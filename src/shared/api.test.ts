@@ -45,6 +45,48 @@ describe("prepared show commands", () => {
   });
 });
 
+describe("playlist block commands", () => {
+  it("addresses a whole saved list at a top-level occurrence gap", async () => {
+    await api.playlistAddSaved(5, false, "later-block");
+    expect(invoke).toHaveBeenCalledWith("playlist_add_saved", {
+      id: 5,
+      weave: false,
+      beforeId: "later-block",
+    });
+  });
+
+  it("addresses copied and moved children by destination and occurrence ID", async () => {
+    const destination = {
+      scope: "block" as const,
+      blockId: "b",
+      beforeId: "child-2",
+    };
+    await api.playlistCopyTracks([7, 7], destination);
+    await api.playlistMoveOccurrence("child-1", destination);
+    await api.playlistMoveBlock("b", "later-block");
+    expect(invoke.mock.calls).toEqual([
+      ["playlist_copy_tracks", { ids: [7, 7], destination }],
+      ["playlist_move_occurrence", { id: "child-1", destination }],
+      ["playlist_move_block", { blockId: "b", beforeId: "later-block" }],
+    ]);
+  });
+
+  it("sends Add as next and per-occurrence play, remove, and cue actions", async () => {
+    await api.playlistAddAsNext([3, 2]);
+    await api.playlistPlayOccurrence("copy-2");
+    await api.playlistRemoveOccurrence("copy-2");
+    await api.playlistRemoveBlock("b");
+    await api.playlistSetOccurrenceCuePoints("copy-1", null);
+    expect(invoke.mock.calls).toEqual([
+      ["playlist_add_as_next", { ids: [3, 2] }],
+      ["playlist_play_occurrence", { id: "copy-2" }],
+      ["playlist_remove_occurrence", { id: "copy-2" }],
+      ["playlist_remove_block", { blockId: "b" }],
+      ["playlist_set_occurrence_cue_points", { id: "copy-1", cuePoints: null }],
+    ]);
+  });
+});
+
 describe("api.updateTrackMetadata", () => {
   it("omits absent keys entirely (leave unchanged)", async () => {
     // Only genre is set — the other fields must not appear in the payload, so

@@ -1,8 +1,9 @@
 # Playlist — what is queued, what is on air, and how the two advance
 
-The playlist is the ordered sequence of upcoming items that feeds the `main`
-deck, plus the rules that move one item onto air and the next into place. The
-**backend owns all of it**; the renderer is a projection.
+The playlist is the ordered sequence of upcoming standalone items and copied
+saved-list blocks that feeds the `main` deck, plus the rules that move one item
+onto air and the next into place. The **backend owns all of it**; the renderer
+is a projection.
 
 | topic                                   | detail                                     |
 | --------------------------------------- | ------------------------------------------ |
@@ -39,10 +40,11 @@ The module splits three ways:
 ### The snapshot
 
 ```
-program:playlist-state { playlist, current, history }
+program:playlist-state { playlist, currentBlockId, current, history }
 ```
 
-- `playlist` — the upcoming items in order, stop markers included
+- `playlist` — top-level standalone items and blocks in order
+- `currentBlockId` — the block whose child is on air or waiting at an interior Stop
 - `current` — the item now on the `main` deck
 - `history` — the last `tuning.autoPlaylist.historyCap` (100) aired tracks
 
@@ -54,14 +56,18 @@ retention limit — every airing stays logged. See
 [rotation.md](./rotation.md#the-airing-log).
 
 A `PlaylistItem::Track` carries the whole `Track`, not just its id, so the
-snapshot is displayable without a second round-trip to resolve titles.
+snapshot is displayable without a second round-trip to resolve titles. Each
+standalone occurrence, block and block child also has a stable occurrence id;
+track ids alone cannot distinguish repeated entries.
 
 ### Commands
 
 ```
 playlist_add             playlist_add_front        playlist_insert
-playlist_add_many        playlist_add_saved        playlist_add_filler
-playlist_add_stop_marker playlist_remove           playlist_move
+playlist_add_many        playlist_copy_tracks      playlist_add_as_next
+playlist_add_saved       playlist_add_filler       playlist_add_stop_marker
+playlist_remove          playlist_remove_occurrence playlist_move_occurrence
+playlist_move_block      playlist_remove_block     playlist_move
 playlist_clear           playlist_play_index       playlist_play_now
 playlist_next            playlist_prev             playlist_stop
 playlist_set_auto_advance                          playlist_set_auto_playlist
@@ -75,7 +81,7 @@ playlist, and changes nothing here.
 Every one of them but `playlist_sync` **queues** its transition and returns at
 once. `playlist_add_saved` does too, but reads the saved playlist first and
 answers with what it found — see
-[saved-playlists.md](./saved-playlists.md#appending-to-the-playlist). A Tauri command handler declared without `async` runs on the process main
+[saved-playlists.md](./saved-playlists.md#adding-to-the-playlist). A Tauri command handler declared without `async` runs on the process main
 thread, which is the thread the window is drawn from, and a transition is not
 cheap: a refill under the queue's threshold is tens of milliseconds of SQL on a
 large library, and it waits on the same database lock the analysis pass holds, so
@@ -179,13 +185,44 @@ artist window, and one track per artist within a generated block.
 jingle does not shift the cadence.
 
 **Stop markers** are items too. Advancement consumes one and stops instead of
-loading the next track, leaving later items in the flat playlist for the
-operator to resume or remove. This lets a prepared show park after a track
-finishes at Cue Out; a trailing Stop also prevents later queued material from
-starting. Stops contribute nothing to the prefetch window or Upcoming duration.
-There is no implicit Stop at the end of a prepared show. The playlist stays flat:
-queueing a show appends its ordered entries in one transition, and queueing alone
-never starts or resumes playback.
+loading the next track, leaving later items for the operator to resume or
+remove. A Stop inside a block lets that block park after its preceding track
+finishes at Cue Out; a trailing Stop also prevents the next top-level item from
+starting. Stops contribute nothing to prefetch or duration. There is no
+implicit Stop at the end of a prepared show.
+
+## Playlist blocks
+
+Adding a saved playlist as a whole creates a **playlist block** in Upcoming.
+The block copies the saved title, kind and ordered entries; it is independent
+from the original and from other copies. Editing, renaming or deleting the saved
+list does not change a queued block. Tracks added individually stay standalone.
+See [saved-playlists.md](./saved-playlists.md#adding-to-the-playlist) for
+which actions create a block.
+
+The snapshot keeps blocks as top-level nodes with their remaining children.
+Playback, prefetch, outage handling and air-time calculations traverse those
+children in playback order and continue through the same playlist engine.
+Headers add no audio or duration. Auto-playlist refill counts remaining
+children but appends generated tracks outside every block; a queued Stop remains
+a barrier to refill.
+
+Upcoming shows each block with a header and its remaining track count. Expanded
+children are indented; a disclosure button collapses or expands them. Collapse
+changes only presentation. The active header remains visible while its child is
+on air, through the last child, and while an interior Stop waits. It clears when
+the block finishes; an outgoing audible tail does not keep it active.
+
+Drops between top-level entries place a whole block or standalone item there.
+Indented gaps place tracks among a block's children. Dropping on a
+collapsed header appends inside it; a line before or after it stays outside.
+Moving a queued track removes its former occurrence. An unstarted block can be
+moved as a unit; the active block stays pinned. **Add as next** puts a run of
+tracks before the active block's remaining children, even while collapsed or
+while its last child is on air. With no active block it inserts at the main
+front. Adding a track from the library or saved-list entries and **+** appends
+standalone tracks outside all blocks.
+None of these adds starts or resumes playback.
 
 **Nothing in the Upcoming tab reaches air by a double-click.** A queued track
 goes on by its row's play button, and a stop marker only by the show arriving at
@@ -254,11 +291,15 @@ The playlist row's marker badge clears it. See
 
 ## Persistence
 
-The flat playlist, its Stop items, the current item and both overrides survive a
-restart via `session.json`. Restoring a Stop preserves its position in the
-sequence. `SessionPlaylistItem::Track` carries `cue_override` and `SessionState`
-carries `current_cue_override`, both `serde(default)` so a session file written
-before overrides existed loads untouched. Restore goes through `Effect::Resume`,
+`session.json` stores the structured queue, including standalone items, blocks,
+their stable occurrence ids and remaining child order. It also stores the active
+block association, renderer-owned collapsed block ids, the current item and both
+cue overrides. Restoring a Stop preserves its position. An absent structured
+queue identifies a legacy session, whose flat `playlistItems` / `playlistIds`
+are restored as standalone items; an explicitly empty structured queue remains
+empty. Old sessions restore paused, as structured sessions do. Track entries
+carry `cue_override`, and `SessionState` carries `current_cue_override`, both
+`serde(default)` so older files load. Restore goes through `Effect::Resume`,
 which reloads and seeks without putting audio on air.
 
 History stores tracks rather than items, so a custom airing replays under the

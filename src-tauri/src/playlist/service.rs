@@ -19,21 +19,23 @@ use tauri::{AppHandle, Emitter, Listener};
 
 use super::engine::{Effect, LoadFailure, Playlist, Refiller, Transition};
 use super::generate;
-use super::model::{PlaylistItem, Snapshot, SourceInfo};
+use super::model::{Destination, PlaylistItem, QueueChild, QueueNode, Snapshot, SourceInfo};
 use crate::audio::bus::{ProgramBus, FADED_OUT_EVENT, HANDOVER_EVENT};
 use crate::audio::cache::Cache;
 use crate::audio::cue_points::CuePoints;
 use crate::audio::levelling;
 use crate::audio::player::{Cmd, LoadFailed};
 use crate::broadcast::BroadcastService;
-use crate::library::db::{Db, SavedQueueEntry, Track, TrackLoadInfo};
+use crate::library::db::{
+    Db, SavedEntryKind, SavedPlaylist, SavedPlaylistKind, SavedQueueEntry, Track, TrackLoadInfo,
+};
 use crate::library::health::HEALTH_EVENT;
 use crate::library::scanner::now_ms;
 use crate::library::waveform_scan::{
     CuePointsReady, DurationReady, CUE_POINTS_READY_EVENT, DURATION_READY_EVENT,
 };
 use crate::persist::config::Config;
-use crate::persist::session::SessionState;
+use crate::persist::session::{SessionPlaylistItem, SessionQueueNode, SessionState};
 
 /// The part of `program:handover` the playlist needs: the incoming track. The
 /// outgoing one is already on record as `current`.
@@ -89,6 +91,28 @@ fn authored_items(entries: Vec<SavedQueueEntry>, tracks: Vec<Track>) -> Vec<Play
             SavedQueueEntry::Stop => Some(PlaylistItem::Stop),
         })
         .collect()
+}
+
+/// Copy one saved list's authored sequence, retaining Stops and counting only
+/// unmatched tracks as unavailable. The saved original is never mutated.
+pub(crate) fn saved_copy(
+    list: SavedPlaylist,
+) -> (String, SavedPlaylistKind, Vec<SavedQueueEntry>, usize) {
+    let mut entries = Vec::with_capacity(list.entries.len());
+    let mut unmatched = 0;
+    for entry in list.entries {
+        match entry.kind {
+            SavedEntryKind::Stop => entries.push(SavedQueueEntry::Stop),
+            SavedEntryKind::Track => match entry.track {
+                Some(track) => entries.push(SavedQueueEntry::Track {
+                    id: track.id,
+                    content_type: entry.content_type.unwrap_or_default(),
+                }),
+                None => unmatched += 1,
+            },
+        }
+    }
+    (list.name, list.kind, entries, unmatched)
 }
 
 impl Refiller for DbRefiller<'_> {
@@ -378,7 +402,7 @@ impl PlaylistService {
     pub fn queued_items(&self) -> Result<Vec<PlaylistItem>, String> {
         let (send, receive) = channel();
         self.queue(move |inner| {
-            let _ = send.send(inner.playlist.lock().snapshot().playlist);
+            let _ = send.send(inner.playlist.lock().remaining_items());
         });
         receive
             .recv()
@@ -395,7 +419,12 @@ impl PlaylistService {
     /// is listening — a queued restore could still be resolving its rows when
     /// that call arrives and would answer it with an empty playlist.
     pub fn hydrate(&self, state: &SessionState) {
-        let items = self.inner.resolve_items(state);
+        let queue = state
+            .queue
+            .as_ref()
+            .map(|nodes| self.inner.resolve_queue(nodes));
+        let items = queue.is_none().then(|| self.inner.resolve_items(state));
+        let current_block_id = state.current_block_id.clone();
         let current = state
             .current_track_id
             .and_then(|id| self.inner.lookup(id).ok().flatten());
@@ -415,16 +444,26 @@ impl PlaylistService {
                 log::error!("history restore failed: {}", e);
                 vec![]
             });
-        Inner::apply(&self.inner, move |p, _| {
-            p.hydrate(
-                items,
+        Inner::apply(&self.inner, move |p, _| match queue {
+            Some(queue) => p.hydrate_queue(
+                queue,
+                current_block_id,
                 current,
                 current_override,
                 seconds,
                 auto_playlist,
                 auto_advance,
                 history,
-            )
+            ),
+            None => p.hydrate(
+                items.unwrap_or_default(),
+                current,
+                current_override,
+                seconds,
+                auto_playlist,
+                auto_advance,
+                history,
+            ),
         });
     }
 
@@ -478,6 +517,29 @@ impl PlaylistService {
         });
     }
 
+    /// Copy library tracks into an ID-addressed top-level or block gap.
+    pub fn copy_tracks(&self, ids: Vec<i64>, destination: Destination) {
+        self.queue(move |inner| match inner.db.get_tracks_by_ids(&ids) {
+            Ok(tracks) if !tracks.is_empty() => {
+                Inner::apply(inner, move |p, _| p.copy_tracks(tracks, destination));
+            }
+            Ok(_) => {}
+            Err(e) => log::error!("playlist: looking up tracks for copy failed: {e}"),
+        });
+    }
+
+    /// Insert a selected run ahead of an active block's remaining children,
+    /// or at the main queue's front when no block is active.
+    pub fn add_as_next(&self, ids: Vec<i64>) {
+        self.queue(move |inner| match inner.db.get_tracks_by_ids(&ids) {
+            Ok(tracks) if !tracks.is_empty() => {
+                Inner::apply(inner, move |p, _| p.add_as_next(tracks));
+            }
+            Ok(_) => {}
+            Err(e) => log::error!("playlist: looking up next tracks failed: {e}"),
+        });
+    }
+
     /// Choose where the auto-playlist draws its music from: a saved playlist,
     /// by id and name, or `None` for the music library. Sets the source and
     /// nothing else — it neither switches the auto-playlist on nor touches what
@@ -493,10 +555,17 @@ impl PlaylistService {
         });
     }
 
-    /// Queue a saved list's entries in stored order as one transition. Ordinary
+    /// Queue an independent named block copied from a saved list. Ordinary
     /// playlists may first be brought up to the interleave cadence; prepared
     /// shows keep their authored track and Stop sequence.
-    pub fn add_saved(&self, entries: Vec<SavedQueueEntry>, weave: bool) {
+    pub fn add_saved(
+        &self,
+        title: String,
+        kind: SavedPlaylistKind,
+        entries: Vec<SavedQueueEntry>,
+        weave: bool,
+        before_id: Option<String>,
+    ) {
         self.queue(move |inner| {
             let ids: Vec<i64> = entries
                 .iter()
@@ -537,8 +606,7 @@ impl PlaylistService {
                 let queued: Vec<i64> = inner
                     .playlist
                     .lock()
-                    .snapshot()
-                    .playlist
+                    .remaining_items()
                     .iter()
                     .filter_map(|item| item.as_track().map(|t| t.id))
                     .collect();
@@ -558,7 +626,9 @@ impl PlaylistService {
             if items.is_empty() {
                 return;
             }
-            Inner::apply(inner, move |p, _| p.append_saved(items));
+            Inner::apply(inner, move |p, _| {
+                p.insert_block(title, kind, items, before_id.as_deref())
+            });
         });
     }
 
@@ -596,6 +666,15 @@ impl PlaylistService {
         });
     }
 
+    /// Change one queued occurrence's cue points without relying on a visible index.
+    pub fn set_occurrence_cue_points(&self, id: String, cue_override: Option<CuePoints>) {
+        self.queue(move |inner| {
+            Inner::apply(inner, move |p, _| {
+                p.set_occurrence_cue_points(&id, cue_override)
+            });
+        });
+    }
+
     pub fn add_stop(&self) {
         self.queue(|inner| Inner::apply(inner, |p, _| p.add_stop()));
     }
@@ -615,6 +694,32 @@ impl PlaylistService {
 
     pub fn remove(&self, index: usize) {
         self.queue(move |inner| Inner::apply(inner, move |p, _| p.remove(index)));
+    }
+
+    /// Remove one standalone item or block child by occurrence id.
+    pub fn remove_occurrence(&self, id: String) {
+        self.queue(move |inner| Inner::apply(inner, move |p, _| p.remove_occurrence(&id)));
+    }
+
+    /// Move one queued occurrence to a stable top-level or block gap.
+    pub fn move_occurrence(&self, id: String, destination: Destination) {
+        self.queue(move |inner| {
+            Inner::apply(inner, move |p, _| p.move_occurrence(&id, destination));
+        });
+    }
+
+    /// Move an unstarted block as one top-level occurrence.
+    pub fn move_block(&self, block_id: String, before_id: Option<String>) {
+        self.queue(move |inner| {
+            Inner::apply(inner, move |p, _| {
+                p.move_block(&block_id, before_id.as_deref())
+            });
+        });
+    }
+
+    /// Remove a block's remaining children without cutting its current track.
+    pub fn remove_block(&self, block_id: String) {
+        self.queue(move |inner| Inner::apply(inner, move |p, _| p.remove_block(&block_id)));
     }
 
     pub fn remove_tracks(&self, ids: HashSet<i64>) {
@@ -639,6 +744,13 @@ impl PlaylistService {
                 return;
             }
             Inner::apply(inner, move |p, r| p.play_index(index, r));
+        });
+    }
+
+    /// Put a particular queued child or standalone track on air.
+    pub fn play_occurrence(&self, id: String) {
+        self.queue(move |inner| {
+            Inner::apply(inner, move |p, r| p.play_occurrence(&id, r));
         });
     }
 
@@ -704,6 +816,55 @@ impl Inner {
         PlaylistItem::from_session(&state.playlist_items, &state.playlist_ids, |id| {
             self.lookup(id).ok().flatten()
         })
+    }
+
+    fn resolve_session_item(&self, item: &SessionPlaylistItem) -> Option<PlaylistItem> {
+        match item {
+            SessionPlaylistItem::Stop => Some(PlaylistItem::Stop),
+            SessionPlaylistItem::Track { id, cue_override } => self
+                .lookup(*id)
+                .ok()
+                .flatten()
+                .map(|track| PlaylistItem::with_override(track, *cue_override)),
+        }
+    }
+
+    fn resolve_queue(&self, nodes: &[SessionQueueNode]) -> Vec<QueueNode> {
+        nodes
+            .iter()
+            .filter_map(|node| match node {
+                SessionQueueNode::Standalone { id, item } => {
+                    self.resolve_session_item(item)
+                        .map(|item| QueueNode::Standalone {
+                            id: id.clone(),
+                            item,
+                        })
+                }
+                SessionQueueNode::Block {
+                    id,
+                    title,
+                    saved_kind,
+                    entries,
+                } => {
+                    let entries = entries
+                        .iter()
+                        .filter_map(|child| {
+                            self.resolve_session_item(&child.item)
+                                .map(|item| QueueChild {
+                                    id: child.id.clone(),
+                                    item,
+                                })
+                        })
+                        .collect();
+                    Some(QueueNode::Block {
+                        id: id.clone(),
+                        title: title.clone(),
+                        saved_kind: *saved_kind,
+                        entries,
+                    })
+                }
+            })
+            .collect()
     }
 
     /// Where the auto-playlist draws from for this transition. A source with
@@ -801,6 +962,9 @@ impl Inner {
             playlist.set_history_cap(refiller.history_cap());
             playlist.set_source_view(source, reverted_from);
             let mut transition = f(&mut playlist, &refiller);
+            if let Some(reason) = transition.rejection {
+                log::warn!("playlist: command rejected: {reason}");
+            }
             // Bringing the arm deck in line follows every transition rather
             // than each one remembering to ask, for the same reason the
             // prefetch window does: a queue mutation, a track change and a
@@ -1011,6 +1175,54 @@ impl Inner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::library::db::{SavedEntryInput, TrackInsert};
+
+    #[test]
+    fn a_queued_copy_keeps_its_title_kind_and_entries_after_the_saved_original_changes() {
+        let db = Db::open_in_memory().unwrap();
+        for (id, title) in [(1, "A"), (2, "B")] {
+            db.insert_track(&TrackInsert {
+                path: format!("/{id}.mp3"),
+                content_type: "music".into(),
+                title: Some(title.into()),
+                ..TrackInsert::default()
+            })
+            .unwrap();
+        }
+        let made = db
+            .create_saved_playlist_with_entries(
+                "Friday",
+                SavedPlaylistKind::PreparedShow,
+                &[
+                    SavedEntryInput::Track(1),
+                    SavedEntryInput::Stop,
+                    SavedEntryInput::Track(2),
+                ],
+                1,
+            )
+            .unwrap();
+        let copy = saved_copy(db.saved_playlist(made.id).unwrap().unwrap());
+        db.rename_saved_playlist(made.id, "Saturday", 2).unwrap();
+        db.delete_saved_playlist(made.id).unwrap();
+
+        assert_eq!(copy.0, "Friday");
+        assert_eq!(copy.1, SavedPlaylistKind::PreparedShow);
+        assert_eq!(
+            copy.2,
+            [
+                SavedQueueEntry::Track {
+                    id: 1,
+                    content_type: "music".into()
+                },
+                SavedQueueEntry::Stop,
+                SavedQueueEntry::Track {
+                    id: 2,
+                    content_type: "music".into()
+                },
+            ]
+        );
+        assert_eq!(copy.3, 0);
+    }
 
     #[test]
     fn authored_show_keeps_stops_and_repeated_tracks_when_an_adjacent_file_is_gone() {

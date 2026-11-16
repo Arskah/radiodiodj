@@ -24,6 +24,14 @@ const { api } = vi.hoisted(() => {
     playlistAddFront: vi.fn(),
     playlistInsert: vi.fn(),
     playlistAddMany: vi.fn(),
+    playlistAddAsNext: vi.fn(),
+    playlistCopyTracks: vi.fn(),
+    playlistMoveOccurrence: vi.fn(),
+    playlistRemoveOccurrence: vi.fn(),
+    playlistMoveBlock: vi.fn(),
+    playlistRemoveBlock: vi.fn(),
+    playlistPlayOccurrence: vi.fn(),
+    playlistSetOccurrenceCuePoints: vi.fn(),
     playlistSetItemCuePoints: vi.fn(),
     playlistAddSaved: vi.fn(),
     playlistSetSource: vi.fn(),
@@ -222,6 +230,7 @@ import {
   type CuePoints,
   type HealthReport,
   type PlaylistItem,
+  type QueueNode,
 } from "./types";
 
 const pid = (i: PlaylistItem): number | "STOP" =>
@@ -429,6 +438,9 @@ function wirePlaylist(playlist: MockPlaylistBackend): void {
     (ids: number[], index: number | null) =>
       ok(() => playlist.insertMany(index, ids.map(known))),
   );
+  api.playlistAddAsNext.mockImplementation((ids: number[]) =>
+    ok(() => playlist.insertMany(0, ids.map(known))),
+  );
   api.playlistSetItemCuePoints.mockImplementation(
     (index: number, cuePoints: CuePoints | null) =>
       ok(() => playlist.setItemCuePoints(index, cuePoints)),
@@ -531,7 +543,7 @@ describe("AppState playlist mutations", () => {
     app.addToPlaylist(t(2));
     app.addNextToPlaylist(t(3));
     expect(app.playlist.map(pid)).toEqual([3, 1, 2]);
-    expect(api.playlistAddFront).toHaveBeenCalledWith(3);
+    expect(api.playlistAddAsNext).toHaveBeenCalledWith([3]);
   });
 
   it("a dragged row is queued ahead of the item at the index it is dropped on", () => {
@@ -610,7 +622,7 @@ describe("AppState library selection", () => {
     app.toggleSelected(3);
     app.toggleSelected(1);
     app.addSelectionToPlaylist(true);
-    expect(api.playlistAddMany).toHaveBeenCalledExactlyOnceWith([3, 1], 0);
+    expect(api.playlistAddAsNext).toHaveBeenCalledExactlyOnceWith([3, 1]);
     expect(app.playlist.map(pid)).toEqual([3, 1, 7]);
     expect(app.selectedIds).toEqual([]);
   });
@@ -3313,6 +3325,109 @@ describe("updates", () => {
   });
 });
 
+describe("AppState playlist block projection", () => {
+  let app: AppState;
+  let playlist: MockPlaylistBackend;
+
+  beforeEach(async () => {
+    resetApi();
+    ({ app, playlist } = makeApp());
+    await app.loadSession();
+  });
+
+  it("flattens remaining children for Save as and persists stable IDs and collapse", async () => {
+    const queued: QueueNode[] = [
+      {
+        kind: "block",
+        id: "show-1",
+        title: "Friday",
+        savedKind: "prepared_show",
+        entries: [
+          { id: "opening-1", item: trackItem(t(7)) },
+          { id: "stop-1", item: stopMarker() },
+        ],
+      },
+      { kind: "standalone", id: "tail-1", item: trackItem(t(8)) },
+    ];
+    playlist.emitSnapshot({
+      ...playlist.snapshot(),
+      playlist: queued,
+      currentBlockId: "show-1",
+    });
+    expect(app.playlist.map(pid)).toEqual([7, "STOP", 8]);
+    expect(app.currentBlockId).toBe("show-1");
+    api.playlistSaveAs.mockResolvedValueOnce({
+      id: 20,
+      name: "Flat copy",
+      kind: "prepared_show",
+      entries: 3,
+      stops: 1,
+      missing: 0,
+    });
+    await app.savePlaylistAs("Flat copy", "prepared_show");
+    expect(api.playlistSaveAs).toHaveBeenCalledWith(
+      "Flat copy",
+      "prepared_show",
+    );
+    app.toggleBlockCollapsed("show-1");
+    expect(app.collapsedBlockIds).toEqual(["show-1"]);
+    await app.flushSave();
+    expect(api.saveSession.mock.lastCall?.[0]).toMatchObject({
+      queue: [
+        {
+          kind: "block",
+          id: "show-1",
+          title: "Friday",
+          savedKind: "prepared_show",
+          entries: [
+            { id: "opening-1", item: { kind: "track", id: 7 } },
+            { id: "stop-1", item: { kind: "stop" } },
+          ],
+        },
+        { kind: "standalone", id: "tail-1", item: { kind: "track", id: 8 } },
+      ],
+      currentBlockId: "show-1",
+      collapsedBlockIds: ["show-1"],
+      playlistItems: [
+        { kind: "track", id: 7 },
+        { kind: "stop" },
+        { kind: "track", id: 8 },
+      ],
+    });
+    playlist.emitSnapshot({
+      ...playlist.snapshot(),
+      playlist: queued.slice(1),
+    });
+    expect(app.collapsedBlockIds).toEqual([]);
+  });
+
+  it("routes Add as next through the backend while an empty active block is collapsed", () => {
+    const current = t(6);
+    playlist.emitSnapshot({
+      ...playlist.snapshot(),
+      playlist: [
+        {
+          kind: "block",
+          id: "last-on-air",
+          title: "One song",
+          savedKind: "playlist",
+          entries: [],
+        },
+        { kind: "standalone", id: "later", item: stopMarker() },
+      ],
+      currentBlockId: "last-on-air",
+      current,
+    });
+    app.toggleBlockCollapsed("last-on-air");
+    api.playlistAddAsNext.mockResolvedValueOnce(undefined);
+    app.queueTracks([9, 10], true);
+    expect(api.playlistAddAsNext).toHaveBeenCalledWith([9, 10]);
+    expect(app.currentTrack?.id).toBe(6);
+    expect(app.collapsedBlockIds).toEqual(["last-on-air"]);
+    expect(app.queue[0]).toMatchObject({ id: "last-on-air", entries: [] });
+  });
+});
+
 describe("AppState saved playlists", () => {
   let app: AppState;
 
@@ -3403,7 +3518,7 @@ describe("AppState saved playlists", () => {
   it("says what an append did", async () => {
     api.playlistAddSaved.mockResolvedValue({ added: 31, skipped: 2 });
     await app.addSavedToPlaylist(5, true);
-    expect(api.playlistAddSaved).toHaveBeenCalledWith(5, true);
+    expect(api.playlistAddSaved).toHaveBeenCalledWith(5, true, null);
     expect(app.savedNotice).toBe("Added 31 tracks, skipped 2 unmatched");
   });
 
@@ -3501,9 +3616,10 @@ describe("AppState saved playlists", () => {
     app.queueTracks([4, 2]);
     expect(api.playlistAddMany).toHaveBeenLastCalledWith([4, 2], null);
     app.queueTracks([4, 2], true);
-    expect(api.playlistAddMany).toHaveBeenLastCalledWith([4, 2], 0);
+    expect(api.playlistAddAsNext).toHaveBeenLastCalledWith([4, 2]);
     app.queueTracks([]);
-    expect(api.playlistAddMany).toHaveBeenCalledTimes(2);
+    expect(api.playlistAddMany).toHaveBeenCalledTimes(1);
+    expect(api.playlistAddAsNext).toHaveBeenCalledTimes(1);
   });
 
   it("deleting the open saved playlist closes it", async () => {

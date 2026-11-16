@@ -58,6 +58,11 @@ export class MockPlaylistBackend {
     this.emit();
   }
 
+  /** Emit a structured queue snapshot to exercise renderer projection tests. */
+  emitSnapshot(snapshot: PlaylistSnapshot): void {
+    for (const listener of this.listeners) listener(snapshot);
+  }
+
   add(track: Track, cueOverride: CuePoints | null = null): void {
     this.playlist.push(trackItem(track, cueOverride));
     this.emit();
