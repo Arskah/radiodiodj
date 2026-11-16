@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app } from "../../shared/state.svelte";
   import ErrorBanner from "../ui/ErrorBanner.svelte";
+  import StationClock from "./StationClock.svelte";
 
   // The version rides along because a locked desk cannot open About, and
   // whoever reports a bug from there still needs to say what they are running.
@@ -55,6 +56,7 @@
     {:else}
       <span class="brand">{app.brandName}</span>
     {/if}
+    <StationClock />
   </div>
 
   <div class="nav-center">
