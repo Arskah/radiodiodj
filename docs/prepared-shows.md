@@ -262,12 +262,8 @@ The studio is talking, so playback starts only when the producer starts it.
 A hold keeps its group, which is what keeps the header pinned through a break
 and what **Add as next** joins.
 
-## The station clock
-
-The toolbar shows the host's local time, `HH:MM:SS`, beside the station brand,
-the brand being text or an image. It is the renderer's clock alone and has no
-part in the playlist, so it can ship on its own. A producer times a break
-against it.
+The wall-clock side of a break is the station clock beside the toolbar's brand;
+the counter only says how far into the break the studio is.
 
 ## Not in scope
 
@@ -287,11 +283,10 @@ against it.
 
 | #   | increment                | holds                                                                                                                           | depends on | issue |
 | --- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------- | ---------- | ----- |
-| A   | Station clock            | the toolbar clock                                                                                                               | —          | new   |
 | 1   | Stops in saved playlists | `kind` and planned duration, migration, file 2, hub protocol 3, **+ Stop** and the `m:ss` field in both places, counts, Save as | —          | #682  |
 | 2   | Groups in the playlist   | `group` on items and in the session, what makes one, headers, colour, collapse, drops, Save group as                            | —          | #683  |
 | 3   | The hold                 | `holding` in the snapshot, the deck's STOP view and counter                                                                     | 1          | #684  |
 
 The original ask, a show prepared with its breaks, is delivered by 1. Groups and
 the hold do not depend on each other; whichever lands second carries the hold's
-group. Planned order: A, 1, 2, 3.
+group. Planned order: 1, 2, 3.
