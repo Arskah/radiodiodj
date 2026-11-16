@@ -6,6 +6,7 @@ export default defineConfig({
   test: {
     name: "renderer",
     environment: "jsdom",
+    pool: "vmThreads",
     include: ["src/**/*.test.ts", "tools/**/*.test.ts"],
     coverage: {
       include: ["src/**/*.{ts,svelte}"],
