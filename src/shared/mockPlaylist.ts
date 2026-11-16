@@ -14,6 +14,7 @@ import type { PlaylistSnapshot } from "./api";
  * are specified by that module's tests.
  */
 export class MockPlaylistBackend {
+  revision = 0;
   playlist: PlaylistItem[] = [];
   current: Track | null = null;
   currentOverride: CuePoints | null = null;
@@ -36,6 +37,9 @@ export class MockPlaylistBackend {
 
   snapshot(): PlaylistSnapshot {
     return {
+      revision: this.revision,
+      holdingStop: null,
+      timing: { entries: [], delaySeconds: 0, delayStartedAtUnixMs: null },
       playlist: this.playlist.slice(),
       current: this.current,
       history: this.history.slice(),
@@ -201,6 +205,7 @@ export class MockPlaylistBackend {
   }
 
   private emit(): void {
+    this.revision += 1;
     const snapshot = this.snapshot();
     for (const listener of this.listeners) listener(snapshot);
   }

@@ -64,7 +64,8 @@ CREATE TABLE saved_playlist_entries (
   artist       TEXT,
   title        TEXT,
   duration     REAL,
-  content_type TEXT
+  content_type TEXT,
+  planned_duration_seconds INTEGER -- nullable; Stops only
 );
 CREATE INDEX saved_playlist_entries_list
   ON saved_playlist_entries(playlist_id, position);
@@ -74,6 +75,9 @@ Migration step 20 adds these columns, defaulting existing lists to
 `playlist` and existing entries to `track`; see [database.md](./database.md).
 A Stop has no track snapshot fields. Database guards reject Stops on a
 `playlist` and refuse changing a `prepared_show` with Stops to `playlist`.
+Step 21 appends `planned_duration_seconds`; existing Stops have no plan. This
+column is separate from audio `duration`, and only non-negative whole seconds
+are valid.
 
 `track_id` is the local binding and it is what everything reads: a bound entry
 shows the live track, so a metadata edit or a corrected radio edit reaches every
@@ -178,7 +182,7 @@ library.
 ```json
 {
   "format": "radiodiodj-playlist",
-  "version": 2,
+  "version": 3,
   "name": "Friday Rock",
   "kind": "prepared_show",
   "entries": [
@@ -196,18 +200,23 @@ library.
       "artist": null,
       "title": null,
       "duration": null,
-      "contentType": null
+      "contentType": null,
+      "plannedDurationSeconds": 120
     }
   ]
 }
 ```
 
-Version 2 carries the saved kind and an entry kind (`track` or `stop`). A Stop
+Version 3 adds the optional `plannedDurationSeconds` Stop plan. Version 2 carries
+the saved kind and an entry kind (`track` or `stop`). A Stop
 entry has no track identity, so its track metadata fields are `null`. Track
 entries carry no track ids or paths. An id belongs to one install's database,
 and a path to one machine's mount; the fingerprint is the only track identity
-that travels. Version 1 track-only files import as `playlist`. A version 2 file
-that declares `playlist` while containing a Stop is refused.
+that travels. Versions 1 and 2 remain readable, with no Stop plan. Version 1
+track-only files import as `playlist`. Any file that declares `playlist` while
+containing a Stop is refused. Older readers refuse version 3 rather than
+discarding a plan on a save round trip. Holds, elapsed time and ETAs never travel
+in a saved file.
 
 _Import_ is on the list of saved playlists and _Export_ on an open one; both
 are a file picker and one command, and both are open while admin mode is
@@ -380,8 +389,11 @@ With a saved playlist open in the _Playlists_ tab:
   prepared show with Stops to **Playlist** is refused until those Stops are
   removed.
 - **+ Stop** is available for a prepared show. A Stop can be dragged into the
-  authored order and removed like a track entry. Stop rows have no duration,
-  missing badge or track controls.
+  authored order and removed like a track entry. Its optional planned duration
+  accepts `m:ss`; blank means unspecified and `0:00` is an explicit plan. Only
+  admins may edit a saved Stop. Stop rows have no audio duration, missing badge
+  or track controls. Queued copies can be edited independently; the consumed
+  Stop on the main deck is read-only.
 - **Add to saved playlist…** in a library row's menu, and for a selection on
   the selection bar (_Save…_) and in the selection's menu. It opens a dialog
   rather than a submenu: the saved playlists to pick from, and a name field that
@@ -535,6 +547,7 @@ saved_playlist_add_entries  saved_playlist_remove_entry saved_playlist_move_entr
 saved_playlist_remove_entries                           saved_playlist_move_entries
 saved_playlist_rename       saved_playlist_delete       saved_playlist_bind_entry
 saved_playlist_add_stop     saved_playlist_set_kind
+saved_playlist_set_stop_duration
 ```
 
 `saved_playlist_create` takes its entries with it, which is what keeps creation

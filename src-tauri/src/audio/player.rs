@@ -103,6 +103,8 @@ pub enum Cmd {
         /// falling back to a filesystem read, and to name the track in the
         /// `:load-failed` event when a load fails or times out.
         id: i64,
+        /// Stable playlist occurrence; absent for off-air cue loads.
+        occurrence_id: Option<String>,
         path: PathBuf,
         duration: Option<f64>,
         /// The markers to apply to this airing, already chosen: the radio edit

@@ -33,6 +33,8 @@ The module splits three ways:
   plus what the caller already knows and returns `Effect`s. No database, no
   audio device, no Tauri handle, so the advancement specification is testable on
   its own.
+- **`timing.rs`** — the pure schedule projection, retaining one origin and shared
+  delay across normal playback and handovers.
 - **`service.rs`** — wiring. Turns effects into deck commands, play-count
   increments, prefetch-window updates and retry timers, and emits a snapshot at
   the end of every transition.
@@ -44,9 +46,13 @@ program:playlist-state { playlist, currentBlockId, current, history }
 ```
 
 - `playlist` — top-level standalone items and blocks in order
-- `currentBlockId` — the block whose child is on air or waiting at an interior Stop
+- `currentBlockId` — the block whose child is on air or holding at a Stop,
+  including a trailing Stop
 - `current` — the item now on the `main` deck
 - `history` — the last `tuning.autoPlaylist.historyCap` (100) aired tracks
+- `holdingStop` — the consumed Stop's plan, elapsed hold and block association
+- `timing` — occurrence-keyed base ETAs and one shared moving or frozen delay
+- `revision` — the sequence keeping queue and timing from older snapshots out
 
 A whole snapshot on every mutation, never deltas: the playlist is short,
 snapshots are idempotent, and a dropped or out-of-order event cannot
@@ -191,6 +197,40 @@ finishes at Cue Out; a trailing Stop also prevents the next top-level item from
 starting. Stops contribute nothing to prefetch or duration. There is no
 implicit Stop at the end of a prepared show.
 
+A Stop's optional `plannedDurationSeconds` estimates the presenter's pause.
+Blank is unspecified; zero is an explicit plan. Upcoming and saved prepared-show
+rows accept whole-second `m:ss` values, including minutes above 59. Editing a
+queued copy does not change its saved original. A plan never resumes playback.
+
+Consuming a Stop enters **Holding at stop**, retaining its plan and active block
+after its row leaves Upcoming. The deck shows **STOP** and a counter: elapsed
+minus planned time for a planned Stop, then signed overtime with a warning-coloured
+counter and pulsing heading. Reduced motion disables the pulse. An unplanned
+hold shows elapsed time alone. The consumed Stop is read-only. Play and Next
+retain their transport meanings, while Stop clears the hold. Upcoming edits do
+not end it.
+
+## Start-time estimates
+
+Upcoming displays local wall-clock ETAs beside durations, including for Stop
+arrival. Blocks add no time, and collapsing them changes no estimate. Auto
+uses Next Start between tracks and Cue Out before a Stop; Manual assumes the
+presenter starts each next track at Cue Out. An audible tail constrains the next
+overlap so estimates never require three simultaneous tracks. Unavailable audio
+is skipped; unknown required timing hides later estimates. An upcoming unplanned
+Stop exposes its own arrival and hides all later ETAs until reached.
+
+The backend retains one schedule across ordinary position events, automatic
+consumption and normal handovers. Fractional spans accumulate before absolute
+ETAs are truncated once. Pauses, idle transport and overdue holds move every
+known ETA by one shared delay; resuming freezes it without changing labels.
+Planned holds allow that delay to grow only after their deadline. Queue edits,
+cue changes, seeks, early skips and real output or loading interruptions can
+revise the affected schedule. The renderer uses one sampled clock for the
+toolbar, hold counter and moving delay, without per-second playlist transitions.
+See [playlist-eta.md](./playlist-eta.md) for the timing contract and acceptance
+cases. Planned pauses never contribute to unattended audio coverage.
+
 ## Playlist blocks
 
 Adding a saved playlist as a whole creates a **playlist block** in Upcoming.
@@ -210,8 +250,9 @@ a barrier to refill.
 Upcoming shows each block with a header and its remaining track count. Expanded
 children are indented; a disclosure button collapses or expands them. Collapse
 changes only presentation. The active header remains visible while its child is
-on air, through the last child, and while an interior Stop waits. It clears when
-the block finishes; an outgoing audible tail does not keep it active.
+on air, through the last child, and while holding at any of its Stops. It clears
+when that hold or the block finishes; an outgoing audible tail does not keep it
+active.
 
 Drops between top-level entries place a whole block or standalone item there.
 Indented gaps place tracks among a block's children. Dropping on a
@@ -302,6 +343,11 @@ carry `cue_override`, and `SessionState` carries `current_cue_override`, both
 `serde(default)` so older files load. Restore goes through `Effect::Resume`,
 which reloads and seeks without putting audio on air.
 
+A held Stop saves its plan, block association and elapsed time. Restore starts
+counting from that elapsed value; time with the app closed is excluded. Neither
+ETAs nor an active playback clock are persisted, and restoring never starts
+audio.
+
 History stores tracks rather than items, so a custom airing replays under the
 radio edit.
 
@@ -313,6 +359,7 @@ radio edit.
 | `playlist/service.rs`        | effects → deck commands, timers, snapshots, `Serial`  |
 | `playlist/generate.rs`       | selection + interleave, `Interleave` cadence          |
 | `playlist/model.rs`          | `PlaylistItem`, `Snapshot` — the wire types           |
+| `playlist/timing.rs`         | occurrence-keyed ETA projection and shared delay      |
 | `src/features/playlist/`     | the Upcoming and History tabs                         |
 | `src/shared/state.svelte.ts` | the renderer's mirror of the snapshot                 |
 

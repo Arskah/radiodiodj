@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MockBackend } from "./mockBackend";
 import { MockPlaylistBackend } from "./mockPlaylist";
+import type { ClockSource } from "./playlistTiming";
 
 const { api } = vi.hoisted(() => {
   const api = {
@@ -33,6 +34,7 @@ const { api } = vi.hoisted(() => {
     playlistPlayOccurrence: vi.fn(),
     playlistSetOccurrenceCuePoints: vi.fn(),
     playlistSetItemCuePoints: vi.fn(),
+    playlistSetStopDuration: vi.fn(),
     playlistAddSaved: vi.fn(),
     playlistSetSource: vi.fn(),
     playlistSaveAs: vi.fn(),
@@ -47,6 +49,7 @@ const { api } = vi.hoisted(() => {
     savedPlaylistAddEntries: vi.fn(),
     savedPlaylistAddStop: vi.fn(),
     savedPlaylistSetKind: vi.fn(),
+    savedPlaylistSetStopDuration: vi.fn(),
     savedPlaylistRemoveEntry: vi.fn(),
     savedPlaylistBindEntry: vi.fn(),
     savedPlaylistMoveEntry: vi.fn(),
@@ -313,6 +316,8 @@ function resetApi(): void {
   api.savedPlaylistRemoveEntry.mockResolvedValue(undefined);
   api.savedPlaylistAddStop.mockResolvedValue(undefined);
   api.savedPlaylistSetKind.mockResolvedValue(undefined);
+  api.savedPlaylistSetStopDuration.mockResolvedValue(undefined);
+  api.playlistSetStopDuration.mockResolvedValue(undefined);
   api.savedPlaylistBindEntry.mockResolvedValue(undefined);
   api.savedPlaylistMoveEntry.mockResolvedValue(undefined);
   api.savedPlaylistRemoveEntries.mockResolvedValue(undefined);
@@ -473,14 +478,14 @@ function wirePlaylist(playlist: MockPlaylistBackend): void {
   );
 }
 
-function makeApp(): TestApp {
+function makeApp(clockSource?: ClockSource): TestApp {
   document.body.innerHTML = "";
   document.title = "RadiodioDJ";
   const mock = new MockBackend();
   const cueMock = new MockBackend();
   const playlist = new MockPlaylistBackend();
   wirePlaylist(playlist);
-  const app = new AppState(mock, cueMock);
+  const app = new AppState(mock, cueMock, clockSource);
   return { app, mock, cueMock, playlist };
 }
 
@@ -2501,7 +2506,7 @@ describe("AppState session persistence (stop markers)", () => {
     const arg = api.saveSession.mock.calls[0][0];
     expect(arg.playlistItems).toEqual([
       { kind: "track", id: 1, cue_override: null },
-      { kind: "stop" },
+      { kind: "stop", plannedDurationSeconds: null },
       { kind: "track", id: 2, cue_override: null },
     ]);
     expect(arg.playlistIds).toEqual([1, 2]);
@@ -3841,5 +3846,163 @@ describe("admin mode", () => {
     await app.setIdleLockMin(0);
     expect(api.adminSetIdleLockMin).toHaveBeenCalledWith(0);
     expect(app.admin.idleLockMin).toBe(1);
+  });
+});
+
+describe("AppState playlist schedule and shared clock", () => {
+  let wall: number;
+  let monotonic: number;
+  let app: AppState;
+  let playlist: MockPlaylistBackend;
+  let mock: MockBackend;
+
+  beforeEach(() => {
+    resetApi();
+    wall = 10_000;
+    monotonic = 0;
+    ({ app, playlist, mock } = makeApp({
+      wallNow: () => wall,
+      monotonicNow: () => monotonic,
+    }));
+  });
+
+  it("rejects an older queue and schedule together", () => {
+    const newer = {
+      ...playlist.snapshot(),
+      revision: 4,
+      playlist: [
+        { kind: "standalone" as const, id: "new", item: trackItem(t(4)) },
+      ],
+      timing: {
+        entries: [{ occurrenceId: "new", baseSecond: 25 }],
+        delaySeconds: 0,
+        delayStartedAtUnixMs: null,
+      },
+    };
+    playlist.emitSnapshot(newer);
+    playlist.emitSnapshot({ ...playlist.snapshot(), revision: 3 });
+    expect(app.queue[0].id).toBe("new");
+    expect(app.upcomingEta("new")).toBe(25);
+    expect(app.playlistTiming).toEqual(newer.timing);
+  });
+
+  it("keeps fixed ETAs through delayed progress, snapshots and handover", () => {
+    const schedule = {
+      entries: [{ occurrenceId: "later", baseSecond: 120 }],
+      delaySeconds: 0.75,
+      delayStartedAtUnixMs: null,
+    };
+    playlist.emitSnapshot({
+      ...playlist.snapshot(),
+      revision: 1,
+      timing: schedule,
+    });
+    monotonic = 4_999;
+    wall += monotonic;
+    app.sampleClock();
+    mock.emitTime(50);
+    mock.emitTime(5);
+    playlist.emitSnapshot({
+      ...playlist.snapshot(),
+      revision: 2,
+      current: t(7),
+      timing: schedule,
+    });
+    expect(app.upcomingEta("later")).toBe(120);
+  });
+
+  it("shares one timer, catches up elapsed time and cleans up its final user", () => {
+    vi.useFakeTimers();
+    try {
+      playlist.emitSnapshot({
+        ...playlist.snapshot(),
+        revision: 1,
+        timing: {
+          entries: [
+            { occurrenceId: "first", baseSecond: 12 },
+            { occurrenceId: "second", baseSecond: 20 },
+          ],
+          delaySeconds: 0.7,
+          delayStartedAtUnixMs: 10_000,
+        },
+      });
+      const stopFirst = app.startClock();
+      const stopSecond = app.startClock();
+      expect(vi.getTimerCount()).toBe(1);
+      monotonic = 3_350;
+      wall += monotonic;
+      vi.advanceTimersByTime(100);
+      expect(app.clockNow).toBe(13_350);
+      expect(app.upcomingEta("first")).toBe(16);
+      expect(app.upcomingEta("second")).toBe(24);
+      stopFirst();
+      expect(vi.getTimerCount()).toBe(1);
+      stopSecond();
+      stopSecond();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reanchors a host correction once with the matching backend schedule", async () => {
+    const corrected = { ...playlist.snapshot(), revision: 5 };
+    let finish!: (snapshot: typeof corrected) => void;
+    api.playlistSync.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    wall += 60_000;
+    app.sampleClock();
+    app.sampleClock();
+    expect(api.playlistSync).toHaveBeenCalledTimes(1);
+    expect(app.clockNow).toBe(10_000);
+    finish(corrected);
+    await flushAsync();
+    expect(app.clockNow).toBe(70_000);
+    app.sampleClock();
+    expect(api.playlistSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("persists Stop plans and sampled hold elapsed, leaving capture time local", async () => {
+    await app.loadSession();
+    playlist.emitSnapshot({
+      ...playlist.snapshot(),
+      revision: 1,
+      playlist: [stopMarker(90)],
+      holdingStop: {
+        occurrenceId: "held-stop",
+        plannedDurationSeconds: 120,
+        elapsedSeconds: 53,
+        capturedAtUnixMs: 10_000,
+        blockId: "show",
+      },
+    });
+    monotonic = 2_250;
+    wall += monotonic;
+    await app.flushSave();
+    const saved = api.saveSession.mock.lastCall?.[0];
+    expect(saved.playlistItems).toEqual([
+      { kind: "stop", plannedDurationSeconds: 90 },
+    ]);
+    expect(saved.queue[0].item.plannedDurationSeconds).toBe(90);
+    expect(saved.holdingStop).toEqual({
+      occurrenceId: "held-stop",
+      plannedDurationSeconds: 120,
+      elapsedSeconds: 55.25,
+      blockId: "show",
+    });
+  });
+
+  it("addresses a queued Stop by occurrence and preserves saved admin permissions", () => {
+    app.setStopDuration("one-copy", 0);
+    app.setSavedStopDuration(7, null);
+    expect(api.playlistSetStopDuration).toHaveBeenCalledWith("one-copy", 0);
+    expect(api.savedPlaylistSetStopDuration).toHaveBeenCalledWith(7, null);
+    app.admin = { passwordSet: true, unlocked: false, idleLockMin: 15 };
+    app.setSavedStopDuration(7, 90);
+    expect(api.savedPlaylistSetStopDuration).toHaveBeenCalledTimes(1);
   });
 });

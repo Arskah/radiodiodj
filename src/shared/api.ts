@@ -9,6 +9,8 @@ import type {
   CuePoints,
   DeckRoleEntry,
   PlaylistItem,
+  HoldingStop,
+  PlaylistTiming,
   QueueDestination,
   QueueNode,
   DeviceInfo,
@@ -42,12 +44,12 @@ import { METADATA_KEYS } from "./types";
 
 export type PersistedPlaylistItem =
   | { kind: "track"; id: number; cue_override: CuePoints | null }
-  | { kind: "stop" };
+  | { kind: "stop"; plannedDurationSeconds?: number | null };
 
 /** Session form of a queued item, with a track reference rather than metadata. */
 export type PersistedQueueItem =
   | { kind: "track"; id: number; cueOverride: CuePoints | null }
-  | { kind: "stop" };
+  | { kind: "stop"; plannedDurationSeconds?: number | null };
 
 /** A saved queue occurrence or independent block copy. */
 export type PersistedQueueNode =
@@ -65,6 +67,8 @@ export interface SessionPersistState {
   playlistItems: PersistedPlaylistItem[];
   queue?: PersistedQueueNode[];
   currentBlockId?: string | null;
+  /** Closed-app time never contributes to the restored hold. */
+  holdingStop?: Omit<HoldingStop, "capturedAtUnixMs"> | null;
   collapsedBlockIds?: string[];
   currentTrackId: number | null;
   currentTime: number;
@@ -93,6 +97,10 @@ export interface SessionLoadResult {
  * a playlist of its own. See `docs/playlist.md`.
  */
 export interface PlaylistSnapshot {
+  /** Queue and schedule share a revision; delayed older snapshots are refused. */
+  revision: number;
+  holdingStop: HoldingStop | null;
+  timing: PlaylistTiming;
   playlist: QueueNode[] | PlaylistItem[];
   currentBlockId?: string | null;
   current: Track | null;
@@ -390,6 +398,16 @@ export const api = {
   savedPlaylistAddStop(id: number, index: number | null = null): Promise<void> {
     return invoke<void>("saved_playlist_add_stop", { id, index });
   },
+  /** Admin only. Change the plan on one saved Stop. */
+  savedPlaylistSetStopDuration(
+    entryId: number,
+    plannedDurationSeconds: number | null,
+  ): Promise<void> {
+    return invoke<void>("saved_playlist_set_stop_duration", {
+      entryId,
+      plannedDurationSeconds,
+    });
+  },
   /** Admin only. The backend refuses a playlist kind while Stops remain. */
   savedPlaylistSetKind(id: number, kind: SavedPlaylistKind): Promise<void> {
     return invoke<void>("saved_playlist_set_kind", { id, kind });
@@ -436,6 +454,16 @@ export const api = {
     cuePoints: CuePoints | null,
   ): Promise<void> {
     return invoke<void>("playlist_set_item_cue_points", { index, cuePoints });
+  },
+  /** Change only this queued Stop copy, addressed by occurrence identity. */
+  playlistSetStopDuration(
+    occurrenceId: string,
+    plannedDurationSeconds: number | null,
+  ): Promise<void> {
+    return invoke<void>("playlist_set_stop_duration", {
+      occurrenceId,
+      plannedDurationSeconds,
+    });
   },
   playlistAddStopMarker(): Promise<void> {
     return invoke<void>("playlist_add_stop_marker");

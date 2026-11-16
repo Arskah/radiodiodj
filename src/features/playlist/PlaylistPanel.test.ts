@@ -19,6 +19,7 @@ const { app } = vi.hoisted(() => ({
     currentBlockId: null as string | null,
     collapsedBlockIds: [] as string[],
     upcomingAirTime: 0,
+    holdingStop: null as { blockId: string | null } | null,
     history: [],
     historyDisplay: [],
     stats: null,
@@ -38,6 +39,11 @@ const { app } = vi.hoisted(() => ({
     toggleBlockCollapsed: vi.fn(),
     playQueueOccurrence: vi.fn(),
     setQueueOccurrenceCuePoints: vi.fn(),
+    setStopDuration: vi.fn(),
+    upcomingEta: vi.fn((occurrenceId: string): number | null => {
+      void occurrenceId;
+      return null;
+    }),
     clearPlaylist: vi.fn(),
     addFiller: vi.fn(),
     clearHover: vi.fn(),
@@ -48,6 +54,13 @@ vi.mock("../../shared/state.svelte", () => ({
   app,
   formatSpan: (seconds: number) => `${seconds}s`,
   formatTime: (seconds: number) => `${seconds}s`,
+}));
+vi.mock("../../shared/playlistTiming", () => ({
+  formatEta: (value: number | null) => (value === null ? "—" : String(value)),
+  formatStopDuration: (value: number | null) =>
+    value === null ? "" : String(value),
+  parseStopDuration: (value: string) =>
+    value.trim() === "2:00" ? 120 : undefined,
 }));
 import PlaylistPanel from "./PlaylistPanel.svelte";
 
@@ -75,6 +88,7 @@ describe("PlaylistPanel queue blocks", () => {
     app.draggedTrackIds = null;
     app.draggedSavedPlaylistId = null;
     app.savedDialog = null;
+    app.holdingStop = null;
   });
   afterEach(async () => {
     await unmount(component);
@@ -103,6 +117,32 @@ describe("PlaylistPanel queue blocks", () => {
       ) as HTMLButtonElement
     ).click();
     expect(app.removeQueueOccurrence).toHaveBeenCalledWith("stop-1");
+  });
+
+  it("edits a queued Stop copy and shows its projected arrival", () => {
+    app.queue = [
+      {
+        kind: "standalone",
+        id: "stop-1",
+        item: { kind: "stop", plannedDurationSeconds: null },
+      },
+    ];
+    app.upcomingEta.mockReturnValue(12_345);
+    render();
+    const input = document.querySelector(
+      '.stop-row input[aria-label="Planned Stop duration (m:ss)"]',
+    ) as HTMLInputElement;
+    input.value = "2:00";
+    input.focus();
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.blur();
+    expect(app.setStopDuration).toHaveBeenCalledWith("stop-1", 120);
+    expect(document.querySelector(".stop-row .pl-eta")?.textContent).toBe(
+      "12345",
+    );
+    expect(
+      document.querySelector(".stop-row .pl-play-action-spacer"),
+    ).not.toBeNull();
   });
 
   it("shows an active named header, indented children, and a labelled disclosure", () => {
