@@ -8,7 +8,7 @@ use crate::persist::session::SessionPlaylistItem;
 
 /// A run of items queued together from one saved playlist. A label the engine
 /// stores and returns; advancement never reads it. See
-/// `docs/prepared-shows.md#groups-in-the-playlist`.
+/// `docs/playlist.md#groups`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Group {
     /// Fresh for each insertion, so a list queued twice is two groups.

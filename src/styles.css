@@ -1860,7 +1860,7 @@ body {
 
 /* Groups: a saved playlist queued whole. A stripe in the group's colour runs
    down its header and every row of it, and the rows sit indented under the
-   header. See docs/prepared-shows.md. */
+   header. See docs/playlist.md#groups. */
 .playlist-row.in-group {
   margin-left: var(--sp-lg);
   border-left: 3px solid var(--group-colour);

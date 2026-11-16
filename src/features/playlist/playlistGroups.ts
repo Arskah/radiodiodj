@@ -3,7 +3,7 @@ import type { Group, PlaylistItem } from "../../shared/types";
 /**
  * The Upcoming list as drawn: the flat playlist with a header over each run of
  * items that share a group. Groups are labels on the items; this is the only
- * place they become structure. See `docs/prepared-shows.md`.
+ * place they become structure. See `docs/playlist.md#groups`.
  */
 export type UpcomingRow =
   | {

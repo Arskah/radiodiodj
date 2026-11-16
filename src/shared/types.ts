@@ -138,7 +138,7 @@ export interface DeckRoleEntry {
 
 /**
  * A run of playlist items queued together from one saved playlist. A label;
- * advancement never reads it. See `docs/prepared-shows.md`.
+ * advancement never reads it. See `docs/playlist.md#groups`.
  */
 export interface Group {
   /** Fresh for each insertion: a list queued twice is two groups. */
