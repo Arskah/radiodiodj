@@ -8,6 +8,7 @@ import type {
   SavedEntry,
   SavedPlaylist,
   SavedPlaylistSummary,
+  SavedPlaylistKind,
   SourceInfo,
   CuePoints,
   DeviceInfo,
@@ -59,7 +60,12 @@ import { APP_NAME } from "./appName";
 import { savePaintHint } from "./appearance";
 import { healthAttention as attentionOf } from "./health";
 import { needsAttention } from "./sharedLibrary";
-import { appendMessage, importMessage, sizeLabel } from "./savedPlaylists";
+import {
+  appendMessage,
+  canSetKind,
+  importMessage,
+  sizeLabel,
+} from "./savedPlaylists";
 
 const logger = {
   error: (...args: unknown[]) => console.error(...args),
@@ -751,7 +757,9 @@ export class AppState {
   async addSavedToPlaylist(id: number, weave: boolean): Promise<void> {
     try {
       const { added, skipped } = await api.playlistAddSaved(id, weave);
-      this.savedNotice = appendMessage(added, skipped);
+      const stops =
+        this.savedPlaylists.find((saved) => saved.id === id)?.stops ?? 0;
+      this.savedNotice = appendMessage(added, skipped, stops);
     } catch (err) {
       logger.error("Adding a saved playlist failed:", err);
     }
@@ -777,7 +785,12 @@ export class AppState {
       const path = await api.pickSavedPlaylistFile();
       if (path === null) return;
       const made = await api.savedPlaylistImport(path);
-      this.savedNotice = importMessage(made.name, made.entries, made.missing);
+      this.savedNotice = importMessage(
+        made.name,
+        made.entries,
+        made.missing,
+        made.stops,
+      );
     } catch (err) {
       this.savedNotice = `Import failed: ${messageOf(err)}`;
     }
@@ -796,14 +809,46 @@ export class AppState {
   }
 
   /** Rejects with the backend's reason, for the dialog to show. */
-  async savePlaylistAs(name: string): Promise<void> {
-    await api.playlistSaveAs(name);
+  async savePlaylistAs(name: string, kind: SavedPlaylistKind): Promise<void> {
+    await api.playlistSaveAs(name, kind);
   }
 
   /** Rejects with the backend's reason, for the dialog to show. */
-  async createSavedPlaylist(name: string, trackIds: number[]): Promise<void> {
-    const made = await api.savedPlaylistCreate(name, trackIds);
-    this.savedNotice = `Saved “${made.name}”: ${sizeLabel(made.entries, 0)}`;
+  async createSavedPlaylist(
+    name: string,
+    trackIds: number[],
+    kind: SavedPlaylistKind = "playlist",
+  ): Promise<void> {
+    const made = await api.savedPlaylistCreate(name, trackIds, kind);
+    this.savedNotice = `Saved “${made.name}”: ${sizeLabel(made.entries, 0, made.stops)}`;
+  }
+
+  /** Change the open list's kind after both the local and backend checks. */
+  async setSavedPlaylistKind(kind: SavedPlaylistKind): Promise<void> {
+    const saved = this.openSaved;
+    if (!saved || saved.kind === kind) return;
+    const stops = saved.entries.filter((entry) => entry.kind === "stop").length;
+    if (!canSetKind(kind, stops)) {
+      this.savedNotice =
+        "Remove the Stops before changing this prepared show to a playlist";
+      return;
+    }
+    try {
+      await api.savedPlaylistSetKind(saved.id, kind);
+    } catch (err) {
+      this.savedNotice = messageOf(err);
+    }
+  }
+
+  /** Add a stored Stop to the open prepared show. */
+  async addSavedStop(): Promise<void> {
+    const saved = this.openSaved;
+    if (!saved || saved.kind !== "prepared_show") return;
+    try {
+      await api.savedPlaylistAddStop(saved.id, null);
+    } catch (err) {
+      this.savedNotice = messageOf(err);
+    }
   }
 
   /** Rejects with the backend's reason, for the dialog to show. */

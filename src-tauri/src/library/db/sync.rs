@@ -2315,6 +2315,96 @@ mod tests {
     }
 
     #[test]
+    fn a_prepared_show_and_its_stops_travel_in_order() {
+        use super::super::saved_playlists::{SavedEntryInput, SavedPlaylistKind, SavedQueueEntry};
+
+        let owner = capturing();
+        let a = add_track(&owner);
+        let b = add_track(&owner);
+        let studio = studio_of(&owner);
+        let show = studio
+            .create_saved_playlist_with_entries(
+                "Friday",
+                SavedPlaylistKind::PreparedShow,
+                &[
+                    SavedEntryInput::Track(a),
+                    SavedEntryInput::Stop,
+                    SavedEntryInput::Track(b),
+                    SavedEntryInput::Stop,
+                ],
+                5,
+            )
+            .unwrap();
+
+        relay(&studio, "studio", &owner, "owner");
+
+        let theirs = owner.saved_playlists().unwrap();
+        assert_eq!(
+            (
+                theirs[0].kind,
+                theirs[0].entries,
+                theirs[0].stops,
+                theirs[0].missing
+            ),
+            (SavedPlaylistKind::PreparedShow, 4, 2, 0)
+        );
+        let offered = owner.saved_playlist_items(theirs[0].id).unwrap().unwrap();
+        assert_eq!(
+            offered.entries,
+            [
+                SavedQueueEntry::Track {
+                    id: a,
+                    content_type: "music".into()
+                },
+                SavedQueueEntry::Stop,
+                SavedQueueEntry::Track {
+                    id: b,
+                    content_type: "music".into()
+                },
+                SavedQueueEntry::Stop,
+            ]
+        );
+        assert_eq!(
+            owner.saved_playlist_pool(theirs[0].id).unwrap().unwrap().1,
+            2
+        );
+        assert_eq!(
+            studio.saved_playlist(show.id).unwrap().unwrap().kind,
+            SavedPlaylistKind::PreparedShow
+        );
+    }
+
+    #[test]
+    fn invalid_synced_playlist_stop_does_not_replace_existing_entries() {
+        use super::super::saved_playlists::SavedPlaylistKind;
+
+        let db = capturing();
+        let track = add_track(&db);
+        let list = db.create_saved_playlist("Friday", &[track], 1).unwrap();
+        let uid: String = db
+            .conn
+            .lock()
+            .query_row(
+                "SELECT uid FROM saved_playlists WHERE id = ?",
+                [list.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let invalid = serde_json::json!({
+            "name": "Should not land", "kind": "playlist", "created_at": 1,
+            "updated_at": 2, "entries": [{"kind": "stop"}]
+        });
+        assert!(
+            super::operator::write(&db.conn.lock(), "playlist", &uid, false, Some(&invalid))
+                .is_err()
+        );
+        let kept = db.saved_playlist(list.id).unwrap().unwrap();
+        assert_eq!(kept.kind, SavedPlaylistKind::Playlist);
+        assert_eq!(kept.name, "Friday");
+        assert_eq!(kept.entries.len(), 1);
+    }
+
+    #[test]
     fn a_dismissal_travels_and_so_does_undoing_it() {
         let owner = capturing();
         let studio = studio_of(&owner);

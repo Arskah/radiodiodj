@@ -21,7 +21,10 @@ mod operator;
 mod saved_playlists;
 mod sync;
 pub use operator::{track_of, KINDS as OPERATOR_KINDS};
-pub use saved_playlists::{SavedPlaylist, SavedPlaylistFile, SavedPlaylistSummary};
+pub use saved_playlists::{
+    SavedEntryInput, SavedPlaylist, SavedPlaylistFile, SavedPlaylistKind, SavedPlaylistSummary,
+    SavedQueueEntry,
+};
 pub use sync::{Applied, Incoming, Outgoing};
 
 /// `Default` exists for test fixtures, which would otherwise have to name every
@@ -277,7 +280,8 @@ impl<'a> SelectionFilter<'a> {
         }
         if self.pool.is_some() {
             sql.push_str(
-                " AND id IN (SELECT track_id FROM saved_playlist_entries WHERE playlist_id = ?)",
+                " AND id IN (SELECT track_id FROM saved_playlist_entries \
+                  WHERE playlist_id = ? AND kind = 'track')",
             );
         }
         sql
@@ -3091,6 +3095,7 @@ const MIGRATION_STEPS: &[M] = &[
     M::up(sync::CHANGE_CAPTURE),
     M::up(sync::REPLICA),
     M::up(sync::PARKED),
+    M::up(PREPARED_SHOWS),
 ];
 const MIGRATIONS: Migrations = Migrations::from_slice(MIGRATION_STEPS);
 
@@ -3548,6 +3553,39 @@ CREATE TABLE saved_playlist_entries (
 
 CREATE INDEX saved_playlist_entries_list
   ON saved_playlist_entries(playlist_id, position);
+"#;
+
+/// Step 20: distinguish saved playlist tracks from deliberate Stops.
+const PREPARED_SHOWS: &str = r#"
+ALTER TABLE saved_playlists
+  ADD COLUMN kind TEXT NOT NULL DEFAULT 'playlist'
+  CHECK (kind IN ('playlist', 'prepared_show'));
+ALTER TABLE saved_playlist_entries
+  ADD COLUMN kind TEXT NOT NULL DEFAULT 'track'
+  CHECK (kind IN ('track', 'stop'));
+CREATE TRIGGER saved_entry_stop_insert BEFORE INSERT ON saved_playlist_entries
+WHEN new.kind = 'stop' AND (SELECT kind FROM saved_playlists WHERE id = new.playlist_id) IS NOT 'prepared_show'
+BEGIN SELECT RAISE(ABORT, 'a playlist cannot contain Stops'); END;
+CREATE TRIGGER saved_entry_stop_update BEFORE UPDATE OF kind, playlist_id ON saved_playlist_entries
+WHEN new.kind = 'stop' AND (SELECT kind FROM saved_playlists WHERE id = new.playlist_id) IS NOT 'prepared_show'
+BEGIN SELECT RAISE(ABORT, 'a playlist cannot contain Stops'); END;
+CREATE TRIGGER saved_entry_stop_identity_insert BEFORE INSERT ON saved_playlist_entries
+WHEN new.kind = 'stop' AND (
+  new.track_id IS NOT NULL OR new.fingerprint IS NOT NULL OR new.artist IS NOT NULL
+  OR new.title IS NOT NULL OR new.duration IS NOT NULL OR new.content_type IS NOT NULL
+)
+BEGIN SELECT RAISE(ABORT, 'a Stop cannot carry audio identity'); END;
+CREATE TRIGGER saved_entry_stop_identity_update BEFORE UPDATE ON saved_playlist_entries
+WHEN new.kind = 'stop' AND (
+  new.track_id IS NOT NULL OR new.fingerprint IS NOT NULL OR new.artist IS NOT NULL
+  OR new.title IS NOT NULL OR new.duration IS NOT NULL OR new.content_type IS NOT NULL
+)
+BEGIN SELECT RAISE(ABORT, 'a Stop cannot carry audio identity'); END;
+CREATE TRIGGER saved_playlist_kind_update BEFORE UPDATE OF kind ON saved_playlists
+WHEN new.kind = 'playlist' AND EXISTS (
+  SELECT 1 FROM saved_playlist_entries WHERE playlist_id = new.id AND kind = 'stop'
+)
+BEGIN SELECT RAISE(ABORT, 'remove Stops before changing to a playlist'); END;
 "#;
 
 /// Step 15: library paths as library data, and tracks stored relative to them.
@@ -4028,6 +4066,20 @@ mod tests {
             )
             .unwrap();
         },
+        |conn| {
+            seed_track(conn);
+            seed_dismissal(conn);
+            conn.execute_batch(
+                "UPDATE tracks SET edited_fields = 1; \
+                 INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
+                 SELECT id, 1000, artist, title, duration FROM tracks; \
+                 INSERT INTO saved_playlists (name, created_at, updated_at, kind) \
+                 VALUES ('Show', 1, 1, 'prepared_show'); \
+                 INSERT INTO saved_playlist_entries (playlist_id, position, kind) \
+                 VALUES (1, 0, 'stop')",
+            )
+            .unwrap();
+        },
     ];
 
     /// Step 13 rebuilds the table around its rows, so the rows have to come out
@@ -4057,6 +4109,42 @@ mod tests {
             [],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn the_prepared_show_step_keeps_existing_lists_as_ordered_tracks() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        MIGRATIONS.to_version(&mut conn, 19).unwrap();
+        conn.execute_batch(
+            "INSERT INTO saved_playlists (name, created_at, updated_at) VALUES ('Old', 1, 1); \
+             INSERT INTO saved_playlist_entries (playlist_id, position, title) \
+             VALUES (1, 1, 'B'), (1, 0, 'A')",
+        )
+        .unwrap();
+
+        MIGRATIONS.to_latest(&mut conn).unwrap();
+
+        let kind: String = conn
+            .query_row("SELECT kind FROM saved_playlists WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(kind, "playlist");
+        let mut stmt = conn
+            .prepare(
+                "SELECT title, kind FROM saved_playlist_entries \
+                 WHERE playlist_id = 1 ORDER BY position, id",
+            )
+            .unwrap();
+        let entries: Vec<(String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        assert_eq!(
+            entries,
+            [("A".into(), "track".into()), ("B".into(), "track".into())]
+        );
     }
 
     /// Operator work written at any schema version survives every later step.

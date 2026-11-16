@@ -26,7 +26,7 @@ use crate::audio::cue_points::CuePoints;
 use crate::audio::levelling;
 use crate::audio::player::{Cmd, LoadFailed};
 use crate::broadcast::BroadcastService;
-use crate::library::db::{Db, Track, TrackLoadInfo};
+use crate::library::db::{Db, SavedQueueEntry, Track, TrackLoadInfo};
 use crate::library::health::HEALTH_EVENT;
 use crate::library::scanner::now_ms;
 use crate::library::waveform_scan::{
@@ -78,6 +78,17 @@ struct DbRefiller<'a> {
     buffer: i64,
     threshold: i64,
     history_cap: usize,
+}
+
+fn authored_items(entries: Vec<SavedQueueEntry>, tracks: Vec<Track>) -> Vec<PlaylistItem> {
+    let by_id: HashMap<i64, Track> = tracks.into_iter().map(|track| (track.id, track)).collect();
+    entries
+        .into_iter()
+        .filter_map(|entry| match entry {
+            SavedQueueEntry::Track { id, .. } => by_id.get(&id).cloned().map(PlaylistItem::track),
+            SavedQueueEntry::Stop => Some(PlaylistItem::Stop),
+        })
+        .collect()
 }
 
 impl Refiller for DbRefiller<'_> {
@@ -361,6 +372,19 @@ impl PlaylistService {
         self.inner.playlist.lock().snapshot()
     }
 
+    /// Read Upcoming after earlier commands have run, so Save as captures the
+    /// sequence the operator just edited rather than a snapshot still waiting
+    /// behind those commands.
+    pub fn queued_items(&self) -> Result<Vec<PlaylistItem>, String> {
+        let (send, receive) = channel();
+        self.queue(move |inner| {
+            let _ = send.send(inner.playlist.lock().snapshot().playlist);
+        });
+        receive
+            .recv()
+            .map_err(|_| "playlist command thread stopped".to_owned())
+    }
+
     /// Restore the persisted playlist and put the saved track back on the deck,
     /// paused at its saved position. History comes from the airing log rather
     /// than the session file, so a restart shows what actually went out even if
@@ -469,13 +493,18 @@ impl PlaylistService {
         });
     }
 
-    /// Queue a saved playlist's tracks at the end as one run. `entries` is each
-    /// track with its content type, in the list's order; with `weave` the run is
-    /// brought up to the interleave cadence first. See
-    /// `docs/saved-playlists.md`.
-    pub fn add_saved(&self, entries: Vec<(i64, String)>, weave: bool) {
+    /// Queue a saved list's entries in stored order as one transition. Ordinary
+    /// playlists may first be brought up to the interleave cadence; prepared
+    /// shows keep their authored track and Stop sequence.
+    pub fn add_saved(&self, entries: Vec<SavedQueueEntry>, weave: bool) {
         self.queue(move |inner| {
-            let ids: Vec<i64> = entries.iter().map(|(id, _)| *id).collect();
+            let ids: Vec<i64> = entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    SavedQueueEntry::Track { id, .. } => Some(*id),
+                    SavedQueueEntry::Stop => None,
+                })
+                .collect();
             let tracks = match inner.db.get_tracks_by_ids(&ids) {
                 Ok(tracks) => tracks,
                 Err(e) => {
@@ -490,8 +519,14 @@ impl PlaylistService {
                     ids.len()
                 );
             }
-            let tracks = if weave {
-                let types: HashMap<i64, String> = entries.into_iter().collect();
+            let items = if weave {
+                let types: HashMap<i64, String> = entries
+                    .into_iter()
+                    .filter_map(|entry| match entry {
+                        SavedQueueEntry::Track { id, content_type } => Some((id, content_type)),
+                        SavedQueueEntry::Stop => None,
+                    })
+                    .collect();
                 let list = tracks
                     .iter()
                     .map(|t| {
@@ -508,21 +543,22 @@ impl PlaylistService {
                     .filter_map(|item| item.as_track().map(|t| t.id))
                     .collect();
                 let interleave = generate::Interleave::from_config(&inner.config.get_tuning());
-                match generate::weave(&inner.db, list, &queued, &interleave) {
+                let woven = match generate::weave(&inner.db, list, &queued, &interleave) {
                     Ok(woven) => woven,
                     // The operator named the list; it goes on as written.
                     Err(e) => {
                         log::error!("playlist: weaving a saved playlist failed: {}", e);
                         tracks
                     }
-                }
+                };
+                woven.into_iter().map(PlaylistItem::track).collect()
             } else {
-                tracks
+                authored_items(entries, tracks)
             };
-            if tracks.is_empty() {
+            if items.is_empty() {
                 return;
             }
-            Inner::apply(inner, move |p, _| p.insert_many(None, tracks));
+            Inner::apply(inner, move |p, _| p.append_saved(items));
         });
     }
 
@@ -975,6 +1011,55 @@ impl Inner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authored_show_keeps_stops_and_repeated_tracks_when_an_adjacent_file_is_gone() {
+        let entries = vec![
+            SavedQueueEntry::Track {
+                id: 1,
+                content_type: "music".into(),
+            },
+            SavedQueueEntry::Track {
+                id: 99,
+                content_type: "music".into(),
+            },
+            SavedQueueEntry::Stop,
+            SavedQueueEntry::Track {
+                id: 1,
+                content_type: "music".into(),
+            },
+        ];
+        let items = authored_items(
+            entries,
+            vec![Track {
+                id: 1,
+                cue_points: CuePoints {
+                    cue_in_ms: Some(100),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+        );
+
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.as_track().map(|track| track.id))
+                .collect::<Vec<_>>(),
+            vec![Some(1), None, Some(1)]
+        );
+        for item in items.iter().filter(|item| item.as_track().is_some()) {
+            let PlaylistItem::Track {
+                track,
+                cue_override,
+            } = item
+            else {
+                unreachable!()
+            };
+            assert_eq!(track.cue_points.cue_in_ms, Some(100));
+            assert_eq!(*cue_override, None);
+        }
+    }
 
     /// Posted jobs record themselves here, so a test can read the order they ran
     /// in. Stands in for the playlist the real jobs mutate.

@@ -165,11 +165,17 @@ export const isTrackItem = (i: PlaylistItem): i is PlaylistTrackItem =>
 export const isStopMarker = (i: PlaylistItem): i is StopMarker =>
   i.kind === "stop";
 
+/** A stored list with Stops is a prepared show. */
+export type SavedPlaylistKind = "playlist" | "prepared_show";
+
 /** One row of the saved playlists list. See `docs/saved-playlists.md`. */
 export interface SavedPlaylistSummary {
   id: number;
   name: string;
+  kind: SavedPlaylistKind;
   entries: number;
+  /** Stored Stop markers, included in `entries`. */
+  stops: number;
   /** Entries that cannot air: unmatched, or bound to a missing track. */
   missing: number;
 }
@@ -180,6 +186,7 @@ export interface SavedPlaylistSummary {
  */
 export interface SavedEntry {
   id: number;
+  kind: "track" | "stop";
   track: Track | null;
   artist: string;
   title: string;
@@ -190,6 +197,7 @@ export interface SavedEntry {
 export interface SavedPlaylist {
   id: number;
   name: string;
+  kind: SavedPlaylistKind;
   entries: SavedEntry[];
 }
 

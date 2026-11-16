@@ -9,13 +9,99 @@ use serde::{Deserialize, Serialize};
 
 use super::{placeholders, Db, Track, ID_CHUNK};
 
+/// Whether a saved list can hold deliberate Stop markers.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SavedPlaylistKind {
+    /// An ordinary saved playlist containing tracks only.
+    #[default]
+    Playlist,
+    /// An authored sequence that may include Stop markers.
+    PreparedShow,
+}
+
+impl SavedPlaylistKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Playlist => "playlist",
+            Self::PreparedShow => "prepared_show",
+        }
+    }
+
+    fn from_db(value: &str) -> Result<Self> {
+        match value {
+            "playlist" => Ok(Self::Playlist),
+            "prepared_show" => Ok(Self::PreparedShow),
+            _ => bail!("unknown saved playlist kind {value}"),
+        }
+    }
+}
+
+/// An authored saved entry, in the order it will air.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SavedEntryInput {
+    /// Add the track with this library id.
+    Track(i64),
+    /// Add a deliberate Stop marker.
+    Stop,
+}
+
+/// A saved entry ready to append to the on-air queue.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SavedQueueEntry {
+    /// A bound track and its current content type.
+    Track {
+        /// The library track id.
+        id: i64,
+        /// The track's current content type.
+        content_type: String,
+    },
+    /// A deliberate Stop marker.
+    Stop,
+}
+
+/// The ordered playable projection of one saved list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedItems {
+    /// Whether the list is a playlist or a prepared show.
+    pub kind: SavedPlaylistKind,
+    /// Bound tracks and Stops in stored order.
+    pub entries: Vec<SavedQueueEntry>,
+    /// Track entries with no bound library row.
+    pub unmatched: usize,
+}
+
+/// Whether one saved entry names audio or marks a pause.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SavedEntryKind {
+    /// A track entry, including an unmatched one.
+    #[default]
+    Track,
+    /// A deliberate Stop marker with no audio identity.
+    Stop,
+}
+
+impl SavedEntryKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Track => "track",
+            Self::Stop => "stop",
+        }
+    }
+}
+
 /// One row of the saved playlists list.
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SavedPlaylistSummary {
     pub id: i64,
     pub name: String,
+    /// Whether the list permits Stops.
+    pub kind: SavedPlaylistKind,
     pub entries: i64,
+    /// Deliberate Stop markers among `entries`.
+    pub stops: i64,
     /// Entries that cannot air: unmatched, or bound to a missing or hidden
     /// track.
     pub missing: i64,
@@ -27,6 +113,8 @@ pub struct SavedPlaylistSummary {
 #[serde(rename_all = "camelCase")]
 pub struct SavedEntry {
     pub id: i64,
+    /// Distinguishes an unmatched track from a Stop.
+    pub kind: SavedEntryKind,
     pub track: Option<Track>,
     pub artist: String,
     pub title: String,
@@ -39,11 +127,14 @@ pub struct SavedEntry {
 pub struct SavedPlaylist {
     pub id: i64,
     pub name: String,
+    /// Whether the list permits Stops.
+    pub kind: SavedPlaylistKind,
     pub entries: Vec<SavedEntry>,
 }
 
 /// What a saved playlist offers the on-air playlist: its bound tracks in
 /// order, each with its content type, and how many entries had none.
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SavedTracks {
     pub tracks: Vec<(i64, String)>,
@@ -52,8 +143,8 @@ pub struct SavedTracks {
 
 /// The `format` every saved playlist file carries.
 pub const FILE_FORMAT: &str = "radiodiodj-playlist";
-/// The only file version this build reads and writes.
-pub const FILE_VERSION: u32 = 1;
+/// The file version this build writes. Version 1 track-only files remain readable.
+pub const FILE_VERSION: u32 = 2;
 
 /// A saved playlist as it travels between installs: no track ids and no paths,
 /// only what identifies a recording anywhere. See `docs/saved-playlists.md`.
@@ -63,12 +154,18 @@ pub struct SavedPlaylistFile {
     pub format: String,
     pub version: u32,
     pub name: String,
+    /// Defaults to playlist for legacy version 1 files.
+    #[serde(default)]
+    pub kind: SavedPlaylistKind,
     pub entries: Vec<FileEntry>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct FileEntry {
+    /// Defaults to track for legacy version 1 files.
+    #[serde(default)]
+    pub kind: SavedEntryKind,
     #[serde(default)]
     pub fingerprint: Option<String>,
     #[serde(default)]
@@ -96,15 +193,42 @@ impl SavedPlaylistFile {
             bail!("not a saved playlist file");
         }
         match header.version {
-            Some(FILE_VERSION) => {}
+            Some(1 | FILE_VERSION) => {}
             Some(v) => bail!(
                 "this saved playlist file is version {v}, and this build reads version \
                  {FILE_VERSION}"
             ),
             None => bail!("not a saved playlist file"),
         }
-        serde_json::from_str(json).map_err(|e| anyhow!("not a saved playlist file: {e}"))
+        let file: Self =
+            serde_json::from_str(json).map_err(|e| anyhow!("not a saved playlist file: {e}"))?;
+        if file.version == 1
+            && (file.kind != SavedPlaylistKind::Playlist
+                || file.entries.iter().any(|e| e.kind != SavedEntryKind::Track))
+        {
+            bail!("version 1 saved playlist files can contain tracks only");
+        }
+        validate_entries(file.kind, &file.entries)?;
+        Ok(file)
     }
+}
+
+fn validate_entries(kind: SavedPlaylistKind, entries: &[FileEntry]) -> Result<()> {
+    if kind == SavedPlaylistKind::Playlist && entries.iter().any(|e| e.kind == SavedEntryKind::Stop)
+    {
+        bail!("a playlist cannot contain Stops");
+    }
+    if entries.iter().any(|e| {
+        e.kind == SavedEntryKind::Stop
+            && (e.fingerprint.is_some()
+                || e.artist.is_some()
+                || e.title.is_some()
+                || e.duration.is_some()
+                || e.content_type.is_some())
+    }) {
+        bail!("a Stop cannot carry audio identity");
+    }
+    Ok(())
 }
 
 /// Bind every unmatched entry to the present track with its fingerprint. Two
@@ -118,7 +242,7 @@ fn bind(conn: &Connection) -> Result<usize> {
            ORDER BY ABS(COALESCE(t.duration, 0) - COALESCE(saved_playlist_entries.duration, 0)), \
                     t.id \
            LIMIT 1) \
-         WHERE track_id IS NULL AND fingerprint IS NOT NULL AND EXISTS (SELECT 1 {MATCH})"
+         WHERE kind = 'track' AND track_id IS NULL AND fingerprint IS NOT NULL AND EXISTS (SELECT 1 {MATCH})"
     );
     Ok(conn.execute(&sql, [])?)
 }
@@ -210,8 +334,9 @@ impl Db {
     pub fn saved_playlists(&self) -> Result<Vec<SavedPlaylistSummary>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT p.id, p.name, COUNT(e.id), \
-                    COALESCE(SUM(e.id IS NOT NULL \
+            "SELECT p.id, p.name, p.kind, COUNT(e.id), \
+                    COALESCE(SUM(e.kind = 'stop'), 0), \
+                    COALESCE(SUM(e.id IS NOT NULL AND e.kind = 'track' \
                                  AND (t.id IS NULL OR t.missing_since IS NOT NULL \
                                       OR t.hidden_at IS NOT NULL)), 0) \
              FROM saved_playlists p \
@@ -223,27 +348,40 @@ impl Db {
             Ok(SavedPlaylistSummary {
                 id: r.get(0)?,
                 name: r.get(1)?,
-                entries: r.get(2)?,
-                missing: r.get(3)?,
+                kind: SavedPlaylistKind::from_db(&r.get::<_, String>(2)?)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                entries: r.get(3)?,
+                stops: r.get(4)?,
+                missing: r.get(5)?,
             })
         })?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
 
     pub fn saved_playlist(&self, id: i64) -> Result<Option<SavedPlaylist>> {
-        type Row = (i64, Option<i64>, String, String, f64, Option<String>);
-        let (name, rows): (String, Vec<Row>) = {
+        type Row = (
+            i64,
+            SavedEntryKind,
+            Option<i64>,
+            String,
+            String,
+            f64,
+            Option<String>,
+        );
+        let (name, kind, rows): (String, SavedPlaylistKind, Vec<Row>) = {
             let conn = self.conn.lock();
-            let Some(name) = conn
-                .query_row("SELECT name FROM saved_playlists WHERE id = ?", [id], |r| {
-                    r.get::<_, String>(0)
-                })
+            let Some((name, kind)) = conn
+                .query_row(
+                    "SELECT name, kind FROM saved_playlists WHERE id = ?",
+                    [id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )
                 .optional()?
             else {
                 return Ok(None);
             };
             let mut stmt = conn.prepare(
-                "SELECT id, track_id, COALESCE(artist, ''), COALESCE(title, ''), \
+                "SELECT id, kind, track_id, COALESCE(artist, ''), COALESCE(title, ''), \
                         COALESCE(duration, 0), content_type \
                  FROM saved_playlist_entries WHERE playlist_id = ? ORDER BY position, id",
             )?;
@@ -251,17 +389,22 @@ impl Db {
                 .query_map([id], |r| {
                     Ok((
                         r.get(0)?,
-                        r.get(1)?,
+                        match r.get::<_, String>(1)?.as_str() {
+                            "stop" => SavedEntryKind::Stop,
+                            "track" => SavedEntryKind::Track,
+                            _ => return Err(rusqlite::Error::InvalidQuery),
+                        },
                         r.get(2)?,
                         r.get(3)?,
                         r.get(4)?,
                         r.get(5)?,
+                        r.get(6)?,
                     ))
                 })?
                 .collect::<rusqlite::Result<_>>()?;
-            (name, rows)
+            (name, SavedPlaylistKind::from_db(&kind)?, rows)
         };
-        let mut bound: Vec<i64> = rows.iter().filter_map(|r| r.1).collect();
+        let mut bound: Vec<i64> = rows.iter().filter_map(|r| r.2).collect();
         bound.sort_unstable();
         bound.dedup();
         let mut tracks = std::collections::HashMap::new();
@@ -273,8 +416,9 @@ impl Db {
         let entries = rows
             .into_iter()
             .map(
-                |(id, track_id, artist, title, duration, content_type)| SavedEntry {
+                |(id, kind, track_id, artist, title, duration, content_type)| SavedEntry {
                     id,
+                    kind,
                     track: track_id.and_then(|t| tracks.get(&t).cloned()),
                     artist,
                     title,
@@ -283,34 +427,131 @@ impl Db {
                 },
             )
             .collect();
-        Ok(Some(SavedPlaylist { id, name, entries }))
+        Ok(Some(SavedPlaylist {
+            id,
+            name,
+            kind,
+            entries,
+        }))
     }
 
     /// Create a saved playlist holding `track_ids` in order. A name in use
     /// takes the next free one, so making a list never fails on its name.
+    #[cfg(test)]
     pub fn create_saved_playlist(
         &self,
         name: &str,
         track_ids: &[i64],
         now_ms: i64,
     ) -> Result<SavedPlaylistSummary> {
+        let entries: Vec<_> = track_ids
+            .iter()
+            .copied()
+            .map(SavedEntryInput::Track)
+            .collect();
+        self.create_saved_playlist_with_entries(name, SavedPlaylistKind::Playlist, &entries, now_ms)
+    }
+
+    /// Create a list from ordered tracks and Stops. A playlist cannot contain Stops.
+    pub fn create_saved_playlist_with_entries(
+        &self,
+        name: &str,
+        kind: SavedPlaylistKind,
+        entries: &[SavedEntryInput],
+        now_ms: i64,
+    ) -> Result<SavedPlaylistSummary> {
+        if kind == SavedPlaylistKind::Playlist && entries.contains(&SavedEntryInput::Stop) {
+            bail!("a playlist cannot contain Stops");
+        }
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         let name = free_name(&tx, name)?;
         tx.execute(
-            "INSERT INTO saved_playlists (name, created_at, updated_at) VALUES (?, ?, ?)",
-            params![name, now_ms, now_ms],
+            "INSERT INTO saved_playlists (name, created_at, updated_at, kind) VALUES (?, ?, ?, ?)",
+            params![name, now_ms, now_ms, kind.as_str()],
         )?;
         let id = tx.last_insert_rowid();
-        let added = insert_entries(&tx, id, track_ids)?;
+        let mut added = Vec::with_capacity(entries.len());
+        let mut stops = 0;
+        for entry in entries {
+            match entry {
+                SavedEntryInput::Track(track_id) => {
+                    added.extend(insert_entries(&tx, id, &[*track_id])?);
+                }
+                SavedEntryInput::Stop => {
+                    tx.execute(
+                        "INSERT INTO saved_playlist_entries (playlist_id, position, kind) VALUES (?, -1, 'stop')",
+                        [id],
+                    )?;
+                    added.push(tx.last_insert_rowid());
+                    stops += 1;
+                }
+            }
+        }
         write_order(&tx, &added)?;
         tx.commit()?;
         Ok(SavedPlaylistSummary {
             id,
             name,
+            kind,
             entries: added.len() as i64,
+            stops,
             missing: 0,
         })
+    }
+
+    /// Change a list's kind. Removing Stops is required before a downgrade.
+    pub fn set_saved_playlist_kind(
+        &self,
+        id: i64,
+        kind: SavedPlaylistKind,
+        now_ms: i64,
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        if kind == SavedPlaylistKind::Playlist {
+            let stops: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM saved_playlist_entries WHERE playlist_id = ? AND kind = 'stop'",
+                [id], |r| r.get(0)
+            )?;
+            if stops > 0 {
+                bail!("remove Stops before changing to a playlist");
+            }
+        }
+        let changed = conn.execute(
+            "UPDATE saved_playlists SET kind = ?, updated_at = ? WHERE id = ?",
+            params![kind.as_str(), now_ms, id],
+        )?;
+        if changed == 0 {
+            bail!("no saved playlist {id}");
+        }
+        Ok(())
+    }
+
+    /// Insert a Stop in stored order, or append it when `index` is absent.
+    pub fn add_saved_stop(
+        &self,
+        playlist_id: i64,
+        index: Option<usize>,
+        now_ms: i64,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let kind: String = tx.query_row(
+            "SELECT kind FROM saved_playlists WHERE id = ?",
+            [playlist_id],
+            |r| r.get(0),
+        )?;
+        if kind != "prepared_show" {
+            bail!("a playlist cannot contain Stops");
+        }
+        touch(&tx, playlist_id, now_ms)?;
+        let mut order = entry_ids(&tx, playlist_id)?;
+        tx.execute("INSERT INTO saved_playlist_entries (playlist_id, position, kind) VALUES (?, -1, 'stop')", [playlist_id])?;
+        let at = index.map_or(order.len(), |i| i.min(order.len()));
+        order.insert(at, tx.last_insert_rowid());
+        write_order(&tx, &order)?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// Add entries for `track_ids`, in order, ahead of the entry at `index`.
@@ -360,7 +601,7 @@ impl Db {
         let tx = conn.transaction()?;
         let playlist_id: i64 = tx
             .query_row(
-                "UPDATE saved_playlist_entries                  SET track_id = t.id,                      fingerprint = COALESCE(t.fingerprint, saved_playlist_entries.fingerprint),                      artist = t.artist, title = t.title, duration = t.duration,                      content_type = t.content_type                  FROM tracks t                  WHERE saved_playlist_entries.id = ?1 AND t.id = ?2 AND t.missing_since IS NULL AND t.hidden_at IS NULL                  RETURNING playlist_id",
+                "UPDATE saved_playlist_entries                  SET track_id = t.id,                      fingerprint = COALESCE(t.fingerprint, saved_playlist_entries.fingerprint),                      artist = t.artist, title = t.title, duration = t.duration,                      content_type = t.content_type                  FROM tracks t                  WHERE saved_playlist_entries.id = ?1 AND saved_playlist_entries.kind = 'track' AND t.id = ?2 AND t.missing_since IS NULL AND t.hidden_at IS NULL                  RETURNING playlist_id",
                 params![entry_id, track_id],
                 |r| r.get(0),
             )
@@ -501,7 +742,7 @@ impl Db {
             "SELECT p.name, ( \
                SELECT COUNT(DISTINCT t.id) \
                FROM saved_playlist_entries e JOIN tracks t ON t.id = e.track_id \
-               WHERE e.playlist_id = p.id AND t.missing_since IS NULL AND t.hidden_at IS NULL \
+               WHERE e.playlist_id = p.id AND e.kind = 'track' AND t.missing_since IS NULL AND t.hidden_at IS NULL \
                  AND t.content_type = 'music') \
              FROM saved_playlists p WHERE p.id = ?",
             [id],
@@ -522,16 +763,18 @@ impl Db {
     /// now, so a fingerprint version bump never exports a stale identity.
     pub fn export_saved_playlist(&self, id: i64) -> Result<Option<SavedPlaylistFile>> {
         let conn = self.conn.lock();
-        let Some(name) = conn
-            .query_row("SELECT name FROM saved_playlists WHERE id = ?", [id], |r| {
-                r.get::<_, String>(0)
-            })
+        let Some((name, kind)) = conn
+            .query_row(
+                "SELECT name, kind FROM saved_playlists WHERE id = ?",
+                [id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
             .optional()?
         else {
             return Ok(None);
         };
         let mut stmt = conn.prepare(
-            "SELECT COALESCE(t.fingerprint, e.fingerprint), COALESCE(t.artist, e.artist), \
+            "SELECT e.kind, COALESCE(t.fingerprint, e.fingerprint), COALESCE(t.artist, e.artist), \
                     COALESCE(t.title, e.title), COALESCE(t.duration, e.duration), \
                     COALESCE(t.content_type, e.content_type) \
              FROM saved_playlist_entries e LEFT JOIN tracks t ON t.id = e.track_id \
@@ -540,11 +783,16 @@ impl Db {
         let entries = stmt
             .query_map([id], |r| {
                 Ok(FileEntry {
-                    fingerprint: r.get(0)?,
-                    artist: r.get(1)?,
-                    title: r.get(2)?,
-                    duration: r.get(3)?,
-                    content_type: r.get(4)?,
+                    kind: match r.get::<_, String>(0)?.as_str() {
+                        "track" => SavedEntryKind::Track,
+                        "stop" => SavedEntryKind::Stop,
+                        _ => return Err(rusqlite::Error::InvalidQuery),
+                    },
+                    fingerprint: r.get(1)?,
+                    artist: r.get(2)?,
+                    title: r.get(3)?,
+                    duration: r.get(4)?,
+                    content_type: r.get(5)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -552,6 +800,7 @@ impl Db {
             format: FILE_FORMAT.to_owned(),
             version: FILE_VERSION,
             name,
+            kind: SavedPlaylistKind::from_db(&kind)?,
             entries,
         }))
     }
@@ -564,24 +813,35 @@ impl Db {
         file: &SavedPlaylistFile,
         now_ms: i64,
     ) -> Result<SavedPlaylistSummary> {
+        if file.version != 1 && file.version != FILE_VERSION {
+            bail!("unsupported saved playlist file version {}", file.version);
+        }
+        if file.version == 1
+            && (file.kind != SavedPlaylistKind::Playlist
+                || file.entries.iter().any(|e| e.kind != SavedEntryKind::Track))
+        {
+            bail!("version 1 saved playlist files can contain tracks only");
+        }
+        validate_entries(file.kind, &file.entries)?;
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         let name = free_name(&tx, &file.name)?;
         tx.execute(
-            "INSERT INTO saved_playlists (name, created_at, updated_at) VALUES (?, ?, ?)",
-            params![name, now_ms, now_ms],
+            "INSERT INTO saved_playlists (name, created_at, updated_at, kind) VALUES (?, ?, ?, ?)",
+            params![name, now_ms, now_ms, file.kind.as_str()],
         )?;
         let id = tx.last_insert_rowid();
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO saved_playlist_entries \
-                   (playlist_id, position, fingerprint, artist, title, duration, content_type) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                   (playlist_id, position, kind, fingerprint, artist, title, duration, content_type) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             )?;
             for (position, entry) in file.entries.iter().enumerate() {
                 stmt.execute(params![
                     id,
                     position as i64,
+                    entry.kind.as_str(),
                     entry.fingerprint,
                     entry.artist,
                     entry.title,
@@ -592,7 +852,7 @@ impl Db {
         }
         bind(&tx)?;
         let missing: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM saved_playlist_entries WHERE playlist_id = ? AND track_id IS NULL",
+            "SELECT COUNT(*) FROM saved_playlist_entries WHERE playlist_id = ? AND kind = 'track' AND track_id IS NULL",
             [id],
             |r| r.get(0),
         )?;
@@ -600,13 +860,20 @@ impl Db {
         Ok(SavedPlaylistSummary {
             id,
             name,
+            kind: file.kind,
             entries: file.entries.len() as i64,
+            stops: file
+                .entries
+                .iter()
+                .filter(|e| e.kind == SavedEntryKind::Stop)
+                .count() as i64,
             missing,
         })
     }
 
     /// The bound tracks of a saved playlist, in order, for an append. A missing
     /// track is among them; an unmatched entry is only counted.
+    #[cfg(test)]
     pub fn saved_playlist_tracks(&self, id: i64) -> Result<Option<SavedTracks>> {
         let conn = self.conn.lock();
         let exists: Option<i64> = conn
@@ -620,7 +887,7 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT t.id, t.content_type \
              FROM saved_playlist_entries e LEFT JOIN tracks t ON t.id = e.track_id \
-             WHERE e.playlist_id = ? ORDER BY e.position, e.id",
+             WHERE e.playlist_id = ? AND e.kind = 'track' ORDER BY e.position, e.id",
         )?;
         let rows = stmt.query_map([id], |r| {
             Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<String>>(1)?))
@@ -634,6 +901,52 @@ impl Db {
             }
         }
         Ok(Some(SavedTracks { tracks, unmatched }))
+    }
+
+    /// Every bound track and Stop in stored order. Unmatched tracks are counted
+    /// but cannot be queued; Stops never contribute to that count.
+    pub fn saved_playlist_items(&self, id: i64) -> Result<Option<SavedItems>> {
+        let conn = self.conn.lock();
+        let kind: Option<String> = conn
+            .query_row("SELECT kind FROM saved_playlists WHERE id = ?", [id], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        let Some(kind) = kind else { return Ok(None) };
+        let kind = SavedPlaylistKind::from_db(&kind)?;
+        let mut stmt = conn.prepare(
+            "SELECT e.kind, t.id, t.content_type \
+             FROM saved_playlist_entries e LEFT JOIN tracks t ON t.id = e.track_id \
+             WHERE e.playlist_id = ? ORDER BY e.position, e.id",
+        )?;
+        let mut entries = Vec::new();
+        let mut unmatched = 0;
+        for row in stmt.query_map([id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<i64>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        })? {
+            match row? {
+                (entry_kind, _, _) if entry_kind == "stop" => {
+                    if kind != SavedPlaylistKind::PreparedShow {
+                        bail!("a playlist cannot contain Stops");
+                    }
+                    entries.push(SavedQueueEntry::Stop);
+                }
+                (entry_kind, Some(id), Some(content_type)) if entry_kind == "track" => {
+                    entries.push(SavedQueueEntry::Track { id, content_type });
+                }
+                (entry_kind, _, _) if entry_kind == "track" => unmatched += 1,
+                (entry_kind, _, _) => bail!("unknown saved entry kind {entry_kind}"),
+            }
+        }
+        Ok(Some(SavedItems {
+            kind,
+            entries,
+            unmatched,
+        }))
     }
 }
 
@@ -940,9 +1253,11 @@ mod tests {
             format: FILE_FORMAT.into(),
             version: FILE_VERSION,
             name: name.into(),
+            kind: SavedPlaylistKind::Playlist,
             entries: fingerprints
                 .iter()
                 .map(|fp| FileEntry {
+                    kind: SavedEntryKind::Track,
                     fingerprint: Some((*fp).into()),
                     artist: Some("x".into()),
                     title: Some(format!("from {fp}")),
@@ -1071,12 +1386,186 @@ mod tests {
     }
 
     #[test]
+    fn a_prepared_show_keeps_stops_in_order_through_storage_and_file_transfer() {
+        let (db, ids) = db_with_tracks(&["A", "B"]);
+        let made = db
+            .create_saved_playlist_with_entries(
+                "Show",
+                SavedPlaylistKind::PreparedShow,
+                &[
+                    SavedEntryInput::Track(ids[0]),
+                    SavedEntryInput::Stop,
+                    SavedEntryInput::Track(ids[1]),
+                    SavedEntryInput::Stop,
+                ],
+                1,
+            )
+            .unwrap();
+        assert_eq!((made.entries, made.stops, made.missing), (4, 2, 0));
+        assert_eq!(
+            db.saved_playlist_items(made.id).unwrap().unwrap().entries,
+            [
+                SavedQueueEntry::Track {
+                    id: ids[0],
+                    content_type: "music".into()
+                },
+                SavedQueueEntry::Stop,
+                SavedQueueEntry::Track {
+                    id: ids[1],
+                    content_type: "music".into()
+                },
+                SavedQueueEntry::Stop,
+            ]
+        );
+        let detail = db.saved_playlist(made.id).unwrap().unwrap();
+        assert_eq!(
+            detail.entries.iter().map(|e| e.kind).collect::<Vec<_>>(),
+            [
+                SavedEntryKind::Track,
+                SavedEntryKind::Stop,
+                SavedEntryKind::Track,
+                SavedEntryKind::Stop
+            ]
+        );
+        let file = db.export_saved_playlist(made.id).unwrap().unwrap();
+        let json = serde_json::to_string(&file).unwrap();
+        let imported = db
+            .import_saved_playlist(&SavedPlaylistFile::parse(&json).unwrap(), 2)
+            .unwrap();
+        assert_eq!(
+            (
+                imported.kind,
+                imported.entries,
+                imported.stops,
+                imported.missing
+            ),
+            (SavedPlaylistKind::PreparedShow, 4, 2, 0)
+        );
+        assert_eq!(
+            db.saved_playlist_items(imported.id)
+                .unwrap()
+                .unwrap()
+                .entries,
+            db.saved_playlist_items(made.id).unwrap().unwrap().entries
+        );
+    }
+
+    #[test]
+    fn an_ordinary_playlist_rejects_stops_and_a_downgrade_is_atomic() {
+        let (db, ids) = db_with_tracks(&["A"]);
+        assert!(db
+            .create_saved_playlist_with_entries(
+                "Bad",
+                SavedPlaylistKind::Playlist,
+                &[SavedEntryInput::Track(ids[0]), SavedEntryInput::Stop],
+                1
+            )
+            .is_err());
+        assert!(db.saved_playlists().unwrap().is_empty());
+        let made = db
+            .create_saved_playlist_with_entries(
+                "Show",
+                SavedPlaylistKind::PreparedShow,
+                &[SavedEntryInput::Track(ids[0]), SavedEntryInput::Stop],
+                1,
+            )
+            .unwrap();
+        assert!(db
+            .set_saved_playlist_kind(made.id, SavedPlaylistKind::Playlist, 2)
+            .unwrap_err()
+            .to_string()
+            .contains("remove Stops"));
+        assert_eq!(
+            db.saved_playlist(made.id).unwrap().unwrap().kind,
+            SavedPlaylistKind::PreparedShow
+        );
+        let ordinary = db.create_saved_playlist("Ordinary", &ids, 1).unwrap();
+        assert!(db.add_saved_stop(ordinary.id, None, 2).is_err());
+        assert_eq!(
+            db.saved_playlist(ordinary.id)
+                .unwrap()
+                .unwrap()
+                .entries
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn legacy_track_only_files_import_as_playlists_and_bad_v2_files_are_refused() {
+        let legacy = r#"{"format":"radiodiodj-playlist","version":1,"name":"Old","entries":[{"title":"unmatched"}]}"#;
+        let file = SavedPlaylistFile::parse(legacy).unwrap();
+        assert_eq!(file.kind, SavedPlaylistKind::Playlist);
+        assert_eq!(file.entries[0].kind, SavedEntryKind::Track);
+        let (db, _) = db_with_tracks(&[]);
+        let imported = db.import_saved_playlist(&file, 1).unwrap();
+        assert_eq!(
+            (imported.entries, imported.stops, imported.missing),
+            (1, 0, 1)
+        );
+        let invalid = r#"{"format":"radiodiodj-playlist","version":2,"name":"Bad","kind":"playlist","entries":[{"kind":"stop"}]}"#;
+        assert!(SavedPlaylistFile::parse(invalid).is_err());
+        assert_eq!(db.saved_playlists().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn an_unmatched_track_next_to_a_stop_does_not_consume_the_stop() {
+        let (db, ids) = db_with_tracks(&["B"]);
+        let file = SavedPlaylistFile {
+            format: FILE_FORMAT.into(),
+            version: FILE_VERSION,
+            name: "Show".into(),
+            kind: SavedPlaylistKind::PreparedShow,
+            entries: vec![
+                FileEntry {
+                    kind: SavedEntryKind::Track,
+                    fingerprint: Some("v2:absent".into()),
+                    artist: Some("A".into()),
+                    title: Some("A".into()),
+                    duration: Some(100.0),
+                    content_type: Some("music".into()),
+                },
+                FileEntry {
+                    kind: SavedEntryKind::Stop,
+                    fingerprint: None,
+                    artist: None,
+                    title: None,
+                    duration: None,
+                    content_type: None,
+                },
+                FileEntry {
+                    kind: SavedEntryKind::Track,
+                    fingerprint: Some("v2:0".into()),
+                    artist: Some("B".into()),
+                    title: Some("B".into()),
+                    duration: Some(100.0),
+                    content_type: Some("music".into()),
+                },
+            ],
+        };
+        let made = db.import_saved_playlist(&file, 1).unwrap();
+        assert_eq!((made.entries, made.stops, made.missing), (3, 1, 1));
+        let offered = db.saved_playlist_items(made.id).unwrap().unwrap();
+        assert_eq!(offered.unmatched, 1);
+        assert_eq!(
+            offered.entries,
+            [
+                SavedQueueEntry::Stop,
+                SavedQueueEntry::Track {
+                    id: ids[0],
+                    content_type: "music".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn a_file_this_build_does_not_know_is_refused_whole() {
-        let newer = r#"{"format":"radiodiodj-playlist","version":2,"name":"X","entries":[]}"#;
+        let newer = r#"{"format":"radiodiodj-playlist","version":3,"name":"X","entries":[]}"#;
         assert!(SavedPlaylistFile::parse(newer)
             .unwrap_err()
             .to_string()
-            .contains("version 2"));
+            .contains("version 3"));
         let other = r#"{"format":"m3u","version":1,"name":"X","entries":[]}"#;
         assert!(SavedPlaylistFile::parse(other).is_err());
         assert!(SavedPlaylistFile::parse("#EXTM3U").is_err());

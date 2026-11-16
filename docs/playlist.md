@@ -179,9 +179,13 @@ artist window, and one track per artist within a generated block.
 jingle does not shift the cadence.
 
 **Stop markers** are items too. Advancement consumes one and stops instead of
-loading the next track, which is how an operator parks the show at a fixed point
-without emptying the queue. They contribute nothing to the prefetch window and
-nothing to the Upcoming tab's total duration.
+loading the next track, leaving later items in the flat playlist for the
+operator to resume or remove. This lets a prepared show park after a track
+finishes at Cue Out; a trailing Stop also prevents later queued material from
+starting. Stops contribute nothing to the prefetch window or Upcoming duration.
+There is no implicit Stop at the end of a prepared show. The playlist stays flat:
+queueing a show appends its ordered entries in one transition, and queueing alone
+never starts or resumes playback.
 
 **Nothing in the Upcoming tab reaches air by a double-click.** A queued track
 goes on by its row's play button, and a stop marker only by the show arriving at
@@ -250,11 +254,12 @@ The playlist row's marker badge clears it. See
 
 ## Persistence
 
-The queue, the current item and both overrides survive a restart via
-`session.json`: `SessionPlaylistItem::Track` carries `cue_override` and
-`SessionState` carries `current_cue_override`, both `serde(default)` so a
-session file written before overrides existed loads untouched. Restore goes
-through `Effect::Resume`, which reloads and seeks without putting audio on air.
+The flat playlist, its Stop items, the current item and both overrides survive a
+restart via `session.json`. Restoring a Stop preserves its position in the
+sequence. `SessionPlaylistItem::Track` carries `cue_override` and `SessionState`
+carries `current_cue_override`, both `serde(default)` so a session file written
+before overrides existed loads untouched. Restore goes through `Effect::Resume`,
+which reloads and seeks without putting audio on air.
 
 History stores tracks rather than items, so a custom airing replays under the
 radio edit.

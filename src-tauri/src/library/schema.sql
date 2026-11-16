@@ -42,14 +42,16 @@ CREATE TABLE saved_playlist_entries (
   title        TEXT,
   duration     REAL,
   content_type TEXT
-);
+, kind TEXT NOT NULL DEFAULT 'track'
+  CHECK (kind IN ('track', 'stop')));
 
 CREATE TABLE saved_playlists (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   name       TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
-, uid TEXT);
+, uid TEXT, kind TEXT NOT NULL DEFAULT 'playlist'
+  CHECK (kind IN ('playlist', 'prepared_show')));
 
 CREATE TABLE sync_local (
   id         INTEGER PRIMARY KEY CHECK (id = 1),
@@ -122,6 +124,34 @@ CREATE TABLE 'tracks_fts_data'(id INTEGER PRIMARY KEY, block BLOB);
 CREATE TABLE 'tracks_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB);
 
 CREATE TABLE 'tracks_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID;
+
+CREATE TRIGGER saved_entry_stop_identity_insert BEFORE INSERT ON saved_playlist_entries
+WHEN new.kind = 'stop' AND (
+  new.track_id IS NOT NULL OR new.fingerprint IS NOT NULL OR new.artist IS NOT NULL
+  OR new.title IS NOT NULL OR new.duration IS NOT NULL OR new.content_type IS NOT NULL
+)
+BEGIN SELECT RAISE(ABORT, 'a Stop cannot carry audio identity'); END;
+
+CREATE TRIGGER saved_entry_stop_identity_update BEFORE UPDATE ON saved_playlist_entries
+WHEN new.kind = 'stop' AND (
+  new.track_id IS NOT NULL OR new.fingerprint IS NOT NULL OR new.artist IS NOT NULL
+  OR new.title IS NOT NULL OR new.duration IS NOT NULL OR new.content_type IS NOT NULL
+)
+BEGIN SELECT RAISE(ABORT, 'a Stop cannot carry audio identity'); END;
+
+CREATE TRIGGER saved_entry_stop_insert BEFORE INSERT ON saved_playlist_entries
+WHEN new.kind = 'stop' AND (SELECT kind FROM saved_playlists WHERE id = new.playlist_id) IS NOT 'prepared_show'
+BEGIN SELECT RAISE(ABORT, 'a playlist cannot contain Stops'); END;
+
+CREATE TRIGGER saved_entry_stop_update BEFORE UPDATE OF kind, playlist_id ON saved_playlist_entries
+WHEN new.kind = 'stop' AND (SELECT kind FROM saved_playlists WHERE id = new.playlist_id) IS NOT 'prepared_show'
+BEGIN SELECT RAISE(ABORT, 'a playlist cannot contain Stops'); END;
+
+CREATE TRIGGER saved_playlist_kind_update BEFORE UPDATE OF kind ON saved_playlists
+WHEN new.kind = 'playlist' AND EXISTS (
+  SELECT 1 FROM saved_playlist_entries WHERE playlist_id = new.id AND kind = 'stop'
+)
+BEGIN SELECT RAISE(ABORT, 'remove Stops before changing to a playlist'); END;
 
 CREATE TRIGGER saved_playlists_ai AFTER INSERT ON saved_playlists
 WHEN new.uid IS NULL BEGIN

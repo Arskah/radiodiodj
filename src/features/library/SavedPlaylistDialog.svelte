@@ -1,17 +1,21 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { app } from "../../shared/state.svelte";
+  import { kindForQueue, kindLabel } from "../../shared/savedPlaylists";
+  import type { SavedPlaylistKind } from "../../shared/types";
 
   let nameInput: HTMLInputElement | undefined = $state();
   let name = $state("");
   let busy = $state(false);
   let error = $state<string | null>(null);
+  let kind = $state<SavedPlaylistKind>("playlist");
 
   const dialog = $derived(app.savedDialog);
 
   const heading = $derived.by(() => {
     switch (dialog?.kind) {
       case "saveAs":
-        return "Save playlist as";
+        return "Save upcoming as";
       case "addTo":
         return app.isAdmin ? "Add to saved playlist" : "New saved playlist";
       case "rename":
@@ -39,6 +43,10 @@
   $effect(() => {
     if (!dialog) return;
     name = dialog.kind === "rename" ? dialog.name : "";
+    kind =
+      dialog.kind === "saveAs"
+        ? untrack(() => kindForQueue(app.playlist))
+        : "playlist";
     error = null;
     busy = false;
     nameInput?.focus();
@@ -67,13 +75,21 @@
     e.preventDefault();
     const current = dialog;
     if (!current) return;
+    if (
+      current.kind === "saveAs" &&
+      kind === "playlist" &&
+      app.playlist.some((item) => item.kind === "stop")
+    ) {
+      error = "Remove the Stops or choose Prepared show";
+      return;
+    }
     void run(() => {
       switch (current.kind) {
         case "saveAs":
-          return app.savePlaylistAs(name);
+          return app.savePlaylistAs(name, kind);
         case "addTo":
           return app
-            .createSavedPlaylist(name, current.trackIds)
+            .createSavedPlaylist(name, current.trackIds, kind)
             .then(() => used(current));
         case "rename":
           return app.renameSavedPlaylist(current.id, name);
@@ -144,11 +160,23 @@
                   disabled={busy}
                   onclick={() => addTo(saved.id)}
                 >
-                  {saved.name}
+                  {saved.name} · {kindLabel(saved.kind)}
                 </button>
               {/each}
             </div>
             <p class="saved-desc">Or make a new one:</p>
+          {/if}
+          {#if dialog.kind === "saveAs" || dialog.kind === "addTo"}
+            <label class="saved-kind-label" for="saved-kind">Kind</label>
+            <select id="saved-kind" bind:value={kind} disabled={busy}>
+              <option value="playlist">Playlist</option>
+              <option value="prepared_show">Prepared show</option>
+            </select>
+            {#if dialog.kind === "saveAs" && app.playlist.some((item) => item.kind === "stop") && kind === "playlist"}
+              <p class="saved-desc" role="status">
+                The upcoming Stops need a Prepared show.
+              </p>
+            {/if}
           {/if}
           <input
             id="saved-name"
@@ -170,7 +198,11 @@
             type="submit"
             class="btn btn-primary"
             class:btn-danger={dialog.kind === "delete"}
-            disabled={busy || (dialog.kind !== "delete" && name.trim() === "")}
+            disabled={busy ||
+              (dialog.kind !== "delete" && name.trim() === "") ||
+              (dialog.kind === "saveAs" &&
+                kind === "playlist" &&
+                app.playlist.some((item) => item.kind === "stop"))}
             >{confirmLabel}</button
           >
         </div>
@@ -230,7 +262,8 @@
     background: color-mix(in srgb, var(--on-surface) 8%, transparent);
   }
 
-  input {
+  input,
+  select {
     background: transparent;
     border: 1px solid var(--outline-variant);
     border-radius: var(--r-lg);
@@ -238,6 +271,11 @@
     color: var(--on-surface);
     font-size: 14px;
     outline: none;
+  }
+
+  .saved-kind-label {
+    color: var(--on-surface-variant);
+    font-size: 12px;
   }
 
   input:focus {

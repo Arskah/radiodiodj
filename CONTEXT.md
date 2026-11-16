@@ -257,11 +257,11 @@ _Avoid_: Repeat protection, cooldown, interleave
 See [docs/saved-playlists.md](docs/saved-playlists.md).
 
 **Saved playlist**:
-A named, stored, ordered list of **Entries**. Never on air by itself: it is appended to the **Playlist**, or chosen as the **Auto-playlist source**.
-_Avoid_: Playlist (that is the on-air one), show, set list, crate
+A named, stored, ordered list of **Entries**, with kind `playlist` or `prepared_show`. Never on air by itself: it is appended to the **Playlist**, or chosen as the **Auto-playlist source**.
+_Avoid_: Playlist (that is the on-air one), set list, crate
 
 **Entry**:
-One row of a **Saved playlist**, referring to a Track of any content type. Keeps the artist, title, duration and **Fingerprint** of its Track as last known, so it survives its Track being unknown here.
+One ordered row of a **Saved playlist**: either a track reference of any content type, or a Stop. A track entry keeps its Track's artist, title, duration and **Fingerprint** as last known, so it survives its Track being unknown here. A Stop has no audio identity.
 _Avoid_: Item (that is a Playlist item), row, song
 
 **Unmatched entry**:
@@ -269,8 +269,16 @@ An **Entry** no Track in this library answers to. Kept in place and shown as mis
 _Avoid_: Missing entry, broken, orphan
 
 **Auto-playlist source**:
-Where the **Auto-playlist** draws music from: the Music library, or one **Saved playlist**. Narrows the pool and nothing else; **Rotation rules** and **Interleave** apply as before.
+Where the **Auto-playlist** draws music from: the Music library, or the music track **Entries** of one **Saved playlist**. Stops and non-music entries are ignored; **Rotation rules** and **Interleave** apply as before.
 _Avoid_: Pool, mode, curated mode
+
+### Prepared shows
+
+See [Prepared shows](docs/prepared-shows.md).
+
+**Prepared show**:
+A **Saved playlist** of kind `prepared_show`, with an authored sequence of track and optional Stop entries. Only prepared shows may contain stored Stops.
+_Avoid_: Separate show feature
 
 ### Shared library
 
@@ -362,8 +370,10 @@ _Avoid_: Persist, sync
 - The **Analysis pass** produces the **Level envelope**, and the **Automatic cue points** are derived from it; **Recalculate** re-derives them without a second decode
 - **Cue point ownership** decides what may be re-derived: an `auto` **Track** yes, a `manual` one never
 - An **Airing** is written to the **Airing log** when a **Track** reaches air; the **Rotation rules** read that log to decide what the **Auto-playlist** may select next
-- A **Saved playlist** holds **Entries**; an **Entry** is bound to a **Track** or is an **Unmatched entry**, and only a bound one whose Track is present can air
-- The **Auto-playlist source** is the Music library or one **Saved playlist**; only that saved playlist's music **Entries** are the pool
+- A **Saved playlist** holds ordered **Entries**; a track entry is bound to a **Track** or is an **Unmatched entry**, while a Stop has no audio identity
+- A **Prepared show** is a **Saved playlist** whose authored order may include Stops; queueing it appends that sequence to the flat **Playlist** without starting playback
+- Saved track entries reference the station's **Cue points** and carry no item overrides
+- The **Auto-playlist source** is the Music library or one **Saved playlist**; only that saved playlist's music track **Entries** are the pool
 - A **Dismissal** silences a **Library health** finding without hiding it
 - A **Hidden track** is present to a **Scan** and absent everywhere else; hiding one copy of a **Duplicate** ends the finding, and a later copy of the same audio is not hidden with it
 - A **Track** is identified by its row, not its path: **Prune** makes it **Missing**, **Reattach** or a returning path restores it, and only **Purge** deletes it
