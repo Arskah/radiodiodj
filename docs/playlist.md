@@ -62,6 +62,7 @@ snapshot is displayable without a second round-trip to resolve titles.
 playlist_add             playlist_add_front        playlist_insert
 playlist_add_many        playlist_add_saved        playlist_add_filler
 playlist_add_items       playlist_set_stop_duration
+playlist_move_group      playlist_remove_group
 playlist_add_stop_marker playlist_remove           playlist_move
 playlist_clear           playlist_play_index       playlist_play_now
 playlist_next            playlist_prev             playlist_stop
@@ -193,8 +194,7 @@ a [saved playlist](./saved-playlists.md#stops), whole or as picked entries
 (`playlist_add_items`), and leaves with it through _Save playlist as…_.
 
 A reached marker stops the deck the way the Stop button does; telling the two
-apart, and grouping a queued show, are planned in
-[prepared-shows.md](./prepared-shows.md).
+apart is planned in [prepared-shows.md](./prepared-shows.md).
 
 **Nothing in the Upcoming tab reaches air by a double-click.** A queued track
 goes on by its row's play button, and a stop marker only by the show arriving at
@@ -237,6 +237,121 @@ than dead air.
   that set too, so it is skipped the same way. See
   [library-health.md](./library-health.md).
 
+## Groups
+
+A saved playlist queued whole stays recognisable in the playlist: its rows are
+one **group**, drawn under a header in a colour of its own, and the track on air
+says which show it belongs to.
+
+### The model
+
+The playlist stays one flat sequence of items. An item carries an optional
+`group: Option<Group>`, `Group { id, name }`:
+
+- `id` is fresh for each insertion, so the same saved playlist queued twice is
+  two groups.
+- `name` is copied when it is queued, so renaming or deleting the saved original
+  changes nothing queued.
+- Both item variants carry it: a Stop belongs to its show as much as a track
+  does.
+
+Advancement, refill, prefetch, the outage rules and Stop consumption never read
+it. A group is a label the engine stores and returns, and every decision about
+which group an item is in is made by the command that inserts or moves it,
+which says so: `playlist_add_front`, `playlist_insert`, `playlist_add_many`,
+`playlist_add_items` and `playlist_move` take the `group` the item lands in,
+`null` for none. Only the renderer can see where a row was dropped.
+
+The engine also keeps `current_group`, the group of the track on air. It is set
+wherever an item becomes the track on air — played, handed over to, retried —
+and cleared by a stop, by _Play now_ and by `prev`, which returns the outgoing
+track to the head of the playlist in its group. The snapshot carries it as
+`currentGroup`.
+
+### What makes one
+
+| action                                                  | result                                                         |
+| ------------------------------------------------------- | -------------------------------------------------------------- |
+| **Add to playlist** on a saved playlist                 | a new group: every entry in stored order                       |
+| **Add with jingles and commercials**                    | a new group, the drawn items in it                             |
+| tracks or a selection, from the library or a saved list | no group, appended                                             |
+| **+**, **Add N tracks**, **+ Stop**, fillers            | no group, appended after everything                            |
+| **Add as next**, and the cue editor's _Use once_        | the front of the playlist, in the group on air; otherwise none |
+| refill                                                  | no group, appended                                             |
+
+**Add as next** joins the show on air so that the show stays one run. Without
+it, a track added as next during a show would sit ungrouped between the track
+on air and the rest of the show, and the show would draw two headers.
+
+### In Upcoming
+
+A header is drawn over each run of consecutive items sharing a group id. That is
+all the structure there is: `features/playlist/playlistGroups.ts` derives the
+rows from the flat playlist, and the engine knows nothing of headers.
+
+```text
+Standalone track
+▾ ▌ John's morning show · 3 tracks · 1 stop
+  ▌ Opening jingle
+  ▌ Track A
+  ▌ Stop · 2:00
+  ▌ Track B
+Standalone track
+```
+
+- **The header** is the size of a track row: a disclosure, the name, what is
+  left in it, and buttons to save the group and to remove it.
+- **Colour.** A stripe on the header and every row of the group, Stops
+  included, indented under it. Colours come from four theme tokens, handed out
+  in the order groups are first seen, so a group and the next one differ. The
+  renderer keeps the assignment for as long as the window is open.
+- **Collapse** hides the rows and keeps the header. It is presentation only,
+  never order or playback, and held in renderer memory: after a restart every
+  group is open. The disclosure is a labelled button that exposes its state.
+- **On air.** The main deck shows the group's name in its colour while the track
+  on air carries one. Meanwhile its header stays at the top of Upcoming, pinned
+  while the list scrolls, even with nothing of it left queued. It goes when the
+  last of the group leaves the deck.
+
+A run split by a row from elsewhere is two runs and draws two headers with one
+name.
+
+### Moving rows
+
+Drops are positional, over the rows as drawn:
+
+- A row dropped **between two rows of one group** joins it, the gap under an
+  open header included — so the gap under the pinned header of the group on air
+  joins that group, as **Add as next** does.
+- A row dropped **at a boundary** — between two groups, or between a group and
+  a standalone row — joins none. Moving a row out of a group clears its group.
+- A row dropped **on a collapsed header** is appended as the group's last item,
+  and the group stays collapsed. A drop before or after the header is outside it.
+- **A header** drags the whole run as one, while none of it is on air
+  (`playlist_move_group`). Dropped inside another group, it lands ahead of that
+  group. The header of the group on air does not move.
+- **Removing a header** removes the group's remaining rows
+  (`playlist_remove_group`). The track on air plays on.
+
+So an open group cannot be extended at its very end by one drop; a collapsed one
+can. Telling an inside drop from an outside one at the same boundary is what
+made a nested queue hard to use and hard to build.
+
+### Saving it back
+
+**Save playlist as…** takes everything queued, Stops and their plans included.
+Groups are flattened.
+
+**Save group as…**, the header's save button, takes that group's remaining rows
+(`playlist_save_as` with the group's id). It is how an adjusted show is kept:
+edit it in the playlist, where it is the operator's, and save it as a new list,
+named after the group to start with.
+
+Both make a new saved playlist and are open while admin mode is locked, as
+making one already is. Neither replaces an existing list; that stays an admin's
+edit. Everything else here is open to everyone too, because none of it changes a
+saved playlist.
+
 ## Item overrides
 
 A `PlaylistItem::Track` carries `cue_override: Option<CuePoints>` — cue points
@@ -268,7 +383,7 @@ The queue, the current item and both overrides survive a restart via
 `SessionState` carries `current_cue_override`, both `serde(default)` so a
 session file written before overrides existed loads untouched. A
 `SessionPlaylistItem::Stop` carries its `planned_duration_seconds` the same
-way. Restore goes
+way, and both carry their `group`, as `SessionState` carries `current_group`. Restore goes
 through `Effect::Resume`, which reloads and seeks without putting audio on air.
 
 History stores tracks rather than items, so a custom airing replays under the

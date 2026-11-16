@@ -482,6 +482,21 @@ body {
   color: var(--secondary);
 }
 
+.np-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-xs);
+  padding-left: var(--sp-sm);
+  border-left: 3px solid var(--group-colour);
+  font-size: 11px;
+  color: var(--on-surface-variant);
+}
+
+.np-group .material-symbols-outlined {
+  font-size: 14px;
+  color: var(--group-colour);
+}
+
 .track-names {
   min-width: 0;
   overflow: hidden;
@@ -1843,6 +1858,82 @@ body {
   box-shadow: inset 0 2px 0 0 var(--primary);
 }
 
+/* Groups: a saved playlist queued whole. A stripe in the group's colour runs
+   down its header and every row of it, and the rows sit indented under the
+   header. See docs/prepared-shows.md. */
+.playlist-row.in-group {
+  margin-left: var(--sp-lg);
+  border-left: 3px solid var(--group-colour);
+}
+
+.group-colour-0 {
+  --group-colour: var(--primary);
+}
+
+.group-colour-1 {
+  --group-colour: var(--tertiary);
+}
+
+.group-colour-2 {
+  --group-colour: var(--secondary);
+}
+
+.group-colour-3 {
+  --group-colour: var(--inverse-primary);
+}
+
+.playlist-row.group-header {
+  gap: var(--sp-sm);
+  padding: var(--sp-xs) var(--sp-md);
+  border-left: 3px solid var(--group-colour);
+  background: color-mix(in srgb, var(--group-colour) 8%, transparent);
+}
+
+/* The group on air keeps its header in view while its rows scroll by. */
+.playlist-row.group-header.on-air {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: color-mix(
+    in srgb,
+    var(--group-colour) 12%,
+    var(--surface-container)
+  );
+}
+
+.playlist-row.group-header.drop-into {
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
+
+.group-toggle {
+  display: flex;
+  align-items: center;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--on-surface-variant);
+  cursor: pointer;
+}
+
+.group-icon {
+  font-size: 18px;
+  color: var(--group-colour);
+}
+
+.group-name {
+  font-weight: 700;
+  color: var(--on-surface);
+}
+
+.group-size {
+  font-size: 11px;
+  color: var(--on-surface-variant);
+}
+
+.pl-status.group-on-air {
+  color: var(--group-colour);
+}
+
 /* Index badge */
 .pl-num {
   display: flex;
@@ -2639,6 +2730,7 @@ input.stop-duration.refused {
 /* Unavailable: the library owner's control on a studio, or a button with
    nothing to act on yet. The tooltip says which. */
 .btn-remove:disabled,
+.btn-edit:disabled,
 .btn-add-section:disabled,
 .btn-scan-now:disabled,
 .settings-section--tuning .device-row input:disabled {

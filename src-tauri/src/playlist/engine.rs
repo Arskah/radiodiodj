@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::model::{PlaylistItem, Snapshot, SourceInfo};
+use super::model::{Group, PlaylistItem, Snapshot, SourceInfo};
 use crate::audio::cue_points::CuePoints;
 use crate::library::db::Track;
 
@@ -162,6 +162,9 @@ pub struct Playlist {
     /// rather than folded into it so `prev` can return the item to the queue
     /// with its override intact — the defect the renderer-owned playlist had.
     current_override: Option<CuePoints>,
+    /// The group the track on air came from. Held next to `current` for the
+    /// reason `current_override` is.
+    current_group: Option<Group>,
     auto_playlist: bool,
     auto_advance: bool,
     /// What the arm deck currently holds. The item itself stays in `items`, so
@@ -239,6 +242,7 @@ impl Playlist {
             auto_playlist_active: self.auto_playlist,
             auto_advance: self.auto_advance,
             current_override: self.current_override,
+            current_group: self.current_group.clone(),
             awaiting_network: self.awaiting_network,
             source: self.source.clone(),
             reverted_from: self.reverted_from.clone(),
@@ -293,6 +297,7 @@ impl Playlist {
                 PlaylistItem::Track {
                     track,
                     cue_override,
+                    ..
                 } => {
                     return Some(ArmTarget {
                         id: track.id,
@@ -313,36 +318,10 @@ impl Playlist {
         Transition::default()
     }
 
-    /// Insert at the head as next-up — the outgoing track on `prev`.
-    ///
-    /// `cue_override` is what the operator auditioned on the cue deck when it
-    /// differs from the track's radio edit; `None` leaves the item referencing
-    /// the track.
-    pub fn add_front(&mut self, track: Track, cue_override: Option<CuePoints>) -> Transition {
-        self.items
-            .insert(0, PlaylistItem::with_override(track, cue_override));
-        Transition::default()
-    }
-
-    /// Insert ahead of the item at `index` — a library row dropped between two
-    /// queued ones. An index past the end appends: it describes a snapshot the
-    /// queue has since shrunk under, and the operator still named the track.
-    pub fn insert(&mut self, index: usize, track: Track) -> Transition {
-        let index = index.min(self.items.len());
-        self.items
-            .insert(index, PlaylistItem::with_override(track, None));
-        Transition::default()
-    }
-
-    /// Insert a run of tracks, in the order given, ahead of the item at `index`
-    /// — a library selection queued in one go. `None` appends, and so does an
-    /// index past the end, for the reason [`Playlist::insert`] gives.
-    pub fn insert_many(&mut self, index: Option<usize>, tracks: Vec<Track>) -> Transition {
-        self.insert_items(index, tracks.into_iter().map(PlaylistItem::track).collect())
-    }
-
-    /// [`Playlist::insert_many`] for items, Stops among them — a saved
-    /// playlist queued whole, or entries picked from one.
+    /// Insert items, in the order given, ahead of the item at `index`: a track
+    /// dropped on the playlist, a selection, a saved playlist queued whole. `None`
+    /// appends, and so does an index past the end: it describes a snapshot the
+    /// queue has since shrunk under, and the operator still named the items.
     pub fn insert_items(&mut self, index: Option<usize>, items: Vec<PlaylistItem>) -> Transition {
         let len = self.items.len();
         let at = index.map_or(len, |i| i.min(len));
@@ -396,12 +375,40 @@ impl Playlist {
         Transition::default()
     }
 
-    pub fn move_item(&mut self, from: usize, to: usize) -> Transition {
-        if from == to || from >= self.items.len() || to >= self.items.len() {
+    /// Move the item at `from` to `to`, into `group` or, with `None`, out of
+    /// every group. Where it lands decides that, and only the caller can see
+    /// where it landed.
+    pub fn move_into(&mut self, from: usize, to: usize, group: Option<Group>) -> Transition {
+        if from >= self.items.len() || to >= self.items.len() {
             return Transition::default();
         }
-        let item = self.items.remove(from);
+        let item = self.items.remove(from).in_group(group);
         self.items.insert(to, item);
+        Transition::default()
+    }
+
+    /// Move a whole group, as one run in its own order, into the gap at `gap`
+    /// — counted in the playlist as it stands, the group's own items included.
+    pub fn move_group(&mut self, id: &str, gap: usize) -> Transition {
+        let in_group = |item: &PlaylistItem| item.group().is_some_and(|g| g.id == id);
+        let at = self
+            .items
+            .iter()
+            .take(gap.min(self.items.len()))
+            .filter(|item| !in_group(item))
+            .count();
+        let (run, mut rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.items)
+            .into_iter()
+            .partition(in_group);
+        rest.splice(at..at, run);
+        self.items = rest;
+        Transition::default()
+    }
+
+    /// Remove what is left of a group. The track on air plays on.
+    pub fn remove_group(&mut self, id: &str) -> Transition {
+        self.items
+            .retain(|item| item.group().is_none_or(|g| g.id != id));
         Transition::default()
     }
 
@@ -424,7 +431,8 @@ impl Playlist {
             PlaylistItem::Track {
                 track,
                 cue_override,
-            } => self.play_track(track, cue_override, true, r),
+                group,
+            } => self.play_track(track, cue_override, group, true, r),
         }
     }
 
@@ -434,7 +442,7 @@ impl Playlist {
     /// named this track, and there is nothing the engine could substitute that
     /// would be the track they named.
     pub fn play_now(&mut self, track: Track, r: &dyn Refiller) -> Transition {
-        self.play_track(track, None, false, r)
+        self.play_track(track, None, None, false, r)
     }
 
     pub fn next(&mut self, r: &dyn Refiller) -> Transition {
@@ -459,12 +467,13 @@ impl Playlist {
         if let Some(current) = self.current.take() {
             self.items.insert(
                 0,
-                PlaylistItem::with_override(current, self.current_override),
+                PlaylistItem::with_override(current, self.current_override)
+                    .in_group(self.current_group.take()),
             );
         }
         // History stores tracks rather than items, so a custom airing replays
-        // under the radio edit.
-        self.set_current(previous, None, false, r)
+        // under the radio edit, and in no group.
+        self.set_current(previous, None, None, false, r)
     }
 
     pub fn stop(&mut self) -> Transition {
@@ -472,6 +481,7 @@ impl Playlist {
         let aired = self.take_aired();
         self.push_history(aired);
         self.current_override = None;
+        self.current_group = None;
         self.auto_playlist = false;
         self.overlapping = false;
         Transition::effects(vec![Effect::CancelRetry, Effect::Stop])
@@ -540,6 +550,7 @@ impl Playlist {
         let PlaylistItem::Track {
             track,
             cue_override,
+            group,
         } = self.items.remove(at)
         else {
             return Transition::default();
@@ -547,6 +558,7 @@ impl Playlist {
         self.clear_retry();
         let outgoing = self.current.replace(track);
         self.current_override = cue_override;
+        self.current_group = group;
         // The incoming deck is already playing, so this airing is real the
         // moment the role moves — there is no load to wait on.
         let aired = std::mem::replace(&mut self.current_aired, true);
@@ -772,6 +784,7 @@ impl Playlist {
         items: Vec<PlaylistItem>,
         current: Option<Track>,
         current_override: Option<CuePoints>,
+        current_group: Option<Group>,
         seconds: f64,
         auto_playlist: bool,
         auto_advance: bool,
@@ -787,6 +800,7 @@ impl Playlist {
         self.trim_history();
         self.current = current;
         self.current_override = current_override;
+        self.current_group = current_group;
         // The restored track aired before the restart — the log already has it,
         // and the resume load must not count it again.
         self.current_aired = true;
@@ -809,12 +823,13 @@ impl Playlist {
         &mut self,
         track: Track,
         cue_override: Option<CuePoints>,
+        group: Option<Group>,
         playlist_issued: bool,
         r: &dyn Refiller,
     ) -> Transition {
         let aired = self.take_aired();
         self.push_history(aired);
-        self.set_current(track, cue_override, playlist_issued, r)
+        self.set_current(track, cue_override, group, playlist_issued, r)
     }
 
     /// Take the track off the deck, handing it back only if it aired: a load
@@ -847,6 +862,7 @@ impl Playlist {
         &mut self,
         track: Track,
         cue_override: Option<CuePoints>,
+        group: Option<Group>,
         playlist_issued: bool,
         r: &dyn Refiller,
     ) -> Transition {
@@ -854,6 +870,7 @@ impl Playlist {
         let id = track.id;
         self.current = Some(track);
         self.current_override = cue_override;
+        self.current_group = group;
         // Nothing has aired until the deck reports the load landed; see
         // [`Playlist::on_loaded`].
         self.current_aired = false;
@@ -910,7 +927,10 @@ impl Playlist {
                     .requeue_current
                     .then(|| self.current.clone())
                     .flatten()
-                    .map(|track| PlaylistItem::with_override(track, self.current_override));
+                    .map(|track| {
+                        PlaylistItem::with_override(track, self.current_override)
+                            .in_group(self.current_group.clone())
+                    });
                 // Back in the queue before the track change refills it, or the
                 // generator sees a queue without this track and may pick it
                 // again.
@@ -1043,6 +1063,24 @@ impl Playlist {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    /// Shorthands for [`Playlist::insert_items`], in no group.
+    impl Playlist {
+        fn add_front(&mut self, track: Track, cue_override: Option<CuePoints>) -> Transition {
+            self.insert_items(
+                Some(0),
+                vec![PlaylistItem::with_override(track, cue_override)],
+            )
+        }
+
+        fn insert(&mut self, index: usize, track: Track) -> Transition {
+            self.insert_items(Some(index), vec![PlaylistItem::track(track)])
+        }
+
+        fn insert_many(&mut self, index: Option<usize>, tracks: Vec<Track>) -> Transition {
+            self.insert_items(index, tracks.into_iter().map(PlaylistItem::track).collect())
+        }
+    }
 
     fn track(id: i64) -> Track {
         Track {
@@ -1343,16 +1381,16 @@ mod tests {
     }
 
     #[test]
-    fn move_item_reorders() {
+    fn a_move_reorders() {
         let mut p = with(&[Some(1), Some(2), Some(3)]);
-        p.move_item(2, 0);
+        p.move_into(2, 0, None);
         assert_eq!(queued(&p), vec![Some(3), Some(1), Some(2)]);
     }
 
     #[test]
-    fn move_item_is_a_no_op_when_from_equals_to() {
+    fn a_move_in_place_out_of_no_group_is_a_no_op() {
         let mut p = with(&[Some(1), Some(2)]);
-        assert_eq!(p.move_item(1, 1), Transition::default());
+        assert_eq!(p.move_into(1, 1, None), Transition::default());
         assert_eq!(queued(&p), vec![Some(1), Some(2)]);
     }
 
@@ -1360,10 +1398,10 @@ mod tests {
     /// `to` past the end silently appended. Dropping the move is the safer read
     /// of a request that cannot be satisfied.
     #[test]
-    fn move_item_out_of_range_is_a_no_op() {
+    fn a_move_out_of_range_is_a_no_op() {
         let mut p = with(&[Some(1), Some(2), Some(3)]);
-        assert_eq!(p.move_item(0, 9), Transition::default());
-        assert_eq!(p.move_item(9, 0), Transition::default());
+        assert_eq!(p.move_into(0, 9, None), Transition::default());
+        assert_eq!(p.move_into(9, 0, None), Transition::default());
         assert_eq!(queued(&p), vec![Some(1), Some(2), Some(3)]);
     }
 
@@ -1820,6 +1858,128 @@ mod tests {
         assert!(history(&p).is_empty());
     }
 
+    // ----- groups -----
+
+    fn show(id: &str) -> Group {
+        Group {
+            id: id.into(),
+            name: format!("Show {id}"),
+        }
+    }
+
+    /// `items` as `(track id or Stop, group id)`, the group a fresh label.
+    fn grouped(items: &[(Option<i64>, Option<&str>)]) -> Playlist {
+        let mut p = Playlist::new();
+        let items = items
+            .iter()
+            .map(|(id, group)| {
+                let item = id.map_or(PlaylistItem::stop(None), |id| {
+                    PlaylistItem::track(track(id))
+                });
+                item.in_group(group.map(show))
+            })
+            .collect();
+        p.insert_items(None, items);
+        p
+    }
+
+    fn groups(p: &Playlist) -> Vec<Option<String>> {
+        p.snapshot()
+            .playlist
+            .iter()
+            .map(|i| i.group().map(|g| g.id.clone()))
+            .collect()
+    }
+
+    fn on_air_group(p: &Playlist) -> Option<String> {
+        p.snapshot().current_group.map(|g| g.id)
+    }
+
+    #[test]
+    fn the_group_on_air_is_the_one_the_track_came_from() {
+        let mut p = grouped(&[(Some(1), Some("a")), (Some(2), None), (Some(3), Some("b"))]);
+        air(&mut p, 0);
+        assert_eq!(on_air_group(&p).as_deref(), Some("a"));
+        p.next(&NoRefill);
+        assert_eq!(on_air_group(&p), None);
+        p.on_handover(3, &NoRefill);
+        assert_eq!(on_air_group(&p).as_deref(), Some("b"));
+        p.play_now(track(9), &NoRefill);
+        assert_eq!(on_air_group(&p), None, "a track named outright is in none");
+    }
+
+    #[test]
+    fn stopping_ends_the_group_on_air_and_prev_hands_it_back_with_its_track() {
+        let mut p = grouped(&[(Some(1), None), (Some(2), Some("a")), (None, Some("a"))]);
+        air(&mut p, 0);
+        air(&mut p, 0);
+        assert_eq!(on_air_group(&p).as_deref(), Some("a"));
+        p.prev(&NoRefill);
+        assert_eq!(queued(&p), vec![Some(2), None]);
+        assert_eq!(groups(&p), vec![Some("a".into()), Some("a".into())]);
+        assert_eq!(on_air_group(&p), None);
+
+        p.play_index(0, &NoRefill);
+        p.next(&NoRefill);
+        assert_eq!(current_id(&p), None, "the Stop halted it");
+        assert_eq!(on_air_group(&p), None);
+    }
+
+    #[test]
+    fn a_move_says_which_group_the_item_lands_in() {
+        let mut p = grouped(&[(Some(1), Some("a")), (Some(2), Some("a")), (Some(3), None)]);
+        p.move_into(2, 1, Some(show("a")));
+        assert_eq!(queued(&p), vec![Some(1), Some(3), Some(2)]);
+        assert_eq!(groups(&p), vec![Some("a".into()); 3]);
+        p.move_into(0, 0, None);
+        assert_eq!(groups(&p)[0], None, "in place, out of its group");
+        assert_eq!(p.move_into(9, 0, None), Transition::default());
+    }
+
+    #[test]
+    fn a_group_moves_whole_to_a_gap_of_the_playlist_as_it_stands() {
+        let mut p = grouped(&[
+            (Some(1), None),
+            (Some(2), Some("a")),
+            (None, Some("a")),
+            (Some(3), None),
+            (Some(4), None),
+        ]);
+        p.move_group("a", 5);
+        assert_eq!(queued(&p), vec![Some(1), Some(3), Some(4), Some(2), None]);
+        p.move_group("a", 0);
+        assert_eq!(queued(&p), vec![Some(2), None, Some(1), Some(3), Some(4)]);
+    }
+
+    #[test]
+    fn removing_a_group_takes_its_rows_and_leaves_the_rest() {
+        let mut p = grouped(&[
+            (Some(1), Some("a")),
+            (Some(2), Some("b")),
+            (None, Some("a")),
+        ]);
+        air(&mut p, 0);
+        p.remove_group("a");
+        assert_eq!(queued(&p), vec![Some(2)]);
+        assert_eq!(current_id(&p), Some(1), "the track on air plays on");
+    }
+
+    #[test]
+    fn a_restored_session_brings_back_the_group_on_air() {
+        let mut p = Playlist::new();
+        p.hydrate(
+            vec![],
+            Some(track(9)),
+            None,
+            Some(show("a")),
+            3.0,
+            false,
+            true,
+            vec![],
+        );
+        assert_eq!(on_air_group(&p).as_deref(), Some("a"));
+    }
+
     // ----- a load that was given up on (#547) -----
 
     #[test]
@@ -2108,7 +2268,16 @@ mod tests {
     #[test]
     fn a_resumed_track_is_not_counted_again() {
         let mut p = Playlist::new();
-        p.hydrate(vec![], Some(track(9)), None, 12.0, false, true, vec![]);
+        p.hydrate(
+            vec![],
+            Some(track(9)),
+            None,
+            None,
+            12.0,
+            false,
+            true,
+            vec![],
+        );
         assert_eq!(p.on_loaded(9), Transition::default());
     }
 
@@ -2386,6 +2555,7 @@ mod tests {
             vec![],
             Some(track(9)),
             None,
+            None,
             0.0,
             false,
             true,
@@ -2399,6 +2569,7 @@ mod tests {
         let mut p = Playlist::new();
         p.hydrate(
             vec![],
+            None,
             None,
             None,
             0.0,
@@ -2417,6 +2588,7 @@ mod tests {
         let t = p.hydrate(
             vec![PlaylistItem::track(track(1)), PlaylistItem::stop(None)],
             Some(track(9)),
+            None,
             None,
             12.5,
             true,
@@ -2448,6 +2620,7 @@ mod tests {
             vec![PlaylistItem::track(track(3))],
             None,
             None,
+            None,
             0.0,
             false,
             true,
@@ -2464,6 +2637,7 @@ mod tests {
             vec![PlaylistItem::track(track(1))],
             None,
             None,
+            None,
             0.0,
             false,
             true,
@@ -2475,7 +2649,16 @@ mod tests {
     #[test]
     fn hydrate_clamps_a_negative_saved_position() {
         let mut p = Playlist::new();
-        let t = p.hydrate(vec![], Some(track(9)), None, -4.0, false, true, vec![]);
+        let t = p.hydrate(
+            vec![],
+            Some(track(9)),
+            None,
+            None,
+            -4.0,
+            false,
+            true,
+            vec![],
+        );
         assert_eq!(
             t.effects,
             vec![Effect::Resume {
@@ -2711,6 +2894,7 @@ mod tests {
             p.snapshot().playlist,
             Some(track(9)),
             None,
+            None,
             0.0,
             false,
             true,
@@ -2766,6 +2950,7 @@ mod tests {
             vec![],
             Some(track(9)),
             Some(points(2_000)),
+            None,
             12.5,
             false,
             true,
@@ -2831,7 +3016,7 @@ mod tests {
         p.play_index(0, &r);
         p.reconcile_arm();
 
-        p.move_item(1, 0);
+        p.move_into(1, 0, None);
 
         assert_eq!(
             p.reconcile_arm(),

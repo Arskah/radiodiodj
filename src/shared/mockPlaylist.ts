@@ -1,4 +1,10 @@
-import type { CuePoints, PlaylistItem, SourceInfo, Track } from "./types";
+import type {
+  CuePoints,
+  Group,
+  PlaylistItem,
+  SourceInfo,
+  Track,
+} from "./types";
 import { isStopMarker, stopMarker, trackItem } from "./types";
 import type { PlaylistSnapshot } from "./api";
 
@@ -17,6 +23,7 @@ export class MockPlaylistBackend {
   playlist: PlaylistItem[] = [];
   current: Track | null = null;
   currentOverride: CuePoints | null = null;
+  currentGroup: Group | null = null;
   history: Track[] = [];
   historyCap = 100;
   autoPlaylistActive = false;
@@ -42,6 +49,7 @@ export class MockPlaylistBackend {
       autoPlaylistActive: this.autoPlaylistActive,
       autoAdvance: this.autoAdvance,
       currentOverride: this.currentOverride,
+      currentGroup: this.currentGroup,
       awaitingNetwork: this.awaitingNetwork,
       source: this.source,
       revertedFrom: this.revertedFrom,
@@ -63,8 +71,12 @@ export class MockPlaylistBackend {
     this.emit();
   }
 
-  addFront(track: Track, cueOverride: CuePoints | null = null): void {
-    this.playlist.unshift(trackItem(track, cueOverride));
+  addFront(
+    track: Track,
+    cueOverride: CuePoints | null = null,
+    group: Group | null = null,
+  ): void {
+    this.playlist.unshift({ ...trackItem(track, cueOverride), group });
     this.emit();
   }
 
@@ -109,10 +121,9 @@ export class MockPlaylistBackend {
     this.emit();
   }
 
-  move(from: number, to: number): void {
-    if (from === to) return;
+  move(from: number, to: number, group: Group | null = null): void {
     const [item] = this.playlist.splice(from, 1);
-    this.playlist.splice(to, 0, item);
+    this.playlist.splice(to, 0, { ...item, group });
     this.emit();
   }
 
@@ -131,7 +142,7 @@ export class MockPlaylistBackend {
       this.stop();
       return;
     }
-    this.playTrack(item.track, item.cue_override ?? null);
+    this.playTrack(item.track, item.cue_override ?? null, item.group ?? null);
   }
 
   playNow(track: Track): void {
@@ -154,9 +165,13 @@ export class MockPlaylistBackend {
       return;
     }
     if (this.current) {
-      this.playlist.unshift(trackItem(this.current, this.currentOverride));
+      this.playlist.unshift({
+        ...trackItem(this.current, this.currentOverride),
+        group: this.currentGroup,
+      });
     }
     this.current = previous;
+    this.currentGroup = null;
     // History stores tracks, not items, so a custom airing replays under the
     // radio edit — the same rule the engine follows.
     this.currentOverride = null;
@@ -167,6 +182,7 @@ export class MockPlaylistBackend {
     this.pushHistory(this.current);
     this.current = null;
     this.currentOverride = null;
+    this.currentGroup = null;
     this.autoPlaylistActive = false;
     this.emit();
   }
@@ -191,10 +207,15 @@ export class MockPlaylistBackend {
     this.emit();
   }
 
-  private playTrack(track: Track, cueOverride: CuePoints | null = null): void {
+  private playTrack(
+    track: Track,
+    cueOverride: CuePoints | null = null,
+    group: Group | null = null,
+  ): void {
     this.pushHistory(this.current);
     this.current = track;
     this.currentOverride = cueOverride;
+    this.currentGroup = group;
     this.emit();
   }
 

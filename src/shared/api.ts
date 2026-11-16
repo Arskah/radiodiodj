@@ -8,6 +8,7 @@ import type {
   ContentType,
   CuePoints,
   DeckRoleEntry,
+  Group,
   PlaylistItem,
   DeviceInfo,
   DeviceRef,
@@ -38,8 +39,17 @@ import type {
 import { METADATA_KEYS } from "./types";
 
 export type PersistedPlaylistItem =
-  | { kind: "track"; id: number; cue_override: CuePoints | null }
-  | { kind: "stop"; planned_duration_seconds: number | null };
+  | {
+      kind: "track";
+      id: number;
+      cue_override: CuePoints | null;
+      group?: Group | null;
+    }
+  | {
+      kind: "stop";
+      planned_duration_seconds: number | null;
+      group?: Group | null;
+    };
 
 export interface SessionPersistState {
   playlistIds: number[];
@@ -48,6 +58,8 @@ export interface SessionPersistState {
   currentTime: number;
   /** The override the track on air is playing under, if any. */
   currentCueOverride: CuePoints | null;
+  /** The group the track on air came from, if any. */
+  currentGroup: Group | null;
   autoPlaylistActive: boolean;
   /** The auto-playlist source; `null` is the music library. */
   autoPlaylistSource: number | null;
@@ -79,6 +91,8 @@ export interface PlaylistSnapshot {
   autoAdvance: boolean;
   /** The override the track on air came on air under, if it came off an item that carried one. */
   currentOverride: CuePoints | null;
+  /** The group the track on air came from; its header stays pinned. */
+  currentGroup: Group | null;
   /** Playback is blocked waiting for the media share. Drives the reconnecting banner. */
   awaitingNetwork: boolean;
   /** The saved playlist the auto-playlist draws from; `null` is the music library. */
@@ -221,20 +235,33 @@ export const api = {
   playlistAddFront(
     id: number,
     cuePoints: CuePoints | null = null,
+    group: Group | null = null,
   ): Promise<void> {
-    return invoke<void>("playlist_add_front", { id, cuePoints });
+    return invoke<void>("playlist_add_front", { id, cuePoints, group });
   },
-  /** Insert ahead of the item at `index`; an index past the end appends. */
-  playlistInsert(id: number, index: number): Promise<void> {
-    return invoke<void>("playlist_insert", { id, index });
+
+  /**
+   * Insert ahead of the item at `index`, in `group`; an index past the end
+   * appends.
+   */
+  playlistInsert(
+    id: number,
+    index: number,
+    group: Group | null = null,
+  ): Promise<void> {
+    return invoke<void>("playlist_insert", { id, index, group });
   },
 
   /**
    * Insert several tracks as one run, in the order given, ahead of the item at
    * `index`. `null` appends, as does an index past the end.
    */
-  playlistAddMany(ids: number[], index: number | null): Promise<void> {
-    return invoke<void>("playlist_add_many", { ids, index });
+  playlistAddMany(
+    ids: number[],
+    index: number | null,
+    group: Group | null = null,
+  ): Promise<void> {
+    return invoke<void>("playlist_add_many", { ids, index, group });
   },
 
   /**
@@ -244,8 +271,9 @@ export const api = {
   playlistAddItems(
     items: PersistedPlaylistItem[],
     index: number | null,
+    group: Group | null = null,
   ): Promise<void> {
-    return invoke<void>("playlist_add_items", { items, index });
+    return invoke<void>("playlist_add_items", { items, index, group });
   },
 
   /**
@@ -264,8 +292,11 @@ export const api = {
     return invoke<void>("playlist_set_source", { id });
   },
   /** Keep the upcoming tracks as a new saved playlist. */
-  playlistSaveAs(name: string): Promise<SavedPlaylistSummary> {
-    return invoke<SavedPlaylistSummary>("playlist_save_as", { name });
+  playlistSaveAs(
+    name: string,
+    group: string | null = null,
+  ): Promise<SavedPlaylistSummary> {
+    return invoke<SavedPlaylistSummary>("playlist_save_as", { name, group });
   },
 
   savedPlaylistList(): Promise<SavedPlaylistSummary[]> {
@@ -397,8 +428,21 @@ export const api = {
   playlistRemove(index: number): Promise<void> {
     return invoke<void>("playlist_remove", { index });
   },
-  playlistMove(from: number, to: number): Promise<void> {
-    return invoke<void>("playlist_move", { from, to });
+  /** Move the item at `from` to `to`, into `group` or, `null`, out of all. */
+  playlistMove(
+    from: number,
+    to: number,
+    group: Group | null = null,
+  ): Promise<void> {
+    return invoke<void>("playlist_move", { from, to, group });
+  },
+  /** Move a group that is not on air, whole, into the gap at `gap`. */
+  playlistMoveGroup(id: string, gap: number): Promise<void> {
+    return invoke<void>("playlist_move_group", { id, gap });
+  },
+  /** Remove what is left of a group; the track on air plays on. */
+  playlistRemoveGroup(id: string): Promise<void> {
+    return invoke<void>("playlist_remove_group", { id });
   },
   playlistClear(): Promise<void> {
     return invoke<void>("playlist_clear");

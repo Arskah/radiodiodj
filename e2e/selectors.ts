@@ -18,6 +18,7 @@ export const sel = {
   closeSettings: "#btn-close-settings",
   playlist: "#playlist",
   playlistRow: ".playlist-row",
+  groupHeader: "#playlist .group-header",
   /** Puts a queued track on air. The only thing on the row that does. */
   playlistRowPlay: ".btn-play-track",
   playlistRowDuration: ".pl-duration",

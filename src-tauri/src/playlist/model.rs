@@ -6,6 +6,26 @@ use crate::audio::cue_points::CuePoints;
 use crate::library::db::Track;
 use crate::persist::session::SessionPlaylistItem;
 
+/// A run of items queued together from one saved playlist. A label the engine
+/// stores and returns; advancement never reads it. See
+/// `docs/prepared-shows.md#groups-in-the-playlist`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Group {
+    /// Fresh for each insertion, so a list queued twice is two groups.
+    pub id: String,
+    /// The saved playlist's name when it was queued.
+    pub name: String,
+}
+
+impl Group {
+    pub fn new(name: String) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().simple().to_string(),
+            name,
+        }
+    }
+}
+
 /// One entry in the playlist.
 ///
 /// Carries the whole [`Track`], not just its id: the snapshot the renderer
@@ -28,6 +48,8 @@ pub enum PlaylistItem {
         /// whole file this once".
         #[serde(default)]
         cue_override: Option<CuePoints>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group: Option<Group>,
     },
     /// Barrier that halts auto-advance when playback reaches it.
     Stop {
@@ -35,28 +57,46 @@ pub enum PlaylistItem {
         /// the producer; it never resumes playback.
         #[serde(default)]
         planned_duration_seconds: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group: Option<Group>,
     },
 }
 
 impl PlaylistItem {
     pub fn track(track: Track) -> Self {
-        Self::Track {
-            track,
-            cue_override: None,
-        }
+        Self::with_override(track, None)
     }
 
     pub fn with_override(track: Track, cue_override: Option<CuePoints>) -> Self {
         Self::Track {
             track,
             cue_override,
+            group: None,
         }
     }
 
     pub fn stop(planned_duration_seconds: Option<u32>) -> Self {
         Self::Stop {
             planned_duration_seconds,
+            group: None,
         }
+    }
+
+    pub fn group(&self) -> Option<&Group> {
+        match self {
+            Self::Track { group, .. } | Self::Stop { group, .. } => group.as_ref(),
+        }
+    }
+
+    pub fn set_group(&mut self, to: Option<Group>) {
+        match self {
+            Self::Track { group, .. } | Self::Stop { group, .. } => *group = to,
+        }
+    }
+
+    pub fn in_group(mut self, group: Option<Group>) -> Self {
+        self.set_group(group);
+        self
     }
 
     pub fn as_track(&self) -> Option<&Track> {
@@ -97,10 +137,14 @@ impl PlaylistItem {
             .filter_map(|item| match item {
                 SessionPlaylistItem::Stop {
                     planned_duration_seconds,
-                } => Some(Self::stop(*planned_duration_seconds)),
-                SessionPlaylistItem::Track { id, cue_override } => {
-                    lookup(*id).map(|track| Self::with_override(track, *cue_override))
-                }
+                    group,
+                } => Some(Self::stop(*planned_duration_seconds).in_group(group.clone())),
+                SessionPlaylistItem::Track {
+                    id,
+                    cue_override,
+                    group,
+                } => lookup(*id)
+                    .map(|track| Self::with_override(track, *cue_override).in_group(group.clone())),
             })
             .collect()
     }
@@ -131,6 +175,10 @@ pub struct Snapshot {
     /// custom airing does not show file time for a frame before the deck
     /// reports its own.
     pub current_override: Option<CuePoints>,
+    /// The group the track on air came from, which keeps its header pinned
+    /// and is what _Add as next_ joins.
+    #[serde(default)]
+    pub current_group: Option<Group>,
     /// Playback is blocked waiting for the media share to come back. Drives the
     /// reconnecting indicator.
     pub awaiting_network: bool,
@@ -181,6 +229,7 @@ mod tests {
         SessionPlaylistItem::Track {
             id,
             cue_override: None,
+            group: None,
         }
     }
 
@@ -206,12 +255,30 @@ mod tests {
             session_track(1),
             SessionPlaylistItem::Stop {
                 planned_duration_seconds: Some(90),
+                group: None,
             },
             session_track(2),
         ];
         let rebuilt = PlaylistItem::from_session(&items, &[], library);
         assert_eq!(ids(&rebuilt), vec![Some(1), None, Some(2)]);
         assert_eq!(rebuilt[1], PlaylistItem::stop(Some(90)));
+    }
+
+    #[test]
+    fn a_group_is_left_out_of_an_item_without_one_and_restored_with_one() {
+        let plain = serde_json::to_value(PlaylistItem::stop(None)).unwrap();
+        assert!(plain.get("group").is_none());
+        let group = Group {
+            id: "g1".into(),
+            name: "Show".into(),
+        };
+        let items = vec![SessionPlaylistItem::Track {
+            id: 1,
+            cue_override: None,
+            group: Some(group.clone()),
+        }];
+        let rebuilt = PlaylistItem::from_session(&items, &[], library);
+        assert_eq!(rebuilt[0].group(), Some(&group));
     }
 
     #[test]
@@ -254,6 +321,7 @@ mod tests {
             SessionPlaylistItem::Track {
                 id: 1,
                 cue_override: Some(points),
+                group: None,
             },
             session_track(2),
         ];

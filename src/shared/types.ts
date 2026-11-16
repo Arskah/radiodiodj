@@ -136,9 +136,20 @@ export interface DeckRoleEntry {
   trackId: number | null;
 }
 
+/**
+ * A run of playlist items queued together from one saved playlist. A label;
+ * advancement never reads it. See `docs/prepared-shows.md`.
+ */
+export interface Group {
+  /** Fresh for each insertion: a list queued twice is two groups. */
+  id: string;
+  name: string;
+}
+
 export type PlaylistTrackItem = {
   kind: "track";
   track: Track;
+  group?: Group | null;
 
   /**
    * Cue points for this one airing, overriding the track's radio edit. Absent
@@ -150,6 +161,7 @@ export type PlaylistTrackItem = {
 };
 export type StopMarker = {
   kind: "stop";
+  group?: Group | null;
 
   /**
    * How long the break is meant to last, in seconds; absent or `null` is

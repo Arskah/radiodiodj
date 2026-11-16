@@ -3,6 +3,7 @@
   import { isTrackItem } from "../../shared/types";
   import Waveform from "./Waveform.svelte";
   import MissingBadge from "../track/MissingBadge.svelte";
+  import { groupColour } from "../playlist/playlistGroups";
   import defaultCover from "../../assets/radiodiodi_label.svg";
 
   // Something to fade *to*: the next queued item is a track, or the
@@ -60,6 +61,15 @@
           >{app.currentTrack ? app.currentTrack.title : "No Track Loaded"}</span
         >
         <span id="np-artist">{app.currentTrack?.artist ?? ""}</span>
+        {#if app.currentGroup}
+          <span
+            class="np-group group-colour-{groupColour(app.currentGroup.id)}"
+            title="On air from this saved playlist"
+            ><span class="material-symbols-outlined" aria-hidden="true"
+              >queue_music</span
+            >{app.currentGroup.name}</span
+          >
+        {/if}
         {#if app.tailTrack}
           <span
             class="tail-line"
