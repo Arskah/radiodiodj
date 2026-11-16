@@ -11,6 +11,7 @@ import type {
   SourceInfo,
   CuePoints,
   Group,
+  Hold,
   DeviceInfo,
   DeviceRef,
   HealthReport,
@@ -247,6 +248,14 @@ export class AppState {
   currentCueOverride = $state<CuePoints | null>(null);
   /** The group the track on air came from; _Add as next_ joins it. */
   currentGroup = $state<Group | null>(null);
+  /** The break a consumed Stop began, while it lasts. */
+  holding = $state<Hold | null>(null);
+
+  /**
+   * When this window saw the hold begin, on `performance.now()`. The backend
+   * keeps no time; the counter is the renderer's.
+   */
+  holdSince = $state(0);
   currentTrack = $state<Track | null>(null);
 
   /**
@@ -831,9 +840,17 @@ export class AppState {
     this.send(api.playlistRemoveGroup(groupId));
   }
 
+  /**
+   * The group on air: the track's, or through a break the Stop's. Its header
+   * stays pinned, and _Add as next_ joins it.
+   */
+  get onAirGroup(): Group | null {
+    return this.currentGroup ?? this.holding?.group ?? null;
+  }
+
   /** Where _Add as next_ lands: in the group on air, as its next rows. */
   private nextGroup(asNext: boolean): Group | null {
-    return asNext ? this.currentGroup : null;
+    return asNext ? this.onAirGroup : null;
   }
 
   /** Rejects with the backend's reason, for the dialog to show. */
@@ -957,7 +974,7 @@ export class AppState {
 
   /** Queue a track as next-up, ahead of everything already queued. */
   addNextToPlaylist(track: Track): void {
-    this.send(api.playlistAddFront(track.id, null, this.currentGroup));
+    this.send(api.playlistAddFront(track.id, null, this.onAirGroup));
   }
 
   /** The rows a selection gesture can reach: none on the Playlists tab. */
@@ -1123,6 +1140,11 @@ export class AppState {
     this.playlist = snapshot.playlist;
     this.currentCueOverride = snapshot.currentOverride ?? null;
     this.currentGroup = snapshot.currentGroup ?? null;
+    const holding = snapshot.holding ?? null;
+    if (holding && holding.id !== this.holding?.id) {
+      this.holdSince = performance.now();
+    }
+    this.holding = holding;
     this.autoPlaylistActive = snapshot.autoPlaylistActive;
     this.autoSource = snapshot.source ?? null;
     this.revertedFrom = snapshot.revertedFrom ?? null;
@@ -1632,7 +1654,7 @@ export class AppState {
    */
   queueCueDraft(track: Track, points: CuePoints): void {
     const override = cuePointsEqual(points, track.cue_points) ? null : points;
-    this.send(api.playlistAddFront(track.id, override, this.currentGroup));
+    this.send(api.playlistAddFront(track.id, override, this.onAirGroup));
   }
 
   /** Whether adding the cue track now would give its item cue points. */

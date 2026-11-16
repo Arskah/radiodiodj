@@ -146,6 +146,17 @@ export interface Group {
   name: string;
 }
 
+/**
+ * A consumed Stop: the break the studio is in until the producer plays on.
+ * Nothing ends it by itself. See `docs/playlist.md`.
+ */
+export interface Hold {
+  /** New for every Stop consumed, so back-to-back breaks read as two. */
+  id: number;
+  plannedDurationSeconds: number | null;
+  group: Group | null;
+}
+
 export type PlaylistTrackItem = {
   kind: "track";
   track: Track;

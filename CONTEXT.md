@@ -229,7 +229,7 @@ A **Playlist** item that is not a Track. Advancement consumes it and stops inste
 _Avoid_: Pause, break, barrier
 
 **Hold**:
-The state after a **Stop marker** is consumed, until the producer plays on. Shown on the Main deck with a counter against the planned duration (planned).
+The state after a **Stop marker** is consumed, until the producer plays on. Shown on the Main deck with a counter against the planned duration; reaching it never resumes playback.
 _Avoid_: Pause (that is a paused track), stopped
 
 **Group**:

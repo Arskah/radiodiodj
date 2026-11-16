@@ -26,6 +26,19 @@ impl Group {
     }
 }
 
+/// A consumed Stop: the break the studio is in, until the producer plays on.
+/// Held in memory only. See `docs/playlist.md#the-hold`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Hold {
+    /// Counts up with every Stop consumed, so a break that follows another
+    /// at once reads as a fresh one.
+    pub id: u64,
+    pub planned_duration_seconds: Option<u32>,
+    /// The Stop's group, which stays on air through the break.
+    pub group: Option<Group>,
+}
+
 /// One entry in the playlist.
 ///
 /// Carries the whole [`Track`], not just its id: the snapshot the renderer
@@ -179,6 +192,10 @@ pub struct Snapshot {
     /// and is what _Add as next_ joins.
     #[serde(default)]
     pub current_group: Option<Group>,
+    /// A Stop was consumed and nothing has played since. Never resumes
+    /// anything by itself.
+    #[serde(default)]
+    pub holding: Option<Hold>,
     /// Playback is blocked waiting for the media share to come back. Drives the
     /// reconnecting indicator.
     pub awaiting_network: bool,

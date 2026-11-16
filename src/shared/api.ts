@@ -9,6 +9,7 @@ import type {
   CuePoints,
   DeckRoleEntry,
   Group,
+  Hold,
   PlaylistItem,
   DeviceInfo,
   DeviceRef,
@@ -93,6 +94,8 @@ export interface PlaylistSnapshot {
   currentOverride: CuePoints | null;
   /** The group the track on air came from; its header stays pinned. */
   currentGroup: Group | null;
+  /** A consumed Stop, until something plays or the deck is stopped. */
+  holding: Hold | null;
   /** Playback is blocked waiting for the media share. Drives the reconnecting banner. */
   awaitingNetwork: boolean;
   /** The saved playlist the auto-playlist draws from; `null` is the music library. */

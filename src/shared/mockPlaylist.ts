@@ -1,6 +1,7 @@
 import type {
   CuePoints,
   Group,
+  Hold,
   PlaylistItem,
   SourceInfo,
   Track,
@@ -24,6 +25,8 @@ export class MockPlaylistBackend {
   current: Track | null = null;
   currentOverride: CuePoints | null = null;
   currentGroup: Group | null = null;
+  holding: Hold | null = null;
+  private holds = 0;
   history: Track[] = [];
   historyCap = 100;
   autoPlaylistActive = false;
@@ -50,6 +53,7 @@ export class MockPlaylistBackend {
       autoAdvance: this.autoAdvance,
       currentOverride: this.currentOverride,
       currentGroup: this.currentGroup,
+      holding: this.holding,
       awaitingNetwork: this.awaitingNetwork,
       source: this.source,
       revertedFrom: this.revertedFrom,
@@ -139,7 +143,15 @@ export class MockPlaylistBackend {
     }
     const [item] = this.playlist.splice(index, 1);
     if (isStopMarker(item)) {
-      this.stop();
+      this.pushHistory(this.current);
+      this.clearDeck();
+      this.holds += 1;
+      this.holding = {
+        id: this.holds,
+        plannedDurationSeconds: item.planned_duration_seconds ?? null,
+        group: item.group ?? null,
+      };
+      this.emit();
       return;
     }
     this.playTrack(item.track, item.cue_override ?? null, item.group ?? null);
@@ -172,6 +184,7 @@ export class MockPlaylistBackend {
     }
     this.current = previous;
     this.currentGroup = null;
+    this.holding = null;
     // History stores tracks, not items, so a custom airing replays under the
     // radio edit — the same rule the engine follows.
     this.currentOverride = null;
@@ -180,11 +193,16 @@ export class MockPlaylistBackend {
 
   stop(): void {
     this.pushHistory(this.current);
+    this.clearDeck();
+    this.emit();
+  }
+
+  private clearDeck(): void {
     this.current = null;
     this.currentOverride = null;
     this.currentGroup = null;
+    this.holding = null;
     this.autoPlaylistActive = false;
-    this.emit();
   }
 
   setAutoPlaylist(active: boolean): void {
@@ -216,6 +234,7 @@ export class MockPlaylistBackend {
     this.current = track;
     this.currentOverride = cueOverride;
     this.currentGroup = group;
+    this.holding = null;
     this.emit();
   }
 

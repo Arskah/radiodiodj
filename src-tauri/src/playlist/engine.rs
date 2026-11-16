@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::model::{Group, PlaylistItem, Snapshot, SourceInfo};
+use super::model::{Group, Hold, PlaylistItem, Snapshot, SourceInfo};
 use crate::audio::cue_points::CuePoints;
 use crate::library::db::Track;
 
@@ -165,6 +165,11 @@ pub struct Playlist {
     /// The group the track on air came from. Held next to `current` for the
     /// reason `current_override` is.
     current_group: Option<Group>,
+    /// The break a consumed Stop began. Ends with whatever puts a track on
+    /// the deck, or with a stop.
+    holding: Option<Hold>,
+    /// The last [`Hold::id`] handed out.
+    holds: u64,
     auto_playlist: bool,
     auto_advance: bool,
     /// What the arm deck currently holds. The item itself stays in `items`, so
@@ -243,6 +248,7 @@ impl Playlist {
             auto_advance: self.auto_advance,
             current_override: self.current_override,
             current_group: self.current_group.clone(),
+            holding: self.holding.clone(),
             awaiting_network: self.awaiting_network,
             source: self.source.clone(),
             reverted_from: self.reverted_from.clone(),
@@ -431,7 +437,19 @@ impl Playlist {
             return Transition::default();
         }
         match self.items.remove(index) {
-            PlaylistItem::Stop { .. } => self.stop(),
+            PlaylistItem::Stop {
+                planned_duration_seconds,
+                group,
+            } => {
+                let stopped = self.stop();
+                self.holds += 1;
+                self.holding = Some(Hold {
+                    id: self.holds,
+                    planned_duration_seconds,
+                    group,
+                });
+                stopped
+            }
             PlaylistItem::Track {
                 track,
                 cue_override,
@@ -486,6 +504,7 @@ impl Playlist {
         self.push_history(aired);
         self.current_override = None;
         self.current_group = None;
+        self.holding = None;
         self.auto_playlist = false;
         self.overlapping = false;
         Transition::effects(vec![Effect::CancelRetry, Effect::Stop])
@@ -563,6 +582,7 @@ impl Playlist {
         let outgoing = self.current.replace(track);
         self.current_override = cue_override;
         self.current_group = group;
+        self.holding = None;
         // The incoming deck is already playing, so this airing is real the
         // moment the role moves — there is no load to wait on.
         let aired = std::mem::replace(&mut self.current_aired, true);
@@ -876,6 +896,7 @@ impl Playlist {
         self.current = Some(track);
         self.current_override = cue_override;
         self.current_group = group;
+        self.holding = None;
         // Nothing has aired until the deck reports the load landed; see
         // [`Playlist::on_loaded`].
         self.current_aired = false;
@@ -2007,6 +2028,87 @@ mod tests {
             vec![],
         );
         assert_eq!(on_air_group(&p).as_deref(), Some("a"));
+    }
+
+    // ----- the hold -----
+
+    fn hold(p: &Playlist) -> Option<Hold> {
+        p.snapshot().holding
+    }
+
+    #[test]
+    fn reaching_a_stop_holds_with_its_plan_and_group_and_plays_nothing() {
+        let mut p = grouped(&[
+            (Some(1), Some("a")),
+            (None, Some("a")),
+            (Some(2), Some("a")),
+        ]);
+        let mut stop = PlaylistItem::stop(Some(120)).in_group(Some(show("a")));
+        std::mem::swap(&mut p.items[1], &mut stop);
+        air(&mut p, 0);
+        let t = p.on_ended(&NoRefill);
+
+        assert_eq!(t.effects, vec![Effect::CancelRetry, Effect::Stop]);
+        assert_eq!(current_id(&p), None);
+        assert_eq!(queued(&p), vec![Some(2)]);
+        let held = hold(&p).expect("a hold");
+        assert_eq!(held.planned_duration_seconds, Some(120));
+        assert_eq!(held.group, Some(show("a")));
+    }
+
+    #[test]
+    fn a_hold_lasts_through_edits_to_upcoming() {
+        let mut p = with(&[None, Some(1)]);
+        p.next(&NoRefill);
+        p.add(track(9), None);
+        p.remove(0);
+        p.add_stop();
+        assert!(hold(&p).is_some());
+    }
+
+    #[test]
+    fn a_hold_ends_with_whatever_plays_and_with_the_stop_button() {
+        let held = || {
+            let mut p = with(&[None, Some(1)]);
+            p.next(&NoRefill);
+            assert!(hold(&p).is_some());
+            p
+        };
+        let mut p = held();
+        p.next(&NoRefill);
+        assert_eq!(hold(&p), None, "the next track went on");
+        let mut p = held();
+        p.play_now(track(7), &NoRefill);
+        assert_eq!(hold(&p), None, "a track named outright went on");
+        let mut p = held();
+        p.stop();
+        assert_eq!(hold(&p), None, "the Stop button");
+    }
+
+    #[test]
+    fn a_stop_straight_after_another_is_a_fresh_hold() {
+        let mut p = with(&[None, None]);
+        p.next(&NoRefill);
+        let first = hold(&p).expect("a hold").id;
+        p.next(&NoRefill);
+        assert!(hold(&p).expect("a hold").id > first);
+    }
+
+    #[test]
+    fn a_handover_ends_a_hold() {
+        let mut p = with(&[None, Some(1), Some(2)]);
+        p.next(&NoRefill);
+        air(&mut p, 0);
+        assert_eq!(hold(&p), None);
+        let mut p = with(&[Some(1), Some(2)]);
+        air(&mut p, 0);
+        p.holding = Some(Hold {
+            id: 1,
+            planned_duration_seconds: None,
+            group: None,
+        });
+        p.on_handover(2, &NoRefill);
+        assert_eq!(hold(&p), None);
     }
 
     // ----- a load that was given up on (#547) -----

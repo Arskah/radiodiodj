@@ -482,6 +482,44 @@ body {
   color: var(--secondary);
 }
 
+/* A consumed Stop: the break, and how it is going against its plan. The
+   counter never resumes anything; it is for the producer. */
+.hold-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-xs);
+  color: var(--error);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.hold-heading.over {
+  color: var(--tertiary);
+  animation: led-pulse 2s ease-in-out infinite;
+}
+
+#hold-counter {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 32px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--on-surface);
+}
+
+#hold-counter.over {
+  color: var(--tertiary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hold-heading.over {
+    animation: none;
+  }
+}
+
 .deck-group {
   display: inline-flex;
   align-items: center;

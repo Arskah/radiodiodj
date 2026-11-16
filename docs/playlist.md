@@ -193,8 +193,8 @@ through a Stop, and only the producer ends it. A Stop arrives with its plan from
 a [saved playlist](./saved-playlists.md#stops), whole or as picked entries
 (`playlist_add_items`), and leaves with it through _Save playlist as…_.
 
-A reached marker stops the deck the way the Stop button does; telling the two
-apart is planned in [prepared-shows.md](./prepared-shows.md).
+A reached marker stops the deck the way the Stop button does, and then
+[holds](#the-hold).
 
 **Nothing in the Upcoming tab reaches air by a double-click.** A queued track
 goes on by its row's play button, and a stop marker only by the show arriving at
@@ -236,6 +236,48 @@ than dead air.
   to the next stop marker, even on a cold cache. A track an admin hid is in
   that set too, so it is skipped the same way. See
   [library-health.md](./library-health.md).
+
+## The hold
+
+A reached Stop is a planned break, and the main deck says so. Consuming a Stop
+stops the deck as the Stop button does, and the snapshot gains
+`holding: Option<Hold>`, `Hold { id, planned_duration_seconds, group }`:
+
+- `id` counts up with every Stop consumed, so a Stop reached straight after
+  another reads as a fresh break.
+- The plan and the group are the Stop's own. The group stays on air through the
+  break: its header stays pinned, and **Add as next** joins it.
+
+The hold ends with anything that puts a track on the deck — Play, Next, a row's
+play button, _Play now_, `prev`, a handover — and with the Stop button. Editing
+Upcoming does not end it. It lives in memory: a restart during a break comes
+back to the ordinary stopped deck with the playlist intact.
+
+**The backend keeps no time.** The renderer notes when it saw the hold begin, on
+`performance.now()`, and counts from there, sampling the clock on each tick
+rather than counting ticks, so a late tick catches up instead of drifting:
+
+```text
+planned 2:00          unplanned
+  −2:00  break         0:00
+  −0:45                1:15
+   0:00                3:40 …
+  +0:30  overrun
+```
+
+The main deck shows **Stop** where the title is, the plan under it, and the
+counter where the waveform and the time are; there is nothing to seek. Past a
+planned break's end the counter takes the warning colour and the heading pulses,
+with no pulse under reduced motion. An unplanned break counts up and never
+warns. Play and Next keep their meaning, and either ends the hold.
+
+**Reaching zero does nothing to playback.** The studio is talking through a
+Stop, so playback starts only when the producer starts it. The counter is the
+producer's, beside the station clock in the toolbar.
+
+Expected start times in Upcoming are not built. They need a timing schedule in
+the backend, fed from the audio worker; the shared-delay model in the
+`feat/stop-timing-and-eta` branch (#687) is where that design starts.
 
 ## Groups
 
