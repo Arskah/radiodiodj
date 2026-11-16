@@ -4,7 +4,10 @@
 ///
 /// 2: operator work travels. A build on 1 would step over those rows and
 /// never see them again, so it has to stop instead.
-pub const PROTOCOL: i32 = 2;
+///
+/// 3: a saved playlist entry can be a Stop. A build on 2 would read one as an
+/// unmatched track and send it back as one.
+pub const PROTOCOL: i32 = 3;
 
 /// The transaction-level advisory lock every hub writer takes, so revisions
 /// are handed out in commit order.

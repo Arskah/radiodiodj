@@ -26,14 +26,14 @@ use crate::audio::cue_points::CuePoints;
 use crate::audio::levelling;
 use crate::audio::player::{Cmd, LoadFailed};
 use crate::broadcast::BroadcastService;
-use crate::library::db::{Db, Track, TrackLoadInfo};
+use crate::library::db::{Db, SavedItem, Track, TrackLoadInfo};
 use crate::library::health::HEALTH_EVENT;
 use crate::library::scanner::now_ms;
 use crate::library::waveform_scan::{
     CuePointsReady, DurationReady, CUE_POINTS_READY_EVENT, DURATION_READY_EVENT,
 };
 use crate::persist::config::Config;
-use crate::persist::session::SessionState;
+use crate::persist::session::{SessionPlaylistItem, SessionState};
 
 /// The part of `program:handover` the playlist needs: the incoming track. The
 /// outgoing one is already on record as `current`.
@@ -469,36 +469,47 @@ impl PlaylistService {
         });
     }
 
-    /// Queue a saved playlist's tracks at the end as one run. `entries` is each
-    /// track with its content type, in the list's order; with `weave` the run is
-    /// brought up to the interleave cadence first. See
-    /// `docs/saved-playlists.md`.
-    pub fn add_saved(&self, entries: Vec<(i64, String)>, weave: bool) {
+    /// Queue entries as one run ahead of the item at `index`, or at the end
+    /// without one: tracks by id, and Stops with their plans — entries picked
+    /// from a saved playlist. A track id with no row is skipped.
+    pub fn add_items(&self, items: Vec<SessionPlaylistItem>, index: Option<usize>) {
         self.queue(move |inner| {
-            let ids: Vec<i64> = entries.iter().map(|(id, _)| *id).collect();
-            let tracks = match inner.db.get_tracks_by_ids(&ids) {
-                Ok(tracks) => tracks,
-                Err(e) => {
-                    log::error!("playlist: lookup of {} tracks failed: {}", ids.len(), e);
-                    return;
-                }
+            let Some(items) = Inner::resolve_entries(inner, &items) else {
+                return;
             };
-            if tracks.len() < ids.len() {
-                log::error!(
-                    "playlist: {} of {} tracks are not in the library",
-                    ids.len() - tracks.len(),
-                    ids.len()
-                );
+            if !items.is_empty() {
+                Inner::apply(inner, move |p, _| p.insert_items(index, items));
             }
-            let tracks = if weave {
-                let types: HashMap<i64, String> = entries.into_iter().collect();
-                let list = tracks
-                    .iter()
-                    .map(|t| {
-                        let content_type = types.get(&t.id).cloned().unwrap_or_default();
-                        (t.clone(), content_type)
-                    })
-                    .collect();
+        });
+    }
+
+    /// Queue a saved playlist at the end as one run: its bound tracks and its
+    /// Stops, in the list's order. With `weave` the run is brought up to the
+    /// interleave cadence first. See `docs/saved-playlists.md`.
+    pub fn add_saved(&self, entries: Vec<SavedItem>, weave: bool) {
+        self.queue(move |inner| {
+            let mut types = HashMap::new();
+            let wanted: Vec<SessionPlaylistItem> = entries
+                .into_iter()
+                .map(|entry| match entry {
+                    SavedItem::Track { id, content_type } => {
+                        types.insert(id, content_type);
+                        SessionPlaylistItem::Track {
+                            id,
+                            cue_override: None,
+                        }
+                    }
+                    SavedItem::Stop {
+                        planned_duration_seconds,
+                    } => SessionPlaylistItem::Stop {
+                        planned_duration_seconds,
+                    },
+                })
+                .collect();
+            let Some(items) = Inner::resolve_entries(inner, &wanted) else {
+                return;
+            };
+            let items = if weave {
                 let queued: Vec<i64> = inner
                     .playlist
                     .lock()
@@ -508,21 +519,21 @@ impl PlaylistService {
                     .filter_map(|item| item.as_track().map(|t| t.id))
                     .collect();
                 let interleave = generate::Interleave::from_config(&inner.config.get_tuning());
-                match generate::weave(&inner.db, list, &queued, &interleave) {
+                match generate::weave(&inner.db, items.clone(), &types, &queued, &interleave) {
                     Ok(woven) => woven,
                     // The operator named the list; it goes on as written.
                     Err(e) => {
                         log::error!("playlist: weaving a saved playlist failed: {}", e);
-                        tracks
+                        items
                     }
                 }
             } else {
-                tracks
+                items
             };
-            if tracks.is_empty() {
+            if items.is_empty() {
                 return;
             }
-            Inner::apply(inner, move |p, _| p.insert_many(None, tracks));
+            Inner::apply(inner, move |p, _| p.insert_items(None, items));
         });
     }
 
@@ -562,6 +573,14 @@ impl PlaylistService {
 
     pub fn add_stop(&self) {
         self.queue(|inner| Inner::apply(inner, |p, _| p.add_stop()));
+    }
+
+    pub fn set_stop_duration(&self, index: usize, planned_duration_seconds: Option<u32>) {
+        self.queue(move |inner| {
+            Inner::apply(inner, move |p, _| {
+                p.set_stop_duration(index, planned_duration_seconds)
+            })
+        });
     }
 
     /// Append one jingle or commercial picked the same way the auto-playlist
@@ -662,6 +681,48 @@ impl Inner {
             Ok(None) => log::error!("playlist: track {} is not in the library", id),
             Err(e) => log::error!("playlist: track {} lookup failed: {}", id, e),
         }
+    }
+
+    /// Items for `wanted`, in its order, its tracks read in one query. A track
+    /// with no row is left out; `None` is a failed lookup, already logged.
+    fn resolve_entries(
+        inner: &Arc<Inner>,
+        wanted: &[SessionPlaylistItem],
+    ) -> Option<Vec<PlaylistItem>> {
+        let ids: Vec<i64> = wanted
+            .iter()
+            .filter_map(|item| match item {
+                SessionPlaylistItem::Track { id, .. } => Some(*id),
+                SessionPlaylistItem::Stop { .. } => None,
+            })
+            .collect();
+        let tracks: HashMap<i64, Track> = match inner.db.get_tracks_by_ids(&ids) {
+            Ok(tracks) => tracks.into_iter().map(|t| (t.id, t)).collect(),
+            Err(e) => {
+                log::error!("playlist: lookup of {} tracks failed: {}", ids.len(), e);
+                return None;
+            }
+        };
+        let items: Vec<PlaylistItem> = wanted
+            .iter()
+            .filter_map(|item| match item {
+                SessionPlaylistItem::Track { id, cue_override } => tracks
+                    .get(id)
+                    .map(|t| PlaylistItem::with_override(t.clone(), *cue_override)),
+                SessionPlaylistItem::Stop {
+                    planned_duration_seconds,
+                } => Some(PlaylistItem::stop(*planned_duration_seconds)),
+            })
+            .collect();
+        let found = items.iter().filter(|i| !i.is_stop()).count();
+        if found < ids.len() {
+            log::error!(
+                "playlist: {} of {} tracks are not in the library",
+                ids.len() - found,
+                ids.len()
+            );
+        }
+        Some(items)
     }
 
     fn resolve_items(&self, state: &SessionState) -> Vec<PlaylistItem> {

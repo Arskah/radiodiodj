@@ -85,12 +85,34 @@ export function importMessage(
   name: string,
   entries: number,
   missing: number,
+  stops = 0,
 ): string {
-  return `Imported “${name}”: ${sizeLabel(entries, missing)}`;
+  return `Imported “${name}”: ${sizeLabel(entries, missing, stops)}`;
 }
 
-/** How a saved playlist's size reads in the list: `12 tracks · 2 missing`. */
-export function sizeLabel(entries: number, missing: number): string {
-  const tracks = `${entries} ${entries === 1 ? "track" : "tracks"}`;
-  return missing > 0 ? `${tracks} · ${missing} missing` : tracks;
+const count = (n: number, one: string, many: string): string =>
+  `${n} ${n === 1 ? one : many}`;
+
+/**
+ * How a saved playlist's size reads in the list: `12 tracks · 2 stops · 1
+ * missing`. `entries` counts its Stops too.
+ */
+export function sizeLabel(entries: number, missing: number, stops = 0): string {
+  const parts = [count(entries - stops, "track", "tracks")];
+  if (stops > 0) parts.push(count(stops, "stop", "stops"));
+  if (missing > 0) parts.push(`${missing} missing`);
+  return parts.join(" · ");
+}
+
+/**
+ * A planned duration as typed: `m:ss`, minutes past 59 allowed. Blank is no
+ * plan, `null`; anything else that does not read is `undefined`, so a caller
+ * keeps what it had.
+ */
+export function parsePlannedDuration(text: string): number | null | undefined {
+  const typed = text.trim();
+  if (typed === "") return null;
+  const parts = /^(\d+):([0-5]\d)$/.exec(typed);
+  if (!parts) return undefined;
+  return Number(parts[1]) * 60 + Number(parts[2]);
 }

@@ -21,7 +21,9 @@ mod operator;
 mod saved_playlists;
 mod sync;
 pub use operator::{track_of, KINDS as OPERATOR_KINDS};
-pub use saved_playlists::{SavedPlaylist, SavedPlaylistFile, SavedPlaylistSummary};
+pub use saved_playlists::{
+    NewEntry, SavedItem, SavedPlaylist, SavedPlaylistFile, SavedPlaylistSummary,
+};
 pub use sync::{Applied, Incoming, Outgoing};
 
 /// `Default` exists for test fixtures, which would otherwise have to name every
@@ -3091,6 +3093,7 @@ const MIGRATION_STEPS: &[M] = &[
     M::up(sync::CHANGE_CAPTURE),
     M::up(sync::REPLICA),
     M::up(sync::PARKED),
+    M::up(SAVED_STOPS),
 ];
 const MIGRATIONS: Migrations = Migrations::from_slice(MIGRATION_STEPS);
 
@@ -3576,6 +3579,16 @@ CREATE UNIQUE INDEX tracks_path_present ON tracks(root_id, path) WHERE missing_s
 /// auto-playlist are offered. See `docs/library-health.md`.
 const HIDDEN_TRACKS: &str = "ALTER TABLE tracks ADD COLUMN hidden_at INTEGER;";
 
+/// A saved playlist entry is a track or a Stop. A Stop has every track column
+/// `NULL`, and `kind` is what keeps it from reading as an unmatched entry.
+/// `planned_duration_seconds` is a Stop's plan, `NULL` for none. See
+/// `docs/saved-playlists.md#stops`.
+const SAVED_STOPS: &str = "
+ALTER TABLE saved_playlist_entries
+  ADD COLUMN kind TEXT NOT NULL DEFAULT 'track' CHECK (kind IN ('track', 'stop'));
+ALTER TABLE saved_playlist_entries ADD COLUMN planned_duration_seconds INTEGER;
+";
+
 /// A database this build must not touch.
 #[derive(Debug, PartialEq)]
 pub enum OpenError {
@@ -4028,7 +4041,56 @@ mod tests {
             )
             .unwrap();
         },
+        |conn| {
+            seed_track(conn);
+            seed_dismissal(conn);
+            conn.execute_batch(
+                "UPDATE tracks SET edited_fields = 1; \
+                 INSERT INTO play_log (track_id, aired_at, artist, title, duration) \
+                 SELECT id, 1000, artist, title, duration FROM tracks; \
+                 INSERT INTO saved_playlists (name, created_at, updated_at) \
+                 VALUES ('Show', 1, 1); \
+                 INSERT INTO saved_playlist_entries \
+                   (playlist_id, position, kind, planned_duration_seconds) \
+                 VALUES (1, 0, 'stop', 120)",
+            )
+            .unwrap();
+        },
     ];
+
+    /// Entries written before Stops existed are all tracks, unmatched ones
+    /// included, and keep their order.
+    #[test]
+    fn entries_from_before_stops_become_tracks() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        MIGRATIONS
+            .to_version(&mut conn, schema_version() - 1)
+            .unwrap();
+        conn.execute_batch(
+            "INSERT INTO saved_playlists (name, created_at, updated_at) VALUES ('Show', 1, 1); \
+             INSERT INTO saved_playlist_entries (playlist_id, position, title) \
+             VALUES (1, 0, 'Gone'), (1, 1, 'Also gone')",
+        )
+        .unwrap();
+        MIGRATIONS.to_latest(&mut conn).unwrap();
+        let kinds: Vec<(String, String, Option<i64>)> = conn
+            .prepare(
+                "SELECT title, kind, planned_duration_seconds FROM saved_playlist_entries \
+                 ORDER BY position",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            kinds,
+            [
+                ("Gone".into(), "track".into(), None),
+                ("Also gone".into(), "track".into(), None)
+            ]
+        );
+    }
 
     /// Step 13 rebuilds the table around its rows, so the rows have to come out
     /// the other side — and the kind the rebuild exists for has to be accepted.

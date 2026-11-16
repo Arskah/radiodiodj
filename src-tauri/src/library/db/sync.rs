@@ -1084,7 +1084,10 @@ mod tests {
     use rusqlite::{params, Connection};
     use rusqlite_migration::Migrations;
 
-    use super::super::{Db, Dismissal, TrackInsert, TrackMetadataUpdate, MIGRATION_STEPS};
+    use super::super::saved_playlists::EntryKind;
+    use super::super::{
+        Db, Dismissal, NewEntry, TrackInsert, TrackMetadataUpdate, MIGRATION_STEPS,
+    };
     use super::{operator, Incoming, EDITABLE, NOT_IN_A_TRACK_DOCUMENT};
     use crate::audio::cue_points::CuePoints;
     use crate::audio_measure::level_envelope::RmsWindows;
@@ -2312,6 +2315,40 @@ mod tests {
         studio.delete_saved_playlist(list).unwrap();
         relay(&studio, "studio", &owner, "owner");
         assert_eq!(owner.saved_playlists().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn a_stop_and_its_plan_travel_in_their_place() {
+        let owner = capturing();
+        let a = add_track(&owner);
+        let studio = studio_of(&owner);
+        let entries = [NewEntry::Track(a), NewEntry::Stop(Some(120))];
+        let list = studio
+            .create_saved_playlist_of("Talk", &entries, 5)
+            .unwrap()
+            .id;
+
+        relay(&studio, "studio", &owner, "owner");
+        let theirs = owner.saved_playlists().unwrap();
+        assert_eq!(
+            (theirs[0].entries, theirs[0].stops, theirs[0].missing),
+            (2, 1, 0)
+        );
+        let got = owner.saved_playlist(theirs[0].id).unwrap().unwrap().entries;
+        assert_eq!(got[0].track.as_ref().map(|t| t.id), Some(a));
+        assert_eq!(
+            (got[1].kind, got[1].planned_duration_seconds),
+            (EntryKind::Stop, Some(120))
+        );
+
+        // A changed plan is a change to the list.
+        owner.set_saved_stop_duration(got[1].id, None, 9).unwrap();
+        relay(&owner, "owner", &studio, "studio");
+        let ours = studio.saved_playlist(list).unwrap().unwrap().entries;
+        assert_eq!(
+            (ours[1].kind, ours[1].planned_duration_seconds),
+            (EntryKind::Stop, None)
+        );
     }
 
     #[test]

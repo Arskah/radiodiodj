@@ -1,8 +1,9 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use strum::AsRefStr;
 
+use super::model::PlaylistItem;
 use crate::library::db::{artist_key, Db, SelectionFilter, Track};
 use crate::persist::config::TuningConfig;
 
@@ -258,11 +259,7 @@ pub fn pick_filler(db: &Db, content_type: ContentType, il: &Interleave) -> Resul
     }
 }
 
-pub fn interleave_evenly(
-    music: Vec<Track>,
-    jingles: Vec<Track>,
-    commercials: Vec<Track>,
-) -> Vec<Track> {
+pub fn interleave_evenly<T>(music: Vec<T>, jingles: Vec<T>, commercials: Vec<T>) -> Vec<T> {
     let total = music.len() + jingles.len() + commercials.len();
     if total == 0 {
         return vec![];
@@ -299,23 +296,34 @@ fn top_up(music: i64, own: i64, every: i64) -> i64 {
     (cadence_count(music, every) - own).max(0)
 }
 
-/// A saved playlist's tracks brought up to the interleave cadence: the list in
-/// its own order, with the jingles and commercials it is short of drawn from
-/// the libraries and spread through it. `queued_ids` is what the playlist
-/// already holds. See `docs/saved-playlists.md`.
+/// A saved playlist's items brought up to the interleave cadence: the list in
+/// its own order, Stops included, with the jingles and commercials it is short
+/// of drawn from the libraries and spread through it. `content_types` names
+/// each listed track's type, and `queued_ids` is what the playlist already
+/// holds. See `docs/saved-playlists.md`.
 pub fn weave(
     db: &Db,
-    list: Vec<(Track, String)>,
+    list: Vec<PlaylistItem>,
+    content_types: &HashMap<i64, String>,
     queued_ids: &[i64],
     il: &Interleave,
-) -> Result<Vec<Track>> {
-    let count = |t: ContentType| list.iter().filter(|(_, c)| c == t.as_ref()).count() as i64;
+) -> Result<Vec<PlaylistItem>> {
+    let listed_ids: Vec<i64> = list
+        .iter()
+        .filter_map(|item| item.as_track().map(|t| t.id))
+        .collect();
+    let count = |t: ContentType| {
+        listed_ids
+            .iter()
+            .filter(|id| content_types.get(id).map(String::as_str) == Some(t.as_ref()))
+            .count() as i64
+    };
     let music = count(ContentType::Music);
     let jingle_count = top_up(music, count(ContentType::Jingle), il.jingle_every);
     let commercial_count = top_up(music, count(ContentType::Commercial), il.commercial_every);
 
     let mut exclude_ids: Vec<i64> = queued_ids.to_vec();
-    exclude_ids.extend(list.iter().map(|(t, _)| t.id));
+    exclude_ids.extend(&listed_ids);
     let jingles = db.get_random_tracks(
         ContentType::Jingle.as_ref(),
         jingle_count,
@@ -328,8 +336,8 @@ pub fn weave(
         &exclude_ids,
     )?;
 
-    let list = list.into_iter().map(|(t, _)| t).collect();
-    Ok(interleave_evenly(list, jingles, commercials))
+    let drawn = |tracks: Vec<Track>| tracks.into_iter().map(PlaylistItem::track).collect();
+    Ok(interleave_evenly(list, drawn(jingles), drawn(commercials)))
 }
 
 fn pick_even_slots(total: usize, count: usize) -> HashSet<usize> {
@@ -428,20 +436,30 @@ mod tests {
         db
     }
 
-    fn listed(db: &Db, ids: &[i64]) -> Vec<(Track, String)> {
+    /// The tracks of a mixed library by id, in the order given, and the
+    /// content type of every one of them.
+    fn listed(db: &Db, ids: &[i64]) -> (Vec<PlaylistItem>, HashMap<i64, String>) {
         let kind = |id: i64| match id {
             1..=8 => "music",
             9..=12 => "jingle",
             _ => "commercial",
         };
-        db.get_tracks_by_ids(ids)
+        let types = (1..=16).map(|id| (id, kind(id).to_owned())).collect();
+        let mut tracks: HashMap<i64, Track> = db
+            .get_tracks_by_ids(ids)
             .unwrap()
             .into_iter()
-            .map(|t| {
-                let content_type = kind(t.id).to_owned();
-                (t, content_type)
-            })
-            .collect()
+            .map(|t| (t.id, t))
+            .collect();
+        let items = ids
+            .iter()
+            .map(|id| PlaylistItem::track(tracks.remove(id).unwrap()))
+            .collect();
+        (items, types)
+    }
+
+    fn woven_tracks(items: &[PlaylistItem]) -> Vec<Track> {
+        items.iter().filter_map(|i| i.as_track().cloned()).collect()
     }
 
     fn kinds_of(tracks: &[Track]) -> (usize, usize, usize) {
@@ -509,8 +527,8 @@ mod tests {
     #[test]
     fn weaving_brings_a_music_list_up_to_the_cadence() {
         let db = mixed_library(8, 4, 4);
-        let list = listed(&db, &[1, 2, 3, 4, 5, 6, 7, 8]);
-        let woven = weave(&db, list, &[], &Interleave::default()).unwrap();
+        let (list, types) = listed(&db, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        let woven = woven_tracks(&weave(&db, list, &types, &[], &Interleave::default()).unwrap());
         assert_eq!(kinds_of(&woven), (8, 2, 1));
         let music: Vec<i64> = woven.iter().map(|t| t.id).filter(|id| *id <= 8).collect();
         assert_eq!(music, [1, 2, 3, 4, 5, 6, 7, 8]);
@@ -519,8 +537,8 @@ mod tests {
     #[test]
     fn weaving_counts_what_the_list_already_holds() {
         let db = mixed_library(8, 4, 4);
-        let list = listed(&db, &[9, 1, 2, 3, 4, 5, 6, 7, 8, 13, 14]);
-        let woven = weave(&db, list, &[], &Interleave::default()).unwrap();
+        let (list, types) = listed(&db, &[9, 1, 2, 3, 4, 5, 6, 7, 8, 13, 14]);
+        let woven = woven_tracks(&weave(&db, list, &types, &[], &Interleave::default()).unwrap());
         assert_eq!(kinds_of(&woven), (8, 2, 2));
         assert_eq!(woven[0].id, 9, "the list's own entries keep their order");
     }
@@ -528,14 +546,47 @@ mod tests {
     #[test]
     fn weaving_never_draws_what_is_queued_or_listed() {
         let db = mixed_library(8, 4, 4);
-        let list = listed(&db, &[1, 2, 3, 4, 5, 6, 7, 8]);
-        let woven = weave(&db, list, &[9, 10, 11], &Interleave::default()).unwrap();
+        let (list, types) = listed(&db, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        let woven =
+            woven_tracks(&weave(&db, list, &types, &[9, 10, 11], &Interleave::default()).unwrap());
         let jingles: Vec<i64> = woven
             .iter()
             .map(|t| t.id)
             .filter(|id| (9..=12).contains(id))
             .collect();
         assert_eq!(jingles, [12], "one jingle left to draw, though two are due");
+    }
+
+    #[test]
+    fn weaving_keeps_stops_among_the_lists_own_entries_and_counts_only_music() {
+        let db = mixed_library(8, 4, 4);
+        let (mut list, types) = listed(&db, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        list.insert(4, PlaylistItem::stop(Some(90)));
+        list.push(PlaylistItem::stop(None));
+        let woven = weave(&db, list, &types, &[], &Interleave::default()).unwrap();
+
+        assert_eq!(kinds_of(&woven_tracks(&woven)), (8, 2, 1));
+        let own: Vec<Option<i64>> = woven
+            .iter()
+            .filter(|i| i.as_track().is_none_or(|t| t.id <= 8))
+            .map(|i| i.as_track().map(|t| t.id))
+            .collect();
+        assert_eq!(
+            own,
+            [
+                Some(1),
+                Some(2),
+                Some(3),
+                Some(4),
+                None,
+                Some(5),
+                Some(6),
+                Some(7),
+                Some(8),
+                None
+            ]
+        );
+        assert!(woven.contains(&PlaylistItem::stop(Some(90))));
     }
 
     fn block(db: &Db, count: i64, queued: &[&Track], rot: &Rotation) -> Vec<Track> {
@@ -644,7 +695,7 @@ mod tests {
 
     #[test]
     fn empty_inputs_yield_empty_output() {
-        assert!(interleave_evenly(vec![], vec![], vec![]).is_empty());
+        assert!(interleave_evenly::<Track>(vec![], vec![], vec![]).is_empty());
     }
 
     #[test]

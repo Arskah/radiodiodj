@@ -148,7 +148,15 @@ export type PlaylistTrackItem = {
    */
   cue_override?: CuePoints | null;
 };
-export type StopMarker = { kind: "stop" };
+export type StopMarker = {
+  kind: "stop";
+
+  /**
+   * How long the break is meant to last, in seconds; absent or `null` is
+   * unplanned. An estimate for the producer, never a resume.
+   */
+  planned_duration_seconds?: number | null;
+};
 export type PlaylistItem = PlaylistTrackItem | StopMarker;
 
 export const trackItem = (
@@ -159,7 +167,9 @@ export const trackItem = (
   track,
   cue_override,
 });
-export const stopMarker = (): StopMarker => ({ kind: "stop" });
+export const stopMarker = (
+  planned_duration_seconds: number | null = null,
+): StopMarker => ({ kind: "stop", planned_duration_seconds });
 export const isTrackItem = (i: PlaylistItem): i is PlaylistTrackItem =>
   i.kind === "track";
 export const isStopMarker = (i: PlaylistItem): i is StopMarker =>
@@ -169,8 +179,10 @@ export const isStopMarker = (i: PlaylistItem): i is StopMarker =>
 export interface SavedPlaylistSummary {
   id: number;
   name: string;
+  /** Every entry, Stops included. */
   entries: number;
-  /** Entries that cannot air: unmatched, or bound to a missing track. */
+  stops: number;
+  /** Track entries that cannot air: unmatched, or bound to a missing track. */
   missing: number;
 }
 
@@ -180,6 +192,10 @@ export interface SavedPlaylistSummary {
  */
 export interface SavedEntry {
   id: number;
+  kind: "track" | "stop";
+  /** A Stop's planned duration in seconds; `null` is unplanned. */
+  plannedDurationSeconds: number | null;
+  /** Always `null` on a Stop. */
   track: Track | null;
   artist: string;
   title: string;

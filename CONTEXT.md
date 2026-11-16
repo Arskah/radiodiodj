@@ -225,7 +225,7 @@ Ordered sequence of upcoming tracks that feeds the Main deck.
 _Avoid_: Queue, list
 
 **Stop marker**:
-A **Playlist** item that is not a Track. Advancement consumes it and stops instead of loading the next item, so the Playlist below it never plays unattended. May carry a planned duration, which is an estimate and never resumes playback (planned, [docs/prepared-shows.md](docs/prepared-shows.md)).
+A **Playlist** item that is not a Track. Advancement consumes it and stops instead of loading the next item, so the Playlist below it never plays unattended. May carry a planned duration, which is an estimate and never resumes playback. A **Saved playlist** can hold Stop markers too.
 _Avoid_: Pause, break, barrier
 
 **Hold**:
@@ -273,7 +273,7 @@ A named, stored, ordered list of **Entries**. Never on air by itself: it is appe
 _Avoid_: Playlist (that is the on-air one), show, set list, crate
 
 **Entry**:
-One row of a **Saved playlist**, referring to a Track of any content type (planned: or a **Stop marker**). Keeps the artist, title, duration and **Fingerprint** of its Track as last known, so it survives its Track being unknown here.
+One row of a **Saved playlist**, referring to a Track of any content type, or a **Stop marker**. Keeps the artist, title, duration and **Fingerprint** of its Track as last known, so it survives its Track being unknown here.
 _Avoid_: Item (that is a Playlist item), row, song
 
 **Unmatched entry**:

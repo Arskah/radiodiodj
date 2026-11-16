@@ -271,9 +271,11 @@ over everything in it. A studio whose
 
 **The version rule.** `protocol` is a constant in the build, and the hub carries
 the owner's. A machine that does not know the hub's protocol keeps its database,
-keeps playing, stops syncing and says so. Documents are keyed by column name, so
-inside one protocol a key a build does not know is ignored and one it expected
-is left at its default.
+keeps playing, stops syncing and says so. A studio on a later protocol than the
+hub's stops too, until the owner is updated: the owner would read what the
+studio sends with the older build's meaning and send it back that way. Documents
+are keyed by column name, so inside one protocol a key a build does not know is
+ignored and one it expected is left at its default.
 
 **The client** is `tokio-postgres` over `rustls`, which `reqwest` already brings
 in (`hub/`). It runs in one worker task and nowhere else: every 30 seconds it
@@ -290,9 +292,11 @@ until the next one is due.
 **Both roles send, then take.** The owner sends the library and its own operator
 work, then takes what studios sent — leaving out its own rows, which would
 otherwise be the whole library handed back. A studio sends its operator work
-and takes everything. The protocol number is 2 from here: a build that knew
-only `root` and `track` would step over the other kinds and never see them
-again, so it has to stop instead.
+and takes everything. The protocol number went to 2 with operator work: a build
+that knew only `root` and `track` would step over the other kinds and never see
+them again, so it has to stop instead. It went to 3 with
+[Stops in saved playlists](./saved-playlists.md#stops): a build on 2 reads a Stop
+as an unmatched track entry and saves it back as one.
 
 **The hub's address is a connection URL in `config.json`, password included, in
 plain text.** It is the only secret there that is not a hash, and the README's

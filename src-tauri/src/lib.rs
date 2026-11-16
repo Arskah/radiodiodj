@@ -39,8 +39,8 @@ use audio::player::{Cmd, PlayerTuning, RampDone};
 use broadcast::{service::default_now_playing_dir, BroadcastService};
 use library::check::LibraryCheck;
 use library::db::{
-    Db, LibraryStats, OpenError, Recalculated, SavedPlaylist, SavedPlaylistFile,
-    SavedPlaylistSummary, Track, TrackMetadataUpdate,
+    Db, LibraryStats, NewEntry, OpenError, Recalculated, SavedItem, SavedPlaylist,
+    SavedPlaylistFile, SavedPlaylistSummary, Track, TrackMetadataUpdate,
 };
 use library::health::{FindingKind, Health, HealthReport};
 use library::roots::{self, LibraryPath};
@@ -55,7 +55,7 @@ use persist::config::{
     TuningConfig,
 };
 use persist::session::{Session, SessionPlaylistItem, SessionState};
-use playlist::{PlaylistService, Snapshot};
+use playlist::{PlaylistItem, PlaylistService, Snapshot};
 use std::time::Duration;
 use update::{UpdateState, Updater};
 
@@ -315,7 +315,7 @@ async fn load_session(app: State<'_, AppState>) -> Result<SessionLoadResult, Str
         let mut seen: HashSet<i64> = HashSet::new();
         let item_ids = s.playlist_items.iter().filter_map(|item| match item {
             SessionPlaylistItem::Track { id, .. } => Some(id),
-            SessionPlaylistItem::Stop => None,
+            SessionPlaylistItem::Stop { .. } => None,
         });
         for id in s
             .playlist_ids
@@ -388,8 +388,19 @@ fn playlist_add_many(app: State<'_, AppState>, ids: Vec<i64>, index: Option<usiz
     app.playlist.add_many(ids, index);
 }
 
+/// Insert entries picked from a saved playlist as one run, tracks and Stops in
+/// the order given, ahead of the item at `index`. Absent or `null` appends.
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_add_items(
+    app: State<'_, AppState>,
+    items: Vec<SessionPlaylistItem>,
+    index: Option<usize>,
+) {
+    app.playlist.add_items(items, index);
+}
+
 /// What an append of a saved playlist did: how many tracks it queued, and how
-/// many entries it had to leave out for want of a track.
+/// many entries it had to leave out for want of a track. Stops are not counted.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct SavedAppend {
@@ -413,8 +424,12 @@ async fn playlist_add_saved(
             .saved_playlist_tracks(id)
             .map_err(err)?
             .ok_or_else(|| format!("no saved playlist {id}"))?;
-        let added = offered.tracks.len();
-        playlist.add_saved(offered.tracks, weave);
+        let added = offered
+            .items
+            .iter()
+            .filter(|item| matches!(item, SavedItem::Track { .. }))
+            .count();
+        playlist.add_saved(offered.items, weave);
         Ok(SavedAppend {
             added,
             skipped: offered.unmatched,
@@ -423,8 +438,8 @@ async fn playlist_add_saved(
     .await
 }
 
-/// Keep the upcoming tracks as a new saved playlist. Stop markers and item
-/// overrides are not carried.
+/// Keep the upcoming tracks and Stops, with their plans, as a new saved
+/// playlist. Item overrides are not carried.
 #[tauri::command(rename_all = "camelCase")]
 async fn playlist_save_as(
     handle: AppHandle,
@@ -432,16 +447,21 @@ async fn playlist_save_as(
     name: String,
 ) -> Result<SavedPlaylistSummary, String> {
     let db = Arc::clone(&state.db);
-    let ids: Vec<i64> = state
+    let entries: Vec<NewEntry> = state
         .playlist
         .snapshot()
         .playlist
         .iter()
-        .filter_map(|item| item.as_track().map(|t| t.id))
+        .map(|item| match item {
+            PlaylistItem::Track { track, .. } => NewEntry::Track(track.id),
+            PlaylistItem::Stop {
+                planned_duration_seconds,
+            } => NewEntry::Stop(*planned_duration_seconds),
+        })
         .collect();
     blocking(move || {
         let made = db
-            .create_saved_playlist(&name, &ids, now_ms())
+            .create_saved_playlist_of(&name, &entries, now_ms())
             .map_err(err)?;
         saved_playlists::emit(&handle, &db);
         Ok(made)
@@ -520,6 +540,40 @@ async fn saved_playlist_import(
         let made = db.import_saved_playlist(&file, now_ms()).map_err(err)?;
         saved_playlists::emit(&handle, &db);
         Ok(made)
+    })
+    .await
+}
+
+/// Append an unplanned Stop to a saved playlist.
+#[tauri::command(rename_all = "camelCase")]
+async fn saved_playlist_add_stop(
+    handle: AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<(), String> {
+    let db = Arc::clone(&state.db);
+    blocking(move || {
+        db.add_saved_stop(id, now_ms()).map_err(err)?;
+        saved_playlists::emit(&handle, &db);
+        Ok(())
+    })
+    .await
+}
+
+/// Set a saved Stop's planned duration in seconds; `null` clears it.
+#[tauri::command(rename_all = "camelCase")]
+async fn saved_playlist_set_stop_duration(
+    handle: AppHandle,
+    state: State<'_, AppState>,
+    entry_id: i64,
+    planned_duration_seconds: Option<u32>,
+) -> Result<(), String> {
+    let db = Arc::clone(&state.db);
+    blocking(move || {
+        db.set_saved_stop_duration(entry_id, planned_duration_seconds, now_ms())
+            .map_err(err)?;
+        saved_playlists::emit(&handle, &db);
+        Ok(())
     })
     .await
 }
@@ -678,6 +732,18 @@ fn playlist_set_item_cue_points(
 #[tauri::command(rename_all = "camelCase")]
 fn playlist_add_stop_marker(app: State<'_, AppState>) {
     app.playlist.add_stop();
+}
+
+/// Set the planned duration of the queued Stop at `index`, in seconds; `null`
+/// clears it. Changes that queued copy only.
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_set_stop_duration(
+    app: State<'_, AppState>,
+    index: usize,
+    planned_duration_seconds: Option<u32>,
+) {
+    app.playlist
+        .set_stop_duration(index, planned_duration_seconds);
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -2016,6 +2082,7 @@ pub fn run() {
             playlist_add_front,
             playlist_insert,
             playlist_add_many,
+            playlist_add_items,
             playlist_add_saved,
             playlist_save_as,
             saved_playlist_list,
@@ -2024,6 +2091,8 @@ pub fn run() {
             saved_playlist_export,
             saved_playlist_import,
             saved_playlist_add_entries,
+            saved_playlist_add_stop,
+            saved_playlist_set_stop_duration,
             saved_playlist_remove_entry,
             saved_playlist_bind_entry,
             saved_playlist_move_entry,
@@ -2033,6 +2102,7 @@ pub fn run() {
             saved_playlist_delete,
             playlist_set_item_cue_points,
             playlist_add_stop_marker,
+            playlist_set_stop_duration,
             playlist_add_filler,
             playlist_remove,
             playlist_move,

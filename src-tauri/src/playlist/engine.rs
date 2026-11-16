@@ -288,7 +288,7 @@ impl Playlist {
         }
         for item in &self.items {
             match item {
-                PlaylistItem::Stop => return None,
+                PlaylistItem::Stop { .. } => return None,
                 PlaylistItem::Track { track, .. } if self.missing_ids.contains(&track.id) => {}
                 PlaylistItem::Track {
                     track,
@@ -338,14 +338,28 @@ impl Playlist {
     /// — a library selection queued in one go. `None` appends, and so does an
     /// index past the end, for the reason [`Playlist::insert`] gives.
     pub fn insert_many(&mut self, index: Option<usize>, tracks: Vec<Track>) -> Transition {
+        self.insert_items(index, tracks.into_iter().map(PlaylistItem::track).collect())
+    }
+
+    /// [`Playlist::insert_many`] for items, Stops among them — a saved
+    /// playlist queued whole, or entries picked from one.
+    pub fn insert_items(&mut self, index: Option<usize>, items: Vec<PlaylistItem>) -> Transition {
         let len = self.items.len();
         let at = index.map_or(len, |i| i.min(len));
-        self.items.splice(
-            at..at,
-            tracks
-                .into_iter()
-                .map(|track| PlaylistItem::with_override(track, None)),
-        );
+        self.items.splice(at..at, items);
+        Transition::default()
+    }
+
+    /// Set or clear the planned duration of the queued Stop at `index`. Any
+    /// other item is left alone.
+    pub fn set_stop_duration(
+        &mut self,
+        index: usize,
+        planned_duration_seconds: Option<u32>,
+    ) -> Transition {
+        if let Some(item @ PlaylistItem::Stop { .. }) = self.items.get_mut(index) {
+            *item = PlaylistItem::stop(planned_duration_seconds);
+        }
         Transition::default()
     }
 
@@ -364,7 +378,7 @@ impl Playlist {
     }
 
     pub fn add_stop(&mut self) -> Transition {
-        self.items.push(PlaylistItem::Stop);
+        self.items.push(PlaylistItem::stop(None));
         Transition::default()
     }
 
@@ -406,7 +420,7 @@ impl Playlist {
             return Transition::default();
         }
         match self.items.remove(index) {
-            PlaylistItem::Stop => self.stop(),
+            PlaylistItem::Stop { .. } => self.stop(),
             PlaylistItem::Track {
                 track,
                 cue_override,
@@ -936,7 +950,7 @@ impl Playlist {
         }
         for (i, item) in self.items.iter().enumerate() {
             match item {
-                PlaylistItem::Stop => return Plan::Stop(i),
+                PlaylistItem::Stop { .. } => return Plan::Stop(i),
                 PlaylistItem::Track { track, .. } if self.cached_ids.contains(&track.id) => {
                     return Plan::Play(i)
                 }
@@ -1175,7 +1189,7 @@ mod tests {
     fn item_override(p: &Playlist, index: usize) -> Option<CuePoints> {
         match &p.snapshot().playlist[index] {
             PlaylistItem::Track { cue_override, .. } => *cue_override,
-            PlaylistItem::Stop => None,
+            PlaylistItem::Stop { .. } => None,
         }
     }
 
@@ -1256,6 +1270,22 @@ mod tests {
         let mut p = with(&[Some(1)]);
         p.insert(7, track(9));
         assert_eq!(queued(&p), vec![Some(1), Some(9)]);
+    }
+
+    #[test]
+    fn a_queued_stop_takes_a_planned_duration_and_a_track_does_not() {
+        let mut p = Playlist::new();
+        p.insert_items(
+            None,
+            vec![PlaylistItem::track(track(1)), PlaylistItem::stop(None)],
+        );
+        p.set_stop_duration(1, Some(120));
+        p.set_stop_duration(0, Some(60));
+        p.set_stop_duration(9, Some(60));
+        assert_eq!(
+            p.snapshot().playlist,
+            vec![PlaylistItem::track(track(1)), PlaylistItem::stop(Some(120))]
+        );
     }
 
     #[test]
@@ -2385,7 +2415,7 @@ mod tests {
     fn hydrate_restores_the_queue_and_resumes_paused_at_the_saved_position() {
         let mut p = Playlist::new();
         let t = p.hydrate(
-            vec![PlaylistItem::track(track(1)), PlaylistItem::Stop],
+            vec![PlaylistItem::track(track(1)), PlaylistItem::stop(None)],
             Some(track(9)),
             None,
             12.5,

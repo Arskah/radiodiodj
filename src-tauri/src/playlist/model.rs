@@ -30,7 +30,12 @@ pub enum PlaylistItem {
         cue_override: Option<CuePoints>,
     },
     /// Barrier that halts auto-advance when playback reaches it.
-    Stop,
+    Stop {
+        /// How long the break is meant to last, in seconds. An estimate for
+        /// the producer; it never resumes playback.
+        #[serde(default)]
+        planned_duration_seconds: Option<u32>,
+    },
 }
 
 impl PlaylistItem {
@@ -48,15 +53,21 @@ impl PlaylistItem {
         }
     }
 
+    pub fn stop(planned_duration_seconds: Option<u32>) -> Self {
+        Self::Stop {
+            planned_duration_seconds,
+        }
+    }
+
     pub fn as_track(&self) -> Option<&Track> {
         match self {
             Self::Track { track, .. } => Some(track),
-            Self::Stop => None,
+            Self::Stop { .. } => None,
         }
     }
 
     pub fn is_stop(&self) -> bool {
-        matches!(self, Self::Stop)
+        matches!(self, Self::Stop { .. })
     }
 
     /// Rebuild a persisted playlist, resolving ids through `lookup`.
@@ -84,7 +95,9 @@ impl PlaylistItem {
         items
             .iter()
             .filter_map(|item| match item {
-                SessionPlaylistItem::Stop => Some(Self::Stop),
+                SessionPlaylistItem::Stop {
+                    planned_duration_seconds,
+                } => Some(Self::stop(*planned_duration_seconds)),
                 SessionPlaylistItem::Track { id, cue_override } => {
                     lookup(*id).map(|track| Self::with_override(track, *cue_override))
                 }
@@ -179,7 +192,7 @@ mod tests {
     fn cue_override(item: &PlaylistItem) -> Option<CuePoints> {
         match item {
             PlaylistItem::Track { cue_override, .. } => *cue_override,
-            PlaylistItem::Stop => None,
+            PlaylistItem::Stop { .. } => None,
         }
     }
 
@@ -191,11 +204,25 @@ mod tests {
     fn from_session_rebuilds_items_including_stop_markers() {
         let items = vec![
             session_track(1),
-            SessionPlaylistItem::Stop,
+            SessionPlaylistItem::Stop {
+                planned_duration_seconds: Some(90),
+            },
             session_track(2),
         ];
         let rebuilt = PlaylistItem::from_session(&items, &[], library);
         assert_eq!(ids(&rebuilt), vec![Some(1), None, Some(2)]);
+        assert_eq!(rebuilt[1], PlaylistItem::stop(Some(90)));
+    }
+
+    #[test]
+    fn a_stop_is_tagged_and_its_plan_defaults_to_none() {
+        let planned = serde_json::to_value(PlaylistItem::stop(Some(120))).unwrap();
+        assert_eq!(
+            planned,
+            serde_json::json!({ "kind": "stop", "planned_duration_seconds": 120 })
+        );
+        let older: PlaylistItem = serde_json::from_str(r#"{"kind":"stop"}"#).unwrap();
+        assert_eq!(older, PlaylistItem::stop(None));
     }
 
     #[test]

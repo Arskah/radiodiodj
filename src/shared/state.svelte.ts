@@ -39,6 +39,7 @@ import {
 } from "./cuePoints";
 import {
   api,
+  type PersistedPlaylistItem,
   type PlaylistSnapshot,
   type ScanStatus,
   type SessionLoadResult,
@@ -181,6 +182,12 @@ export class AppState {
    * one row, or the whole selection when the row under the pointer is in it.
    */
   draggedTrackIds = $state<number[] | null>(null);
+
+  /**
+   * Saved-playlist entries being dragged, Stops among them. While set,
+   * `draggedTrackIds` holds their tracks, and may be empty.
+   */
+  private draggedItems: PersistedPlaylistItem[] | null = null;
   /** What is being dragged is the library selection, which a drop then uses up. */
   private draggedLibrarySelection = false;
 
@@ -777,7 +784,12 @@ export class AppState {
       const path = await api.pickSavedPlaylistFile();
       if (path === null) return;
       const made = await api.savedPlaylistImport(path);
-      this.savedNotice = importMessage(made.name, made.entries, made.missing);
+      this.savedNotice = importMessage(
+        made.name,
+        made.entries,
+        made.missing,
+        made.stops,
+      );
     } catch (err) {
       this.savedNotice = `Import failed: ${messageOf(err)}`;
     }
@@ -840,6 +852,29 @@ export class AppState {
   queueTracks(ids: number[], asNext = false): void {
     if (ids.length === 0) return;
     this.send(api.playlistAddMany(ids, asNext ? 0 : null));
+  }
+
+  /** Queue saved-playlist entries, Stops among them, at the end or as next-up. */
+  queueItems(items: PersistedPlaylistItem[], asNext = false): void {
+    if (items.length === 0) return;
+    this.send(api.playlistAddItems(items, asNext ? 0 : null));
+  }
+
+  /** Admin only. Append an unplanned Stop to the open saved playlist. */
+  addSavedStop(): void {
+    const saved = this.openSaved;
+    if (!saved) return;
+    this.send(api.savedPlaylistAddStop(saved.id));
+  }
+
+  /** Admin only. `null` clears the plan. */
+  setSavedStopDuration(entryId: number, seconds: number | null): void {
+    this.send(api.savedPlaylistSetStopDuration(entryId, seconds));
+  }
+
+  /** Plan the queued Stop at `index`; `null` clears it. Open to everyone. */
+  setStopDuration(index: number, seconds: number | null): void {
+    this.send(api.playlistSetStopDuration(index, seconds));
   }
 
   removeSavedEntries(entryIds: number[]): void {
@@ -941,6 +976,7 @@ export class AppState {
 
   /** A drag of a selected row carries the selection; of any other, that row. */
   startLibraryDrag(track: Track): void {
+    this.draggedItems = null;
     this.draggedLibrarySelection = this.selectedIds.includes(track.id);
     this.draggedTrackIds = this.draggedLibrarySelection
       ? [...this.selectedIds]
@@ -948,18 +984,34 @@ export class AppState {
   }
 
   /**
-   * Start a drag of tracks that are not the library selection's — the entries
-   * of a saved playlist. An empty list is a drag that carries no track.
+   * Start a drag of the entries of a saved playlist, tracks and Stops. An
+   * empty list is a drag that carries nothing to the playlist.
    */
-  startTrackDrag(ids: number[]): void {
+  startEntryDrag(items: PersistedPlaylistItem[]): void {
     this.draggedLibrarySelection = false;
-    this.draggedTrackIds = ids.length > 0 ? ids : null;
+    this.draggedItems = items.length > 0 ? items : null;
+    this.draggedTrackIds = this.draggedItems
+      ? this.draggedItems.flatMap((item) =>
+          item.kind === "track" ? [item.id] : [],
+        )
+      : null;
+  }
+
+  /** The drag is over, dropped or not. */
+  endDrag(): void {
+    this.draggedTrackIds = null;
+    this.draggedItems = null;
   }
 
   /** Queue what is being dragged ahead of the item at `index`. */
   dropDraggedInPlaylist(index: number): void {
     const ids = this.draggedTrackIds;
-    this.draggedTrackIds = null;
+    const items = this.draggedItems;
+    this.endDrag();
+    if (items) {
+      this.send(api.playlistAddItems(items, index));
+      return;
+    }
     if (!ids || ids.length === 0) return;
     const selection = this.draggedLibrarySelection;
     if (ids.length === 1) this.send(api.playlistInsert(ids[0], index));
@@ -1815,7 +1867,10 @@ export class AppState {
         playlistIds: this.playlist.filter(isTrackItem).map((i) => i.track.id),
         playlistItems: this.playlist.map((i) =>
           isStopMarker(i)
-            ? { kind: "stop" as const }
+            ? {
+                kind: "stop" as const,
+                planned_duration_seconds: i.planned_duration_seconds ?? null,
+              }
             : {
                 kind: "track" as const,
                 id: i.track.id,

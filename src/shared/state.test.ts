@@ -24,6 +24,8 @@ const { api } = vi.hoisted(() => {
     playlistAddFront: vi.fn(),
     playlistInsert: vi.fn(),
     playlistAddMany: vi.fn(),
+    playlistAddItems: vi.fn(),
+    playlistSetStopDuration: vi.fn(),
     playlistSetItemCuePoints: vi.fn(),
     playlistAddSaved: vi.fn(),
     playlistSetSource: vi.fn(),
@@ -37,6 +39,8 @@ const { api } = vi.hoisted(() => {
     pickSavedPlaylistFile: vi.fn(),
     pickSavedPlaylistTarget: vi.fn(),
     savedPlaylistAddEntries: vi.fn(),
+    savedPlaylistAddStop: vi.fn(),
+    savedPlaylistSetStopDuration: vi.fn(),
     savedPlaylistRemoveEntry: vi.fn(),
     savedPlaylistBindEntry: vi.fn(),
     savedPlaylistMoveEntry: vi.fn(),
@@ -210,7 +214,7 @@ import {
   formatTime,
   type Track,
 } from "./state.svelte";
-import type { ScanStatus } from "./api";
+import type { PersistedPlaylistItem, ScanStatus } from "./api";
 import { NO_CUE_POINTS } from "./cuePoints";
 import {
   isTrackItem,
@@ -431,6 +435,23 @@ function wirePlaylist(playlist: MockPlaylistBackend): void {
   );
   api.playlistAddStopMarker.mockImplementation(() =>
     ok(() => playlist.addStopMarker()),
+  );
+  api.playlistAddItems.mockImplementation(
+    (items: PersistedPlaylistItem[], index: number | null) =>
+      ok(() =>
+        playlist.insertItems(
+          index,
+          items.map((item) =>
+            item.kind === "stop"
+              ? stopMarker(item.planned_duration_seconds)
+              : trackItem(known(item.id), item.cue_override),
+          ),
+        ),
+      ),
+  );
+  api.playlistSetStopDuration.mockImplementation(
+    (index: number, seconds: number | null) =>
+      ok(() => playlist.setStopDuration(index, seconds)),
   );
   api.playlistAddFiller.mockResolvedValue(undefined);
   api.playlistRemove.mockImplementation((index: number) =>
@@ -2485,10 +2506,25 @@ describe("AppState session persistence (stop markers)", () => {
     const arg = api.saveSession.mock.calls[0][0];
     expect(arg.playlistItems).toEqual([
       { kind: "track", id: 1, cue_override: null },
-      { kind: "stop" },
+      { kind: "stop", planned_duration_seconds: null },
       { kind: "track", id: 2, cue_override: null },
     ]);
     expect(arg.playlistIds).toEqual([1, 2]);
+  });
+
+  it("a queued Stop's plan is set by index and kept in the session", async () => {
+    ({ app } = makeApp());
+    await app.loadSession();
+    app.addToPlaylist(t(1));
+    app.addStopMarker();
+    app.setStopDuration(1, 150);
+    vi.runAllTimers();
+    expect(api.playlistSetStopDuration).toHaveBeenCalledWith(1, 150);
+    const arg = api.saveSession.mock.calls.at(-1)![0];
+    expect(arg.playlistItems[1]).toEqual({
+      kind: "stop",
+      planned_duration_seconds: 150,
+    });
   });
 
   it("mirrors a restored playlist that still holds a stop marker", async () => {
@@ -3318,6 +3354,8 @@ describe("AppState saved playlists", () => {
     name: "Show",
     entries: titles.map((title, i) => ({
       id: i + 1,
+      kind: "track",
+      plannedDurationSeconds: null,
       track: null,
       artist: "a",
       title,
@@ -3425,10 +3463,52 @@ describe("AppState saved playlists", () => {
     app.toggleSelected(2);
     // Track 1 is in the library selection too, but this drag is not that.
     t(9);
-    app.startTrackDrag([1, 9]);
+    const items: PersistedPlaylistItem[] = [
+      { kind: "track", id: 1, cue_override: null },
+      { kind: "stop", planned_duration_seconds: 60 },
+      { kind: "track", id: 9, cue_override: null },
+    ];
+    app.startEntryDrag(items);
+    expect(app.draggedTrackIds).toEqual([1, 9]);
     app.dropDraggedInPlaylist(0);
-    expect(api.playlistAddMany).toHaveBeenCalledWith([1, 9], 0);
+    expect(api.playlistAddItems).toHaveBeenCalledWith(items, 0);
+    expect(app.draggedTrackIds).toBeNull();
     expect(app.selectedIds).toEqual([1, 2]);
+  });
+
+  it("a drag of a Stop alone still reaches the playlist", () => {
+    const stop: PersistedPlaylistItem[] = [
+      { kind: "stop", planned_duration_seconds: null },
+    ];
+    app.startEntryDrag(stop);
+    expect(app.draggedTrackIds).toEqual([]);
+    app.dropDraggedInPlaylist(2);
+    expect(api.playlistAddItems).toHaveBeenCalledWith(stop, 2);
+  });
+
+  it("queues picked entries, Stops among them, at the end or as next", () => {
+    const items: PersistedPlaylistItem[] = [
+      { kind: "stop", planned_duration_seconds: 90 },
+    ];
+    app.queueItems(items);
+    expect(api.playlistAddItems).toHaveBeenLastCalledWith(items, null);
+    app.queueItems(items, true);
+    expect(api.playlistAddItems).toHaveBeenLastCalledWith(items, 0);
+    app.queueItems([]);
+    expect(api.playlistAddItems).toHaveBeenCalledTimes(2);
+  });
+
+  it("adds a Stop to the open saved playlist and plans one by its entry", async () => {
+    api.savedPlaylistAddStop.mockResolvedValue(undefined);
+    api.savedPlaylistSetStopDuration.mockResolvedValue(undefined);
+    app.addSavedStop();
+    expect(api.savedPlaylistAddStop).not.toHaveBeenCalled();
+    api.savedPlaylistGet.mockResolvedValue(show(["A"]));
+    await app.openSavedPlaylist(5);
+    app.addSavedStop();
+    expect(api.savedPlaylistAddStop).toHaveBeenCalledWith(5);
+    app.setSavedStopDuration(12, null);
+    expect(api.savedPlaylistSetStopDuration).toHaveBeenCalledWith(12, null);
   });
 
   it("queues tracks in the order given, at the end or as next", () => {

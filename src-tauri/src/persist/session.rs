@@ -18,7 +18,12 @@ pub enum SessionPlaylistItem {
         #[serde(default)]
         cue_override: Option<CuePoints>,
     },
-    Stop,
+    Stop {
+        /// Additive and defaulted: a Stop saved before plans existed loads
+        /// unplanned.
+        #[serde(default)]
+        planned_duration_seconds: Option<u32>,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -233,7 +238,9 @@ mod tests {
                     id: 7,
                     cue_override: None,
                 },
-                SessionPlaylistItem::Stop,
+                SessionPlaylistItem::Stop {
+                    planned_duration_seconds: None,
+                },
                 SessionPlaylistItem::Track {
                     id: 9,
                     cue_override: None,
@@ -252,7 +259,9 @@ mod tests {
                     id: 7,
                     cue_override: None,
                 },
-                SessionPlaylistItem::Stop,
+                SessionPlaylistItem::Stop {
+                    planned_duration_seconds: None,
+                },
                 SessionPlaylistItem::Track {
                     id: 9,
                     cue_override: None,
@@ -283,7 +292,9 @@ mod tests {
                     id: 7,
                     cue_override: None,
                 },
-                SessionPlaylistItem::Stop
+                SessionPlaylistItem::Stop {
+                    planned_duration_seconds: None,
+                }
             ]
         );
     }

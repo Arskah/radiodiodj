@@ -92,6 +92,18 @@ export class MockPlaylistBackend {
     this.emit();
   }
 
+  insertItems(index: number | null, items: PlaylistItem[]): void {
+    this.playlist.splice(index ?? this.playlist.length, 0, ...items);
+    this.emit();
+  }
+
+  setStopDuration(index: number, seconds: number | null): void {
+    if (this.playlist[index] && isStopMarker(this.playlist[index])) {
+      this.playlist[index] = stopMarker(seconds);
+    }
+    this.emit();
+  }
+
   remove(index: number): void {
     this.playlist.splice(index, 1);
     this.emit();
