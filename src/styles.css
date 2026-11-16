@@ -482,7 +482,7 @@ body {
   color: var(--secondary);
 }
 
-.np-group {
+.deck-group {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-xs);
@@ -492,7 +492,7 @@ body {
   color: var(--on-surface-variant);
 }
 
-.np-group .material-symbols-outlined {
+.deck-group .material-symbols-outlined {
   font-size: 14px;
   color: var(--group-colour);
 }

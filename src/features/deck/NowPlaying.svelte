@@ -63,7 +63,7 @@
         <span id="np-artist">{app.currentTrack?.artist ?? ""}</span>
         {#if app.currentGroup}
           <span
-            class="np-group group-colour-{groupColour(app.currentGroup.id)}"
+            class="deck-group group-colour-{groupColour(app.currentGroup.id)}"
             title="On air from this saved playlist"
             ><span class="material-symbols-outlined" aria-hidden="true"
               >queue_music</span
