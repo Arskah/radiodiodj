@@ -224,6 +224,18 @@ _Avoid_: Edited time, local time
 Ordered sequence of upcoming tracks that feeds the Main deck.
 _Avoid_: Queue, list
 
+**Stop marker**:
+A **Playlist** item that is not a Track. Advancement consumes it and stops instead of loading the next item, so the Playlist below it never plays unattended. May carry a planned duration, which is an estimate and never resumes playback (planned, [docs/prepared-shows.md](docs/prepared-shows.md)).
+_Avoid_: Pause, break, barrier
+
+**Hold**:
+The state after a **Stop marker** is consumed, until the producer plays on. Shown on the Main deck with a counter against the planned duration (planned).
+_Avoid_: Pause (that is a paused track), stopped
+
+**Group**:
+A run of **Playlist** items queued together from one **Saved playlist**, drawn under one header and colour. A label on the items; advancement ignores it (planned).
+_Avoid_: Block (that is one refill's generated run), show, set
+
 **Auto-playlist**:
 Playlist mode that maintains itself by randomly selecting from the **Auto-playlist source** — the Music library unless a **Saved playlist** is chosen — with jingle/commercial interleaving.
 _Avoid_: Auto-DJ, autoplay
@@ -261,7 +273,7 @@ A named, stored, ordered list of **Entries**. Never on air by itself: it is appe
 _Avoid_: Playlist (that is the on-air one), show, set list, crate
 
 **Entry**:
-One row of a **Saved playlist**, referring to a Track of any content type. Keeps the artist, title, duration and **Fingerprint** of its Track as last known, so it survives its Track being unknown here.
+One row of a **Saved playlist**, referring to a Track of any content type (planned: or a **Stop marker**). Keeps the artist, title, duration and **Fingerprint** of its Track as last known, so it survives its Track being unknown here.
 _Avoid_: Item (that is a Playlist item), row, song
 
 **Unmatched entry**:
