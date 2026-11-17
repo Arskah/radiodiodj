@@ -118,6 +118,8 @@ describe("saved playlists", () => {
     await waitForQueue(2);
     expect(await queuedTitles()).toEqual(queued);
     await waitForText(sel.savedNotice, "Added 2 tracks");
+    // Queued whole, the saved playlist is one group under its own header.
+    await waitForText(sel.groupHeader, "Morning show");
   });
 
   it("chooses a saved playlist as the auto-playlist source and drops it again", async () => {

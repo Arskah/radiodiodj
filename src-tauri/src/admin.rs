@@ -186,6 +186,8 @@ mod tests {
         "playlist_insert",
         "playlist_add_many",
         "playlist_add_items",
+        "playlist_move_group",
+        "playlist_remove_group",
         "playlist_set_stop_duration",
         "playlist_add_saved",
         "playlist_save_as",

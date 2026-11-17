@@ -10,6 +10,7 @@ import type {
   SavedPlaylistSummary,
   SourceInfo,
   CuePoints,
+  Group,
   DeviceInfo,
   DeviceRef,
   HealthReport,
@@ -154,7 +155,8 @@ const messageOf = (err: unknown): string =>
 
 /** Which saved-playlist dialog is up, and what it acts on. */
 export type SavedDialog =
-  | { kind: "saveAs" }
+  /** With `group`, that group's rows alone, named after it to start with. */
+  | { kind: "saveAs"; group?: Group }
   /** `fromSelection` clears the library selection once the tracks are in. */
   | { kind: "addTo"; trackIds: number[]; fromSelection?: boolean }
   | { kind: "rename"; id: number; name: string }
@@ -243,6 +245,8 @@ export class AppState {
    * that carried one.
    */
   currentCueOverride = $state<CuePoints | null>(null);
+  /** The group the track on air came from; _Add as next_ joins it. */
+  currentGroup = $state<Group | null>(null);
   currentTrack = $state<Track | null>(null);
 
   /**
@@ -813,6 +817,26 @@ export class AppState {
   }
 
   /** Rejects with the backend's reason, for the dialog to show. */
+  async saveGroupAs(groupId: string, name: string): Promise<void> {
+    await api.playlistSaveAs(name, groupId);
+  }
+
+  /** Move a group that is not on air, whole, into the gap at `gap`. */
+  moveGroup(groupId: string, gap: number): void {
+    this.send(api.playlistMoveGroup(groupId, gap));
+  }
+
+  /** Remove what is left of a group; the track on air plays on. */
+  removeGroup(groupId: string): void {
+    this.send(api.playlistRemoveGroup(groupId));
+  }
+
+  /** Where _Add as next_ lands: in the group on air, as its next rows. */
+  private nextGroup(asNext: boolean): Group | null {
+    return asNext ? this.currentGroup : null;
+  }
+
+  /** Rejects with the backend's reason, for the dialog to show. */
   async createSavedPlaylist(name: string, trackIds: number[]): Promise<void> {
     const made = await api.savedPlaylistCreate(name, trackIds);
     this.savedNotice = `Saved “${made.name}”: ${sizeLabel(made.entries, 0)}`;
@@ -851,13 +875,17 @@ export class AppState {
   /** Queue tracks in the order given, at the end or as next-up. */
   queueTracks(ids: number[], asNext = false): void {
     if (ids.length === 0) return;
-    this.send(api.playlistAddMany(ids, asNext ? 0 : null));
+    this.send(
+      api.playlistAddMany(ids, asNext ? 0 : null, this.nextGroup(asNext)),
+    );
   }
 
   /** Queue saved-playlist entries, Stops among them, at the end or as next-up. */
   queueItems(items: PersistedPlaylistItem[], asNext = false): void {
     if (items.length === 0) return;
-    this.send(api.playlistAddItems(items, asNext ? 0 : null));
+    this.send(
+      api.playlistAddItems(items, asNext ? 0 : null, this.nextGroup(asNext)),
+    );
   }
 
   /** Admin only. Append an unplanned Stop to the open saved playlist. */
@@ -929,7 +957,7 @@ export class AppState {
 
   /** Queue a track as next-up, ahead of everything already queued. */
   addNextToPlaylist(track: Track): void {
-    this.send(api.playlistAddFront(track.id));
+    this.send(api.playlistAddFront(track.id, null, this.currentGroup));
   }
 
   /** The rows a selection gesture can reach: none on the Playlists tab. */
@@ -970,7 +998,13 @@ export class AppState {
   /** Queue the selection in pick order, at the end or as next-up, and clear it. */
   addSelectionToPlaylist(asNext = false): void {
     if (this.selectedIds.length === 0) return;
-    this.send(api.playlistAddMany([...this.selectedIds], asNext ? 0 : null));
+    this.send(
+      api.playlistAddMany(
+        [...this.selectedIds],
+        asNext ? 0 : null,
+        this.nextGroup(asNext),
+      ),
+    );
     this.clearSelection();
   }
 
@@ -1003,19 +1037,19 @@ export class AppState {
     this.draggedItems = null;
   }
 
-  /** Queue what is being dragged ahead of the item at `index`. */
-  dropDraggedInPlaylist(index: number): void {
+  /** Queue what is being dragged ahead of the item at `index`, in `group`. */
+  dropDraggedInPlaylist(index: number, group: Group | null = null): void {
     const ids = this.draggedTrackIds;
     const items = this.draggedItems;
     this.endDrag();
     if (items) {
-      this.send(api.playlistAddItems(items, index));
+      this.send(api.playlistAddItems(items, index, group));
       return;
     }
     if (!ids || ids.length === 0) return;
     const selection = this.draggedLibrarySelection;
-    if (ids.length === 1) this.send(api.playlistInsert(ids[0], index));
-    else this.send(api.playlistAddMany(ids, index));
+    if (ids.length === 1) this.send(api.playlistInsert(ids[0], index, group));
+    else this.send(api.playlistAddMany(ids, index, group));
     if (selection) this.clearSelection();
   }
 
@@ -1049,9 +1083,11 @@ export class AppState {
     this.send(api.playlistRemove(index));
   }
 
-  movePlaylistItem(from: number, to: number): void {
-    if (from === to) return;
-    this.send(api.playlistMove(from, to));
+  /** Move a queued item to `to`, into `group` or, with `null`, out of all. */
+  movePlaylistItem(from: number, to: number, group: Group | null = null): void {
+    const was = this.playlist[from]?.group?.id ?? null;
+    if (from === to && was === (group?.id ?? null)) return;
+    this.send(api.playlistMove(from, to, group));
   }
 
   clearPlaylist(): void {
@@ -1086,6 +1122,7 @@ export class AppState {
   private applySnapshot(snapshot: PlaylistSnapshot): void {
     this.playlist = snapshot.playlist;
     this.currentCueOverride = snapshot.currentOverride ?? null;
+    this.currentGroup = snapshot.currentGroup ?? null;
     this.autoPlaylistActive = snapshot.autoPlaylistActive;
     this.autoSource = snapshot.source ?? null;
     this.revertedFrom = snapshot.revertedFrom ?? null;
@@ -1595,7 +1632,7 @@ export class AppState {
    */
   queueCueDraft(track: Track, points: CuePoints): void {
     const override = cuePointsEqual(points, track.cue_points) ? null : points;
-    this.send(api.playlistAddFront(track.id, override));
+    this.send(api.playlistAddFront(track.id, override, this.currentGroup));
   }
 
   /** Whether adding the cue track now would give its item cue points. */
@@ -1870,16 +1907,19 @@ export class AppState {
             ? {
                 kind: "stop" as const,
                 planned_duration_seconds: i.planned_duration_seconds ?? null,
+                group: i.group ?? null,
               }
             : {
                 kind: "track" as const,
                 id: i.track.id,
                 cue_override: i.cue_override ?? null,
+                group: i.group ?? null,
               },
         ),
         currentTrackId: this.currentTrack?.id ?? null,
         currentTime: this.currentTime,
         currentCueOverride: this.currentCueOverride,
+        currentGroup: this.currentGroup,
         autoPlaylistActive: this.autoPlaylistActive,
         autoPlaylistSource: this.autoSource?.id ?? null,
         autoAdvance: this.autoAdvance,

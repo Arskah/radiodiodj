@@ -97,6 +97,7 @@ pub enum SavedItem {
 /// Stops in order, and how many track entries had no track.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SavedTracks {
+    pub name: String,
     pub items: Vec<SavedItem>,
     pub unmatched: usize,
 }
@@ -774,14 +775,14 @@ impl Db {
     /// counted.
     pub fn saved_playlist_tracks(&self, id: i64) -> Result<Option<SavedTracks>> {
         let conn = self.conn.lock();
-        let exists: Option<i64> = conn
-            .query_row("SELECT id FROM saved_playlists WHERE id = ?", [id], |r| {
-                r.get(0)
+        let Some(name) = conn
+            .query_row("SELECT name FROM saved_playlists WHERE id = ?", [id], |r| {
+                r.get::<_, String>(0)
             })
-            .optional()?;
-        if exists.is_none() {
+            .optional()?
+        else {
             return Ok(None);
-        }
+        };
         let mut stmt = conn.prepare(
             "SELECT e.kind, e.planned_duration_seconds, t.id, t.content_type \
              FROM saved_playlist_entries e LEFT JOIN tracks t ON t.id = e.track_id \
@@ -808,7 +809,11 @@ impl Db {
                 (EntryKind::Track, ..) => unmatched += 1,
             }
         }
-        Ok(Some(SavedTracks { items, unmatched }))
+        Ok(Some(SavedTracks {
+            name,
+            items,
+            unmatched,
+        }))
     }
 }
 

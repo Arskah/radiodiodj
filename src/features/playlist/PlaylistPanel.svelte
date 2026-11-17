@@ -14,10 +14,45 @@
   import MissingBadge from "../track/MissingBadge.svelte";
   import StopDurationField from "./StopDurationField.svelte";
   import { gapAt, moveTarget } from "./playlistDrop";
+  import {
+    dropAt,
+    dropInto,
+    groupColour,
+    groupGap,
+    upcomingRows,
+    type HeaderRow,
+    type UpcomingRow,
+  } from "./playlistGroups";
   import { sizeLabel } from "../../shared/savedPlaylists";
 
   let dragFromIndex = $state(-1);
-  let dropTarget = $state(-1);
+  /** The group being dragged whole by its header. */
+  let dragGroup = $state<string | null>(null);
+  /** The gap between drawn rows a drop would land in. */
+  let dropGap = $state(-1);
+  /** The collapsed header a drop would append to, instead of a gap. */
+  let dropHeader = $state<string | null>(null);
+
+  /** Collapsed groups, by id. The window's alone: a restart opens them all. */
+  let collapsed = $state<ReadonlySet<string>>(new Set());
+
+  const rows = $derived(
+    upcomingRows(app.playlist, app.currentGroup, collapsed),
+  );
+
+  function toggleCollapsed(id: string): void {
+    const next = new Set(collapsed);
+    if (!next.delete(id)) next.add(id);
+    collapsed = next;
+  }
+
+  const colourClass = (colour: number | null): string =>
+    colour === null ? "" : `in-group group-colour-${colour}`;
+
+  function rowKeyOf(row: UpcomingRow): string {
+    if (row.kind === "header") return `h-${row.group.id}-${row.start}`;
+    return `${row.index}-${rowKey(row.item)}`;
+  }
 
   function onEnter(track: Track, e: MouseEvent): void {
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -26,6 +61,7 @@
 
   function onDragStart(e: DragEvent, i: number): void {
     dragFromIndex = i;
+    dragGroup = null;
     // A library row removed mid-drag never fires the `dragend` that clears it.
     app.endDrag();
     if (e.dataTransfer) {
@@ -34,24 +70,42 @@
     }
   }
 
+  function onGroupDragStart(e: DragEvent, id: string): void {
+    dragGroup = id;
+    dragFromIndex = -1;
+    app.endDrag();
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", id);
+    }
+  }
+
   function onDragEnd(): void {
     dragFromIndex = -1;
-    dropTarget = -1;
+    dragGroup = null;
+    dropGap = -1;
+    dropHeader = null;
   }
 
   /** A row of this list or of the library is in the air. */
   const dragging = $derived(
-    dragFromIndex !== -1 || app.draggedTrackIds !== null,
+    dragFromIndex !== -1 || dragGroup !== null || app.draggedTrackIds !== null,
   );
 
   // A drag that ends anywhere else never reaches a handler here.
   $effect(() => {
-    if (!dragging) dropTarget = -1;
+    if (!dragging) {
+      dropGap = -1;
+      dropHeader = null;
+    }
   });
 
   // The same hazard the other way round: a queued row that aired mid-drag.
   $effect(() => {
-    if (app.draggedTrackIds) dragFromIndex = -1;
+    if (app.draggedTrackIds) {
+      dragFromIndex = -1;
+      dragGroup = null;
+    }
   });
 
   /**
@@ -61,10 +115,23 @@
    */
   function gapUnder(e: DragEvent): number {
     const list = e.currentTarget as HTMLElement;
-    const rows = Array.from(list.querySelectorAll(".playlist-row"), (row) =>
+    const drawn = Array.from(list.querySelectorAll(".playlist-row"), (row) =>
       row.getBoundingClientRect(),
     );
-    return gapAt(e.clientY, rows);
+    return gapAt(e.clientY, drawn);
+  }
+
+  /** A collapsed header under the pointer takes rows, though not a group. */
+  function headerUnder(e: DragEvent): HeaderRow | null {
+    if (dragGroup !== null || !(e.target instanceof Element)) return null;
+    const id = e.target
+      .closest(".group-header.collapsed")
+      ?.getAttribute("data-group");
+    return (
+      rows.find(
+        (row): row is HeaderRow => row.kind === "header" && row.group.id === id,
+      ) ?? null
+    );
   }
 
   function onDragOver(e: DragEvent): void {
@@ -73,30 +140,42 @@
     if (e.dataTransfer) {
       e.dataTransfer.dropEffect = app.draggedTrackIds ? "copy" : "move";
     }
-    dropTarget = gapUnder(e);
+    const header = headerUnder(e);
+    dropHeader = header?.group.id ?? null;
+    dropGap = header ? -1 : gapUnder(e);
   }
 
   function onDragLeave(e: DragEvent): void {
     const list = e.currentTarget as HTMLElement;
     if (!(e.relatedTarget instanceof Node) || !list.contains(e.relatedTarget)) {
-      dropTarget = -1;
+      dropGap = -1;
+      dropHeader = null;
     }
   }
 
   function onDrop(e: DragEvent): void {
     e.preventDefault();
-    const target = gapUnder(e);
+    const header = headerUnder(e);
+    const gap = gapUnder(e);
     const from = dragFromIndex;
-    const fromLibrary = app.draggedTrackIds !== null;
-    dropTarget = -1;
-    dragFromIndex = -1;
-    if (fromLibrary) {
-      app.dropDraggedInPlaylist(target);
+    const group = dragGroup;
+    const fromOutside = app.draggedTrackIds !== null;
+    onDragEnd();
+    if (group !== null) {
+      app.moveGroup(group, groupGap(rows, gap));
+      return;
+    }
+    const target = header ? dropInto(header) : dropAt(rows, gap);
+    if (fromOutside) {
+      app.dropDraggedInPlaylist(target.index, target.group);
       return;
     }
     if (from === -1) return;
-    const to = moveTarget(from, target);
-    if (to !== null) app.movePlaylistItem(from, to);
+    app.movePlaylistItem(
+      from,
+      moveTarget(from, target.index) ?? from,
+      target.group,
+    );
   }
 
   const stopped = $derived(app.playlist.some(isStopMarker));
@@ -232,15 +311,13 @@
   {#if app.playlistTab === "playlist"}
     <div
       id="playlist"
-      class:drop-into={dragging &&
-        dropTarget === 0 &&
-        app.playlist.length === 0}
+      class:drop-into={dragging && dropGap === 0 && rows.length === 0}
       ondragover={onDragOver}
       ondragleave={onDragLeave}
       ondrop={onDrop}
       role="list"
     >
-      {#if app.playlist.length === 0}
+      {#if rows.length === 0}
         <div class="empty">
           <span class="empty-icon"
             ><span class="material-symbols-outlined">queue_music</span></span
@@ -252,130 +329,198 @@
           >
         </div>
       {:else}
-        {#each app.playlist as item, i (i + "-" + rowKey(item))}
-          {#if isStopMarker(item)}
+        {#each rows as row, r (rowKeyOf(row))}
+          {#if row.kind === "header"}
+            {@const colour = groupColour(row.group.id)}
             <div
-              class="playlist-row stop-row"
-              class:dragging={i === dragFromIndex}
-              class:drop-before={dragging && dropTarget === i}
+              class="playlist-row group-header group-colour-{colour}"
+              class:collapsed={row.collapsed}
+              class:on-air={row.onAir}
+              class:pinned={row.pinned}
+              class:dragging={dragGroup === row.group.id}
+              class:drop-before={dragging && dropGap === r}
               class:drop-after={dragging &&
-                dropTarget === i + 1 &&
-                i === app.playlist.length - 1}
-              draggable="true"
-              data-index={i}
-              ondragstart={(e) => onDragStart(e, i)}
+                dropGap === r + 1 &&
+                r === rows.length - 1}
+              class:drop-into={dragging && dropHeader === row.group.id}
+              draggable={!row.onAir}
+              data-group={row.group.id}
+              ondragstart={(e) => onGroupDragStart(e, row.group.id)}
               ondragend={onDragEnd}
               role="listitem"
             >
-              <span class="pl-drag"
-                ><span class="material-symbols-outlined">drag_indicator</span
-                ></span
+              <button
+                class="group-toggle"
+                aria-expanded={!row.collapsed}
+                aria-label={`${row.collapsed ? "Expand" : "Collapse"} ${row.group.name}`}
+                title={row.collapsed ? "Expand" : "Collapse"}
+                onclick={() => toggleCollapsed(row.group.id)}
               >
-              <span class="pl-num"
-                ><span class="material-symbols-outlined">block</span></span
+                <span class="material-symbols-outlined"
+                  >{row.collapsed ? "chevron_right" : "expand_more"}</span
+                >
+              </button>
+              <span class="material-symbols-outlined group-icon"
+                >queue_music</span
               >
               <div class="pl-body">
-                <span class="pl-stop-label">Stop</span>
-                <span class="pl-stop-sub">Auto play halts here</span>
+                <span class="group-name">{row.group.name}</span>
+                <span class="group-size"
+                  >{sizeLabel(row.tracks + row.stops, 0, row.stops)}</span
+                >
               </div>
-              <div class="pl-right">
-                <StopDurationField
-                  value={item.planned_duration_seconds ?? null}
-                  oncommit={(seconds) => app.setStopDuration(i, seconds)}
-                />
-              </div>
+              {#if row.onAir}
+                <span class="pl-status group-on-air">On air</span>
+              {/if}
+              <button
+                class="btn-edit"
+                title="Save this group as a saved playlist"
+                aria-label={`Save ${row.group.name} as a saved playlist`}
+                disabled={row.tracks + row.stops === 0}
+                onclick={() =>
+                  (app.savedDialog = { kind: "saveAs", group: row.group })}
+              >
+                <span class="material-symbols-outlined">save</span>
+              </button>
               <button
                 class="btn-remove"
-                title="Remove"
-                aria-label="Remove stop marker"
-                onclick={(e) => {
-                  e.stopPropagation();
-                  app.removeFromPlaylist(i);
-                }}
+                title="Remove what is left of this group"
+                aria-label={`Remove ${row.group.name}`}
+                disabled={row.tracks + row.stops === 0}
+                onclick={() => app.removeGroup(row.group.id)}
               >
                 <span class="material-symbols-outlined">close</span>
               </button>
             </div>
           {:else}
-            {@const aired = airedTrack(item.track, item.cue_override)}
-            <div
-              class="playlist-row"
-              class:dragging={i === dragFromIndex}
-              class:drop-before={dragging && dropTarget === i}
-              class:drop-after={dragging &&
-                dropTarget === i + 1 &&
-                i === app.playlist.length - 1}
-              draggable="true"
-              data-index={i}
-              ondragstart={(e) => onDragStart(e, i)}
-              ondragend={onDragEnd}
-              role="listitem"
-            >
+            {@const i = row.index}
+            {@const item = row.item}
+            {@const colour = item.group ? groupColour(item.group.id) : null}
+            {#if isStopMarker(item)}
               <div
-                class="pl-hover-area"
-                role="presentation"
-                onmouseenter={(e) => onEnter(aired, e)}
-                onmouseleave={() => app.clearHover()}
+                class="playlist-row stop-row {colourClass(colour)}"
+                class:dragging={i === dragFromIndex}
+                class:drop-before={dragging && dropGap === r}
+                class:drop-after={dragging &&
+                  dropGap === r + 1 &&
+                  r === rows.length - 1}
+                draggable="true"
+                data-index={i}
+                ondragstart={(e) => onDragStart(e, i)}
+                ondragend={onDragEnd}
+                role="listitem"
               >
                 <span class="pl-drag"
                   ><span class="material-symbols-outlined">drag_indicator</span
                   ></span
                 >
-                <span class="pl-num">{i + 1}</span>
+                <span class="pl-num"
+                  ><span class="material-symbols-outlined">block</span></span
+                >
                 <div class="pl-body">
-                  <span class="pl-title">{item.track.title}</span>
-                  <span class="pl-artist">{item.track.artist}</span>
+                  <span class="pl-stop-label">Stop</span>
+                  <span class="pl-stop-sub">Auto play halts here</span>
                 </div>
                 <div class="pl-right">
-                  <MissingBadge trackId={item.track.id} />
-                  {#if i === 0}
-                    <span class="pl-status next-up">Next Up</span>
-                  {/if}
-                  {#if item.cue_override}
-                    <!-- This airing plays under cue points of its own, not the
-                         track's. Clicking hands it back to the radio edit. -->
-                    <button
-                      class="pl-override"
-                      title="Custom cue points for this airing — click to play the track's own instead"
-                      aria-label="Clear this airing's cue points"
-                      onclick={(e) => {
-                        e.stopPropagation();
-                        app.setItemCuePoints(i, null);
-                      }}
-                    >
-                      <span class="material-symbols-outlined"
-                        >line_start_diamond</span
-                      >
-                    </button>
-                  {/if}
-                  <span class="pl-duration" class:trimmed={isTrimmed(aired)}
-                    >{formatTime(airDuration(aired))}</span
-                  >
+                  <StopDurationField
+                    value={item.planned_duration_seconds ?? null}
+                    oncommit={(seconds) => app.setStopDuration(i, seconds)}
+                  />
                 </div>
+                <button
+                  class="btn-remove"
+                  title="Remove"
+                  aria-label="Remove stop marker"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    app.removeFromPlaylist(i);
+                  }}
+                >
+                  <span class="material-symbols-outlined">close</span>
+                </button>
               </div>
-              <button
-                class="btn-play-track"
-                title="Play now"
-                aria-label="Play now"
-                onclick={(e) => {
-                  e.stopPropagation();
-                  app.playIndex(i);
-                }}
+            {:else}
+              {@const aired = airedTrack(item.track, item.cue_override)}
+              <div
+                class="playlist-row {colourClass(colour)}"
+                class:dragging={i === dragFromIndex}
+                class:drop-before={dragging && dropGap === r}
+                class:drop-after={dragging &&
+                  dropGap === r + 1 &&
+                  r === rows.length - 1}
+                draggable="true"
+                data-index={i}
+                ondragstart={(e) => onDragStart(e, i)}
+                ondragend={onDragEnd}
+                role="listitem"
               >
-                <span class="material-symbols-outlined">play_arrow</span>
-              </button>
-              <button
-                class="btn-remove"
-                title="Remove"
-                aria-label="Remove from playlist"
-                onclick={(e) => {
-                  e.stopPropagation();
-                  app.removeFromPlaylist(i);
-                }}
-              >
-                <span class="material-symbols-outlined">close</span>
-              </button>
-            </div>
+                <div
+                  class="pl-hover-area"
+                  role="presentation"
+                  onmouseenter={(e) => onEnter(aired, e)}
+                  onmouseleave={() => app.clearHover()}
+                >
+                  <span class="pl-drag"
+                    ><span class="material-symbols-outlined"
+                      >drag_indicator</span
+                    ></span
+                  >
+                  <span class="pl-num">{i + 1}</span>
+                  <div class="pl-body">
+                    <span class="pl-title">{item.track.title}</span>
+                    <span class="pl-artist">{item.track.artist}</span>
+                  </div>
+                  <div class="pl-right">
+                    <MissingBadge trackId={item.track.id} />
+                    {#if i === 0}
+                      <span class="pl-status next-up">Next Up</span>
+                    {/if}
+                    {#if item.cue_override}
+                      <!-- This airing plays under cue points of its own, not the
+                         track's. Clicking hands it back to the radio edit. -->
+                      <button
+                        class="pl-override"
+                        title="Custom cue points for this airing — click to play the track's own instead"
+                        aria-label="Clear this airing's cue points"
+                        onclick={(e) => {
+                          e.stopPropagation();
+                          app.setItemCuePoints(i, null);
+                        }}
+                      >
+                        <span class="material-symbols-outlined"
+                          >line_start_diamond</span
+                        >
+                      </button>
+                    {/if}
+                    <span class="pl-duration" class:trimmed={isTrimmed(aired)}
+                      >{formatTime(airDuration(aired))}</span
+                    >
+                  </div>
+                </div>
+                <button
+                  class="btn-play-track"
+                  title="Play now"
+                  aria-label="Play now"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    app.playIndex(i);
+                  }}
+                >
+                  <span class="material-symbols-outlined">play_arrow</span>
+                </button>
+                <button
+                  class="btn-remove"
+                  title="Remove"
+                  aria-label="Remove from playlist"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    app.removeFromPlaylist(i);
+                  }}
+                >
+                  <span class="material-symbols-outlined">close</span>
+                </button>
+              </div>
+            {/if}
           {/if}
         {/each}
       {/if}

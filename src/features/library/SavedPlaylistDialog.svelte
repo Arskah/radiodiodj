@@ -11,7 +11,7 @@
   const heading = $derived.by(() => {
     switch (dialog?.kind) {
       case "saveAs":
-        return "Save playlist as";
+        return dialog.group ? "Save group as" : "Save playlist as";
       case "addTo":
         return app.isAdmin ? "Add to saved playlist" : "New saved playlist";
       case "rename":
@@ -38,7 +38,12 @@
 
   $effect(() => {
     if (!dialog) return;
-    name = dialog.kind === "rename" ? dialog.name : "";
+    name =
+      dialog.kind === "rename"
+        ? dialog.name
+        : dialog.kind === "saveAs"
+          ? (dialog.group?.name ?? "")
+          : "";
     error = null;
     busy = false;
     nameInput?.focus();
@@ -70,7 +75,9 @@
     void run(() => {
       switch (current.kind) {
         case "saveAs":
-          return app.savePlaylistAs(name);
+          return current.group
+            ? app.saveGroupAs(current.group.id, name)
+            : app.savePlaylistAs(name);
         case "addTo":
           return app
             .createSavedPlaylist(name, current.trackIds)

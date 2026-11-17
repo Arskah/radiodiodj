@@ -19,7 +19,7 @@ use tauri::{AppHandle, Emitter, Listener};
 
 use super::engine::{Effect, LoadFailure, Playlist, Refiller, Transition};
 use super::generate;
-use super::model::{PlaylistItem, Snapshot, SourceInfo};
+use super::model::{Group, PlaylistItem, Snapshot, SourceInfo};
 use crate::audio::bus::{ProgramBus, FADED_OUT_EVENT, HANDOVER_EVENT};
 use crate::audio::cache::Cache;
 use crate::audio::cue_points::CuePoints;
@@ -376,6 +376,7 @@ impl PlaylistService {
             .current_track_id
             .and_then(|id| self.inner.lookup(id).ok().flatten());
         let current_override = state.current_cue_override;
+        let current_group = state.current_group.clone();
         let seconds = state.current_time;
         let auto_playlist = state.auto_playlist_active;
         let auto_advance = state.auto_advance;
@@ -396,6 +397,7 @@ impl PlaylistService {
                 items,
                 current,
                 current_override,
+                current_group,
                 seconds,
                 auto_playlist,
                 auto_advance,
@@ -412,26 +414,32 @@ impl PlaylistService {
     }
 
     /// Queue a track as next-up, optionally under an override the operator
-    /// auditioned on the cue deck.
-    pub fn add_front(&self, id: i64, cue_override: Option<CuePoints>) {
+    /// auditioned on the cue deck, and in `group`.
+    pub fn add_front(&self, id: i64, cue_override: Option<CuePoints>, group: Option<Group>) {
         self.queue(move |inner| {
             Inner::with_track(inner, id, move |p, _, track| {
-                p.add_front(track, cue_override)
+                let item = PlaylistItem::with_override(track, cue_override).in_group(group);
+                p.insert_items(Some(0), vec![item])
             })
         });
     }
 
-    /// Queue a track ahead of the item at `index`.
-    pub fn insert(&self, id: i64, index: usize) {
+    /// Queue a track ahead of the item at `index`, in `group`.
+    pub fn insert(&self, id: i64, index: usize, group: Option<Group>) {
         self.queue(move |inner| {
-            Inner::with_track(inner, id, move |p, _, track| p.insert(index, track))
+            Inner::with_track(inner, id, move |p, _, track| {
+                p.insert_items(
+                    Some(index),
+                    vec![PlaylistItem::track(track).in_group(group)],
+                )
+            })
         });
     }
 
     /// Queue several tracks as one run ahead of the item at `index`, or at the
     /// end without one: one transition and one snapshot, however many there
     /// are. An id with no row is skipped, as [`Inner::with_track`] skips one.
-    pub fn add_many(&self, ids: Vec<i64>, index: Option<usize>) {
+    pub fn add_many(&self, ids: Vec<i64>, index: Option<usize>, group: Option<Group>) {
         self.queue(move |inner| {
             let tracks = match inner.db.get_tracks_by_ids(&ids) {
                 Ok(tracks) => tracks,
@@ -450,7 +458,11 @@ impl PlaylistService {
             if tracks.is_empty() {
                 return;
             }
-            Inner::apply(inner, move |p, _| p.insert_many(index, tracks));
+            let items = tracks
+                .into_iter()
+                .map(|track| PlaylistItem::track(track).in_group(group.clone()))
+                .collect();
+            Inner::apply(inner, move |p, _| p.insert_items(index, items));
         });
     }
 
@@ -472,21 +484,31 @@ impl PlaylistService {
     /// Queue entries as one run ahead of the item at `index`, or at the end
     /// without one: tracks by id, and Stops with their plans — entries picked
     /// from a saved playlist. A track id with no row is skipped.
-    pub fn add_items(&self, items: Vec<SessionPlaylistItem>, index: Option<usize>) {
+    pub fn add_items(
+        &self,
+        items: Vec<SessionPlaylistItem>,
+        index: Option<usize>,
+        group: Option<Group>,
+    ) {
         self.queue(move |inner| {
             let Some(items) = Inner::resolve_entries(inner, &items) else {
                 return;
             };
+            let items: Vec<PlaylistItem> = items
+                .into_iter()
+                .map(|item| item.in_group(group.clone()))
+                .collect();
             if !items.is_empty() {
                 Inner::apply(inner, move |p, _| p.insert_items(index, items));
             }
         });
     }
 
-    /// Queue a saved playlist at the end as one run: its bound tracks and its
-    /// Stops, in the list's order. With `weave` the run is brought up to the
-    /// interleave cadence first. See `docs/saved-playlists.md`.
-    pub fn add_saved(&self, entries: Vec<SavedItem>, weave: bool) {
+    /// Queue a saved playlist at the end as one run, a new group named `name`:
+    /// its bound tracks and its Stops, in the list's order. With `weave` the
+    /// run is brought up to the interleave cadence first, and what it draws is
+    /// in the group too. See `docs/saved-playlists.md`.
+    pub fn add_saved(&self, name: String, entries: Vec<SavedItem>, weave: bool) {
         self.queue(move |inner| {
             let mut types = HashMap::new();
             let wanted: Vec<SessionPlaylistItem> = entries
@@ -497,12 +519,14 @@ impl PlaylistService {
                         SessionPlaylistItem::Track {
                             id,
                             cue_override: None,
+                            group: None,
                         }
                     }
                     SavedItem::Stop {
                         planned_duration_seconds,
                     } => SessionPlaylistItem::Stop {
                         planned_duration_seconds,
+                        group: None,
                     },
                 })
                 .collect();
@@ -533,6 +557,11 @@ impl PlaylistService {
             if items.is_empty() {
                 return;
             }
+            let group = Group::new(name);
+            let items = items
+                .into_iter()
+                .map(|item| item.in_group(Some(group.clone())))
+                .collect();
             Inner::apply(inner, move |p, _| p.insert_items(None, items));
         });
     }
@@ -604,8 +633,17 @@ impl PlaylistService {
         self.queue(move |inner| Inner::apply(inner, move |p, _| p.remove_tracks(&ids)));
     }
 
-    pub fn move_item(&self, from: usize, to: usize) {
-        self.queue(move |inner| Inner::apply(inner, move |p, _| p.move_item(from, to)));
+    /// Move the item at `from` to `to`, into `group` or out of every group.
+    pub fn move_into(&self, from: usize, to: usize, group: Option<Group>) {
+        self.queue(move |inner| Inner::apply(inner, move |p, _| p.move_into(from, to, group)));
+    }
+
+    pub fn move_group(&self, id: String, gap: usize) {
+        self.queue(move |inner| Inner::apply(inner, move |p, _| p.move_group(&id, gap)));
+    }
+
+    pub fn remove_group(&self, id: String) {
+        self.queue(move |inner| Inner::apply(inner, move |p, _| p.remove_group(&id)));
     }
 
     pub fn clear(&self) {

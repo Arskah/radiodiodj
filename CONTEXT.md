@@ -233,7 +233,7 @@ The state after a **Stop marker** is consumed, until the producer plays on. Show
 _Avoid_: Pause (that is a paused track), stopped
 
 **Group**:
-A run of **Playlist** items queued together from one **Saved playlist**, drawn under one header and colour. A label on the items; advancement ignores it (planned).
+A run of **Playlist** items queued together from one **Saved playlist**, drawn under one header and colour. A label on the items; advancement ignores it.
 _Avoid_: Block (that is one refill's generated run), show, set
 
 **Auto-playlist**:

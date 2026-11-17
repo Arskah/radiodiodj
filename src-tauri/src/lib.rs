@@ -55,7 +55,7 @@ use persist::config::{
     TuningConfig,
 };
 use persist::session::{Session, SessionPlaylistItem, SessionState};
-use playlist::{PlaylistItem, PlaylistService, Snapshot};
+use playlist::{Group, PlaylistItem, PlaylistService, Snapshot};
 use std::time::Duration;
 use update::{UpdateState, Updater};
 
@@ -369,23 +369,33 @@ fn playlist_add(app: State<'_, AppState>, id: i64, cue_points: Option<CuePoints>
 /// when the draft differs from the track's radio edit.
 /// Absent or `null` leaves the item referencing the track.
 #[tauri::command(rename_all = "camelCase")]
-fn playlist_add_front(app: State<'_, AppState>, id: i64, cue_points: Option<CuePoints>) {
-    app.playlist.add_front(id, cue_points);
+fn playlist_add_front(
+    app: State<'_, AppState>,
+    id: i64,
+    cue_points: Option<CuePoints>,
+    group: Option<Group>,
+) {
+    app.playlist.add_front(id, cue_points, group);
 }
 
 /// Insert ahead of the item at `index` — a library row dropped on the playlist.
 /// An index past the end appends.
 #[tauri::command(rename_all = "camelCase")]
-fn playlist_insert(app: State<'_, AppState>, id: i64, index: usize) {
-    app.playlist.insert(id, index);
+fn playlist_insert(app: State<'_, AppState>, id: i64, index: usize, group: Option<Group>) {
+    app.playlist.insert(id, index, group);
 }
 
 /// Insert several tracks as one run, in the order given, ahead of the item at
 /// `index` — a library selection. Absent or `null` appends, as does an index
 /// past the end.
 #[tauri::command(rename_all = "camelCase")]
-fn playlist_add_many(app: State<'_, AppState>, ids: Vec<i64>, index: Option<usize>) {
-    app.playlist.add_many(ids, index);
+fn playlist_add_many(
+    app: State<'_, AppState>,
+    ids: Vec<i64>,
+    index: Option<usize>,
+    group: Option<Group>,
+) {
+    app.playlist.add_many(ids, index, group);
 }
 
 /// Insert entries picked from a saved playlist as one run, tracks and Stops in
@@ -395,8 +405,9 @@ fn playlist_add_items(
     app: State<'_, AppState>,
     items: Vec<SessionPlaylistItem>,
     index: Option<usize>,
+    group: Option<Group>,
 ) {
-    app.playlist.add_items(items, index);
+    app.playlist.add_items(items, index, group);
 }
 
 /// What an append of a saved playlist did: how many tracks it queued, and how
@@ -429,7 +440,7 @@ async fn playlist_add_saved(
             .iter()
             .filter(|item| matches!(item, SavedItem::Track { .. }))
             .count();
-        playlist.add_saved(offered.items, weave);
+        playlist.add_saved(offered.name, offered.items, weave);
         Ok(SavedAppend {
             added,
             skipped: offered.unmatched,
@@ -439,12 +450,14 @@ async fn playlist_add_saved(
 }
 
 /// Keep the upcoming tracks and Stops, with their plans, as a new saved
-/// playlist. Item overrides are not carried.
+/// playlist: all of them, or with `group` that group's alone. Item overrides
+/// are not carried.
 #[tauri::command(rename_all = "camelCase")]
 async fn playlist_save_as(
     handle: AppHandle,
     state: State<'_, AppState>,
     name: String,
+    group: Option<String>,
 ) -> Result<SavedPlaylistSummary, String> {
     let db = Arc::clone(&state.db);
     let entries: Vec<NewEntry> = state
@@ -452,13 +465,22 @@ async fn playlist_save_as(
         .snapshot()
         .playlist
         .iter()
+        .filter(|item| {
+            group
+                .as_deref()
+                .is_none_or(|id| item.group().is_some_and(|g| g.id == id))
+        })
         .map(|item| match item {
             PlaylistItem::Track { track, .. } => NewEntry::Track(track.id),
             PlaylistItem::Stop {
                 planned_duration_seconds,
+                ..
             } => NewEntry::Stop(*planned_duration_seconds),
         })
         .collect();
+    if group.is_some() && entries.is_empty() {
+        return Err("nothing is left of that group to save".into());
+    }
     blocking(move || {
         let made = db
             .create_saved_playlist_of(&name, &entries, now_ms())
@@ -757,8 +779,20 @@ fn playlist_remove(app: State<'_, AppState>, index: usize) {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn playlist_move(app: State<'_, AppState>, from: usize, to: usize) {
-    app.playlist.move_item(from, to);
+fn playlist_move(app: State<'_, AppState>, from: usize, to: usize, group: Option<Group>) {
+    app.playlist.move_into(from, to, group);
+}
+
+/// Move a group that is not on air, whole, into the gap at `gap`.
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_move_group(app: State<'_, AppState>, id: String, gap: usize) {
+    app.playlist.move_group(id, gap);
+}
+
+/// Remove what is left of a group. The track on air plays on.
+#[tauri::command(rename_all = "camelCase")]
+fn playlist_remove_group(app: State<'_, AppState>, id: String) {
+    app.playlist.remove_group(id);
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -2106,6 +2140,8 @@ pub fn run() {
             playlist_add_filler,
             playlist_remove,
             playlist_move,
+            playlist_move_group,
+            playlist_remove_group,
             playlist_clear,
             playlist_play_index,
             playlist_play_now,

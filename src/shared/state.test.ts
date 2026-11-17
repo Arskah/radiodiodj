@@ -52,6 +52,8 @@ const { api } = vi.hoisted(() => {
     playlistAddFiller: vi.fn(),
     playlistRemove: vi.fn(),
     playlistMove: vi.fn(),
+    playlistMoveGroup: vi.fn(),
+    playlistRemoveGroup: vi.fn(),
     playlistClear: vi.fn(),
     playlistPlayIndex: vi.fn(),
     playlistPlayNow: vi.fn(),
@@ -222,6 +224,7 @@ import {
   trackItem,
   type Appearance,
   type CuePoints,
+  type Group,
   type HealthReport,
   type PlaylistItem,
 } from "./types";
@@ -419,8 +422,8 @@ function wirePlaylist(playlist: MockPlaylistBackend): void {
       ok(() => playlist.add(known(id), cuePoints)),
   );
   api.playlistAddFront.mockImplementation(
-    (id: number, cuePoints: CuePoints | null = null) =>
-      ok(() => playlist.addFront(known(id), cuePoints)),
+    (id: number, cuePoints: CuePoints | null = null, group: Group | null) =>
+      ok(() => playlist.addFront(known(id), cuePoints, group ?? null)),
   );
   api.playlistInsert.mockImplementation((id: number, index: number) =>
     ok(() => playlist.insert(index, known(id))),
@@ -457,8 +460,9 @@ function wirePlaylist(playlist: MockPlaylistBackend): void {
   api.playlistRemove.mockImplementation((index: number) =>
     ok(() => playlist.remove(index)),
   );
-  api.playlistMove.mockImplementation((from: number, to: number) =>
-    ok(() => playlist.move(from, to)),
+  api.playlistMove.mockImplementation(
+    (from: number, to: number, group: Group | null = null) =>
+      ok(() => playlist.move(from, to, group)),
   );
   api.playlistClear.mockImplementation(() => ok(() => playlist.clear()));
   api.playlistPlayIndex.mockImplementation((index: number) =>
@@ -524,6 +528,65 @@ describe("formatSpan", () => {
   });
 });
 
+describe("AppState groups", () => {
+  let app: AppState;
+  let playlist: MockPlaylistBackend;
+  const show: Group = { id: "g1", name: "Morning show" };
+
+  beforeEach(() => {
+    resetApi();
+    ({ app, playlist } = makeApp());
+    api.playlistMoveGroup.mockResolvedValue(undefined);
+    api.playlistRemoveGroup.mockResolvedValue(undefined);
+    api.playlistSaveAs.mockResolvedValue({});
+  });
+
+  it("mirrors the group on air from the snapshot", () => {
+    playlist.restore({ currentGroup: show });
+    playlist.resync();
+    expect(app.currentGroup).toEqual(show);
+  });
+
+  it("adds as next into the group on air, and appends outside every group", () => {
+    playlist.restore({ currentGroup: show });
+    playlist.resync();
+    app.addNextToPlaylist(t(3));
+    expect(api.playlistAddFront).toHaveBeenLastCalledWith(3, null, show);
+    t(4);
+    t(5);
+    app.queueTracks([4, 5], true);
+    expect(api.playlistAddMany).toHaveBeenLastCalledWith([4, 5], 0, show);
+    app.queueTracks([4, 5]);
+    expect(api.playlistAddMany).toHaveBeenLastCalledWith([4, 5], null, null);
+  });
+
+  it("drops into the group the drop names", () => {
+    app.addToPlaylist(t(1));
+    app.startLibraryDrag(t(3));
+    app.dropDraggedInPlaylist(1, show);
+    expect(api.playlistInsert).toHaveBeenCalledWith(3, 1, show);
+  });
+
+  it("moves a row in place when only its group changes", () => {
+    app.addToPlaylist(t(1));
+    app.addToPlaylist(t(2));
+    app.movePlaylistItem(1, 1, null);
+    expect(api.playlistMove).not.toHaveBeenCalled();
+    app.movePlaylistItem(1, 1, show);
+    expect(api.playlistMove).toHaveBeenCalledWith(1, 1, show);
+    expect(app.playlist[1].group).toEqual(show);
+  });
+
+  it("moves, removes and saves a group by its id", async () => {
+    app.moveGroup("g1", 3);
+    expect(api.playlistMoveGroup).toHaveBeenCalledWith("g1", 3);
+    app.removeGroup("g1");
+    expect(api.playlistRemoveGroup).toHaveBeenCalledWith("g1");
+    await app.saveGroupAs("g1", "Kept");
+    expect(api.playlistSaveAs).toHaveBeenCalledWith("Kept", "g1");
+  });
+});
+
 describe("AppState playlist mutations", () => {
   let app: AppState;
   beforeEach(() => {
@@ -548,7 +611,7 @@ describe("AppState playlist mutations", () => {
     app.addToPlaylist(t(2));
     app.addNextToPlaylist(t(3));
     expect(app.playlist.map(pid)).toEqual([3, 1, 2]);
-    expect(api.playlistAddFront).toHaveBeenCalledWith(3);
+    expect(api.playlistAddFront).toHaveBeenCalledWith(3, null, null);
   });
 
   it("a dragged row is queued ahead of the item at the index it is dropped on", () => {
@@ -557,7 +620,7 @@ describe("AppState playlist mutations", () => {
     app.startLibraryDrag(t(3));
     app.dropDraggedInPlaylist(1);
     expect(app.playlist.map(pid)).toEqual([1, 3, 2]);
-    expect(api.playlistInsert).toHaveBeenCalledWith(3, 1);
+    expect(api.playlistInsert).toHaveBeenCalledWith(3, 1, null);
     expect(app.draggedTrackIds).toBeNull();
   });
 });
@@ -617,7 +680,11 @@ describe("AppState library selection", () => {
     app.toggleSelected(3);
     app.toggleSelected(1);
     app.addSelectionToPlaylist();
-    expect(api.playlistAddMany).toHaveBeenCalledExactlyOnceWith([3, 1], null);
+    expect(api.playlistAddMany).toHaveBeenCalledExactlyOnceWith(
+      [3, 1],
+      null,
+      null,
+    );
     expect(app.playlist.map(pid)).toEqual([7, 3, 1]);
     expect(app.selectedIds).toEqual([]);
   });
@@ -627,7 +694,11 @@ describe("AppState library selection", () => {
     app.toggleSelected(3);
     app.toggleSelected(1);
     app.addSelectionToPlaylist(true);
-    expect(api.playlistAddMany).toHaveBeenCalledExactlyOnceWith([3, 1], 0);
+    expect(api.playlistAddMany).toHaveBeenCalledExactlyOnceWith(
+      [3, 1],
+      0,
+      null,
+    );
     expect(app.playlist.map(pid)).toEqual([3, 1, 7]);
     expect(app.selectedIds).toEqual([]);
   });
@@ -652,7 +723,11 @@ describe("AppState library selection", () => {
     app.startLibraryDrag(t(1));
     expect(app.draggedTrackIds).toEqual([3, 1]);
     app.dropDraggedInPlaylist(1);
-    expect(api.playlistAddMany).toHaveBeenCalledExactlyOnceWith([3, 1], 1);
+    expect(api.playlistAddMany).toHaveBeenCalledExactlyOnceWith(
+      [3, 1],
+      1,
+      null,
+    );
     expect(app.playlist.map(pid)).toEqual([7, 3, 1, 8]);
     expect(app.selectedIds).toEqual([]);
   });
@@ -663,7 +738,7 @@ describe("AppState library selection", () => {
     app.startLibraryDrag(t(2));
     expect(app.draggedTrackIds).toEqual([2]);
     app.dropDraggedInPlaylist(0);
-    expect(api.playlistInsert).toHaveBeenCalledWith(2, 0);
+    expect(api.playlistInsert).toHaveBeenCalledWith(2, 0, null);
     expect(app.selectedIds).toEqual([3, 1]);
   });
 
@@ -2496,6 +2571,24 @@ describe("AppState session persistence (stop markers)", () => {
     vi.useRealTimers();
   });
 
+  it("keeps each item's group and the one on air in the session", async () => {
+    const show: Group = { id: "g1", name: "Morning show" };
+    const { app: a, playlist } = makeApp();
+    playlist.restore({
+      playlist: [{ ...stopMarker(), group: show }],
+      currentGroup: show,
+    });
+    await a.loadSession();
+    a.addStopMarker();
+    vi.runAllTimers();
+    const arg = api.saveSession.mock.calls.at(-1)![0];
+    expect(arg.playlistItems).toEqual([
+      { kind: "stop", planned_duration_seconds: null, group: show },
+      { kind: "stop", planned_duration_seconds: null, group: null },
+    ]);
+    expect(arg.currentGroup).toEqual(show);
+  });
+
   it("persistSession writes playlistItems with mixed track and stop entries", async () => {
     ({ app } = makeApp());
     await app.loadSession();
@@ -2505,9 +2598,9 @@ describe("AppState session persistence (stop markers)", () => {
     vi.runAllTimers();
     const arg = api.saveSession.mock.calls[0][0];
     expect(arg.playlistItems).toEqual([
-      { kind: "track", id: 1, cue_override: null },
-      { kind: "stop", planned_duration_seconds: null },
-      { kind: "track", id: 2, cue_override: null },
+      { kind: "track", id: 1, cue_override: null, group: null },
+      { kind: "stop", planned_duration_seconds: null, group: null },
+      { kind: "track", id: 2, cue_override: null, group: null },
     ]);
     expect(arg.playlistIds).toEqual([1, 2]);
   });
@@ -2524,6 +2617,7 @@ describe("AppState session persistence (stop markers)", () => {
     expect(arg.playlistItems[1]).toEqual({
       kind: "stop",
       planned_duration_seconds: 150,
+      group: null,
     });
   });
 
@@ -3206,7 +3300,7 @@ describe("AppState item cue overrides", () => {
       const arg = calls[calls.length - 1][0];
       expect(arg.currentCueOverride).toEqual(audition);
       expect(arg.playlistItems).toEqual([
-        { kind: "track", id: 1, cue_override: audition },
+        { kind: "track", id: 1, cue_override: audition, group: null },
       ]);
     } finally {
       vi.useRealTimers();
@@ -3471,7 +3565,7 @@ describe("AppState saved playlists", () => {
     app.startEntryDrag(items);
     expect(app.draggedTrackIds).toEqual([1, 9]);
     app.dropDraggedInPlaylist(0);
-    expect(api.playlistAddItems).toHaveBeenCalledWith(items, 0);
+    expect(api.playlistAddItems).toHaveBeenCalledWith(items, 0, null);
     expect(app.draggedTrackIds).toBeNull();
     expect(app.selectedIds).toEqual([1, 2]);
   });
@@ -3483,7 +3577,7 @@ describe("AppState saved playlists", () => {
     app.startEntryDrag(stop);
     expect(app.draggedTrackIds).toEqual([]);
     app.dropDraggedInPlaylist(2);
-    expect(api.playlistAddItems).toHaveBeenCalledWith(stop, 2);
+    expect(api.playlistAddItems).toHaveBeenCalledWith(stop, 2, null);
   });
 
   it("queues picked entries, Stops among them, at the end or as next", () => {
@@ -3491,9 +3585,9 @@ describe("AppState saved playlists", () => {
       { kind: "stop", planned_duration_seconds: 90 },
     ];
     app.queueItems(items);
-    expect(api.playlistAddItems).toHaveBeenLastCalledWith(items, null);
+    expect(api.playlistAddItems).toHaveBeenLastCalledWith(items, null, null);
     app.queueItems(items, true);
-    expect(api.playlistAddItems).toHaveBeenLastCalledWith(items, 0);
+    expect(api.playlistAddItems).toHaveBeenLastCalledWith(items, 0, null);
     app.queueItems([]);
     expect(api.playlistAddItems).toHaveBeenCalledTimes(2);
   });
@@ -3514,9 +3608,9 @@ describe("AppState saved playlists", () => {
   it("queues tracks in the order given, at the end or as next", () => {
     t(4);
     app.queueTracks([4, 2]);
-    expect(api.playlistAddMany).toHaveBeenLastCalledWith([4, 2], null);
+    expect(api.playlistAddMany).toHaveBeenLastCalledWith([4, 2], null, null);
     app.queueTracks([4, 2], true);
-    expect(api.playlistAddMany).toHaveBeenLastCalledWith([4, 2], 0);
+    expect(api.playlistAddMany).toHaveBeenLastCalledWith([4, 2], 0, null);
     app.queueTracks([]);
     expect(api.playlistAddMany).toHaveBeenCalledTimes(2);
   });

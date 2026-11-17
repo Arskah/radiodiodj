@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use super::atomic_write;
 use crate::audio::cue_points::CuePoints;
+use crate::playlist::model::Group;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -17,12 +18,16 @@ pub enum SessionPlaylistItem {
         /// overrides existed loads with none, as does a stop marker.
         #[serde(default)]
         cue_override: Option<CuePoints>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group: Option<Group>,
     },
     Stop {
         /// Additive and defaulted: a Stop saved before plans existed loads
         /// unplanned.
         #[serde(default)]
         planned_duration_seconds: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group: Option<Group>,
     },
 }
 
@@ -40,6 +45,9 @@ pub struct SessionState {
     /// The override the restored track was airing under, if any.
     #[serde(default)]
     pub current_cue_override: Option<CuePoints>,
+    /// The group the restored track was airing from, if any.
+    #[serde(default)]
+    pub current_group: Option<Group>,
     #[serde(default)]
     pub auto_playlist_active: bool,
     /// The saved playlist the auto-playlist draws from; `None` is the music
@@ -70,6 +78,7 @@ impl Default for SessionState {
             current_track_id: None,
             current_time: 0.0,
             current_cue_override: None,
+            current_group: None,
             auto_playlist_active: false,
             auto_playlist_source: None,
             auto_advance: true,
@@ -237,13 +246,16 @@ mod tests {
                 SessionPlaylistItem::Track {
                     id: 7,
                     cue_override: None,
+                    group: None,
                 },
                 SessionPlaylistItem::Stop {
                     planned_duration_seconds: None,
+                    group: None,
                 },
                 SessionPlaylistItem::Track {
                     id: 9,
                     cue_override: None,
+                    group: None,
                 },
             ],
             ..Default::default()
@@ -258,13 +270,16 @@ mod tests {
                 SessionPlaylistItem::Track {
                     id: 7,
                     cue_override: None,
+                    group: None,
                 },
                 SessionPlaylistItem::Stop {
                     planned_duration_seconds: None,
+                    group: None,
                 },
                 SessionPlaylistItem::Track {
                     id: 9,
                     cue_override: None,
+                    group: None,
                 },
             ]
         );
@@ -291,9 +306,11 @@ mod tests {
                 SessionPlaylistItem::Track {
                     id: 7,
                     cue_override: None,
+                    group: None,
                 },
                 SessionPlaylistItem::Stop {
                     planned_duration_seconds: None,
+                    group: None,
                 }
             ]
         );
@@ -313,6 +330,7 @@ mod tests {
             playlist_items: vec![SessionPlaylistItem::Track {
                 id: 7,
                 cue_override: Some(override_points),
+                group: None,
             }],
             current_track_id: Some(9),
             current_cue_override: Some(override_points),
@@ -326,6 +344,7 @@ mod tests {
             vec![SessionPlaylistItem::Track {
                 id: 7,
                 cue_override: Some(override_points),
+                group: None,
             }]
         );
         assert_eq!(loaded.current_cue_override, Some(override_points));
