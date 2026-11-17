@@ -577,25 +577,27 @@ describe("AppState groups", () => {
     expect(app.playlist[1].group).toEqual(show);
   });
 
-  it("mirrors a hold and starts its clock once per Stop", () => {
-    const now = vi.spyOn(performance, "now").mockReturnValue(1_000);
+  it("mirrors a hold, with the start the backend gave it, until it ends", () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
     app.addStopMarker();
     app.addStopMarker();
     app.next();
-    expect(app.holding).toMatchObject({ plannedDurationSeconds: null });
-    expect(app.holdSince).toBe(1_000);
+    expect(app.holding).toMatchObject({
+      plannedDurationSeconds: null,
+      startedAtMs: 1_000,
+    });
+    const first = app.holding!.id;
 
-    now.mockReturnValue(5_000);
+    clock.mockReturnValue(5_000);
     playlist.resync();
-    // The same hold, refreshed.
-    expect(app.holdSince).toBe(1_000);
+    expect(app.holding?.startedAtMs).toBe(1_000);
     app.next();
-    // The next Stop is a new hold.
-    expect(app.holdSince).toBe(5_000);
+    expect(app.holding?.id).not.toBe(first);
+    expect(app.holding?.startedAtMs).toBe(5_000);
 
     app.stop();
     expect(app.holding).toBeNull();
-    now.mockRestore();
+    clock.mockRestore();
   });
 
   it("adds as next into the group of the Stop being held", () => {

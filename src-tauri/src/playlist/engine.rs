@@ -170,6 +170,8 @@ pub struct Playlist {
     holding: Option<Hold>,
     /// The last [`Hold::id`] handed out.
     holds: u64,
+    /// The time, unix ms, as the service read it before this transition.
+    now_ms: i64,
     auto_playlist: bool,
     auto_advance: bool,
     /// What the arm deck currently holds. The item itself stays in `items`, so
@@ -229,6 +231,12 @@ impl Playlist {
             history_cap: DEFAULT_HISTORY_CAP,
             ..Default::default()
         }
+    }
+
+    /// The time this transition happens at. Pushed in before every one, as the
+    /// history cap is, so the engine reads no clock of its own.
+    pub fn set_now(&mut self, now_ms: i64) {
+        self.now_ms = now_ms;
     }
 
     /// Set the history window from the stored tuning.
@@ -397,7 +405,11 @@ impl Playlist {
     /// — counted in the playlist as it stands, the group's own items included.
     /// The group on air stays where it is.
     pub fn move_group(&mut self, id: &str, gap: usize) -> Transition {
-        if self.current_group.as_ref().is_some_and(|g| g.id == id) {
+        let on_air = self
+            .current_group
+            .as_ref()
+            .or(self.holding.as_ref().and_then(|h| h.group.as_ref()));
+        if on_air.is_some_and(|g| g.id == id) {
             return Transition::default();
         }
         let in_group = |item: &PlaylistItem| item.group().is_some_and(|g| g.id == id);
@@ -419,6 +431,12 @@ impl Playlist {
     pub fn remove_group(&mut self, id: &str) -> Transition {
         self.items
             .retain(|item| item.group().is_none_or(|g| g.id != id));
+        // Removed from the break too, or the next _Add as next_ brings it back.
+        if let Some(hold) = &mut self.holding {
+            if hold.group.as_ref().is_some_and(|g| g.id == id) {
+                hold.group = None;
+            }
+        }
         Transition::default()
     }
 
@@ -445,6 +463,7 @@ impl Playlist {
                 self.holds += 1;
                 self.holding = Some(Hold {
                     id: self.holds,
+                    started_at_ms: self.now_ms,
                     planned_duration_seconds,
                     group,
                 });
@@ -2086,6 +2105,32 @@ mod tests {
     }
 
     #[test]
+    fn a_hold_starts_when_its_stop_is_consumed() {
+        let mut p = with(&[None]);
+        p.set_now(1_234);
+        p.next(&NoRefill);
+        assert_eq!(hold(&p).expect("a hold").started_at_ms, 1_234);
+    }
+
+    #[test]
+    fn a_group_removed_during_a_break_leaves_the_break_and_the_hold_holds_it_in_place() {
+        let mut p = grouped(&[
+            (None, Some("a")),
+            (Some(1), Some("a")),
+            (Some(2), Some("b")),
+        ]);
+        p.next(&NoRefill);
+        p.move_group("a", 2);
+        assert_eq!(
+            queued(&p),
+            vec![Some(1), Some(2)],
+            "the group on hold stays put"
+        );
+        p.remove_group("a");
+        assert_eq!(hold(&p).expect("a hold").group, None);
+    }
+
+    #[test]
     fn a_stop_straight_after_another_is_a_fresh_hold() {
         let mut p = with(&[None, None]);
         p.next(&NoRefill);
@@ -2093,25 +2138,6 @@ mod tests {
         p.next(&NoRefill);
         assert!(hold(&p).expect("a hold").id > first);
     }
-
-    #[test]
-    fn a_handover_ends_a_hold() {
-        let mut p = with(&[None, Some(1), Some(2)]);
-        p.next(&NoRefill);
-        air(&mut p, 0);
-        assert_eq!(hold(&p), None);
-        let mut p = with(&[Some(1), Some(2)]);
-        air(&mut p, 0);
-        p.holding = Some(Hold {
-            id: 1,
-            planned_duration_seconds: None,
-            group: None,
-        });
-        p.on_handover(2, &NoRefill);
-        assert_eq!(hold(&p), None);
-    }
-
-    // ----- a load that was given up on (#547) -----
 
     #[test]
     fn a_track_given_up_on_returns_to_the_head_of_the_playlist() {

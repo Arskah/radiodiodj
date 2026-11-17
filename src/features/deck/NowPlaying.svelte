@@ -15,20 +15,26 @@
       (app.playlist.length > 0 && isTrackItem(app.playlist[0])),
   );
 
-  // Sampled, not counted: a late tick catches up rather than drifting.
-  let now = $state(performance.now());
+  // Sampled, not counted: a late tick catches up rather than drifting. One
+  // timer per break, not per snapshot.
+  let now = $state(Date.now());
+  const holdId = $derived(app.holding?.id ?? null);
   $effect(() => {
-    if (!app.holding) return;
-    now = performance.now();
-    const timer = setInterval(() => (now = performance.now()), 250);
+    if (holdId === null) return;
+    now = Date.now();
+    const timer = setInterval(() => (now = Date.now()), 250);
     return () => clearInterval(timer);
   });
-  const counter = $derived(
+  /** The break and its counter, while there is one. */
+  const held = $derived(
     app.holding
-      ? holdCounter(
-          app.holding.plannedDurationSeconds,
-          (now - app.holdSince) / 1000,
-        )
+      ? {
+          planned: app.holding.plannedDurationSeconds,
+          ...holdCounter(
+            app.holding.plannedDurationSeconds,
+            (now - app.holding.startedAtMs) / 1000,
+          ),
+        }
       : null,
   );
 
@@ -75,16 +81,16 @@
         {/if}
       </div>
       <div class="track-names">
-        {#if app.holding && counter}
-          <span id="np-title" class="hold-heading" class:over={counter.over}
+        {#if held}
+          <span id="np-title" class="hold-heading" class:over={held.over}
             ><span class="material-symbols-outlined" aria-hidden="true"
               >block</span
             >Stop</span
           >
           <span id="np-artist"
-            >{app.holding.plannedDurationSeconds === null
+            >{held.planned === null
               ? "No planned length"
-              : `Planned ${formatTime(app.holding.plannedDurationSeconds)}`}</span
+              : `Planned ${formatTime(held.planned)}`}</span
           >
         {:else}
           <span id="np-title"
@@ -236,16 +242,16 @@
         alt=""
       />
     </div>
-    {#if app.holding && counter}
+    {#if held}
       <div
         id="hold-counter"
-        class:over={counter.over}
+        class:over={held.over}
         role="timer"
-        aria-label={app.holding.plannedDurationSeconds === null
+        aria-label={held.planned === null
           ? "Time into the break"
           : "Time against the planned break"}
       >
-        {counter.text}
+        {held.text}
       </div>
     {:else}
       <div

@@ -1,13 +1,12 @@
+import { formatTime } from "./time";
+
 /** What the main deck's counter reads during a hold. */
 export interface HoldCounter {
+  /** `−m:ss` before a plan's end, `+m:ss` after, `m:ss` without a plan. */
   text: string;
   /** Past a planned break's end. Never true without a plan. */
   over: boolean;
 }
-
-/** Whole seconds as `m:ss`, minutes past an hour included. */
-const minutes = (seconds: number): string =>
-  `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 
 /**
  * The counter `elapsed` seconds into a hold. A planned break counts down from
@@ -19,9 +18,9 @@ export function holdCounter(
   elapsed: number,
 ): HoldCounter {
   const seconds = Math.max(0, Math.floor(elapsed));
-  if (planned === null) return { text: minutes(seconds), over: false };
+  if (planned === null) return { text: formatTime(seconds), over: false };
   const left = planned - seconds;
-  if (left > 0) return { text: `−${minutes(left)}`, over: false };
+  if (left > 0) return { text: `−${formatTime(left)}`, over: false };
   if (left === 0) return { text: "0:00", over: false };
-  return { text: `+${minutes(-left)}`, over: true };
+  return { text: `+${formatTime(-left)}`, over: true };
 }

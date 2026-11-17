@@ -148,6 +148,7 @@ export class MockPlaylistBackend {
       this.holds += 1;
       this.holding = {
         id: this.holds,
+        startedAtMs: Date.now(),
         plannedDurationSeconds: item.planned_duration_seconds ?? null,
         group: item.group ?? null,
       };

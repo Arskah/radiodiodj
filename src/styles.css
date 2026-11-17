@@ -488,13 +488,13 @@ body {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-xs);
-  color: var(--error);
+  color: var(--on-surface);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
 
 .hold-heading.over {
-  color: var(--tertiary);
+  color: var(--error);
   animation: led-pulse 2s ease-in-out infinite;
 }
 
@@ -511,7 +511,7 @@ body {
 }
 
 #hold-counter.over {
-  color: var(--tertiary);
+  color: var(--error);
 }
 
 @media (prefers-reduced-motion: reduce) {

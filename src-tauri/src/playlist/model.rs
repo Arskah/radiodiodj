@@ -34,6 +34,10 @@ pub struct Hold {
     /// Counts up with every Stop consumed, so a break that follows another
     /// at once reads as a fresh one.
     pub id: u64,
+    /// When the Stop was consumed, in unix milliseconds. Every window counts
+    /// from here, so a reload mid-break keeps its place.
+    pub started_at_ms: i64,
+    /// How long the break is meant to last, in seconds; `None` is unplanned.
     pub planned_duration_seconds: Option<u32>,
     /// The Stop's group, which stays on air through the break.
     pub group: Option<Group>,

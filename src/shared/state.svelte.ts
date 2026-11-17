@@ -58,6 +58,7 @@ import {
   without,
 } from "./selection";
 import { isStrictNever } from "./isStrictNever";
+export { formatSpan, formatTime } from "./time";
 import { APP_NAME } from "./appName";
 import { savePaintHint } from "./appearance";
 import { healthAttention as attentionOf } from "./health";
@@ -250,12 +251,6 @@ export class AppState {
   currentGroup = $state<Group | null>(null);
   /** The break a consumed Stop began, while it lasts. */
   holding = $state<Hold | null>(null);
-
-  /**
-   * When this window saw the hold begin, on `performance.now()`. The backend
-   * keeps no time; the counter is the renderer's.
-   */
-  holdSince = $state(0);
   currentTrack = $state<Track | null>(null);
 
   /**
@@ -1140,11 +1135,7 @@ export class AppState {
     this.playlist = snapshot.playlist;
     this.currentCueOverride = snapshot.currentOverride ?? null;
     this.currentGroup = snapshot.currentGroup ?? null;
-    const holding = snapshot.holding ?? null;
-    if (holding && holding.id !== this.holding?.id) {
-      this.holdSince = performance.now();
-    }
-    this.holding = holding;
+    this.holding = snapshot.holding ?? null;
     this.autoPlaylistActive = snapshot.autoPlaylistActive;
     this.autoSource = snapshot.source ?? null;
     this.revertedFrom = snapshot.revertedFrom ?? null;
@@ -2271,17 +2262,3 @@ export class AppState {
 }
 
 export const app = new AppState();
-
-/** A span that can run past an hour — queue totals — as H:MM:SS or M:SS. */
-export function formatSpan(seconds: number): string {
-  if (!isFinite(seconds) || seconds < 3600) return formatTime(seconds);
-  const h = Math.floor(seconds / 3600);
-  return `${h}:${formatTime(seconds % 3600).padStart(5, "0")}`;
-}
-
-export function formatTime(seconds: number): string {
-  if (!isFinite(seconds)) return "0:00";
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
