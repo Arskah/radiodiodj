@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatClock, msToNextSecond } from "./clock";
+import { formatClock, formatEta, msToNextSecond } from "./clock";
 
 describe("formatClock", () => {
   it("pads every part to two digits", () => {
@@ -20,5 +20,17 @@ describe("msToNextSecond", () => {
 
   it("waits a whole second when called on the boundary", () => {
     expect(msToNextSecond(1_000_000)).toBe(1000);
+  });
+});
+
+describe("formatEta", () => {
+  const at = new Date(2026, 10, 18, 13, 4, 31).getTime();
+
+  it("shows the time to the second", () => {
+    expect(formatEta(at)).toBe("13:04:31");
+  });
+
+  it("shows an unknown ETA as a dash", () => {
+    expect(formatEta(null)).toBe("—");
   });
 });

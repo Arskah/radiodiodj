@@ -24,6 +24,8 @@
     type UpcomingRow,
   } from "./playlistGroups";
   import { sizeLabel } from "../../shared/savedPlaylists";
+  import { formatEta, msToNextSecond } from "../../shared/clock";
+  import { DeckAnchor, etaDeck, upcomingEtas } from "../../shared/eta";
 
   let dragFromIndex = $state(-1);
   /** The group being dragged whole by its header. */
@@ -37,6 +39,39 @@
   let collapsed = $state<ReadonlySet<string>>(new Set());
 
   const rows = $derived(upcomingRows(app.playlist, app.onAirGroup, collapsed));
+
+  let now = $state(Date.now());
+  // On the second, as the toolbar clock ticks, so the two read alike.
+  $effect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = (): void => {
+      now = Date.now();
+      timer = setTimeout(tick, msToNextSecond(now));
+    };
+    timer = setTimeout(tick, msToNextSecond(now));
+    return () => clearTimeout(timer);
+  });
+
+  const anchor = new DeckAnchor();
+
+  const etas = $derived.by(() => {
+    // The tick's `now` can be most of a second old when a position arrives.
+    const nowMs = Math.max(now, Date.now());
+    const deck = app.currentTrack
+      ? etaDeck(
+          airedTrack(app.currentTrack, app.currentCueOverride),
+          anchor.read(app.currentTime, app.isPlaying, nowMs),
+          app.duration,
+        )
+      : null;
+    return upcomingEtas({
+      items: app.playlist,
+      deck,
+      hold: app.holding,
+      autoAdvance: app.autoAdvance,
+      nowMs,
+    });
+  });
 
   function toggleCollapsed(id: string): void {
     const next = new Set(collapsed);
@@ -183,6 +218,11 @@
     return isStopMarker(item) ? "stop" : String(item.track.id);
   }
 </script>
+
+{#snippet eta(i: number)}
+  <span class="pl-eta" title="Expected start">{formatEta(etas[i] ?? null)}</span
+  >
+{/snippet}
 
 <section id="playlist-panel" class="panel">
   <div class="panel-header">
@@ -370,6 +410,9 @@
               {#if row.onAir}
                 <span class="pl-status group-on-air">On air</span>
               {/if}
+              {#if row.end > row.start}
+                {@render eta(row.start)}
+              {/if}
               <button
                 class="btn-edit"
                 title="Save this group as a saved playlist"
@@ -420,6 +463,7 @@
                   <span class="pl-stop-sub">Auto play halts here</span>
                 </div>
                 <div class="pl-right">
+                  {@render eta(i)}
                   <StopDurationField
                     value={item.planned_duration_seconds ?? null}
                     oncommit={(seconds) => app.setStopDuration(i, seconds)}
@@ -490,6 +534,7 @@
                         >
                       </button>
                     {/if}
+                    {@render eta(i)}
                     <span class="pl-duration" class:trimmed={isTrimmed(aired)}
                       >{formatTime(airDuration(aired))}</span
                     >

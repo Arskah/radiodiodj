@@ -1760,6 +1760,13 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.pl-eta {
+  color: var(--on-surface-variant);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Row action icon buttons */
 .btn-play-track,
 .btn-add,

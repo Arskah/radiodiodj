@@ -9,3 +9,8 @@ export function formatClock(date: Date): string {
 export function msToNextSecond(nowMs: number): number {
   return 1000 - (nowMs % 1000);
 }
+
+/** An ETA at Unix `ms` as the clock shows time, or `—` when unknown. */
+export function formatEta(ms: number | null): string {
+  return ms === null ? "—" : formatClock(new Date(ms));
+}
