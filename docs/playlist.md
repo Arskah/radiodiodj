@@ -283,12 +283,13 @@ producer's, beside the station clock in the toolbar.
 ## ETAs
 
 Each Upcoming row shows when it is expected to start, left of its duration; a
-Stop's is when its break begins. The renderer works them out
+Stop's is when its break begins. A group header shows its first row's, so a
+collapsed group still says when it is due. The renderer works them out
 (`shared/eta.ts`), since everything they need is already in its state: the
 playlist, the deck's position and air time, Auto, and the hold. It is a sum,
 not a schedule:
 
-- The first row starts now plus what is left of the track on air, up to its
+- The first row starts when the track on air began plus its length up to its
   Next Start when Auto hands over to a track and its Cue Out otherwise. In a
   hold it starts at the end of the plan, or now once the plan is overrun or
   there is none.

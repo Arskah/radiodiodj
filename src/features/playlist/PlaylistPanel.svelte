@@ -410,6 +410,9 @@
               {#if row.onAir}
                 <span class="pl-status group-on-air">On air</span>
               {/if}
+              {#if row.end > row.start}
+                {@render eta(row.start)}
+              {/if}
               <button
                 class="btn-edit"
                 title="Save this group as a saved playlist"
