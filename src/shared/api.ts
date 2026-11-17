@@ -39,7 +39,7 @@ import { METADATA_KEYS } from "./types";
 
 export type PersistedPlaylistItem =
   | { kind: "track"; id: number; cue_override: CuePoints | null }
-  | { kind: "stop" };
+  | { kind: "stop"; planned_duration_seconds: number | null };
 
 export interface SessionPersistState {
   playlistIds: number[];
@@ -238,6 +238,17 @@ export const api = {
   },
 
   /**
+   * Insert entries picked from a saved playlist, tracks and Stops, as one run
+   * in the order given, ahead of the item at `index`. `null` appends.
+   */
+  playlistAddItems(
+    items: PersistedPlaylistItem[],
+    index: number | null,
+  ): Promise<void> {
+    return invoke<void>("playlist_add_items", { items, index });
+  },
+
+  /**
    * Append a saved playlist's tracks; with `weave`, brought up to the
    * interleave cadence. Resolves to what it added and what it had to skip.
    */
@@ -310,6 +321,20 @@ export const api = {
   ): Promise<void> {
     return invoke<void>("saved_playlist_add_entries", { id, trackIds, index });
   },
+  /** Admin only. Appends an unplanned Stop. */
+  savedPlaylistAddStop(id: number): Promise<void> {
+    return invoke<void>("saved_playlist_add_stop", { id });
+  },
+  /** Admin only. `null` clears the plan. */
+  savedPlaylistSetStopDuration(
+    entryId: number,
+    plannedDurationSeconds: number | null,
+  ): Promise<void> {
+    return invoke<void>("saved_playlist_set_stop_duration", {
+      entryId,
+      plannedDurationSeconds,
+    });
+  },
   /** Admin only. */
   savedPlaylistRemoveEntry(entryId: number): Promise<void> {
     return invoke<void>("saved_playlist_remove_entry", { entryId });
@@ -352,6 +377,16 @@ export const api = {
     cuePoints: CuePoints | null,
   ): Promise<void> {
     return invoke<void>("playlist_set_item_cue_points", { index, cuePoints });
+  },
+  /** Set or clear the planned duration of the queued Stop at `index`. */
+  playlistSetStopDuration(
+    index: number,
+    plannedDurationSeconds: number | null,
+  ): Promise<void> {
+    return invoke<void>("playlist_set_stop_duration", {
+      index,
+      plannedDurationSeconds,
+    });
   },
   playlistAddStopMarker(): Promise<void> {
     return invoke<void>("playlist_add_stop_marker");

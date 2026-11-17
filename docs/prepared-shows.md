@@ -1,7 +1,8 @@
-# Prepared shows — Stops in saved playlists, groups in the playlist
+# Prepared shows — groups in the playlist, and the hold at a Stop
 
-**Planned.** Nothing on this page is built. The split into increments is
-[at the end](#increments).
+**Planned.** Nothing on this page is built. It builds on
+[Stops in saved playlists](./saved-playlists.md#stops), which are. The split
+into increments is [at the end](#increments).
 
 A presenter prepares a show before its hour: the music, the jingles, and the
 points where the studio talks. They save it, carry it to the studio, append it
@@ -11,12 +12,8 @@ the break was meant to last.
 
 ## The problem
 
-Three things are missing.
+Two things are missing.
 
-- **A saved playlist cannot hold a Stop.** A Stop marker is a playlist item and
-  not a track, so [saved-playlists.md](./saved-playlists.md) left it out: the
-  operator adds one after appending. A show with four talk breaks is four Stops
-  placed by hand, on air, under time pressure.
 - **An appended show dissolves into the playlist.** Its rows look like every
   other row. Nothing says where it starts and ends, or that the track on air
   belongs to it.
@@ -24,100 +21,6 @@ Three things are missing.
   and calls the same `stop()` the Stop button does. The deck goes empty, and
   nothing tells the producer that this silence is a planned break, or how long
   it was meant to be.
-
-## No kind of saved playlist
-
-Any saved playlist may hold Stops. There is no "prepared show" type beside an
-ordinary playlist: the two would share every control, and a type that refused
-Stops would only guard against appending a list with breaks in it and walking
-away.
-
-That case is answered by showing it. A saved playlist's row reads
-`12 tracks · 2 stops`, and a Stop is an obvious row once queued. Appending never
-asks for confirmation, and nothing ever resumes playback on its own: an
-explicit Stop is the author's decision, and studio discussion fills it. See
-[the hold](#the-hold).
-
-The title of this page names the use, not a type.
-
-## Stops in a saved playlist
-
-### The entry
-
-An entry is a track or a Stop. `saved_playlist_entries` gains two columns in
-one appended migration step:
-
-```sql
-kind                     TEXT NOT NULL DEFAULT 'track',  -- 'track' | 'stop'
-planned_duration_seconds INTEGER                         -- Stops only; NULL = unplanned
-```
-
-`kind` is the word the playlist already uses: `PlaylistItem` is
-`#[serde(tag = "kind")]` with `track` and `stop`, and so are the session file
-and the renderer's types. A Stop is not a content type; `ContentType` stays
-music, jingle and commercial.
-
-A Stop row has every track column `NULL`. Without `kind` it would read as an
-**unmatched entry**, which is the hazard: binding, the missing count, the
-fingerprint match and the auto-playlist pool would each have to tell the two
-apart by a guess. With it, each of them filters on `kind = 'track'` and a Stop
-can never be bound, counted missing or picked.
-
-A planned duration is whole seconds, zero included: `0:00` is an explicit
-zero-length plan, distinct from none. It is not the audio `duration` column,
-which is a track's snapshot.
-
-### Authoring
-
-An open saved playlist gets **+ Stop** beside its controls, for an admin, as
-every edit of an existing list is ([admin mode](./saved-playlists.md#admin-mode)).
-It appends a Stop, which is dragged into place by the existing reorder and
-removed like any entry.
-
-A Stop row reads _Stop_ and carries an `m:ss` field for its planned duration:
-blank is unplanned, minutes above 59 are accepted, and invalid input is refused
-without changing the stored value. It has no track columns, card, cue button or
-**+**. It can be picked, moved and removed as part of the entry selection, and
-**Add N to playlist** takes the picked Stops with the picked tracks, in pick
-order.
-
-The list's row shows tracks and Stops counted apart. Durations, missing counts
-and the playable-music count ignore Stops.
-
-### Using one
-
-**Add to playlist** queues every entry in stored order, Stops included, with
-their planned durations. It never starts playback.
-
-**Add with jingles and commercials** treats a Stop as one more fixed entry: the
-cadence is counted over the whole list as today, and the drawn jingles and
-commercials are spread by `interleave_evenly` around the author's entries. A
-drawn ident can land beside a Stop, which is what a talk break usually has.
-
-**As the auto-playlist source**, a list with Stops is a pool of its music
-entries as before. The pick reads bound tracks, so Stops are never in it.
-
-### The file and the hub
-
-The file always writes `version: 2`. A reader takes 1 and 2; a version-1 file is
-all tracks. An entry gains `kind`, absent meaning `track`:
-
-```json
-{ "kind": "stop", "plannedDurationSeconds": 120 }
-```
-
-An older app refuses version 2 whole, as it refuses any version it does not
-know. That is the point of the bump: a Stop read by a build that ignores `kind`
-becomes an unmatched entry with no fingerprint, and the next save of that list
-makes it one for good.
-
-The hub's `playlist` document carries the same entry, in its own key style:
-`{"kind": "stop", "planned_duration_seconds": 120}`. `hub_station.protocol` goes
-from 2 to 3. Inside one protocol an unknown key is ignored, so a protocol-2
-studio would read a Stop as an unmatched entry and sync that back on its next
-save of the list. A studio that does not know 3 stops syncing and says so, until
-it is updated. The music-library web page reads no `playlist` rows and checks no
-protocol; its drafts stay version-1 files of tracks.
 
 ## Groups in the playlist
 
@@ -206,9 +109,8 @@ made the nested design hard to use and hard to build.
 
 ### Saving it back
 
-**Save playlist as…** takes everything queued, as today, and now keeps its Stops
-and their planned durations in order. Groups are flattened; item overrides are
-still not carried; the track on air is not included.
+**Save playlist as…** takes everything queued, Stops and their plans included,
+as it does today. Groups are flattened.
 
 **Save group as…**, on a header's menu, takes that group's remaining rows. It is
 how an adjusted show is kept: edit it in the playlist, where it is the
@@ -221,10 +123,9 @@ from the group's name.
 
 ## Editing in the playlist
 
-A queued copy is the operator's. Adding, moving and removing rows, adding Stops
-and editing a queued Stop's planned duration are open to everyone, because none
-of it changes a saved playlist. The `m:ss` field is the same one the saved
-playlist uses.
+A queued copy is the operator's. Moving rows in and out of groups, removing a
+group and saving one are open to everyone, as editing a queued Stop's plan
+already is, because none of it changes a saved playlist.
 
 ## The hold
 
@@ -275,18 +176,16 @@ the counter only says how far into the break the studio is.
   `playlist/timing.rs`.
 - **Nested groups**, and a group as a unit the engine advances through.
 - **Automatic resume** at the end of a planned Stop, now or as an option.
-- **Stops authored on the web page.** Its drafts stay track-only files; that is
-  the web page's own repository.
 - **Dynamic commercial breaks.**
 
 ## Increments
 
-| #   | increment                | holds                                                                                                                           | depends on | issue |
-| --- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------- | ---------- | ----- |
-| 1   | Stops in saved playlists | `kind` and planned duration, migration, file 2, hub protocol 3, **+ Stop** and the `m:ss` field in both places, counts, Save as | —          | #682  |
-| 2   | Groups in the playlist   | `group` on items and in the session, what makes one, headers, colour, collapse, drops, Save group as                            | —          | #683  |
-| 3   | The hold                 | `holding` in the snapshot, the deck's STOP view and counter                                                                     | 1          | #684  |
+| #   | increment              | holds                                                                                                | depends on | issue |
+| --- | ---------------------- | ---------------------------------------------------------------------------------------------------- | ---------- | ----- |
+| 2   | Groups in the playlist | `group` on items and in the session, what makes one, headers, colour, collapse, drops, Save group as | —          | #683  |
+| 3   | The hold               | `holding` in the snapshot, the deck's STOP view and counter                                          | —          | #684  |
 
-The original ask, a show prepared with its breaks, is delivered by 1. Groups and
-the hold do not depend on each other; whichever lands second carries the hold's
-group. Planned order: 1, 2, 3.
+The original ask, a show prepared with its breaks, is delivered by
+[Stops in saved playlists](./saved-playlists.md#stops). Groups and the hold do
+not depend on each other; whichever lands second carries the hold's group.
+Planned order: 2, 3.

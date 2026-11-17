@@ -9,6 +9,8 @@
     type EntrySort,
   } from "../../shared/savedPlaylists";
   import MissingBadge from "../track/MissingBadge.svelte";
+  import StopDurationField from "../playlist/StopDurationField.svelte";
+  import type { PersistedPlaylistItem } from "../../shared/api";
   import { gapAt, moveTarget } from "../playlist/playlistDrop";
   import {
     allSelected,
@@ -170,6 +172,16 @@
   function entryItems(entry: SavedEntry): MenuItem[] {
     const track = entry.track;
     const items: MenuItem[] = [];
+    if (entry.kind === "stop") {
+      if (app.isAdmin) {
+        items.push({
+          label: "Remove from saved playlist",
+          icon: "close",
+          onselect: () => app.removeSavedEntry(entry.id),
+        });
+      }
+      return items;
+    }
     if (track) {
       items.push(
         {
@@ -244,17 +256,17 @@
   }
 
   function pickedItems(): MenuItem[] {
-    const tracks = pickedTrackIds.length;
+    const queueable = pickedQueue.length;
     const items: MenuItem[] = [];
-    if (tracks > 0) {
+    if (queueable > 0) {
       items.push(
         {
-          label: `Add ${tracks} to playlist`,
+          label: `Add ${queueable} to playlist`,
           icon: "add",
           onselect: () => queuePicked(),
         },
         {
-          label: `Add ${tracks} as next`,
+          label: `Add ${queueable} as next`,
           icon: "playlist_play",
           onselect: () => queuePicked(true),
         },
@@ -265,7 +277,7 @@
         label: `Remove ${pickedCount} from saved playlist`,
         icon: "close",
         onselect: removePicked,
-        separated: tracks > 0,
+        separated: queueable > 0,
       });
     }
     return items;
@@ -317,11 +329,30 @@
   }
 
   const title = (entry: SavedEntry): string =>
-    entry.track?.title ?? entry.title;
+    entry.kind === "stop" ? "Stop" : (entry.track?.title ?? entry.title);
   const artist = (entry: SavedEntry): string =>
     entry.track?.artist ?? entry.artist;
-  const duration = (entry: SavedEntry): number =>
-    entry.track ? airDuration(entry.track) : entry.duration;
+  /** What an entry queues as, if anything: an unmatched one has no track. */
+  const queued = (entry: SavedEntry): PersistedPlaylistItem[] => {
+    if (entry.kind === "stop") {
+      return [
+        {
+          kind: "stop",
+          planned_duration_seconds: entry.plannedDurationSeconds,
+        },
+      ];
+    }
+    return entry.track
+      ? [{ kind: "track", id: entry.track.id, cue_override: null }]
+      : [];
+  };
+  const openStops = $derived(
+    (open?.entries ?? []).filter((entry) => entry.kind === "stop").length,
+  );
+  const duration = (entry: SavedEntry): number => {
+    if (entry.kind === "stop") return entry.plannedDurationSeconds ?? 0;
+    return entry.track ? airDuration(entry.track) : entry.duration;
+  };
 
   const album = (entry: SavedEntry): string => entry.track?.album ?? "";
 
@@ -442,12 +473,13 @@
   const allShown = $derived(allSelected(picked, shownIds));
   /** Each picked entry's place in the order it will be queued in, from 1. */
   const ordinals = $derived(new Map(picked.map((id, i) => [id, i + 1])));
-  /** The picked entries that have a track, as track ids in pick order. */
-  const pickedTrackIds = $derived.by(() => {
-    const tracks = new Map(
-      (open?.entries ?? []).map((entry) => [entry.id, entry.track?.id]),
-    );
-    return picked.flatMap((id) => tracks.get(id) ?? []);
+  /** The picked entries that can be queued, Stops among them, in pick order. */
+  const pickedQueue = $derived.by(() => {
+    const entries = new Map((open?.entries ?? []).map((e) => [e.id, e]));
+    return picked.flatMap((id) => {
+      const entry = entries.get(id);
+      return entry ? queued(entry) : [];
+    });
   });
   const selectAllLabel = $derived(
     allShown ? "Deselect shown" : `Select all (${shownIds.length})`,
@@ -494,7 +526,7 @@
   }
 
   function queuePicked(asNext = false): void {
-    app.queueTracks(pickedTrackIds, asNext);
+    app.queueItems(pickedQueue, asNext);
     clearPicked();
   }
 
@@ -550,7 +582,7 @@
   const reordering = $derived(dragFrom !== -1 || dragBlock !== null);
 
   const draggable = (entry: SavedEntry): boolean =>
-    entry.track !== null || app.isAdmin;
+    queued(entry).length > 0 || app.isAdmin;
 
   function gapUnder(e: DragEvent): number {
     const list = e.currentTarget as HTMLElement;
@@ -569,9 +601,7 @@
     draggingPicked = block;
     dragBlock = block && canReorder ? [...picked] : null;
     dragFrom = !block && canReorder ? i : -1;
-    app.startTrackDrag(
-      block ? pickedTrackIds : entry.track ? [entry.track.id] : [],
-    );
+    app.startEntryDrag(block ? pickedQueue : queued(entry));
     if (e.dataTransfer) {
       e.dataTransfer.effectAllowed = "copyMove";
       e.dataTransfer.setData(
@@ -592,7 +622,7 @@
     dragFrom = -1;
     dragBlock = null;
     dropTarget = -1;
-    app.draggedTrackIds = null;
+    app.endDrag();
   }
 
   function onDragLeave(e: DragEvent): void {
@@ -639,12 +669,16 @@
     </button>
     <span id="saved-open-name">{open.name}</span>
     <span id="saved-open-size"
-      >{sizeLabel(open.entries.length, openSummary?.missing ?? 0)}</span
+      >{sizeLabel(
+        open.entries.length,
+        openSummary?.missing ?? 0,
+        openStops,
+      )}</span
     >
     <button
       id="btn-saved-add"
       class="btn-filler"
-      title="Add every track to the playlist, as written"
+      title="Add every track and Stop to the playlist, as written"
       disabled={open.entries.length === 0}
       onclick={() => append(open.id, false)}>Add to playlist</button
     >
@@ -677,6 +711,12 @@
       <span class="material-symbols-outlined">file_export</span>
     </button>
     {#if app.isAdmin}
+      <button
+        id="btn-saved-add-stop"
+        class="btn-filler"
+        title="Add a Stop at the end, then drag it into place"
+        onclick={() => app.addSavedStop()}>+ Stop</button
+      >
       <button
         class="btn-edit"
         title="Rename"
@@ -758,7 +798,8 @@
         {@const ordinal = ordinals.get(entry.id)}
         <div
           class="track-row saved-entry"
-          class:unmatched={entry.track === null}
+          class:stop-entry={entry.kind === "stop"}
+          class:unmatched={entry.kind === "track" && entry.track === null}
           class:selected={ordinal !== undefined}
           class:dragging={i === dragFrom ||
             (dragBlock !== null && ordinal !== undefined)}
@@ -776,7 +817,9 @@
           onmouseleave={() => app.clearHover()}
           onkeydown={(e) => onEntryKeyDown(entry, e)}
           role="button"
-          aria-label={`Entry ${i + 1}: ${title(entry)} by ${artist(entry)}`}
+          aria-label={entry.kind === "stop"
+            ? `Entry ${i + 1}: Stop`
+            : `Entry ${i + 1}: ${title(entry)} by ${artist(entry)}`}
           aria-haspopup="menu"
           aria-pressed={ordinal !== undefined}
           tabindex="0"
@@ -787,7 +830,12 @@
             <span class="track-check" aria-hidden="true">{ordinal ?? ""}</span>
           </span>
           <span class="track-title saved-entry-title">
-            {#if entry.track}
+            {#if entry.kind === "stop"}
+              <span
+                class="material-symbols-outlined stop-icon"
+                aria-hidden="true">block</span
+              >
+            {:else if entry.track}
               <MissingBadge trackId={entry.track.id} />
             {:else}
               <span
@@ -802,11 +850,22 @@
           <span class="track-artist">{artist(entry)}</span>
           <span class="track-album">{album(entry)}</span>
           <span class="track-plays">{entry.track?.play_count ?? ""}</span>
-          <span
-            class="track-duration"
-            class:trimmed={entry.track !== null && isTrimmed(entry.track)}
-            >{formatTime(duration(entry))}</span
-          >
+          {#if entry.kind === "stop"}
+            <span class="track-duration">
+              <StopDurationField
+                value={entry.plannedDurationSeconds}
+                readonly={!app.isAdmin}
+                oncommit={(seconds) =>
+                  app.setSavedStopDuration(entry.id, seconds)}
+              />
+            </span>
+          {:else}
+            <span
+              class="track-duration"
+              class:trimmed={entry.track !== null && isTrimmed(entry.track)}
+              >{formatTime(duration(entry))}</span
+            >
+          {/if}
           {#if entry.track}
             {@const track = entry.track}
             {#if app.cueDevice !== null}
@@ -905,7 +964,7 @@
             >
           {/if}
           <span class="saved-row-size" class:has-missing={saved.missing > 0}
-            >{sizeLabel(saved.entries, saved.missing)}</span
+            >{sizeLabel(saved.entries, saved.missing, saved.stops)}</span
           >
           {#if app.isAdmin}
             <button
@@ -949,16 +1008,14 @@
     <button
       class="btn-filler"
       id="btn-add-selection"
-      disabled={pickedTrackIds.length === 0}
-      onclick={() => queuePicked()}
-      >Add {pickedTrackIds.length} to playlist</button
+      disabled={pickedQueue.length === 0}
+      onclick={() => queuePicked()}>Add {pickedQueue.length} to playlist</button
     >
     <button
       class="btn-filler"
       id="btn-add-selection-next"
-      disabled={pickedTrackIds.length === 0}
-      onclick={() => queuePicked(true)}
-      >Add {pickedTrackIds.length} as next</button
+      disabled={pickedQueue.length === 0}
+      onclick={() => queuePicked(true)}>Add {pickedQueue.length} as next</button
     >
     {#if app.isAdmin}
       <button
@@ -1041,6 +1098,17 @@
   .saved-entry-title :global(.missing-badge) {
     vertical-align: middle;
     margin-right: 2px;
+  }
+
+  .saved-entry.stop-entry .saved-entry-title {
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--error);
+  }
+
+  .stop-icon {
+    font-size: 16px;
   }
 
   .saved-entry.unmatched .track-title,

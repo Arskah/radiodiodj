@@ -1972,6 +1972,32 @@ body {
   color: color-mix(in srgb, var(--error) 70%, transparent);
 }
 
+/* A Stop's planned duration, m:ss, wherever a Stop row shows it. */
+.stop-duration {
+  width: 52px;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--on-surface-variant);
+}
+
+input.stop-duration {
+  padding: 2px var(--sp-xs);
+  background: transparent;
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--r-lg);
+}
+
+input.stop-duration:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+input.stop-duration.refused {
+  border-color: var(--error);
+}
+
 .pl-drag {
   display: flex;
   align-items: center;

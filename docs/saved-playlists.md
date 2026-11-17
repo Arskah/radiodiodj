@@ -26,19 +26,12 @@ operator calls them.
 ## Model
 
 A saved playlist is a name and an ordered list of **entries**. An entry refers
-to one track of any content type. The same track may appear more than once: a
-theme tune opens and closes a show.
+to one track of any content type, or is a [Stop](#stops). The same track may
+appear more than once: a theme tune opens and closes a show.
 
 It is never on air by itself. It reaches air one of two ways, both described
 under [Using one](#using-one): its entries are appended to the playlist, or it
 becomes the auto-playlist's source.
-
-No stop markers. A stop marker is a playlist item, not a track, and the source
-path below would have to ignore it anyway. An operator who wants the show to
-park adds one to the playlist after appending.
-
-**Planned:** an entry that is a stop marker, with a planned duration. See
-[prepared-shows.md](./prepared-shows.md).
 
 ### Storage
 
@@ -60,7 +53,9 @@ CREATE TABLE saved_playlist_entries (
   artist       TEXT,
   title        TEXT,
   duration     REAL,
-  content_type TEXT
+  content_type TEXT,
+  kind         TEXT NOT NULL DEFAULT 'track',  -- 'track' | 'stop'
+  planned_duration_seconds INTEGER             -- a Stop's plan; NULL is none
 );
 CREATE INDEX saved_playlist_entries_list
   ON saved_playlist_entries(playlist_id, position);
@@ -163,6 +158,52 @@ every stored snapshot at once. That is why `track_id` is the binding and the
 snapshot is not: a bound entry never consults its own fingerprint, and export
 writes the bound track's current one.
 
+## Stops
+
+A saved playlist can hold Stops, so a show is prepared with its talk breaks in
+place rather than given them by hand on air. There is no kind of saved playlist
+that may and one that may not: the two would share every control, and a type
+that refused Stops would only guard against appending a list with breaks in it
+and walking away. That case is answered by showing it — a list's row reads
+`12 tracks · 2 stops` — and by what a Stop is on air: the playlist below it
+never plays unattended, and nothing resumes it but the producer. See
+[playlist.md](./playlist.md#modes).
+
+### The entry
+
+`kind` is the word the playlist already uses: `PlaylistItem` is tagged `kind`,
+`track` or `stop`, and so are the session file and the renderer's types. A Stop
+is not a content type.
+
+A Stop has every track column `NULL`. Without `kind` it would read as an
+**unmatched entry**, which is the hazard: binding, the missing count, the
+fingerprint match and the auto-playlist pool would each have to tell the two
+apart by a guess. With it each of them takes `kind = 'track'`, and a Stop is
+never bound, counted missing or picked.
+
+`planned_duration_seconds` is how long the break is meant to last, in whole
+seconds. `0` is an explicit zero-length plan, distinct from none. It is not the
+`duration` column, which is a track's snapshot, and it never resumes playback.
+
+### Authoring and using one
+
+**+ Stop** on an open saved playlist appends one, for an admin, as every edit of
+an existing list is. It is dragged into place by the ordinary reorder. Its row
+reads _Stop_ and carries the planned duration as `m:ss` where a track's time
+is: blank for none, minutes past 59 allowed, and anything else refused without
+changing what is stored. A Stop is picked, moved and removed with the entry
+selection, and **Add N to playlist** queues the picked Stops with the picked
+tracks, in pick order.
+
+**Add to playlist** queues every entry, Stops with their plans, in stored order.
+**Add with jingles and commercials** counts the cadence over the list's music as
+before and treats a Stop as one more of the author's entries, which
+`interleave_evenly` spreads the drawn ones around: an ident can land beside a
+break, which is what a break usually has. As the auto-playlist's source a list
+with Stops is the pool of its music, as any list is.
+
+**Save playlist as…** keeps the queued Stops and their plans.
+
 ## The file
 
 Export writes it; import reads it; so does anything else that can see the
@@ -171,16 +212,18 @@ library.
 ```json
 {
   "format": "radiodiodj-playlist",
-  "version": 1,
+  "version": 2,
   "name": "Friday Rock",
   "entries": [
     {
+      "kind": "track",
       "fingerprint": "v2:…",
       "artist": "…",
       "title": "…",
       "duration": 214.0,
       "contentType": "music"
-    }
+    },
+    { "kind": "stop", "plannedDurationSeconds": 120 }
   ]
 }
 ```
@@ -200,7 +243,11 @@ must not be able to make one, so a name already in use is not a collision to
 resolve but a new list to name — see [Names](#names).
 
 A `version` this build does not know is refused whole, with the reason — the
-rule themes already follow.
+rule themes already follow. Export always writes 2; import reads 1 and 2. An
+entry without `kind` is a track, which is every entry of a version-1 file, and a
+version-1 file holding a Stop is refused, as is a planned duration on a track.
+The version went up with Stops so that an older build refuses the file rather
+than reading a Stop as an unmatched entry and saving it back as one.
 
 ### Where a file comes from
 
@@ -253,8 +300,9 @@ unmatched" instead of leaving the operator to count. A playlist command queues
 its transition and returns nothing ([playlist.md](./playlist.md#commands)), so
 the count cannot come back from the transition. `playlist_add_saved` therefore
 does its reading first: it is an `async` command that resolves the saved
-playlist to its bound track ids, returns how many it took and how many it
-skipped, and hands the ids to the same queue `playlist_add_many` uses. It is the
+playlist to its bound track ids and its Stops, returns how many tracks it took
+and how many it skipped, and hands them to the same queue `playlist_add_many`
+uses. It is the
 one `playlist_*` command besides `playlist_sync` with a result. A track purged
 between that read and the transition is logged there, as it is for a selection.
 
@@ -349,7 +397,7 @@ With a saved playlist open in the _Playlists_ tab:
   `moveTarget` in `features/playlist/playlistDrop.ts` are pure and take any list
   of rows.
 - **Save as** on the playlist panel: the upcoming tracks become a new saved
-  playlist. Stop markers and item overrides are not carried.
+  playlist. Stops keep their plans; item overrides are not carried.
 
 An entry row is a library row wherever it has a track to be one for. It shows
 the same columns, play count and air time included, with a trimmed track's time
@@ -447,12 +495,12 @@ The line [admin-mode.md](./admin-mode.md) draws is that a guest runs a show and
 cannot change the station. Here that reads: a guest can **make** a saved
 playlist and **use** any of them, and cannot change one that exists.
 
-| open while locked                                | admin only                      |
-| ------------------------------------------------ | ------------------------------- |
-| import, _Save as_, new from a row or a selection | add, remove and reorder entries |
-| export                                           | rename, delete                  |
-| both append actions                              | _Find in library_               |
-| choosing the auto-playlist source                |                                 |
+| open while locked                                | admin only                                                       |
+| ------------------------------------------------ | ---------------------------------------------------------------- |
+| import, _Save as_, new from a row or a selection | add, remove and reorder entries, Stops included, and plan a Stop |
+| export                                           | rename, delete                                                   |
+| both append actions                              | _Find in library_                                                |
+| choosing the auto-playlist source                |                                                                  |
 
 Choosing the source is open for the reason the auto-playlist switch is: it is
 how a show is run, and a guest who can switch the auto-playlist off altogether
@@ -481,6 +529,7 @@ and, listed in `admin::ADMIN_COMMANDS`:
 saved_playlist_add_entries  saved_playlist_remove_entry saved_playlist_move_entry
 saved_playlist_remove_entries                           saved_playlist_move_entries
 saved_playlist_rename       saved_playlist_delete       saved_playlist_bind_entry
+saved_playlist_add_stop     saved_playlist_set_stop_duration
 ```
 
 `saved_playlist_create` takes its entries with it, which is what keeps creation
@@ -490,7 +539,7 @@ drop are one command. `playlist_add_saved` returns its two counts; see
 [Appending to the playlist](#appending-to-the-playlist). The open ones join
 `OPEN_COMMANDS`, the list the admin tests pin as deliberately ungated.
 
-The list of saved playlists — id, name, entry count, missing count — is emitted
+The list of saved playlists — id, name, entry count, Stop count, missing count — is emitted
 whole as `saved-playlists` on every change to it, and after anything that can
 change a missing count: a bind, a scan, a purge. Those all end in
 `Health::refresh`, so that is where the second emit is. `saved_playlist_list` is
@@ -508,8 +557,7 @@ answer "none" on that tab rather than be handed entry ids.
 
 - **M3U and other players' formats.** Path-based identity; revisit once
   root-relative paths exist (#505).
-- **Item overrides** on an entry. Stop markers are planned in
-  [prepared-shows.md](./prepared-shows.md).
+- **Item overrides** on an entry.
 - **In-order as an auto-playlist source.** See
   [Appending to the playlist](#appending-to-the-playlist).
 - **A saved playlist's own jingles as the interleave pool.** One switch, when a

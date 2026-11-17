@@ -69,8 +69,11 @@ machines can disagree about — named by `kind` and `key`, with its content in
 | `playlist`  | the list's own id      | `{"name", "created_at", "updated_at", "entries": [...]}`, entries in order         |
 | `dismissal` | `<finding kind>:<key>` | `{"value"}` — a library health finding an admin dismissed                          |
 
-A playlist entry is `{"track_id", "fingerprint", "artist", "title", "duration",
-"content_type"}`. `track_id` is null for an entry no track answers to.
+A playlist entry is `{"kind", "track_id", "fingerprint", "artist", "title",
+"duration", "content_type", "planned_duration_seconds"}`. `kind` is `track` or
+`stop`. A track entry's `track_id` is null when no track answers to it. A Stop
+has every track key null and, in `planned_duration_seconds`, how long the break
+is meant to last, or null for no plan.
 
 Nothing about what was played is here: no airing log, no play counts, no
 playlist on air.
@@ -168,6 +171,6 @@ of another library: throw it away with its cursor and start from zero.
 - **`hub_station.protocol`** goes up when a build changes what the rows mean:
   a new kind, a key that changes sense. A reader written for one protocol
   should refuse a hub on another rather than guess. This page describes
-  protocol 2.
+  protocol 3, which added the Stop entry.
 - **The hub is not a backup.** The owner empties it when its own library is
   replaced, and can fill it again from nothing.

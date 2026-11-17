@@ -4,6 +4,7 @@ import {
   findQuery,
   importMessage,
   matchesSearch,
+  parsePlannedDuration,
   sortEntries,
   sizeLabel,
 } from "./savedPlaylists";
@@ -102,11 +103,48 @@ describe("sizeLabel", () => {
     expect(sizeLabel(1, 0)).toBe("1 track");
     expect(sizeLabel(12, 2)).toBe("12 tracks · 2 missing");
   });
+
+  it("counts Stops apart from the tracks they are entries among", () => {
+    expect(sizeLabel(14, 0, 2)).toBe("12 tracks · 2 stops");
+    expect(sizeLabel(2, 1, 1)).toBe("1 track · 1 stop · 1 missing");
+    expect(sizeLabel(1, 0, 1)).toBe("0 tracks · 1 stop");
+  });
+});
+
+describe("parsePlannedDuration", () => {
+  it("reads m:ss, minutes past an hour included", () => {
+    expect(parsePlannedDuration("2:00")).toBe(120);
+    expect(parsePlannedDuration(" 0:05 ")).toBe(5);
+    expect(parsePlannedDuration("75:30")).toBe(4530);
+    expect(parsePlannedDuration("0:00")).toBe(0);
+  });
+
+  it("takes blank for no plan", () => {
+    expect(parsePlannedDuration("")).toBeNull();
+    expect(parsePlannedDuration("   ")).toBeNull();
+  });
+
+  it("refuses what does not read as m:ss", () => {
+    for (const typed of [
+      "2",
+      "2:5",
+      "2:60",
+      "-1:00",
+      "1:00:00",
+      "a:bc",
+      "1.5",
+      "99999999:00",
+    ]) {
+      expect(parsePlannedDuration(typed)).toBeUndefined();
+    }
+  });
 });
 
 describe("findQuery", () => {
   const entry = (artist: string, title: string) => ({
     id: 1,
+    kind: "track" as const,
+    plannedDurationSeconds: null,
     track: null,
     artist,
     title,

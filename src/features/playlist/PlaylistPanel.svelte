@@ -12,6 +12,7 @@
   } from "../../shared/types";
   import { airDuration, airedTrack, isTrimmed } from "../../shared/cuePoints";
   import MissingBadge from "../track/MissingBadge.svelte";
+  import StopDurationField from "./StopDurationField.svelte";
   import { gapAt, moveTarget } from "./playlistDrop";
   import { sizeLabel } from "../../shared/savedPlaylists";
 
@@ -26,7 +27,7 @@
   function onDragStart(e: DragEvent, i: number): void {
     dragFromIndex = i;
     // A library row removed mid-drag never fires the `dragend` that clears it.
-    app.draggedTrackIds = null;
+    app.endDrag();
     if (e.dataTransfer) {
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", String(i));
@@ -276,6 +277,12 @@
               <div class="pl-body">
                 <span class="pl-stop-label">Stop</span>
                 <span class="pl-stop-sub">Auto play halts here</span>
+              </div>
+              <div class="pl-right">
+                <StopDurationField
+                  value={item.planned_duration_seconds ?? null}
+                  oncommit={(seconds) => app.setStopDuration(i, seconds)}
+                />
               </div>
               <button
                 class="btn-remove"

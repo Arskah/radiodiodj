@@ -444,6 +444,14 @@ async fn studio_visit(db: &Arc<Db>, link: &Link, machine: &Machine) -> Result<(V
             station.protocol
         );
     }
+    // An owner on an older protocol would send back what it cannot read.
+    if station.protocol < PROTOCOL {
+        bail!(
+            "the hub speaks protocol {} and this version speaks {PROTOCOL}: \
+             update RadiodioDJ on the machine that owns the library",
+            station.protocol
+        );
+    }
     match on(db, Db::library_id).await? {
         None => {
             let id = station.library_id.clone();
@@ -837,6 +845,19 @@ mod tests {
 
         assert!(format!("{refused:#}").contains("join"), "{refused:#}");
         assert_eq!(studio.search("", None, None, None).unwrap()[0].title, "Old");
+    }
+
+    /// An owner that cannot read a Stop would send one back as a track.
+    #[tokio::test]
+    async fn a_studio_waits_for_an_owner_on_an_earlier_protocol() {
+        let Some(hub) = test_hub().await else { return };
+        let studio = joined_studio(&hub).await;
+        query(&hub, "UPDATE hub_station SET protocol = protocol - 1").await;
+
+        let refused = pull(&studio, &hub, &machine("studio")).await.unwrap_err();
+
+        assert!(format!("{refused:#}").contains("owns"), "{refused:#}");
+        assert!(studio.search("", None, None, None).unwrap().is_empty());
     }
 
     async fn joined_studio(hub: &Link) -> Arc<Db> {

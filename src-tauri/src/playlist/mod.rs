@@ -17,5 +17,5 @@ pub mod model;
 pub mod service;
 
 pub use generate::ContentType;
-pub use model::Snapshot;
+pub use model::{PlaylistItem, Snapshot};
 pub use service::PlaylistService;

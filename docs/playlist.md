@@ -61,6 +61,7 @@ snapshot is displayable without a second round-trip to resolve titles.
 ```
 playlist_add             playlist_add_front        playlist_insert
 playlist_add_many        playlist_add_saved        playlist_add_filler
+playlist_add_items       playlist_set_stop_duration
 playlist_add_stop_marker playlist_remove           playlist_move
 playlist_clear           playlist_play_index       playlist_play_now
 playlist_next            playlist_prev             playlist_stop
@@ -181,9 +182,19 @@ jingle does not shift the cadence.
 **Stop markers** are items too. Advancement consumes one and stops instead of
 loading the next track, which is how an operator parks the show at a fixed point
 without emptying the queue. They contribute nothing to the prefetch window and
-nothing to the Upcoming tab's total duration. A reached marker stops the deck
-the way the Stop button does; telling the two apart, and grouping a queued show,
-are planned in [prepared-shows.md](./prepared-shows.md).
+nothing to the Upcoming tab's total duration.
+
+A Stop carries an optional planned duration, `planned_duration_seconds`: how long
+the break is meant to last, set on its Upcoming row as `m:ss` by anyone, since
+it changes only that queued copy (`playlist_set_stop_duration`). It is an
+estimate for the producer. Nothing reads it to resume playback: the studio talks
+through a Stop, and only the producer ends it. A Stop arrives with its plan from
+a [saved playlist](./saved-playlists.md#stops), whole or as picked entries
+(`playlist_add_items`), and leaves with it through _Save playlist as…_.
+
+A reached marker stops the deck the way the Stop button does; telling the two
+apart, and grouping a queued show, are planned in
+[prepared-shows.md](./prepared-shows.md).
 
 **Nothing in the Upcoming tab reaches air by a double-click.** A queued track
 goes on by its row's play button, and a stop marker only by the show arriving at
@@ -255,7 +266,9 @@ The playlist row's marker badge clears it. See
 The queue, the current item and both overrides survive a restart via
 `session.json`: `SessionPlaylistItem::Track` carries `cue_override` and
 `SessionState` carries `current_cue_override`, both `serde(default)` so a
-session file written before overrides existed loads untouched. Restore goes
+session file written before overrides existed loads untouched. A
+`SessionPlaylistItem::Stop` carries its `planned_duration_seconds` the same
+way. Restore goes
 through `Effect::Resume`, which reloads and seeks without putting audio on air.
 
 History stores tracks rather than items, so a custom airing replays under the
