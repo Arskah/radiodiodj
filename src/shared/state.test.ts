@@ -577,6 +577,41 @@ describe("AppState groups", () => {
     expect(app.playlist[1].group).toEqual(show);
   });
 
+  it("mirrors a hold, with the start the backend gave it, until it ends", () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    app.addStopMarker();
+    app.addStopMarker();
+    app.next();
+    expect(app.holding).toMatchObject({
+      plannedDurationSeconds: null,
+      startedAtMs: 1_000,
+    });
+    const first = app.holding!.id;
+
+    clock.mockReturnValue(5_000);
+    playlist.resync();
+    expect(app.holding?.startedAtMs).toBe(1_000);
+    app.next();
+    expect(app.holding?.id).not.toBe(first);
+    expect(app.holding?.startedAtMs).toBe(5_000);
+
+    app.stop();
+    expect(app.holding).toBeNull();
+    clock.mockRestore();
+  });
+
+  it("adds as next into the group of the Stop being held", () => {
+    playlist.restore({
+      playlist: [{ ...stopMarker(90), group: show }],
+    });
+    playlist.resync();
+    app.next();
+    expect(app.holding).toMatchObject({ plannedDurationSeconds: 90 });
+    expect(app.onAirGroup).toEqual(show);
+    app.addNextToPlaylist(t(3));
+    expect(api.playlistAddFront).toHaveBeenLastCalledWith(3, null, show);
+  });
+
   it("moves, removes and saves a group by its id", async () => {
     app.moveGroup("g1", 3);
     expect(api.playlistMoveGroup).toHaveBeenCalledWith("g1", 3);

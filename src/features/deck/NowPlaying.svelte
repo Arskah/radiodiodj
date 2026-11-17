@@ -4,6 +4,7 @@
   import Waveform from "./Waveform.svelte";
   import MissingBadge from "../track/MissingBadge.svelte";
   import { groupColour } from "../playlist/playlistGroups";
+  import { holdCounter } from "../../shared/hold";
   import defaultCover from "../../assets/radiodiodi_label.svg";
 
   // Something to fade *to*: the next queued item is a track, or the
@@ -14,11 +15,34 @@
       (app.playlist.length > 0 && isTrackItem(app.playlist[0])),
   );
 
-  let progressBar: HTMLDivElement;
+  // Sampled, not counted: a late tick catches up rather than drifting. One
+  // timer per break, not per snapshot.
+  let now = $state(Date.now());
+  const holdId = $derived(app.holding?.id ?? null);
+  $effect(() => {
+    if (holdId === null) return;
+    now = Date.now();
+    const timer = setInterval(() => (now = Date.now()), 250);
+    return () => clearInterval(timer);
+  });
+  /** The break and its counter, while there is one. */
+  const held = $derived(
+    app.holding
+      ? {
+          planned: app.holding.plannedDurationSeconds,
+          ...holdCounter(
+            app.holding.plannedDurationSeconds,
+            (now - app.holding.startedAtMs) / 1000,
+          ),
+        }
+      : null,
+  );
+
+  let progressBar: HTMLDivElement | undefined = $state();
   let hoverPct = $state<number | null>(null);
 
   function pctFromClientX(clientX: number): number {
-    const rect = progressBar.getBoundingClientRect();
+    const rect = progressBar!.getBoundingClientRect();
     return ((clientX - rect.left) / rect.width) * 100;
   }
 
@@ -57,17 +81,32 @@
         {/if}
       </div>
       <div class="track-names">
-        <span id="np-title"
-          >{app.currentTrack ? app.currentTrack.title : "No Track Loaded"}</span
-        >
-        <span id="np-artist">{app.currentTrack?.artist ?? ""}</span>
-        {#if app.currentGroup}
+        {#if held}
+          <span id="np-title" class="hold-heading" class:over={held.over}
+            ><span class="material-symbols-outlined" aria-hidden="true"
+              >block</span
+            >Stop</span
+          >
+          <span id="np-artist"
+            >{held.planned === null
+              ? "No planned length"
+              : `Planned ${formatTime(held.planned)}`}</span
+          >
+        {:else}
+          <span id="np-title"
+            >{app.currentTrack
+              ? app.currentTrack.title
+              : "No Track Loaded"}</span
+          >
+          <span id="np-artist">{app.currentTrack?.artist ?? ""}</span>
+        {/if}
+        {#if app.onAirGroup}
           <span
-            class="deck-group group-colour-{groupColour(app.currentGroup.id)}"
+            class="deck-group group-colour-{groupColour(app.onAirGroup.id)}"
             title="On air from this saved playlist"
             ><span class="material-symbols-outlined" aria-hidden="true"
               >queue_music</span
-            >{app.currentGroup.name}</span
+            >{app.onAirGroup.name}</span
           >
         {/if}
         {#if app.tailTrack}
@@ -203,32 +242,45 @@
         alt=""
       />
     </div>
-    <div
-      id="progress-bar"
-      class:buffering={app.isBuffering}
-      bind:this={progressBar}
-      role="slider"
-      tabindex="0"
-      title="Double-click to seek"
-      aria-label="Seek (double-click)"
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={Math.round(app.progressPct)}
-      ondblclick={onDoubleClick}
-      onpointermove={onPointerMove}
-      onpointerleave={onPointerLeave}
-    >
-      <Waveform
-        peaks={app.waveform}
-        progressPct={app.progressPct}
-        {hoverPct}
-        crop={app.airCrop}
-        id="main"
-      />
-      <div id="progress-fill" style:width="{app.progressPct}%"></div>
-      <span class="time-pill"
-        >{formatTime(app.currentTime)} / {formatTime(app.duration)}</span
+    {#if held}
+      <div
+        id="hold-counter"
+        class:over={held.over}
+        role="timer"
+        aria-label={held.planned === null
+          ? "Time into the break"
+          : "Time against the planned break"}
       >
-    </div>
+        {held.text}
+      </div>
+    {:else}
+      <div
+        id="progress-bar"
+        class:buffering={app.isBuffering}
+        bind:this={progressBar}
+        role="slider"
+        tabindex="0"
+        title="Double-click to seek"
+        aria-label="Seek (double-click)"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(app.progressPct)}
+        ondblclick={onDoubleClick}
+        onpointermove={onPointerMove}
+        onpointerleave={onPointerLeave}
+      >
+        <Waveform
+          peaks={app.waveform}
+          progressPct={app.progressPct}
+          {hoverPct}
+          crop={app.airCrop}
+          id="main"
+        />
+        <div id="progress-fill" style:width="{app.progressPct}%"></div>
+        <span class="time-pill"
+          >{formatTime(app.currentTime)} / {formatTime(app.duration)}</span
+        >
+      </div>
+    {/if}
   </div>
 </section>

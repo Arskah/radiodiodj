@@ -852,6 +852,7 @@ impl Inner {
             let refiller = inner.refiller(source.as_ref().map(|s| s.id));
             let mut playlist = inner.playlist.lock();
             playlist.set_history_cap(refiller.history_cap());
+            playlist.set_now(now_ms());
             playlist.set_source_view(source, reverted_from);
             let mut transition = f(&mut playlist, &refiller);
             // Bringing the arm deck in line follows every transition rather

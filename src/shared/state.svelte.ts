@@ -11,6 +11,7 @@ import type {
   SourceInfo,
   CuePoints,
   Group,
+  Hold,
   DeviceInfo,
   DeviceRef,
   HealthReport,
@@ -57,6 +58,7 @@ import {
   without,
 } from "./selection";
 import { isStrictNever } from "./isStrictNever";
+export { formatSpan, formatTime } from "./time";
 import { APP_NAME } from "./appName";
 import { savePaintHint } from "./appearance";
 import { healthAttention as attentionOf } from "./health";
@@ -247,6 +249,8 @@ export class AppState {
   currentCueOverride = $state<CuePoints | null>(null);
   /** The group the track on air came from; _Add as next_ joins it. */
   currentGroup = $state<Group | null>(null);
+  /** The break a consumed Stop began, while it lasts. */
+  holding = $state<Hold | null>(null);
   currentTrack = $state<Track | null>(null);
 
   /**
@@ -831,9 +835,17 @@ export class AppState {
     this.send(api.playlistRemoveGroup(groupId));
   }
 
+  /**
+   * The group on air: the track's, or through a break the Stop's. Its header
+   * stays pinned, and _Add as next_ joins it.
+   */
+  get onAirGroup(): Group | null {
+    return this.currentGroup ?? this.holding?.group ?? null;
+  }
+
   /** Where _Add as next_ lands: in the group on air, as its next rows. */
   private nextGroup(asNext: boolean): Group | null {
-    return asNext ? this.currentGroup : null;
+    return asNext ? this.onAirGroup : null;
   }
 
   /** Rejects with the backend's reason, for the dialog to show. */
@@ -957,7 +969,7 @@ export class AppState {
 
   /** Queue a track as next-up, ahead of everything already queued. */
   addNextToPlaylist(track: Track): void {
-    this.send(api.playlistAddFront(track.id, null, this.currentGroup));
+    this.send(api.playlistAddFront(track.id, null, this.onAirGroup));
   }
 
   /** The rows a selection gesture can reach: none on the Playlists tab. */
@@ -1123,6 +1135,7 @@ export class AppState {
     this.playlist = snapshot.playlist;
     this.currentCueOverride = snapshot.currentOverride ?? null;
     this.currentGroup = snapshot.currentGroup ?? null;
+    this.holding = snapshot.holding ?? null;
     this.autoPlaylistActive = snapshot.autoPlaylistActive;
     this.autoSource = snapshot.source ?? null;
     this.revertedFrom = snapshot.revertedFrom ?? null;
@@ -1632,7 +1645,7 @@ export class AppState {
    */
   queueCueDraft(track: Track, points: CuePoints): void {
     const override = cuePointsEqual(points, track.cue_points) ? null : points;
-    this.send(api.playlistAddFront(track.id, override, this.currentGroup));
+    this.send(api.playlistAddFront(track.id, override, this.onAirGroup));
   }
 
   /** Whether adding the cue track now would give its item cue points. */
@@ -2249,17 +2262,3 @@ export class AppState {
 }
 
 export const app = new AppState();
-
-/** A span that can run past an hour — queue totals — as H:MM:SS or M:SS. */
-export function formatSpan(seconds: number): string {
-  if (!isFinite(seconds) || seconds < 3600) return formatTime(seconds);
-  const h = Math.floor(seconds / 3600);
-  return `${h}:${formatTime(seconds % 3600).padStart(5, "0")}`;
-}
-
-export function formatTime(seconds: number): string {
-  if (!isFinite(seconds)) return "0:00";
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}

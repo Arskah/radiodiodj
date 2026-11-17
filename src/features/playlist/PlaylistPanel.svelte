@@ -36,9 +36,7 @@
   /** Collapsed groups, by id. The window's alone: a restart opens them all. */
   let collapsed = $state<ReadonlySet<string>>(new Set());
 
-  const rows = $derived(
-    upcomingRows(app.playlist, app.currentGroup, collapsed),
-  );
+  const rows = $derived(upcomingRows(app.playlist, app.onAirGroup, collapsed));
 
   function toggleCollapsed(id: string): void {
     const next = new Set(collapsed);
