@@ -12,11 +12,14 @@ export type UpcomingRow =
       /** The run's items are `start` up to, not including, `end`. */
       start: number;
       end: number;
+      /** The whole group's, every run of it: what its buttons act on. */
       tracks: number;
       stops: number;
       collapsed: boolean;
-      /** The track on air is from this group, so the header stays pinned. */
+      /** The track on air is from this group, so no run of it moves. */
       onAir: boolean;
+      /** The run at the top that stays in view while the list scrolls. */
+      pinned: boolean;
     }
   | { kind: "item"; index: number; item: PlaylistItem };
 
@@ -40,6 +43,15 @@ export function upcomingRows(
   onAir: Group | null,
   collapsed: ReadonlySet<string>,
 ): UpcomingRow[] {
+  const sizes = new Map<string, { tracks: number; stops: number }>();
+  for (const item of items) {
+    const id = groupOf(item)?.id;
+    if (id === undefined) continue;
+    const size = sizes.get(id) ?? { tracks: 0, stops: 0 };
+    if (item.kind === "stop") size.stops++;
+    else size.tracks++;
+    sizes.set(id, size);
+  }
   const rows: UpcomingRow[] = [];
   if (onAir && groupOf(items[0])?.id !== onAir.id) {
     rows.push({
@@ -47,10 +59,10 @@ export function upcomingRows(
       group: onAir,
       start: 0,
       end: 0,
-      tracks: 0,
-      stops: 0,
+      ...(sizes.get(onAir.id) ?? { tracks: 0, stops: 0 }),
       collapsed: collapsed.has(onAir.id),
       onAir: true,
+      pinned: true,
     });
   }
   let i = 0;
@@ -63,17 +75,15 @@ export function upcomingRows(
     }
     let end = i;
     while (end < items.length && groupOf(items[end])?.id === group.id) end++;
-    const run = items.slice(i, end);
-    const stops = run.filter((item) => item.kind === "stop").length;
     const header: HeaderRow = {
       kind: "header",
       group,
       start: i,
       end,
-      tracks: run.length - stops,
-      stops,
+      ...sizes.get(group.id)!,
       collapsed: collapsed.has(group.id),
-      onAir: i === 0 && onAir?.id === group.id,
+      onAir: onAir?.id === group.id,
+      pinned: i === 0 && onAir?.id === group.id,
     };
     rows.push(header);
     if (!header.collapsed) {

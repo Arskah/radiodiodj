@@ -317,7 +317,7 @@
       ondrop={onDrop}
       role="list"
     >
-      {#if app.playlist.length === 0}
+      {#if rows.length === 0}
         <div class="empty">
           <span class="empty-icon"
             ><span class="material-symbols-outlined">queue_music</span></span
@@ -336,6 +336,7 @@
               class="playlist-row group-header group-colour-{colour}"
               class:collapsed={row.collapsed}
               class:on-air={row.onAir}
+              class:pinned={row.pinned}
               class:dragging={dragGroup === row.group.id}
               class:drop-before={dragging && dropGap === r}
               class:drop-after={dragging &&
@@ -375,7 +376,7 @@
                 class="btn-edit"
                 title="Save this group as a saved playlist"
                 aria-label={`Save ${row.group.name} as a saved playlist`}
-                disabled={row.end === row.start}
+                disabled={row.tracks + row.stops === 0}
                 onclick={() =>
                   (app.savedDialog = { kind: "saveAs", group: row.group })}
               >
@@ -385,7 +386,7 @@
                 class="btn-remove"
                 title="Remove what is left of this group"
                 aria-label={`Remove ${row.group.name}`}
-                disabled={row.end === row.start}
+                disabled={row.tracks + row.stops === 0}
                 onclick={() => app.removeGroup(row.group.id)}
               >
                 <span class="material-symbols-outlined">close</span>

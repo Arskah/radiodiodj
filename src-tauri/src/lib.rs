@@ -478,6 +478,9 @@ async fn playlist_save_as(
             } => NewEntry::Stop(*planned_duration_seconds),
         })
         .collect();
+    if group.is_some() && entries.is_empty() {
+        return Err("nothing is left of that group to save".into());
+    }
     blocking(move || {
         let made = db
             .create_saved_playlist_of(&name, &entries, now_ms())

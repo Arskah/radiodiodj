@@ -76,6 +76,28 @@ describe("upcomingRows", () => {
     ]);
   });
 
+  it("gives every run of a split group the whole group's size", () => {
+    const items = queue([1, "a"], [2], [3, "a"], [null, "a"]);
+    const headers = upcomingRows(items, null, none).filter(
+      (row): row is HeaderRow => row.kind === "header",
+    );
+    expect(headers.map((h) => [h.start, h.tracks, h.stops])).toEqual([
+      [0, 2, 1],
+      [2, 2, 1],
+    ]);
+  });
+
+  it("holds every run of the group on air in place and pins only the top", () => {
+    const items = queue([1, "a"], [2], [3, "a"]);
+    const headers = upcomingRows(items, show("a"), none).filter(
+      (row): row is HeaderRow => row.kind === "header",
+    );
+    expect(headers.map((h) => [h.start, h.onAir, h.pinned])).toEqual([
+      [0, true, true],
+      [2, true, false],
+    ]);
+  });
+
   it("draws a group split by another row as two runs", () => {
     const items = queue([1, "a"], [2], [3, "a"]);
     expect(drawn(upcomingRows(items, null, none))).toEqual([

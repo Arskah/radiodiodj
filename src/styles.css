@@ -1890,7 +1890,7 @@ body {
 }
 
 /* The group on air keeps its header in view while its rows scroll by. */
-.playlist-row.group-header.on-air {
+.playlist-row.group-header.pinned {
   position: sticky;
   top: 0;
   z-index: 1;

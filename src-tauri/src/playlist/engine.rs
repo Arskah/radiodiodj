@@ -389,7 +389,11 @@ impl Playlist {
 
     /// Move a whole group, as one run in its own order, into the gap at `gap`
     /// — counted in the playlist as it stands, the group's own items included.
+    /// The group on air stays where it is.
     pub fn move_group(&mut self, id: &str, gap: usize) -> Transition {
+        if self.current_group.as_ref().is_some_and(|g| g.id == id) {
+            return Transition::default();
+        }
         let in_group = |item: &PlaylistItem| item.group().is_some_and(|g| g.id == id);
         let at = self
             .items
@@ -800,7 +804,8 @@ impl Playlist {
         self.trim_history();
         self.current = current;
         self.current_override = current_override;
-        self.current_group = current_group;
+        // A group is on air only with a track of it on the deck.
+        self.current_group = current_group.filter(|_| self.current.is_some());
         // The restored track aired before the restart — the log already has it,
         // and the resume load must not count it again.
         self.current_aired = true;
@@ -1949,6 +1954,30 @@ mod tests {
         assert_eq!(queued(&p), vec![Some(1), Some(3), Some(4), Some(2), None]);
         p.move_group("a", 0);
         assert_eq!(queued(&p), vec![Some(2), None, Some(1), Some(3), Some(4)]);
+    }
+
+    #[test]
+    fn the_group_on_air_does_not_move() {
+        let mut p = grouped(&[(Some(1), Some("a")), (Some(2), Some("a")), (Some(3), None)]);
+        air(&mut p, 0);
+        p.move_group("a", 2);
+        assert_eq!(queued(&p), vec![Some(2), Some(3)]);
+    }
+
+    #[test]
+    fn a_group_comes_back_on_air_only_with_its_track() {
+        let mut p = Playlist::new();
+        p.hydrate(
+            vec![],
+            None,
+            None,
+            Some(show("a")),
+            0.0,
+            false,
+            true,
+            vec![],
+        );
+        assert_eq!(on_air_group(&p), None);
     }
 
     #[test]

@@ -314,7 +314,8 @@ Standalone track
   last of the group leaves the deck.
 
 A run split by a row from elsewhere is two runs and draws two headers with one
-name.
+name. Both show the whole group's size, since their buttons act on the whole
+group.
 
 ### Moving rows
 
@@ -329,7 +330,8 @@ Drops are positional, over the rows as drawn:
   and the group stays collapsed. A drop before or after the header is outside it.
 - **A header** drags the whole run as one, while none of it is on air
   (`playlist_move_group`). Dropped inside another group, it lands ahead of that
-  group. The header of the group on air does not move.
+  group. No run of the group on air moves, and the engine refuses to move it
+  too, for a drag that began before the group went on air.
 - **Removing a header** removes the group's remaining rows
   (`playlist_remove_group`). The track on air plays on.
 
@@ -345,7 +347,8 @@ Groups are flattened.
 **Save group as…**, the header's save button, takes that group's remaining rows
 (`playlist_save_as` with the group's id). It is how an adjusted show is kept:
 edit it in the playlist, where it is the operator's, and save it as a new list,
-named after the group to start with.
+named after the group to start with. A group with nothing left queued is
+refused rather than saved empty.
 
 Both make a new saved playlist and are open while admin mode is locked, as
 making one already is. Neither replaces an existing list; that stays an admin's
