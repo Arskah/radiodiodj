@@ -276,7 +276,9 @@ in what happened:
 - **Add with jingles and commercials** — the same list brought up to the
   station's [interleave](./playlist.md#modes) cadence.
 
-Both **append**. Nothing replaces the operator's playlist.
+Both **append**. Nothing replaces the operator's playlist. Dragging the list's
+row, or the open list's name, into the playlist adds it as written at the drop
+instead. See [groups](./playlist.md#groups).
 
 The woven variant **tops up; it does not stack**. For a list with _M_ music
 entries the cadence asks for `M / jingleEvery` jingles and `M / commercialEvery`

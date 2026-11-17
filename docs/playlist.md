@@ -345,10 +345,15 @@ track to the head of the playlist in its group. The snapshot carries it as
 | ------------------------------------------------------- | -------------------------------------------------------------- |
 | **Add to playlist** on a saved playlist                 | a new group: every entry in stored order                       |
 | **Add with jingles and commercials**                    | a new group, the drawn items in it                             |
+| a whole saved playlist dragged in                       | a new group at the drop, every entry in stored order           |
 | tracks or a selection, from the library or a saved list | no group, appended                                             |
 | **+**, **Add N tracks**, **+ Stop**, fillers            | no group, appended after everything                            |
 | **Add as next**, and the cue editor's _Use once_        | the front of the playlist, in the group on air; otherwise none |
 | refill                                                  | no group, appended                                             |
+
+A whole list is dragged by its row in the list of saved playlists, or by the
+open list's name; dragging its entries means those entries. Dropped inside
+another group, it lands ahead of that group, as a dragged header does.
 
 **Add as next** joins the show on air so that the show stays one run. Without
 it, a track added as next during a show would sit ungrouped between the track

@@ -194,6 +194,8 @@ export class AppState {
   private draggedItems: PersistedPlaylistItem[] | null = null;
   /** What is being dragged is the library selection, which a drop then uses up. */
   private draggedLibrarySelection = false;
+  /** A whole saved playlist being dragged, which queues as a group of its own. */
+  draggedSavedId = $state<number | null>(null);
 
   /**
    * The library selection, as track ids in pick order. It outlives a search, a
@@ -762,10 +764,17 @@ export class AppState {
     this.openSaved = null;
   }
 
-  /** Append a saved playlist to the playlist and say what that did. */
-  async addSavedToPlaylist(id: number, weave: boolean): Promise<void> {
+  /**
+   * Queue a saved playlist, ahead of the item at `index` or at the end, and
+   * say what that did.
+   */
+  async addSavedToPlaylist(
+    id: number,
+    weave: boolean,
+    index: number | null = null,
+  ): Promise<void> {
     try {
-      const { added, skipped } = await api.playlistAddSaved(id, weave);
+      const { added, skipped } = await api.playlistAddSaved(id, weave, index);
       this.savedNotice = appendMessage(added, skipped);
     } catch (err) {
       logger.error("Adding a saved playlist failed:", err);
@@ -1023,6 +1032,7 @@ export class AppState {
   /** A drag of a selected row carries the selection; of any other, that row. */
   startLibraryDrag(track: Track): void {
     this.draggedItems = null;
+    this.draggedSavedId = null;
     this.draggedLibrarySelection = this.selectedIds.includes(track.id);
     this.draggedTrackIds = this.draggedLibrarySelection
       ? [...this.selectedIds]
@@ -1035,6 +1045,7 @@ export class AppState {
    */
   startEntryDrag(items: PersistedPlaylistItem[]): void {
     this.draggedLibrarySelection = false;
+    this.draggedSavedId = null;
     this.draggedItems = items.length > 0 ? items : null;
     this.draggedTrackIds = this.draggedItems
       ? this.draggedItems.flatMap((item) =>
@@ -1043,17 +1054,32 @@ export class AppState {
       : null;
   }
 
+  /** Start a drag of a whole saved playlist. */
+  startSavedDrag(id: number): void {
+    this.endDrag();
+    this.draggedSavedId = id;
+  }
+
   /** The drag is over, dropped or not. */
   endDrag(): void {
     this.draggedTrackIds = null;
     this.draggedItems = null;
+    this.draggedSavedId = null;
   }
 
-  /** Queue what is being dragged ahead of the item at `index`, in `group`. */
+  /**
+   * Queue what is being dragged ahead of the item at `index`, in `group`. A
+   * whole saved playlist is a group of its own, so it takes no `group`.
+   */
   dropDraggedInPlaylist(index: number, group: Group | null = null): void {
     const ids = this.draggedTrackIds;
     const items = this.draggedItems;
+    const saved = this.draggedSavedId;
     this.endDrag();
+    if (saved !== null) {
+      void this.addSavedToPlaylist(saved, false, index);
+      return;
+    }
     if (items) {
       this.send(api.playlistAddItems(items, index, group));
       return;

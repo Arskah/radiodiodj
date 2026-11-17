@@ -504,11 +504,18 @@ impl PlaylistService {
         });
     }
 
-    /// Queue a saved playlist at the end as one run, a new group named `name`:
-    /// its bound tracks and its Stops, in the list's order. With `weave` the
-    /// run is brought up to the interleave cadence first, and what it draws is
-    /// in the group too. See `docs/saved-playlists.md`.
-    pub fn add_saved(&self, name: String, entries: Vec<SavedItem>, weave: bool) {
+    /// Queue a saved playlist as one run, a new group named `name`, ahead of
+    /// the item at `index` or at the end: its bound tracks and its Stops, in
+    /// the list's order. With `weave` the run is brought up to the interleave
+    /// cadence first, and what it draws is in the group too. See
+    /// `docs/saved-playlists.md`.
+    pub fn add_saved(
+        &self,
+        name: String,
+        entries: Vec<SavedItem>,
+        weave: bool,
+        index: Option<usize>,
+    ) {
         self.queue(move |inner| {
             let mut types = HashMap::new();
             let wanted: Vec<SessionPlaylistItem> = entries
@@ -562,7 +569,7 @@ impl PlaylistService {
                 .into_iter()
                 .map(|item| item.in_group(Some(group.clone())))
                 .collect();
-            Inner::apply(inner, move |p, _| p.insert_items(None, items));
+            Inner::apply(inner, move |p, _| p.insert_items(index, items));
         });
     }
 

@@ -120,9 +120,15 @@
     dropHeader = null;
   }
 
-  /** A row of this list or of the library is in the air. */
+  /** A whole saved playlist is in the air, to queue as a group of its own. */
+  const draggingSaved = $derived(app.draggedSavedId !== null);
+
+  /** A row of this list, of the library or a saved playlist is in the air. */
   const dragging = $derived(
-    dragFromIndex !== -1 || dragGroup !== null || app.draggedTrackIds !== null,
+    dragFromIndex !== -1 ||
+      dragGroup !== null ||
+      app.draggedTrackIds !== null ||
+      draggingSaved,
   );
 
   // A drag that ends anywhere else never reaches a handler here.
@@ -135,7 +141,7 @@
 
   // The same hazard the other way round: a queued row that aired mid-drag.
   $effect(() => {
-    if (app.draggedTrackIds) {
+    if (app.draggedTrackIds || draggingSaved) {
       dragFromIndex = -1;
       dragGroup = null;
     }
@@ -156,7 +162,8 @@
 
   /** A collapsed header under the pointer takes rows, though not a group. */
   function headerUnder(e: DragEvent): HeaderRow | null {
-    if (dragGroup !== null || !(e.target instanceof Element)) return null;
+    if (dragGroup !== null || draggingSaved) return null;
+    if (!(e.target instanceof Element)) return null;
     const id = e.target
       .closest(".group-header.collapsed")
       ?.getAttribute("data-group");
@@ -171,7 +178,8 @@
     if (!dragging) return;
     e.preventDefault();
     if (e.dataTransfer) {
-      e.dataTransfer.dropEffect = app.draggedTrackIds ? "copy" : "move";
+      e.dataTransfer.dropEffect =
+        app.draggedTrackIds || draggingSaved ? "copy" : "move";
     }
     const header = headerUnder(e);
     dropHeader = header?.group.id ?? null;
@@ -193,9 +201,14 @@
     const from = dragFromIndex;
     const group = dragGroup;
     const fromOutside = app.draggedTrackIds !== null;
+    const saved = draggingSaved;
     onDragEnd();
     if (group !== null) {
       app.moveGroup(group, groupGap(rows, gap));
+      return;
+    }
+    if (saved) {
+      app.dropDraggedInPlaylist(groupGap(rows, gap));
       return;
     }
     const target = header ? dropInto(header) : dropAt(rows, gap);
