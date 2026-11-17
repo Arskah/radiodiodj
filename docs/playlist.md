@@ -280,8 +280,31 @@ and either ends the hold.
 Stop, so playback starts only when the producer starts it. The counter is the
 producer's, beside the station clock in the toolbar.
 
-Expected start times in Upcoming are not built. They need a timing schedule in
-the backend, fed from the audio worker.
+## ETAs
+
+Each Upcoming row shows when it is expected to start, left of its duration; a
+Stop's is when its break begins. The renderer works them out
+(`shared/eta.ts`), since everything they need is already in its state: the
+playlist, the deck's position and air time, Auto, and the hold. It is a sum,
+not a schedule:
+
+- The first row starts now plus what is left of the track on air, up to its
+  Next Start when Auto hands over to a track and its Cue Out otherwise. In a
+  hold it starts at the end of the plan, or now once the plan is overrun or
+  there is none.
+- Each row after starts when the one above hands over: a track's Next Start
+  when Auto hands over to the track after it, its Cue Out otherwise; a Stop's
+  plan. Past a Stop without a plan the ETAs are unknown and read `—`.
+
+Counting from now keeps the ETAs still while a track plays, since now and the
+position advance together, and lets them all slip together while the deck is
+paused or empty. Manual mode assumes the presenter starts each next item at Cue
+Out. Clicking an ETA shows them to the minute instead of the second, for the
+window only.
+
+What it leaves out, each worth a few seconds at most: the decoded duration the
+deck clamps cue points against, a track whose audio turns out missing, and a
+tail still sounding under the next overlap.
 
 ## Groups
 

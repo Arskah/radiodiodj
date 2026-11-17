@@ -24,6 +24,8 @@
     type UpcomingRow,
   } from "./playlistGroups";
   import { sizeLabel } from "../../shared/savedPlaylists";
+  import { formatEta, msToNextSecond } from "../../shared/clock";
+  import { etaDeck, upcomingEtas } from "../../shared/eta";
 
   let dragFromIndex = $state(-1);
   /** The group being dragged whole by its header. */
@@ -37,6 +39,37 @@
   let collapsed = $state<ReadonlySet<string>>(new Set());
 
   const rows = $derived(upcomingRows(app.playlist, app.onAirGroup, collapsed));
+
+  let now = $state(Date.now());
+  // On the second, as the toolbar clock ticks, so the two read alike.
+  $effect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = (): void => {
+      now = Date.now();
+      timer = setTimeout(tick, msToNextSecond(now));
+    };
+    timer = setTimeout(tick, msToNextSecond(now));
+    return () => clearTimeout(timer);
+  });
+
+  /** ETAs to the minute instead of the second. The window's alone. */
+  let etaMinutes = $state(false);
+
+  const etas = $derived(
+    upcomingEtas({
+      items: app.playlist,
+      deck: app.currentTrack
+        ? etaDeck(
+            airedTrack(app.currentTrack, app.currentCueOverride),
+            app.currentTime,
+            app.duration,
+          )
+        : null,
+      hold: app.holding,
+      autoAdvance: app.autoAdvance,
+      nowMs: now,
+    }),
+  );
 
   function toggleCollapsed(id: string): void {
     const next = new Set(collapsed);
@@ -183,6 +216,20 @@
     return isStopMarker(item) ? "stop" : String(item.track.id);
   }
 </script>
+
+{#snippet eta(i: number)}
+  <button
+    class="pl-eta"
+    title={etaMinutes
+      ? "Expected start. Click to show seconds."
+      : "Expected start. Click to show minutes only."}
+    aria-label="Expected start"
+    onclick={(e) => {
+      e.stopPropagation();
+      etaMinutes = !etaMinutes;
+    }}>{formatEta(etas[i] ?? null, etaMinutes)}</button
+  >
+{/snippet}
 
 <section id="playlist-panel" class="panel">
   <div class="panel-header">
@@ -420,6 +467,7 @@
                   <span class="pl-stop-sub">Auto play halts here</span>
                 </div>
                 <div class="pl-right">
+                  {@render eta(i)}
                   <StopDurationField
                     value={item.planned_duration_seconds ?? null}
                     oncommit={(seconds) => app.setStopDuration(i, seconds)}
@@ -490,6 +538,7 @@
                         >
                       </button>
                     {/if}
+                    {@render eta(i)}
                     <span class="pl-duration" class:trimmed={isTrimmed(aired)}
                       >{formatTime(airDuration(aired))}</span
                     >
