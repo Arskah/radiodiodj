@@ -181,7 +181,9 @@ jingle does not shift the cadence.
 **Stop markers** are items too. Advancement consumes one and stops instead of
 loading the next track, which is how an operator parks the show at a fixed point
 without emptying the queue. They contribute nothing to the prefetch window and
-nothing to the Upcoming tab's total duration.
+nothing to the Upcoming tab's total duration. A reached marker stops the deck
+the way the Stop button does; telling the two apart, and grouping a queued show,
+are planned in [prepared-shows.md](./prepared-shows.md).
 
 **Nothing in the Upcoming tab reaches air by a double-click.** A queued track
 goes on by its row's play button, and a stop marker only by the show arriving at

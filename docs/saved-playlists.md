@@ -37,6 +37,9 @@ No stop markers. A stop marker is a playlist item, not a track, and the source
 path below would have to ignore it anyway. An operator who wants the show to
 park adds one to the playlist after appending.
 
+**Planned:** an entry that is a stop marker, with a planned duration. See
+[prepared-shows.md](./prepared-shows.md).
+
 ### Storage
 
 ```sql
@@ -505,7 +508,8 @@ answer "none" on that tab rather than be handed entry ids.
 
 - **M3U and other players' formats.** Path-based identity; revisit once
   root-relative paths exist (#505).
-- **Stop markers in a saved playlist**, and **item overrides** on an entry.
+- **Item overrides** on an entry. Stop markers are planned in
+  [prepared-shows.md](./prepared-shows.md).
 - **In-order as an auto-playlist source.** See
   [Appending to the playlist](#appending-to-the-playlist).
 - **A saved playlist's own jingles as the interleave pool.** One switch, when a
