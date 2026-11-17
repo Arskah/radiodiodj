@@ -296,9 +296,11 @@ not a schedule:
   when Auto hands over to the track after it, its Cue Out otherwise; a Stop's
   plan. Past a Stop without a plan the ETAs are unknown and read `—`.
 
-Counting from now keeps the ETAs still while a track plays, since now and the
-position advance together, and lets them all slip together while the deck is
-paused or empty. Manual mode assumes the presenter starts each next item at Cue
+The first row counts from when the track on air began, `now − position`, taken
+once as it starts playing and held. Each position arrives a little late, by a
+varying amount, so taking it afresh on every reading moved every ETA a second
+now and then. The start is taken again on resume, on a reading more than 1.5
+seconds off it (a seek, the next track) and on every reading while paused, so while paused the ETAs all slip together, as they do with nothing on air. Manual mode assumes the presenter starts each next item at Cue
 Out. Clicking an ETA shows them to the minute instead of the second, for the
 window only.
 

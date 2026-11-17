@@ -25,7 +25,7 @@
   } from "./playlistGroups";
   import { sizeLabel } from "../../shared/savedPlaylists";
   import { formatEta, msToNextSecond } from "../../shared/clock";
-  import { etaDeck, upcomingEtas } from "../../shared/eta";
+  import { DeckAnchor, etaDeck, upcomingEtas } from "../../shared/eta";
 
   let dragFromIndex = $state(-1);
   /** The group being dragged whole by its header. */
@@ -55,21 +55,26 @@
   /** ETAs to the minute instead of the second. The window's alone. */
   let etaMinutes = $state(false);
 
-  const etas = $derived(
-    upcomingEtas({
+  const anchor = new DeckAnchor();
+
+  const etas = $derived.by(() => {
+    // The tick's `now` can be most of a second old when a position arrives.
+    const nowMs = Math.max(now, Date.now());
+    const deck = app.currentTrack
+      ? etaDeck(
+          airedTrack(app.currentTrack, app.currentCueOverride),
+          anchor.read(app.currentTime, app.isPlaying, nowMs),
+          app.duration,
+        )
+      : null;
+    return upcomingEtas({
       items: app.playlist,
-      deck: app.currentTrack
-        ? etaDeck(
-            airedTrack(app.currentTrack, app.currentCueOverride),
-            app.currentTime,
-            app.duration,
-          )
-        : null,
+      deck,
       hold: app.holding,
       autoAdvance: app.autoAdvance,
-      nowMs: now,
-    }),
-  );
+      nowMs,
+    });
+  });
 
   function toggleCollapsed(id: string): void {
     const next = new Set(collapsed);
