@@ -419,14 +419,16 @@ struct SavedAppend {
     skipped: usize,
 }
 
-/// Append a saved playlist's tracks, in order; with `weave`, brought up to the
-/// interleave cadence. Reads before it queues, which is why it alone among the
-/// `playlist_*` commands has a result. See `docs/saved-playlists.md`.
+/// Queue a saved playlist's tracks, in order, ahead of the item at `index` or
+/// at the end; with `weave`, brought up to the interleave cadence. Reads before
+/// it queues, which is why it alone among the `playlist_*` commands has a
+/// result. See `docs/saved-playlists.md`.
 #[tauri::command(rename_all = "camelCase")]
 async fn playlist_add_saved(
     state: State<'_, AppState>,
     id: i64,
     weave: bool,
+    index: Option<usize>,
 ) -> Result<SavedAppend, String> {
     let db = Arc::clone(&state.db);
     let playlist = Arc::clone(&state.playlist);
@@ -440,7 +442,7 @@ async fn playlist_add_saved(
             .iter()
             .filter(|item| matches!(item, SavedItem::Track { .. }))
             .count();
-        playlist.add_saved(offered.name, offered.items, weave);
+        playlist.add_saved(offered.name, offered.items, weave, index);
         Ok(SavedAppend {
             added,
             skipped: offered.unmatched,

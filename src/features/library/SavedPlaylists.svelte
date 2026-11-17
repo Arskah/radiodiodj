@@ -592,6 +592,19 @@
     return gapAt(e.clientY, rows);
   }
 
+  /** A drag of a whole list, which queues it as a group of its own. */
+  function onSavedDragStart(
+    e: DragEvent,
+    saved: { id: number; name: string },
+  ): void {
+    app.clearHover();
+    app.startSavedDrag(saved.id);
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "copy";
+      e.dataTransfer.setData("text/plain", saved.name);
+    }
+  }
+
   function onDragStart(e: DragEvent, entry: SavedEntry, i: number): void {
     // The tooltip is anchored to the row and would hang over the drag.
     app.clearHover();
@@ -667,7 +680,16 @@
     >
       <span class="material-symbols-outlined">arrow_back</span>
     </button>
-    <span id="saved-open-name">{open.name}</span>
+    <span
+      id="saved-open-name"
+      title={open.entries.length > 0
+        ? "Drag into the playlist to add the whole list"
+        : undefined}
+      draggable={open.entries.length > 0}
+      ondragstart={(e) => onSavedDragStart(e, open)}
+      ondragend={() => app.endDrag()}
+      role="presentation">{open.name}</span
+    >
     <span id="saved-open-size"
       >{sizeLabel(
         open.entries.length,
@@ -949,6 +971,9 @@
           tabindex="0"
           aria-label={`Saved playlist: ${saved.name}`}
           data-saved-id={saved.id}
+          draggable={saved.entries > 0}
+          ondragstart={(e) => onSavedDragStart(e, saved)}
+          ondragend={() => app.endDrag()}
         >
           <span class="track-no" aria-hidden="true"
             ><span class="material-symbols-outlined saved-row-icon"

@@ -280,11 +280,16 @@ export const api = {
   },
 
   /**
-   * Append a saved playlist's tracks; with `weave`, brought up to the
-   * interleave cadence. Resolves to what it added and what it had to skip.
+   * Queue a saved playlist's tracks ahead of the item at `index`, or at the
+   * end; with `weave`, brought up to the interleave cadence. Resolves to what
+   * it added and what it had to skip.
    */
-  playlistAddSaved(id: number, weave: boolean): Promise<SavedAppend> {
-    return invoke<SavedAppend>("playlist_add_saved", { id, weave });
+  playlistAddSaved(
+    id: number,
+    weave: boolean,
+    index: number | null = null,
+  ): Promise<SavedAppend> {
+    return invoke<SavedAppend>("playlist_add_saved", { id, weave, index });
   },
 
   /**

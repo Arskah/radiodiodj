@@ -3557,7 +3557,7 @@ describe("AppState saved playlists", () => {
   it("says what an append did", async () => {
     api.playlistAddSaved.mockResolvedValue({ added: 31, skipped: 2 });
     await app.addSavedToPlaylist(5, true);
-    expect(api.playlistAddSaved).toHaveBeenCalledWith(5, true);
+    expect(api.playlistAddSaved).toHaveBeenCalledWith(5, true, null);
     expect(app.savedNotice).toBe("Added 31 tracks, skipped 2 unmatched");
   });
 
@@ -3613,6 +3613,19 @@ describe("AppState saved playlists", () => {
     expect(app.draggedTrackIds).toEqual([]);
     app.dropDraggedInPlaylist(2);
     expect(api.playlistAddItems).toHaveBeenCalledWith(stop, 2, null);
+  });
+
+  it("queues a whole saved playlist dragged in, at the drop, as written", async () => {
+    api.playlistAddSaved.mockResolvedValue({ added: 3, skipped: 0 });
+    app.startEntryDrag([{ kind: "track", id: 1, cue_override: null }]);
+    app.startSavedDrag(5);
+    expect(app.draggedTrackIds).toBeNull();
+    app.dropDraggedInPlaylist(2, { id: "g", name: "Other" });
+    await vi.waitFor(() =>
+      expect(api.playlistAddSaved).toHaveBeenCalledWith(5, false, 2),
+    );
+    expect(api.playlistAddItems).not.toHaveBeenCalled();
+    expect(app.draggedSavedId).toBeNull();
   });
 
   it("queues picked entries, Stops among them, at the end or as next", () => {
