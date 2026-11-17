@@ -193,8 +193,8 @@ importers:
         specifier: 2.8.4
         version: 2.8.4
       '@tauri-apps/plugin-log':
-        specifier: 2.10.1
-        version: 2.10.1
+        specifier: 2.10.2
+        version: 2.10.2
       material-symbols:
         specifier: 0.49.0
         version: 0.49.0
@@ -1107,8 +1107,8 @@ packages:
   '@tauri-apps/plugin-dialog@2.8.4':
     resolution: {integrity: sha512-+6ZOiXenOaxXwb8qCbBPdT2jX2cFPaVVHGIskrpmJLpmWj+qKRTD6X/z9x7hTdSQn7NedcoXCkWGej4a7dC4lw==}
 
-  '@tauri-apps/plugin-log@2.10.1':
-    resolution: {integrity: sha512-QYgxDunUZP+Cd3ev+8ItOc3Q6uUFkEhRHdTolxUtlC/8SGsc5IyVjGgFclprkAx736HUCUYfh2vqUr3qwNfTTw==}
+  '@tauri-apps/plugin-log@2.10.2':
+    resolution: {integrity: sha512-Vx6uLv9GIqzrnze3poz1LThP1dFi7PHkOVesVewlT8zhYiVFhF7lQIIGXgjh5qtUUUNTzC9/Cv1DiRcSyxI/Mw==}
 
   '@tybys/wasm-util@0.10.4':
     resolution: {integrity: sha512-W3c4gRigFS0T/Ma4qIYF3GDAc5AQdHb1yL5znJT1Zv1YaD9Kitx656wBjvr19qbiosmZT8lWDM5BEMynUqX65A==}
@@ -3869,7 +3869,7 @@ snapshots:
     dependencies:
       '@tauri-apps/api': 2.12.4
 
-  '@tauri-apps/plugin-log@2.10.1':
+  '@tauri-apps/plugin-log@2.10.2':
     dependencies:
       '@tauri-apps/api': 2.12.4
 
