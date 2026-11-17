@@ -52,9 +52,6 @@
     return () => clearTimeout(timer);
   });
 
-  /** ETAs to the minute instead of the second. The window's alone. */
-  let etaMinutes = $state(false);
-
   const anchor = new DeckAnchor();
 
   const etas = $derived.by(() => {
@@ -223,16 +220,7 @@
 </script>
 
 {#snippet eta(i: number)}
-  <button
-    class="pl-eta"
-    title={etaMinutes
-      ? "Expected start. Click to show seconds."
-      : "Expected start. Click to show minutes only."}
-    aria-label="Expected start"
-    onclick={(e) => {
-      e.stopPropagation();
-      etaMinutes = !etaMinutes;
-    }}>{formatEta(etas[i] ?? null, etaMinutes)}</button
+  <span class="pl-eta" title="Expected start">{formatEta(etas[i] ?? null)}</span
   >
 {/snippet}
 

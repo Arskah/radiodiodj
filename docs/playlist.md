@@ -301,8 +301,7 @@ once as it starts playing and held. Each position arrives a little late, by a
 varying amount, so taking it afresh on every reading moved every ETA a second
 now and then. The start is taken again on resume, on a reading more than 1.5
 seconds off it (a seek, the next track) and on every reading while paused, so while paused the ETAs all slip together, as they do with nothing on air. Manual mode assumes the presenter starts each next item at Cue
-Out. Clicking an ETA shows them to the minute instead of the second, for the
-window only.
+Out.
 
 What it leaves out, each worth a few seconds at most: the decoded duration the
 deck clamps cue points against, a track whose audio turns out missing, and a

@@ -10,12 +10,7 @@ export function msToNextSecond(nowMs: number): number {
   return 1000 - (nowMs % 1000);
 }
 
-/**
- * An ETA at Unix `ms` as the clock shows time, or `—` when unknown. `minutes`
- * rounds to the nearest minute and drops the seconds.
- */
-export function formatEta(ms: number | null, minutes: boolean): string {
-  if (ms === null) return "—";
-  if (!minutes) return formatClock(new Date(ms));
-  return formatClock(new Date(Math.round(ms / 60_000) * 60_000)).slice(0, 5);
+/** An ETA at Unix `ms` as the clock shows time, or `—` when unknown. */
+export function formatEta(ms: number | null): string {
+  return ms === null ? "—" : formatClock(new Date(ms));
 }

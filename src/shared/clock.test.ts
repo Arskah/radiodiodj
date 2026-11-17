@@ -26,13 +26,11 @@ describe("msToNextSecond", () => {
 describe("formatEta", () => {
   const at = new Date(2026, 10, 18, 13, 4, 31).getTime();
 
-  it("shows the second, or the nearest minute", () => {
-    expect(formatEta(at, false)).toBe("13:04:31");
-    expect(formatEta(at, true)).toBe("13:05");
-    expect(formatEta(at - 2000, true)).toBe("13:04");
+  it("shows the time to the second", () => {
+    expect(formatEta(at)).toBe("13:04:31");
   });
 
   it("shows an unknown ETA as a dash", () => {
-    expect(formatEta(null, true)).toBe("—");
+    expect(formatEta(null)).toBe("—");
   });
 });
