@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       platform:
-        description: GitHub-hosted runner image (e.g. ubuntu-24.04, macos-14, windows-latest)
+        description: GitHub-hosted runner image (e.g. ubuntu-24.04, macos-15, windows-latest)
         type: string
         required: true
       target:

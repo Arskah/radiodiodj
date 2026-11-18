@@ -21,7 +21,7 @@ jobs:
   build-macos-arm64:
     uses: ./.github/workflows/build.yml
     with:
-      platform: macos-14
+      platform: macos-15
       target: aarch64-apple-darwin
       args: --target aarch64-apple-darwin
       artifact-name: bundle-macos-arm64
@@ -30,7 +30,7 @@ jobs:
   build-macos-x64:
     uses: ./.github/workflows/build.yml
     with:
-      platform: macos-14
+      platform: macos-15
       target: x86_64-apple-darwin
       args: --target x86_64-apple-darwin
       artifact-name: bundle-macos-x64
@@ -140,7 +140,7 @@ jobs:
           exit "$missing"
 
       - name: Fail on incomplete release
-        if: ${{ !cancelled() && contains(needs.*.result, 'failure') }}
+        if: ${{ !cancelled() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
         shell: bash
         env:
           NEEDS: ${{ toJSON(needs) }}
