@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.34.0](https://github.com/Arskah/radiodiodj/compare/v0.33.0...v0.34.0) (2026-11-17)
+
+
+### Features
+
+* allow Stops in saved playlists ([#740](https://github.com/Arskah/radiodiodj/issues/740)) ([c4baafd](https://github.com/Arskah/radiodiodj/commit/c4baafd1b62babc20f2d9ea34e58522c653d688d))
+* drag a whole saved playlist into Upcoming ([#750](https://github.com/Arskah/radiodiodj/issues/750)) ([e674008](https://github.com/Arskah/radiodiodj/commit/e674008d77992b4382aa9e15a8e00c3b95fa2370))
+* queue saved playlists as groups in Upcoming ([#741](https://github.com/Arskah/radiodiodj/issues/741)) ([32d4d13](https://github.com/Arskah/radiodiodj/commit/32d4d13bf0979af8f701d101f1e960e21911e2e7))
+* show a hold counter on the main deck at a Stop ([#742](https://github.com/Arskah/radiodiodj/issues/742)) ([c4b3c9e](https://github.com/Arskah/radiodiodj/commit/c4b3c9e220ec158fffe17fccb5749bead910dcf4))
+* show expected start times in Upcoming ([#748](https://github.com/Arskah/radiodiodj/issues/748)) ([6479dcb](https://github.com/Arskah/radiodiodj/commit/6479dcb74d57a917e4ce026e5d0daab5c26b1475))
+
+
+### Bug Fixes
+
+* **deps:** update rust crate tauri-plugin-opener to v2.7.3 ([#730](https://github.com/Arskah/radiodiodj/issues/730)) ([2d4ed70](https://github.com/Arskah/radiodiodj/commit/2d4ed70e4e7e0e4e9770eebce3be674b4018bc5e))
+* **deps:** update rust crate uuid to v1.29.2 ([#728](https://github.com/Arskah/radiodiodj/issues/728)) ([2c61fc6](https://github.com/Arskah/radiodiodj/commit/2c61fc6a5a1910757233506b51a77dff5bc0f49f))
+* **deps:** update tauri-plugin-log to v2.10.2 ([#731](https://github.com/Arskah/radiodiodj/issues/731)) ([bd326fe](https://github.com/Arskah/radiodiodj/commit/bd326fe664f76b388c0cff63006896c918948d5e))
+
 ## [0.33.0](https://github.com/Arskah/radiodiodj/compare/v0.32.2...v0.33.0) (2026-11-16)
 
 
