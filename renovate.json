@@ -23,6 +23,12 @@
       "matchManagers": ["npm", "cargo"],
       "matchPackageNames": ["tauri-plugin-*", "@tauri-apps/plugin-*"],
       "groupName": "{{{replace '^@tauri-apps/plugin-' 'tauri-plugin-' depName}}}"
+    },
+    {
+      "description": "rusqlite_migration depends on rusqlite, and two rusqlite minors pull two libsqlite3-sys that both link sqlite3, which cargo rejects, so the two crates move in one PR",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["rusqlite", "rusqlite_migration"],
+      "groupName": "rusqlite"
     }
   ]
 }
