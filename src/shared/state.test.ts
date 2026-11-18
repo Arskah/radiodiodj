@@ -128,6 +128,7 @@ const { api } = vi.hoisted(() => {
     pickCertificateFile: vi.fn(),
     readCaCertificate: vi.fn(),
     setSharedLibrary: vi.fn(),
+    joinSharedLibraryAgain: vi.fn(),
     onHubState: vi.fn(),
     onHubLibraryChanged: vi.fn(),
     openLink: vi.fn(),
@@ -2153,6 +2154,20 @@ describe("AppState session persistence", () => {
     expect(app.hubAttention).toBe(false);
   });
 
+  it("adopts what the backend stored when asked to join again", async () => {
+    ({ app } = makeApp());
+    api.joinSharedLibraryAgain.mockResolvedValueOnce({
+      ...app.sharedLibrary,
+      role: "studio",
+      joinAgain: true,
+    });
+
+    await app.joinSharedLibraryAgain(true);
+
+    expect(api.joinSharedLibraryAgain).toHaveBeenCalledWith(true);
+    expect(app.sharedLibrary.joinAgain).toBe(true);
+  });
+
   it("re-reads the library when a pull from the hub changed it", async () => {
     ({ app } = makeApp());
     await flushAsync();
@@ -2178,6 +2193,7 @@ describe("AppState session persistence", () => {
     };
     api.setSharedLibrary.mockResolvedValueOnce({
       ...settings,
+      joinAgain: false,
       status: {
         role: "standalone",
         ok: true,
@@ -2185,6 +2201,7 @@ describe("AppState session persistence", () => {
         reachedAt: null,
         encrypted: null,
         waiting: 0,
+        remedy: null,
       },
     });
 

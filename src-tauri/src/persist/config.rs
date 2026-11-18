@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use parking_lot::{Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -68,6 +68,10 @@ pub struct ExternalLibraryConfig {
     /// than as a path to a file that can be moved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
+    /// A studio's copy is to be set aside and made again at the next launch,
+    /// which clears this.
+    #[serde(default)]
+    pub join_again: bool,
 }
 
 /// What an operator sets of [`ExternalLibraryConfig`]: everything but the
@@ -749,9 +753,23 @@ impl Config {
         section.allow_unencrypted = settings.allow_unencrypted;
         section.direct_tls = settings.direct_tls;
         section.ca_certificate = tidy(settings.ca_certificate);
+        // Only a studio has a copy to make again.
+        section.join_again &= section.role == LibraryRole::Studio;
         let stored = cfg.external_library.clone();
         self.save_and_unlock(cfg)?;
         Ok(stored)
+    }
+
+    /// Ask for a studio's copy to be made again at the next launch, or take
+    /// the request back. Only a machine saved as a studio can ask.
+    pub fn set_join_again(&self, pending: bool) -> Result<()> {
+        let mut cfg = self.inner.lock();
+        let section = &mut cfg.external_library;
+        if pending && section.role != LibraryRole::Studio {
+            bail!("this computer is no longer saved as a studio");
+        }
+        section.join_again = pending;
+        self.save_and_unlock(cfg)
     }
 
     /// This install's id and name on the hub. The id is made and saved the
@@ -1008,6 +1026,34 @@ mod tests {
         let reopened = Config::open(dir.path()).unwrap().external_library();
         assert_eq!(reopened.machine_id, Some(id));
         assert_eq!(reopened.role, LibraryRole::Studio);
+    }
+
+    #[test]
+    fn a_join_asked_for_again_is_dropped_with_the_studio_role() {
+        let dir = tempdir().unwrap();
+        let cfg = Config::open(dir.path()).unwrap();
+        let studio = SharedLibrarySettings {
+            role: LibraryRole::Studio,
+            url: Some("postgresql://hub/x".into()),
+            ..Default::default()
+        };
+        cfg.set_external_library(studio.clone()).unwrap();
+        cfg.set_join_again(true).unwrap();
+
+        let kept = cfg.set_external_library(studio.clone()).unwrap();
+        assert!(kept.join_again, "saving another field leaves it asked for");
+        let reopened = Config::open(dir.path()).unwrap().external_library();
+        assert!(reopened.join_again);
+
+        let left = cfg
+            .set_external_library(SharedLibrarySettings {
+                role: LibraryRole::Standalone,
+                ..studio
+            })
+            .unwrap();
+        assert!(!left.join_again);
+        assert!(cfg.set_join_again(true).is_err(), "only a studio can ask");
+        assert!(!cfg.external_library().join_again);
     }
 
     #[test]
