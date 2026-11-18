@@ -3,8 +3,10 @@
   import { formatAgo } from "../../shared/health";
   import {
     lostByJoiningAgain,
+    ownerLastSeen,
     replacesLibrary,
     roleLabel,
+    takeOverEffect,
     waitingLabel,
   } from "../../shared/sharedLibrary";
   import { api } from "../../shared/api";
@@ -26,7 +28,9 @@
   let error = $state<string | null>(null);
   let confirmingRejoin = $state(false);
   let rejoining = $state(false);
-  let rejoinError = $state<string | null>(null);
+  let actionError = $state<string | null>(null);
+  let confirmingTakeOver = $state(false);
+  let takingOver = $state(false);
 
   const saved = $derived(app.sharedLibrary);
   const running = $derived(saved.status.role);
@@ -45,6 +49,9 @@
     saved.url === null ? "standalone" : saved.role,
   );
   const restartPending = $derived(savedTakesEffect !== running);
+  const takeOver = $derived(
+    saved.status.remedy?.kind === "takeOver" ? saved.status.remedy : null,
+  );
 
   function adopt(): void {
     role = app.sharedLibrary.role;
@@ -56,7 +63,8 @@
     confirming = false;
     error = null;
     confirmingRejoin = false;
-    rejoinError = null;
+    actionError = null;
+    confirmingTakeOver = false;
   }
 
   $effect(() => {
@@ -89,14 +97,27 @@
 
   async function joinAgain(pending: boolean): Promise<void> {
     rejoining = true;
-    rejoinError = null;
+    actionError = null;
     try {
       await app.joinSharedLibraryAgain(pending);
       confirmingRejoin = false;
     } catch (e) {
-      rejoinError = e instanceof Error ? e.message : String(e);
+      actionError = e instanceof Error ? e.message : String(e);
     } finally {
       rejoining = false;
+    }
+  }
+
+  async function takeOwnerRole(): Promise<void> {
+    takingOver = true;
+    actionError = null;
+    try {
+      await api.takeOverSharedLibrary();
+    } catch (e) {
+      actionError = e instanceof Error ? e.message : String(e);
+    } finally {
+      takingOver = false;
+      confirmingTakeOver = false;
     }
   }
 
@@ -388,9 +409,51 @@
       </div>
     {/if}
   {/if}
-  {#if rejoinError}
+  {#if takeOver}
+    {#if confirmingTakeOver}
+      <div class="missing-tracks-confirm" role="alert">
+        <span>
+          {ownerLastSeen(takeOver)} Take the role only from a computer that is not
+          coming back: one that is merely switched off finds it gone and publishes
+          nothing.
+          {takeOverEffect(takeOver)}
+          {#if !takeOver.sameLibrary}
+            What the hub holds is first kept in this computer's data folder, as
+            <code>radiodiodj.hub.bak.db</code> or the next numbered name that is free.
+          {/if}
+        </span>
+        <button
+          id="btn-shared-takeover-confirm"
+          class="btn-purge-confirm"
+          disabled={takingOver}
+          onclick={takeOwnerRole}>Take the owner role</button
+        >
+        <button
+          class="btn-purge-cancel"
+          disabled={takingOver}
+          onclick={() => (confirmingTakeOver = false)}>Cancel</button
+        >
+      </div>
+    {:else}
+      <div class="np-action-row">
+        <button
+          id="btn-shared-takeover"
+          class="btn-scan-now"
+          onclick={() => (confirmingTakeOver = true)}>Take over</button
+        >
+        <span class="np-test-result">{ownerLastSeen(takeOver)}</span>
+      </div>
+    {/if}
+  {/if}
+  {#if saved.status.kept}
+    <p class="settings-section-desc">
+      What the hub held before this computer published to it is kept in
+      <code>{saved.status.kept}</code>.
+    </p>
+  {/if}
+  {#if actionError}
     <div class="np-action-row">
-      <span class="np-test-result">{rejoinError}</span>
+      <span class="np-test-result">{actionError}</span>
     </div>
   {/if}
 </div>

@@ -177,8 +177,9 @@ pnpm typecheck && pnpm lint                       # tsc + svelte-check + eslint
 RadiodioDJ stores its database (`radiodiodj.db`), config (`config.json`), session
 state (`session.json`), themes (`themes/`), station artwork (`branding/`), and
 default now-playing output in a per-user data directory. Database backups sit beside it: `radiodiodj.v{N}.bak.db` (before a
-migration, newest two kept) and `radiodiodj.legacy-v{N}.bak.db` (a pre-baseline
-library that was reset).
+migration, newest two kept), `radiodiodj.legacy-v{N}.bak.db` (a pre-baseline
+library that was reset) and `radiodiodj.hub.bak.db`, then `radiodiodj.hub.{N}.bak.db`
+(what a shared library's hub held before this computer emptied it; never written over).
 
 - macOS: `~/Library/Application Support/com.radiodiodj/`
 - Linux: `~/.local/share/com.radiodiodj/` (or `$XDG_DATA_HOME/com.radiodiodj/`)

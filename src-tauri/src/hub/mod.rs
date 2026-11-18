@@ -2,6 +2,7 @@
 //! Nothing the app plays, searches or edits reads it — one worker moves rows
 //! through it. See `docs/shared-library.md`.
 
+mod backup;
 mod certs;
 mod client;
 mod schema;

@@ -354,6 +354,7 @@ export class AppState {
       encrypted: null,
       waiting: 0,
       remedy: null,
+      kept: null,
     },
   });
   /** Missing tracks, duplicates and disk changes, from `library-health`. */
