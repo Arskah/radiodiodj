@@ -1264,6 +1264,8 @@ struct SharedLibrary {
     allow_unencrypted: bool,
     direct_tls: bool,
     ca_certificate: Option<CaCertificate>,
+    /// Whether the next launch sets this studio's copy aside and joins again.
+    join_again: bool,
     status: hub::Status,
 }
 
@@ -1290,6 +1292,7 @@ fn shared_library(state: &AppState) -> SharedLibrary {
             let summary = hub::summarize_ca(&pem).ok()?;
             Some(CaCertificate { pem, summary })
         }),
+        join_again: saved.join_again,
         status: state.hub.status(),
     }
 }
@@ -1332,6 +1335,23 @@ async fn set_shared_library(
         config.set_external_library(settings).map_err(err)
     })
     .await?;
+    Ok(shared_library(&state))
+}
+
+/// Ask for this studio's copy to be set aside and made again from the library
+/// the hub holds now, or take the request back. It happens at the next launch,
+/// as a first join does, and is only there to ask for while the hub refuses
+/// the copy this machine has.
+#[tauri::command(rename_all = "camelCase")]
+async fn join_shared_library_again(
+    state: State<'_, AppState>,
+    pending: bool,
+) -> Result<SharedLibrary, String> {
+    if pending && state.hub.status().remedy != Some(hub::Remedy::JoinAgain) {
+        return Err("this computer's copy is of the library the hub holds".to_owned());
+    }
+    let config = Arc::clone(&state.config);
+    blocking(move || config.set_join_again(pending).map_err(err)).await?;
     Ok(shared_library(&state))
 }
 
@@ -1925,8 +1945,9 @@ pub fn run() {
             let config = Arc::new(Config::open(&data_dir)?);
             let role = hub::role_in_effect(&config);
             let studio = role == LibraryRole::Studio;
+            let join_again = config.external_library().join_again;
             let (opened, library_joined) =
-                match Db::open_for(&data_dir.join("radiodiodj.db"), studio) {
+                match Db::open_for(&data_dir.join("radiodiodj.db"), studio, join_again) {
                     Ok(opened) => opened,
                     Err(e) => match e.downcast_ref::<OpenError>() {
                         Some(refusal) => {
@@ -1936,6 +1957,13 @@ pub fn run() {
                         None => return Err(e.into()),
                     },
                 };
+            // Not fatal: the copy is set aside already, and a request left
+            // standing only joins once more at the next launch.
+            if join_again {
+                if let Err(e) = config.set_join_again(false) {
+                    log::error!("shared library: join-again request not cleared: {e:#}");
+                }
+            }
             let library_reset = opened.reset_backup.is_some();
             let db = Arc::new(opened.db);
             // The library applies the automatic-cue policy on the way out, so
@@ -2195,6 +2223,7 @@ pub fn run() {
             get_cover_art,
             get_shared_library,
             set_shared_library,
+            join_shared_library_again,
             read_ca_certificate,
             get_now_playing_config,
             set_now_playing_config,

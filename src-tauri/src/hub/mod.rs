@@ -8,7 +8,7 @@ mod schema;
 mod worker;
 
 pub use certs::{summarize as summarize_ca, Summary as CaSummary, MAX_PEM_BYTES};
-pub use worker::{role_in_effect, Service, Status};
+pub use worker::{role_in_effect, Remedy, Service, Status};
 
 /// Commands a studio refuses: the scan, the analysis and what else changes the
 /// library's shape are the owner's. The invoke handler checks every call

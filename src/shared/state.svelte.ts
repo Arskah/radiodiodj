@@ -345,6 +345,7 @@ export class AppState {
     allowUnencrypted: false,
     directTls: false,
     caCertificate: null,
+    joinAgain: false,
     status: {
       role: "standalone",
       ok: true,
@@ -352,6 +353,7 @@ export class AppState {
       reachedAt: null,
       encrypted: null,
       waiting: 0,
+      remedy: null,
     },
   });
   /** Missing tracks, duplicates and disk changes, from `library-health`. */
@@ -2198,6 +2200,14 @@ export class AppState {
   /** Save the shared-library settings. They apply at the next launch. */
   async saveSharedLibrary(settings: SharedLibrarySettings): Promise<void> {
     this.sharedLibrary = await api.setSharedLibrary(settings);
+  }
+
+  /**
+   * Ask for this studio's copy to be made again at the next launch, or take
+   * the request back.
+   */
+  async joinSharedLibraryAgain(pending: boolean): Promise<void> {
+    this.sharedLibrary = await api.joinSharedLibraryAgain(pending);
   }
 
   async loadAdmin(): Promise<void> {
