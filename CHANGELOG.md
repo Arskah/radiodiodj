@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.35.0](https://github.com/Arskah/radiodiodj/compare/v0.34.0...v0.35.0) (2026-11-18)
+
+
+### Features
+
+* **shared-library:** join again in one step ([#664](https://github.com/Arskah/radiodiodj/issues/664)) ([df0b220](https://github.com/Arskah/radiodiodj/commit/df0b22022f12f273c64fdbf930dae50575a4adf8)), closes [#649](https://github.com/Arskah/radiodiodj/issues/649)
+* **shared-library:** take the owner role over from a machine that is gone ([#665](https://github.com/Arskah/radiodiodj/issues/665)) ([3c0a7ad](https://github.com/Arskah/radiodiodj/commit/3c0a7ad5d42b17a895e2a1081109defa86232b0d)), closes [#648](https://github.com/Arskah/radiodiodj/issues/648)
+
+
+### Bug Fixes
+
+* **deps:** update node.js to v26 ([#707](https://github.com/Arskah/radiodiodj/issues/707)) ([dbee565](https://github.com/Arskah/radiodiodj/commit/dbee56588e9b10d00bf32243313bd850bfa78535))
+
 ## [0.34.0](https://github.com/Arskah/radiodiodj/compare/v0.33.0...v0.34.0) (2026-11-17)
 
 
