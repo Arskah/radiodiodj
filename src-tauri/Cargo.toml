@@ -47,7 +47,7 @@ rusqlite_migration = "=2.6.0"
 symphonia = { version = "=0.6.1", default-features = false, features = ["aac", "aiff", "flac", "id3v2", "isomp4", "mp2", "mp3", "ogg", "pcm", "vorbis", "wav"] }
 parking_lot = "=0.13.0"
 anyhow = "=1.0.104"
-walkdir = "=2.5.0"
+walkdir = "=2.5.1"
 lofty = "=0.25.5"
 unicode-normalization = "=0.1.26"
 base64 = "=0.23.1"
