@@ -860,8 +860,8 @@
   }
 
   .btn-primary {
-    background: var(--primary);
-    border-color: var(--primary);
-    color: var(--on-primary);
+    background: var(--accent-fill);
+    border-color: var(--accent-fill);
+    color: var(--on-accent-fill);
   }
 </style>

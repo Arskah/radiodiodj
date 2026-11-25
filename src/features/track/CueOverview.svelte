@@ -218,7 +218,7 @@
   .cue-overview-curve {
     position: relative;
     height: 44px;
-    background: var(--surface-container-lowest);
+    background: var(--waveform-bg);
     border: 1px solid
       color-mix(in srgb, var(--outline-variant) 20%, transparent);
     border-radius: var(--r-lg);
@@ -233,7 +233,7 @@
     position: absolute;
     top: 0;
     bottom: 0;
-    background: color-mix(in srgb, var(--primary) 12%, transparent);
+    background: color-mix(in srgb, var(--selection) 12%, transparent);
     pointer-events: none;
   }
 

@@ -248,8 +248,8 @@
   }
 
   input:focus {
-    border-color: var(--primary);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 15%, transparent);
+    border-color: var(--focus-ring);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus-ring) 15%, transparent);
   }
 
   .saved-error {
@@ -301,12 +301,12 @@
   }
 
   .btn-primary.btn-danger {
-    background: color-mix(in srgb, var(--error) 15%, transparent);
-    border-color: color-mix(in srgb, var(--error) 40%, transparent);
-    color: var(--error);
+    background: color-mix(in srgb, var(--danger) 15%, transparent);
+    border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+    color: var(--danger);
   }
 
   .btn-primary.btn-danger:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--error) 25%, transparent);
+    background: color-mix(in srgb, var(--danger) 25%, transparent);
   }
 </style>

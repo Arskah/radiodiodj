@@ -288,7 +288,7 @@
   .cue-detail-curve {
     position: relative;
     height: 140px;
-    background: var(--surface-container-lowest);
+    background: var(--waveform-bg);
     border: 1px solid
       color-mix(in srgb, var(--outline-variant) 20%, transparent);
     border-radius: var(--r-lg);
@@ -314,7 +314,7 @@
   }
 
   .cue-detail-bars .played rect {
-    fill: var(--secondary);
+    fill: var(--cue-waveform-played);
     opacity: 0.8;
   }
 
@@ -329,11 +329,7 @@
     position: absolute;
     top: 0;
     bottom: 0;
-    background: color-mix(
-      in srgb,
-      var(--surface-container-lowest) 65%,
-      transparent
-    );
+    background: color-mix(in srgb, var(--waveform-bg) 65%, transparent);
     pointer-events: none;
   }
 
@@ -357,8 +353,8 @@
     top: 0;
     bottom: 0;
     width: 1.5px;
-    background: var(--error);
-    box-shadow: 0 0 4px var(--error);
+    background: var(--playhead);
+    box-shadow: 0 0 4px var(--playhead);
     pointer-events: none;
   }
 

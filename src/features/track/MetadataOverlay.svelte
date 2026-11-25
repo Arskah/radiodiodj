@@ -531,8 +531,8 @@
 
   .field input:focus,
   .field textarea:focus {
-    border-color: var(--primary);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 15%, transparent);
+    border-color: var(--focus-ring);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus-ring) 15%, transparent);
   }
 
   .field input::placeholder,
@@ -552,7 +552,7 @@
     margin-left: 6px;
     font-style: normal;
     text-transform: none;
-    color: var(--primary);
+    color: var(--emphasis-text);
   }
 
   .editor-confirm {

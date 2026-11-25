@@ -131,7 +131,8 @@ comments alone. `"notes"` costs nothing.
 
 ## The token contract
 
-A theme may set these, and nothing else:
+A theme may set the **palette** below and the [role tokens](#role-tokens), and
+nothing else. The palette:
 
 | group       | tokens                                                                                                                                                                                                                           |
 | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -146,9 +147,54 @@ A theme may set these, and nothing else:
 | depth       | `--shadow-color`, `--inner-highlight`, `--scrim`                                                                                                                                                                                 |
 | controls    | `--on-toggle-knob`                                                                                                                                                                                                               |
 
-The same names are the `:root` block at the top of `src/styles.css`, the
-`THEMEABLE_TOKENS` list in `appearance/theme.rs`, and the key set of every
-built-in. A token missing from any of the three fails the contract guard.
+The same names are the literal-valued tokens of the `:root` block at the top of
+`src/styles.css`, the `THEMEABLE_TOKENS` list in `appearance/theme.rs`, and the
+key set of every built-in. A token missing from any of the three fails the
+contract guard.
+
+### Role tokens
+
+A palette token is a colour; a role token is a **job**. `--primary` alone used to
+paint the Play button, selected rows, tabs, focus rings, the now-playing title,
+every library title, the played waveform and drop lines — so a theme with a loud
+accent could not keep it on the buttons without painting the whole library in
+it. Each role below is one of those jobs, retintable alone:
+
+| role                    | paints                                                                         | follows                      |
+| ----------------------- | ------------------------------------------------------------------------------ | ---------------------------- |
+| `--accent-fill`         | filled and tinted controls: Play, Auto Mode, Auto/Manual, toggles, add buttons | `--primary`                  |
+| `--on-accent-fill`      | text and icons on `--accent-fill`                                              | `--on-primary`               |
+| `--selection`           | selected library rows, the on-air playlist row, selected cue and theme rows    | `--primary`                  |
+| `--active-tab`          | the active tab, settings tab and sort column                                   | `--primary`                  |
+| `--focus-ring`          | a focused input's border and glow                                              | `--primary`                  |
+| `--emphasis-text`       | now-playing title, deck heading, brand, time pill, panel icons, hovered icons  | `--primary`                  |
+| `--track-title`         | library track titles                                                           | `--primary`                  |
+| `--waveform-played`     | the played part of the main deck's waveform                                    | `--primary`                  |
+| `--progress-fill`       | progress and scan bars, buffering sweep                                        | `--primary`                  |
+| `--drop-indicator`      | drag-and-drop insertion lines                                                  | `--primary`                  |
+| `--link`                | links                                                                          | `--primary`                  |
+| `--cue-waveform-played` | the played part of the cue deck's and cue editor's waveform                    | `--secondary`                |
+| `--playhead`            | the playhead line                                                              | `--error`                    |
+| `--danger`              | destructive buttons: clear, remove, purge, delete                              | `--error`                    |
+| `--stop-row`            | Stop rows and the + Stop button                                                | `--error`                    |
+| `--led`                 | the on-air LED                                                                 | `--error`                    |
+| `--badge`               | the settings attention badge                                                   | `--error`                    |
+| `--toolbar-bg`          | the toolbar and nav bar                                                        | `--surface-container-lowest` |
+| `--waveform-bg`         | waveform strips                                                                | `--surface-container-lowest` |
+| `--field-bg`            | search fields, text inputs and selects                                         | `--surface-container-lowest` |
+| `--row-stripe`          | the library's alternate row                                                    | `--surface-container-lowest` |
+
+A role is declared in the `:root` block as `var()` of the token it follows, and
+is listed in `ROLE_TOKENS`, not `THEMEABLE_TOKENS`. **Built-ins set no roles,
+and resolution never fills one in from the base**: a theme that omits a role gets
+it through CSS from its _own_ palette, so a theme that only sets `--primary`
+still gets accent-coloured titles, and the built-ins look exactly as they did
+before roles existed. The contract guard checks that every role follows a
+palette token and that `ROLE_TOKENS` lists exactly the declared roles.
+
+Not every use of a palette token is a role. A use stays on its palette token
+when nothing would want it apart — the update badge, the playlist group colours
+and the dialog buttons on `--primary-container`.
 
 **Colours only.** Spacing (`--sp-*`), radius (`--r*`) and the two font tokens
 are deliberately not themeable. No colour a validator accepts can break the
@@ -175,15 +221,15 @@ have quietly flattened 0.4 / 0.5 / 0.55 / 0.6 into two values. `--scrim` is the
 exception and carries its own alpha, because it is used directly as a
 background rather than inside a shadow.
 
-There is no `--glow-primary`. The primary glow is
-`color-mix(in srgb, var(--primary) 40%, transparent)`, which is what the
-hardcoded `rgba(184, 195, 255, 0.4)` already was, so it follows `--primary` with
-no token of its own.
+There is no `--glow-primary`. The Play button's glow is
+`color-mix(in srgb, var(--accent-fill) 40%, transparent)`, which is what the
+hardcoded `rgba(184, 195, 255, 0.4)` already was, so it follows the fill with no
+token of its own.
 
 **The set stays small because `color-mix` does the rest.** `styles.css` already
 uses `color-mix(in srgb, var(--token) 25%, transparent)` in 49 places, so every
 derived tint follows its source token. That is the reason not to publish a token
-per shade.
+per shade — a role is a token per job, not per shade.
 
 ### Base
 

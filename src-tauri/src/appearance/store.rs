@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use super::theme::{Base, Theme, ThemeError, THEMEABLE_TOKENS};
+use super::theme::{Base, Theme, ThemeError, ROLE_TOKENS, THEMEABLE_TOKENS};
 
 pub const MIDNIGHT: &str = "midnight";
 pub const DAYLIGHT: &str = "daylight";
@@ -180,8 +180,9 @@ pub struct Resolved {
     pub label: Option<PathBuf>,
 }
 
-/// Resolve `id` into a complete token map, filling whatever it omits from the
-/// built-in its `base` names.
+/// Resolve `id` into a complete palette, filling whatever it omits from the
+/// built-in its `base` names. Role tokens pass through only when the theme sets
+/// them: an omitted one follows the theme's own palette in CSS.
 pub fn resolve(data_dir: &Path, id: &str) -> Result<Resolved, ThemeError> {
     let (theme, dir) = if is_builtin(id) {
         (builtin(id), None)
@@ -204,6 +205,11 @@ pub fn resolve(data_dir: &Path, id: &str) -> Result<Resolved, ThemeError> {
             .cloned();
         if let Some(value) = value {
             tokens.insert((*name).to_string(), value);
+        }
+    }
+    for name in ROLE_TOKENS {
+        if let Some(value) = theme.tokens.get(*name) {
+            tokens.insert((*name).to_string(), value.clone());
         }
     }
 
@@ -341,6 +347,22 @@ mod tests {
             builtin(DAYLIGHT).tokens["--background"],
             "the rest comes from the base, not from Midnight"
         );
+    }
+
+    #[test]
+    fn role_tokens_pass_through_only_when_set() {
+        let tmp = tempdir().unwrap();
+        let body = r##"{"name":"Quiet","base":"dark",
+            "tokens":{"--primary":"#fbfd9f","--track-title":"#f4f1ea"}}"##;
+        write_theme(tmp.path(), "quiet", body);
+
+        let resolved = resolve(tmp.path(), "quiet").unwrap();
+        assert_eq!(resolved.tokens["--track-title"], "#f4f1ea");
+        assert!(
+            !resolved.tokens.contains_key("--focus-ring"),
+            "an omitted role follows the theme's --primary in CSS, not the base's"
+        );
+        assert_eq!(resolved.tokens.len(), THEMEABLE_TOKENS.len() + 1);
     }
 
     #[test]
