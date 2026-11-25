@@ -57,25 +57,32 @@ describe("theme contract", () => {
     expect(offenders).toEqual([]);
   });
 
-  /**
-   * A colour token must exist in three places at once — the stylesheet, the
-   * Rust allowlist, and every built-in — or a theme can set something that
-   * paints nothing, or a built-in can have a hole for others to fall into.
-   */
-  it("agrees on the token contract across all three places", () => {
-    const root = styles.match(/^:root \{[\s\S]*?^\}/m)![0];
-    const css = [...root.matchAll(/^\s*(--[a-z0-9-]+):/gm)]
-      .map((m) => m[1])
-      .filter((token) => !NOT_A_COLOUR.test(token));
+  const root = styles.match(/^:root \{[\s\S]*?^\}/m)![0];
+  const declared = [...root.matchAll(/^\s*(--[a-z0-9-]+):\s*([^;]+);/gm)]
+    .map((m) => ({ token: m[1], value: m[2].trim() }))
+    .filter(({ token }) => !NOT_A_COLOUR.test(token));
+  const ROLE_VALUE = /^var\((--[a-z0-9-]+)\)$/;
+  const palette = declared
+    .filter(({ value }) => !ROLE_VALUE.test(value))
+    .map(({ token }) => token);
+  const roles = declared.filter(({ value }) => ROLE_VALUE.test(value));
 
-    const rust = [
+  function rustList(name: string): string[] {
+    return [
       ...readFileSync(join(TAURI, "src/appearance/theme.rs"), "utf8")
-        .split("THEMEABLE_TOKENS")[1]
+        .split(`pub const ${name}`)[1]
         .split("];")[0]
         .matchAll(/"(--[a-z0-9-]+)"/g),
     ].map((m) => m[1]);
+  }
 
-    expect(new Set(rust)).toEqual(new Set(css));
+  /**
+   * A palette token must exist in three places at once — the stylesheet, the
+   * Rust allowlist, and every built-in — or a theme can set something that
+   * paints nothing, or a built-in can have a hole for others to fall into.
+   */
+  it("agrees on the palette across all three places", () => {
+    expect(new Set(rustList("THEMEABLE_TOKENS"))).toEqual(new Set(palette));
 
     for (const name of ["midnight", "daylight"]) {
       const theme = JSON.parse(
@@ -83,9 +90,25 @@ describe("theme contract", () => {
       ) as { tokens: Record<string, string> };
       expect(
         new Set(Object.keys(theme.tokens)),
-        `${name}.json must set every token — it is what others fall back to`,
-      ).toEqual(new Set(css));
+        `${name}.json must set every palette token, and no role — it is what others fall back to`,
+      ).toEqual(new Set(palette));
     }
+  });
+
+  /**
+   * A role token is declared as `var()` of one palette token, and only there:
+   * that is what lets a theme omit it and still get its own palette colour.
+   */
+  it("declares every role as a palette token, and allows exactly those", () => {
+    expect(roles.length).toBeGreaterThan(0);
+    for (const { token, value } of roles) {
+      expect(palette, `${token} must follow a palette token`).toContain(
+        value.match(ROLE_VALUE)![1],
+      );
+    }
+    expect(new Set(rustList("ROLE_TOKENS"))).toEqual(
+      new Set(roles.map(({ token }) => token)),
+    );
   });
 
   it("catches a literal that slips in", () => {

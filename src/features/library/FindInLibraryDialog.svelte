@@ -261,7 +261,7 @@
     min-width: 0;
     height: 30px;
     padding: 6px 14px 6px 40px;
-    background: var(--surface-container-lowest);
+    background: var(--field-bg);
     border: 1px solid
       color-mix(in srgb, var(--outline-variant) 30%, transparent);
     border-radius: var(--r-pill);
@@ -272,8 +272,8 @@
   }
 
   .find-search input:focus {
-    border-color: var(--primary);
-    box-shadow: 0 0 0 1px var(--primary);
+    border-color: var(--focus-ring);
+    box-shadow: 0 0 0 1px var(--focus-ring);
   }
 
   .find-search input::placeholder {
@@ -309,8 +309,8 @@
   }
 
   .find-tab.active {
-    color: var(--primary);
-    border-bottom-color: var(--primary);
+    color: var(--active-tab);
+    border-bottom-color: var(--active-tab);
   }
 
   .saved-headers .track-header {
@@ -343,7 +343,7 @@
 
   .find-row:focus-visible {
     outline: none;
-    background: color-mix(in srgb, var(--primary) 14%, transparent);
+    background: color-mix(in srgb, var(--selection) 14%, transparent);
   }
 
   .find-row:disabled {

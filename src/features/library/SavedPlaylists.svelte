@@ -1099,12 +1099,12 @@
 
   .saved-row-source {
     font-size: 16px;
-    color: var(--primary);
+    color: var(--emphasis-text);
   }
 
   .btn-filler.active {
-    background: var(--primary);
-    color: var(--on-primary);
+    background: var(--accent-fill);
+    color: var(--on-accent-fill);
   }
 
   .saved-row-size,
@@ -1129,7 +1129,7 @@
     font-weight: 700;
     letter-spacing: 0.05em;
     text-transform: uppercase;
-    color: var(--error);
+    color: var(--stop-row);
   }
 
   .stop-icon {
@@ -1186,11 +1186,11 @@
   }
 
   .saved-entry.drop-before {
-    box-shadow: inset 0 2px 0 0 var(--primary);
+    box-shadow: inset 0 2px 0 0 var(--drop-indicator);
   }
 
   .saved-entry.drop-after {
-    box-shadow: inset 0 -2px 0 0 var(--primary);
+    box-shadow: inset 0 -2px 0 0 var(--drop-indicator);
   }
 
   #saved-list-header {

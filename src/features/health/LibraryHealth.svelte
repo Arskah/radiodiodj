@@ -607,7 +607,7 @@
 
   @keyframes health-flash {
     from {
-      color: var(--primary);
+      color: var(--emphasis-text);
     }
   }
 
@@ -742,7 +742,7 @@
   }
 
   .health-actions button:hover {
-    color: var(--primary);
+    color: var(--emphasis-text);
   }
 
   .health-group {

@@ -40,7 +40,6 @@
   --primary-container: #2e5bff;
   --on-primary-container: #efefff;
   --inverse-primary: #124af0;
-  --track-title-color: #b8c3ff;
 
   /* Secondary (vibrant purple) — cue deck / creative */
   --secondary: #ddb7ff;
@@ -80,6 +79,31 @@
   --cue-out-color: #fb7185;
   --next-start-color: #ddb7ff;
 
+  /* Roles. Each names one job and follows a palette token, so a theme can
+     retint the job alone; one that omits it gets its own palette colour.
+     docs/theming.md#role-tokens */
+  --accent-fill: var(--primary);
+  --on-accent-fill: var(--on-primary);
+  --selection: var(--primary);
+  --active-tab: var(--primary);
+  --focus-ring: var(--primary);
+  --emphasis-text: var(--primary);
+  --track-title: var(--primary);
+  --waveform-played: var(--primary);
+  --progress-fill: var(--primary);
+  --drop-indicator: var(--primary);
+  --link: var(--primary);
+  --cue-waveform-played: var(--secondary);
+  --playhead: var(--error);
+  --danger: var(--error);
+  --stop-row: var(--error);
+  --led: var(--error);
+  --badge: var(--error);
+  --toolbar-bg: var(--surface-container-lowest);
+  --waveform-bg: var(--surface-container-lowest);
+  --field-bg: var(--surface-container-lowest);
+  --row-stripe: var(--surface-container-lowest);
+
   /* Spacing (4px baseline) */
   --sp-xs: 4px;
   --sp-sm: 8px;
@@ -115,9 +139,9 @@
   background: radial-gradient(
     circle at 35% 30%,
     var(--led-highlight),
-    var(--error) 70%
+    var(--led) 70%
   );
-  box-shadow: 0 0 8px var(--error);
+  box-shadow: 0 0 8px var(--led);
   flex-shrink: 0;
 }
 
@@ -179,7 +203,7 @@ body {
   align-items: center;
   height: 30px;
   padding: 0 12px;
-  background: var(--surface-container-lowest);
+  background: var(--toolbar-bg);
   border-bottom: 1px solid var(--outline-variant);
   -webkit-app-region: drag;
   flex-shrink: 0;
@@ -200,7 +224,7 @@ body {
   gap: var(--sp-md);
   height: 56px;
   padding: 0 var(--sp-lg);
-  background: var(--surface-container-lowest);
+  background: var(--toolbar-bg);
   border-bottom: 1px solid var(--outline-variant);
   flex-shrink: 0;
 }
@@ -223,7 +247,7 @@ body {
   font-size: 20px;
   font-weight: 700;
   letter-spacing: -0.02em;
-  color: var(--primary);
+  color: var(--emphasis-text);
 }
 
 .station-clock {
@@ -271,10 +295,10 @@ body {
   align-items: center;
   gap: var(--sp-sm);
   padding: var(--sp-sm) var(--sp-md);
-  background: color-mix(in srgb, var(--primary) 10%, transparent);
-  border: 1px solid color-mix(in srgb, var(--primary) 25%, transparent);
+  background: color-mix(in srgb, var(--accent-fill) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-fill) 25%, transparent);
   border-radius: var(--r-lg);
-  color: var(--primary);
+  color: var(--accent-fill);
   cursor: pointer;
   font-family: var(--font-mono);
   font-size: 10px;
@@ -291,7 +315,7 @@ body {
 }
 
 #btn-generate:hover {
-  background: color-mix(in srgb, var(--primary) 20%, transparent);
+  background: color-mix(in srgb, var(--accent-fill) 20%, transparent);
 }
 
 #btn-generate:active {
@@ -299,9 +323,9 @@ body {
 }
 
 #btn-generate.active {
-  background: var(--primary);
-  border-color: var(--primary);
-  color: var(--on-primary);
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
+  color: var(--on-accent-fill);
 }
 
 /* Nav icon button (settings gear) */
@@ -340,7 +364,7 @@ body {
 }
 
 #btn-admin-lock.active {
-  color: var(--primary);
+  color: var(--emphasis-text);
 }
 
 #btn-settings {
@@ -353,7 +377,7 @@ body {
   height: 16px;
   padding: 0 4px;
   border-radius: var(--r-pill);
-  background: var(--error);
+  background: var(--badge);
   color: var(--on-error);
   font-size: 10px;
   font-weight: 700;
@@ -476,7 +500,7 @@ body {
 }
 
 #now-playing .deck-head {
-  color: var(--primary);
+  color: var(--emphasis-text);
 }
 
 #cue-deck .deck-head {
@@ -560,7 +584,7 @@ body {
   font-size: 18px;
   font-weight: 700;
   letter-spacing: -0.02em;
-  color: var(--primary);
+  color: var(--emphasis-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -635,12 +659,12 @@ body {
 .transport-primary {
   width: 56px;
   height: 56px;
-  background: var(--primary);
-  border-color: var(--primary);
-  color: var(--on-primary);
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
+  color: var(--on-accent-fill);
   box-shadow:
     0 2px 6px color-mix(in srgb, var(--shadow-color) 40%, transparent),
-    0 0 8px color-mix(in srgb, var(--primary) 40%, transparent);
+    0 0 8px color-mix(in srgb, var(--accent-fill) 40%, transparent);
 }
 
 .transport-primary .material-symbols-outlined {
@@ -648,7 +672,7 @@ body {
 }
 
 .transport-primary:hover {
-  background: var(--primary);
+  background: var(--accent-fill);
   filter: brightness(1.08);
 }
 
@@ -715,11 +739,11 @@ body {
   position: absolute;
   inset: 0 auto 0 0;
   width: 0;
-  background: color-mix(in srgb, var(--primary) 35%, transparent);
+  background: color-mix(in srgb, var(--accent-fill) 35%, transparent);
 }
 
 .fade-btn.ramping {
-  border-color: var(--primary);
+  border-color: var(--accent-fill);
 }
 
 .fade-btn.ramping .fade-fill {
@@ -751,8 +775,8 @@ body {
 }
 
 .segmented button.active {
-  background: var(--primary);
-  color: var(--on-primary);
+  background: var(--accent-fill);
+  color: var(--on-accent-fill);
 }
 
 /* ---- Cue deck ---- */
@@ -1007,7 +1031,7 @@ body {
   position: relative;
   overflow: hidden;
   cursor: pointer;
-  background: var(--surface-container-lowest);
+  background: var(--waveform-bg);
   border: 1px solid color-mix(in srgb, var(--outline-variant) 20%, transparent);
   border-radius: var(--r-xl);
 }
@@ -1044,13 +1068,13 @@ body {
   left: 0;
   height: 2px;
   width: 0%;
-  background: var(--primary);
+  background: var(--progress-fill);
   transition: width 0.1s linear;
   z-index: 1;
 }
 
 .cue-progress-fill {
-  background: var(--secondary);
+  background: var(--cue-waveform-played);
 }
 
 #progress-bar:hover #progress-fill,
@@ -1073,7 +1097,7 @@ body {
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.05em;
-  color: var(--primary);
+  color: var(--emphasis-text);
   font-variant-numeric: tabular-nums;
   z-index: 2;
   pointer-events: none;
@@ -1101,19 +1125,19 @@ body {
 }
 
 .waveform .wf-played rect {
-  fill: var(--primary);
+  fill: var(--waveform-played);
 }
 
 /* Cue waveform paints its played curve in secondary. */
 .cue-progress-bar .waveform .wf-played rect {
-  fill: var(--secondary);
+  fill: var(--cue-waveform-played);
 }
 
 /* Glowing red playhead at the play position. */
 .waveform .wf-playhead {
-  stroke: var(--error);
+  stroke: var(--playhead);
   stroke-width: 1.5;
-  filter: drop-shadow(0 0 4px var(--error));
+  filter: drop-shadow(0 0 4px var(--playhead));
 }
 
 /* Hover seek-preview marker. */
@@ -1169,7 +1193,7 @@ body {
   background: linear-gradient(
     90deg,
     transparent 0%,
-    var(--primary) 50%,
+    var(--progress-fill) 50%,
     transparent 100%
   );
   background-size: 40% 100%;
@@ -1253,7 +1277,7 @@ body {
 }
 
 #library-panel .panel-title .material-symbols-outlined {
-  color: var(--primary);
+  color: var(--emphasis-text);
 }
 
 #playlist-panel .panel-title .material-symbols-outlined {
@@ -1282,7 +1306,7 @@ body {
   min-width: 0;
   height: 30px;
   padding: 6px 14px 6px 40px;
-  background: var(--surface-container-lowest);
+  background: var(--field-bg);
   border: 1px solid color-mix(in srgb, var(--outline-variant) 30%, transparent);
   border-radius: var(--r-pill);
   color: var(--on-surface);
@@ -1292,8 +1316,8 @@ body {
 }
 
 #search-input:focus {
-  border-color: var(--primary);
-  box-shadow: 0 0 0 1px var(--primary);
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 1px var(--focus-ring);
 }
 
 #search-input::placeholder {
@@ -1332,8 +1356,8 @@ body {
 
 .lib-tab.active,
 .pl-tab.active {
-  color: var(--primary);
-  border-bottom-color: var(--primary);
+  color: var(--active-tab);
+  border-bottom-color: var(--active-tab);
 }
 
 .pl-tab-count {
@@ -1370,24 +1394,24 @@ body {
 }
 
 .btn-filler {
-  background: color-mix(in srgb, var(--primary) 15%, transparent);
-  border: 1px solid color-mix(in srgb, var(--primary) 40%, transparent);
-  color: var(--primary);
+  background: color-mix(in srgb, var(--accent-fill) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-fill) 40%, transparent);
+  color: var(--accent-fill);
 }
 
 .btn-filler:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--primary) 25%, transparent);
+  background: color-mix(in srgb, var(--accent-fill) 25%, transparent);
 }
 
 /* The +Stop filler reads as a halt (error accent). */
 .btn-filler.btn-filler-stop {
-  background: color-mix(in srgb, var(--error) 10%, transparent);
-  border-color: color-mix(in srgb, var(--error) 25%, transparent);
-  color: var(--error);
+  background: color-mix(in srgb, var(--stop-row) 10%, transparent);
+  border-color: color-mix(in srgb, var(--stop-row) 25%, transparent);
+  color: var(--stop-row);
 }
 
 .btn-filler.btn-filler-stop:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--error) 20%, transparent);
+  background: color-mix(in srgb, var(--stop-row) 20%, transparent);
 }
 
 .btn-filler:disabled {
@@ -1402,8 +1426,8 @@ body {
 }
 
 #btn-clear-playlist:hover {
-  color: var(--error);
-  border-color: var(--error);
+  color: var(--danger);
+  border-color: var(--danger);
 }
 
 /* ---- Library table headers ---- */
@@ -1453,7 +1477,7 @@ body {
 
 .track-header.active,
 .track-header.active .material-symbols-outlined {
-  color: var(--primary);
+  color: var(--active-tab);
   opacity: 1;
 }
 
@@ -1491,7 +1515,7 @@ body {
 }
 
 #btn-select-all:hover:not(:disabled) {
-  color: var(--primary);
+  color: var(--emphasis-text);
 }
 
 #btn-select-all:disabled {
@@ -1518,7 +1542,7 @@ body {
 
 #auto-source > .material-symbols-outlined {
   font-size: 16px;
-  color: var(--primary);
+  color: var(--emphasis-text);
 }
 
 #auto-source .auto-source-text {
@@ -1574,7 +1598,7 @@ body {
   gap: var(--sp-sm);
   padding: var(--sp-sm) var(--sp-md);
   background: var(--surface-container-highest);
-  border: 1px solid color-mix(in srgb, var(--primary) 40%, transparent);
+  border: 1px solid color-mix(in srgb, var(--selection) 40%, transparent);
   border-radius: var(--r-xl);
   box-shadow: 0 4px 12px
     color-mix(in srgb, var(--shadow-color) 40%, transparent);
@@ -1624,11 +1648,7 @@ body {
 }
 
 .track-row:nth-child(even) {
-  background: color-mix(
-    in srgb,
-    var(--surface-container-lowest) 30%,
-    transparent
-  );
+  background: color-mix(in srgb, var(--row-stripe) 30%, transparent);
 }
 
 .track-row:hover {
@@ -1636,11 +1656,11 @@ body {
 }
 
 .track-row.selected {
-  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  background: color-mix(in srgb, var(--selection) 14%, transparent);
 }
 
 .track-row.selected:hover {
-  background: color-mix(in srgb, var(--primary) 20%, transparent);
+  background: color-mix(in srgb, var(--selection) 20%, transparent);
 }
 
 .track-title,
@@ -1652,7 +1672,7 @@ body {
 }
 
 .track-title {
-  color: var(--track-title-color);
+  color: var(--track-title);
   font-weight: 500;
 }
 
@@ -1732,13 +1752,13 @@ body {
 }
 
 .track-row .track-no:hover .track-check {
-  border-color: var(--primary);
+  border-color: var(--selection);
 }
 
 .track-row.selected .track-check {
-  background: var(--primary);
-  border-color: var(--primary);
-  color: var(--on-primary);
+  background: var(--selection);
+  border-color: var(--selection);
+  color: var(--on-accent-fill);
   font-weight: 700;
 }
 
@@ -1796,7 +1816,7 @@ body {
 .btn-add:hover,
 .btn-play-track:hover,
 .btn-edit:hover {
-  color: var(--primary);
+  color: var(--emphasis-text);
 }
 
 .btn-cue:hover {
@@ -1875,8 +1895,8 @@ body {
 
 /* Now-playing item: primary tint + left accent bar. */
 .playlist-row.active {
-  background: color-mix(in srgb, var(--primary) 6%, transparent);
-  border-color: color-mix(in srgb, var(--primary) 20%, transparent);
+  background: color-mix(in srgb, var(--selection) 6%, transparent);
+  border-color: color-mix(in srgb, var(--selection) 20%, transparent);
 }
 
 .playlist-row.active::before {
@@ -1884,7 +1904,7 @@ body {
   position: absolute;
   inset: 0 auto 0 0;
   width: 3px;
-  background: var(--primary);
+  background: var(--selection);
   border-radius: var(--r-xl) 0 0 var(--r-xl);
 }
 
@@ -1893,15 +1913,15 @@ body {
 }
 
 .playlist-row.drop-before {
-  box-shadow: inset 0 2px 0 0 var(--primary);
+  box-shadow: inset 0 2px 0 0 var(--drop-indicator);
 }
 
 .playlist-row.drop-after {
-  box-shadow: inset 0 -2px 0 0 var(--primary);
+  box-shadow: inset 0 -2px 0 0 var(--drop-indicator);
 }
 
 #playlist.drop-into {
-  box-shadow: inset 0 2px 0 0 var(--primary);
+  box-shadow: inset 0 2px 0 0 var(--drop-indicator);
 }
 
 /* Groups: a saved playlist queued whole. A stripe in the group's colour runs
@@ -1948,7 +1968,7 @@ body {
 }
 
 .playlist-row.group-header.drop-into {
-  box-shadow: inset 0 0 0 2px var(--primary);
+  box-shadow: inset 0 0 0 2px var(--drop-indicator);
 }
 
 .group-toggle {
@@ -1999,7 +2019,7 @@ body {
 
 .playlist-row.active .pl-num {
   background: var(--surface-container);
-  color: var(--primary);
+  color: var(--selection);
   box-shadow: inset 0 1px 2px
     color-mix(in srgb, var(--shadow-color) 50%, transparent);
 }
@@ -2017,7 +2037,7 @@ body {
 }
 
 .playlist-row.active .pl-title {
-  color: var(--primary);
+  color: var(--selection);
 }
 
 .pl-artist {
@@ -2033,7 +2053,7 @@ body {
 }
 
 .pl-status.on-air {
-  color: var(--primary);
+  color: var(--emphasis-text);
 }
 
 .pl-status.next-up {
@@ -2085,19 +2105,19 @@ body {
 /* STOP marker card */
 .playlist-row.stop-row {
   padding: var(--sp-sm) var(--sp-md);
-  background: color-mix(in srgb, var(--error) 10%, transparent);
-  border-color: color-mix(in srgb, var(--error) 20%, transparent);
+  background: color-mix(in srgb, var(--stop-row) 10%, transparent);
+  border-color: color-mix(in srgb, var(--stop-row) 20%, transparent);
 }
 
 .playlist-row.stop-row .pl-num {
-  background: color-mix(in srgb, var(--error) 20%, transparent);
-  color: var(--error);
+  background: color-mix(in srgb, var(--stop-row) 20%, transparent);
+  color: var(--stop-row);
 }
 
 .pl-stop-label {
   font-weight: 700;
   letter-spacing: 0.05em;
-  color: var(--error);
+  color: var(--stop-row);
   text-transform: uppercase;
   font-size: 12px;
 }
@@ -2106,7 +2126,7 @@ body {
   font-size: 10px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: color-mix(in srgb, var(--error) 70%, transparent);
+  color: color-mix(in srgb, var(--stop-row) 70%, transparent);
 }
 
 /* A Stop's planned duration, m:ss, wherever a Stop row shows it. */
@@ -2128,7 +2148,7 @@ input.stop-duration {
 
 input.stop-duration:focus {
   outline: none;
-  border-color: var(--primary);
+  border-color: var(--focus-ring);
 }
 
 input.stop-duration.refused {
@@ -2170,7 +2190,7 @@ input.stop-duration.refused {
 }
 
 .btn-remove:hover:not(:disabled) {
-  color: var(--error);
+  color: var(--danger);
 }
 
 .history-row {
@@ -2252,7 +2272,7 @@ input.stop-duration.refused {
 
 .scan-status-bar-fill {
   height: 100%;
-  background: var(--primary);
+  background: var(--progress-fill);
   width: 0%;
   transition: width 0.2s;
 }
@@ -2269,8 +2289,8 @@ input.stop-duration.refused {
 }
 
 .scan-status-cancel:hover:not(:disabled) {
-  border-color: var(--primary);
-  color: var(--primary);
+  border-color: var(--emphasis-text);
+  color: var(--emphasis-text);
 }
 
 .scan-status-cancel:disabled {
@@ -2333,7 +2353,7 @@ input.stop-duration.refused {
 }
 
 .settings-modal-title .material-symbols-outlined {
-  color: var(--primary);
+  color: var(--emphasis-text);
 }
 
 #btn-close-settings-x {
@@ -2399,13 +2419,13 @@ input.stop-duration.refused {
 }
 
 .settings-tab:hover .material-symbols-outlined {
-  color: var(--primary);
+  color: var(--active-tab);
 }
 
 .settings-tab.active {
-  background: color-mix(in srgb, var(--primary) 10%, transparent);
-  color: var(--primary);
-  border-right-color: var(--primary);
+  background: color-mix(in srgb, var(--active-tab) 10%, transparent);
+  color: var(--active-tab);
+  border-right-color: var(--active-tab);
 }
 
 #settings-content {
@@ -2466,7 +2486,7 @@ input.stop-duration.refused {
 .settings-section--tuning .device-row input {
   width: 100%;
   padding: var(--sp-sm) var(--sp-md);
-  background: var(--surface-container-lowest);
+  background: var(--field-bg);
   border: 1px solid var(--outline-variant);
   border-radius: var(--r-lg);
   color: var(--on-surface);
@@ -2497,7 +2517,7 @@ input.stop-duration.refused {
 
 .settings-section--tuning .device-row input:focus {
   outline: none;
-  border-color: var(--primary);
+  border-color: var(--focus-ring);
 }
 
 .settings-section--tuning .device-row input:hover {
@@ -2603,7 +2623,7 @@ input.stop-duration.refused {
   appearance: none;
   width: 100%;
   padding: var(--sp-md);
-  background: var(--surface-container-lowest);
+  background: var(--field-bg);
   border: 1px solid var(--outline-variant);
   border-radius: var(--r-lg);
   color: var(--on-surface);
@@ -2615,7 +2635,7 @@ input.stop-duration.refused {
 
 .device-row select:focus {
   outline: none;
-  border-color: var(--primary);
+  border-color: var(--focus-ring);
 }
 
 .hint {
@@ -2656,7 +2676,7 @@ input.stop-duration.refused {
   background: none;
   border: none;
   border-radius: var(--r-lg);
-  color: var(--primary);
+  color: var(--accent-fill);
   cursor: pointer;
   font-size: 11px;
   font-weight: 600;
@@ -2669,7 +2689,7 @@ input.stop-duration.refused {
 }
 
 .btn-add-section:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  background: color-mix(in srgb, var(--accent-fill) 12%, transparent);
 }
 
 .path-row {
@@ -2712,7 +2732,7 @@ input.stop-duration.refused {
   background: none;
   border: none;
   border-radius: var(--r-lg);
-  color: var(--primary);
+  color: var(--accent-fill);
   cursor: pointer;
   flex-shrink: 0;
   font-size: 11px;
@@ -2727,7 +2747,7 @@ input.stop-duration.refused {
 }
 
 .btn-locate:hover {
-  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  background: color-mix(in srgb, var(--accent-fill) 12%, transparent);
 }
 
 .path-empty {
@@ -2757,16 +2777,16 @@ input.stop-duration.refused {
   align-items: center;
   gap: var(--sp-sm);
   padding: var(--sp-sm) var(--sp-md);
-  background: color-mix(in srgb, var(--primary) 10%, transparent);
-  border: 1px solid var(--primary);
+  background: color-mix(in srgb, var(--accent-fill) 10%, transparent);
+  border: 1px solid var(--accent-fill);
   border-radius: var(--r-lg);
-  color: var(--primary);
+  color: var(--accent-fill);
   cursor: pointer;
   font-size: 13px;
 }
 
 .btn-scan-now:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--primary) 20%, transparent);
+  background: color-mix(in srgb, var(--accent-fill) 20%, transparent);
 }
 
 .btn-scan-now:active:not(:disabled) {
@@ -2803,14 +2823,14 @@ input.stop-duration.refused {
 
 .btn-purge,
 .btn-purge-confirm {
-  background: color-mix(in srgb, var(--error) 10%, transparent);
-  border: 1px solid color-mix(in srgb, var(--error) 50%, transparent);
-  color: var(--error);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 50%, transparent);
+  color: var(--danger);
 }
 
 .btn-purge:hover:not(:disabled),
 .btn-purge-confirm:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--error) 20%, transparent);
+  background: color-mix(in srgb, var(--danger) 20%, transparent);
 }
 
 .btn-purge-cancel {
@@ -2871,7 +2891,7 @@ input.stop-duration.refused {
 }
 
 .np-group-header .material-symbols-outlined {
-  color: var(--primary);
+  color: var(--emphasis-text);
   font-size: 20px;
 }
 
@@ -2921,7 +2941,7 @@ input.stop-duration.refused {
 }
 
 .np-toggle input:checked + .np-toggle-track {
-  background: var(--primary);
+  background: var(--accent-fill);
 }
 
 .np-toggle input:checked + .np-toggle-track::after {
@@ -2975,7 +2995,7 @@ input.stop-duration.refused {
 
 .np-input:focus {
   outline: none;
-  border-color: var(--primary);
+  border-color: var(--focus-ring);
 }
 
 .np-input::placeholder {
@@ -3100,7 +3120,7 @@ input.stop-duration.refused {
 
 .track-tooltip .tt-artist {
   font-size: 12px;
-  color: var(--primary);
+  color: var(--emphasis-text);
   margin-bottom: var(--sp-sm);
   word-break: break-word;
 }
@@ -3182,7 +3202,7 @@ input.stop-duration.refused {
 
 .ctx-item:hover .material-symbols-outlined,
 .ctx-item:focus-visible .material-symbols-outlined {
-  color: var(--primary);
+  color: var(--emphasis-text);
 }
 
 /* Goes straight to air: warm-tinted so it never reads as another add action. */
@@ -3273,8 +3293,8 @@ input.stop-duration.refused {
 }
 
 .theme-row.active {
-  border-color: var(--primary);
-  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  border-color: var(--selection);
+  background: color-mix(in srgb, var(--selection) 12%, transparent);
 }
 
 /* An invalid theme is listed, never hidden: a theme that "didn't show up" is
@@ -3291,7 +3311,7 @@ input.stop-duration.refused {
 }
 
 .theme-row.active .theme-mark {
-  color: var(--primary);
+  color: var(--selection);
 }
 
 .theme-row.invalid .theme-mark {
@@ -3492,7 +3512,7 @@ input.stop-duration.refused {
   padding: 0;
   background: none;
   border: none;
-  color: var(--primary);
+  color: var(--link);
   cursor: pointer;
   font-size: 12px;
 }

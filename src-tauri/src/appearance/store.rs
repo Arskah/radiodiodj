@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use super::theme::{Base, Theme, ThemeError, THEMEABLE_TOKENS};
+use super::theme::{Base, Theme, ThemeError, ROLE_TOKENS, THEMEABLE_TOKENS};
 
 pub const MIDNIGHT: &str = "midnight";
 pub const DAYLIGHT: &str = "daylight";
@@ -180,13 +180,9 @@ pub struct Resolved {
     pub label: Option<PathBuf>,
 }
 
-/// Tokens that, when a theme omits them, take another token of the same theme
-/// before falling back to the base: `(follower, leader)`.
-const FOLLOWS: &[(&str, &str)] = &[("--track-title-color", "--primary")];
-
-/// Resolve `id` into a complete token map, filling whatever it omits from the
-/// built-in its `base` names — or, for a [`FOLLOWS`] token, from the token it
-/// follows when the theme sets that one.
+/// Resolve `id` into a complete palette, filling whatever it omits from the
+/// built-in its `base` names. Role tokens pass through only when the theme sets
+/// them: an omitted one follows the theme's own palette in CSS.
 pub fn resolve(data_dir: &Path, id: &str) -> Result<Resolved, ThemeError> {
     let (theme, dir) = if is_builtin(id) {
         (builtin(id), None)
@@ -205,14 +201,15 @@ pub fn resolve(data_dir: &Path, id: &str) -> Result<Resolved, ThemeError> {
         let value = theme
             .tokens
             .get(*name)
-            .or_else(|| {
-                let (_, leader) = FOLLOWS.iter().find(|(follower, _)| follower == name)?;
-                theme.tokens.get(*leader)
-            })
             .or_else(|| fallback.tokens.get(*name))
             .cloned();
         if let Some(value) = value {
             tokens.insert((*name).to_string(), value);
+        }
+    }
+    for name in ROLE_TOKENS {
+        if let Some(value) = theme.tokens.get(*name) {
+            tokens.insert((*name).to_string(), value.clone());
         }
     }
 
@@ -353,34 +350,19 @@ mod tests {
     }
 
     #[test]
-    fn an_omitted_title_colour_follows_the_theme_primary() {
+    fn role_tokens_pass_through_only_when_set() {
         let tmp = tempdir().unwrap();
-        let follows = r##"{"name":"Red","base":"dark","tokens":{"--primary":"#ff5b5b"}}"##;
-        write_theme(tmp.path(), "red", follows);
-        let own = r##"{"name":"Quiet","base":"dark",
-            "tokens":{"--primary":"#ff5b5b","--track-title-color":"#eeeeee"}}"##;
-        write_theme(tmp.path(), "quiet", own);
-        let neither = r##"{"name":"Bare","base":"dark","tokens":{}}"##;
-        write_theme(tmp.path(), "bare", neither);
+        let body = r##"{"name":"Quiet","base":"dark",
+            "tokens":{"--primary":"#fbfd9f","--track-title":"#f4f1ea"}}"##;
+        write_theme(tmp.path(), "quiet", body);
 
-        let title = |id| resolve(tmp.path(), id).unwrap().tokens["--track-title-color"].clone();
-        assert_eq!(title("red"), "#ff5b5b");
-        assert_eq!(title("quiet"), "#eeeeee");
-        assert_eq!(
-            title("bare"),
-            builtin(MIDNIGHT).tokens["--track-title-color"]
+        let resolved = resolve(tmp.path(), "quiet").unwrap();
+        assert_eq!(resolved.tokens["--track-title"], "#f4f1ea");
+        assert!(
+            !resolved.tokens.contains_key("--focus-ring"),
+            "an omitted role follows the theme's --primary in CSS, not the base's"
         );
-    }
-
-    #[test]
-    fn built_in_title_colour_is_its_primary() {
-        for id in [MIDNIGHT, DAYLIGHT] {
-            let theme = builtin(id);
-            assert_eq!(
-                theme.tokens["--track-title-color"], theme.tokens["--primary"],
-                "{id}"
-            );
-        }
+        assert_eq!(resolved.tokens.len(), THEMEABLE_TOKENS.len() + 1);
     }
 
     #[test]

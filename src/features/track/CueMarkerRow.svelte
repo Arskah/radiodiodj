@@ -188,8 +188,8 @@
   }
 
   .cue-row.selected {
-    border-color: color-mix(in srgb, var(--primary) 45%, transparent);
-    background: color-mix(in srgb, var(--primary) 6%, transparent);
+    border-color: color-mix(in srgb, var(--selection) 45%, transparent);
+    background: color-mix(in srgb, var(--selection) 6%, transparent);
   }
 
   .cue-swatch {
@@ -245,7 +245,7 @@
   }
 
   .cue-time:focus {
-    border-color: var(--primary);
+    border-color: var(--focus-ring);
   }
 
   .cue-time.invalid {

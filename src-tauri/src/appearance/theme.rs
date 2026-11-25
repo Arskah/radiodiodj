@@ -8,9 +8,10 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-/// Every token a theme may set. The same names are the `:root` block of
-/// `src/styles.css` and the key set of each built-in theme; `tools/themeContract.test.ts`
-/// and [`super::store`]'s tests keep the three in step.
+/// The palette: every token a built-in sets and a theme may set. The same names
+/// are the literal-valued tokens of the `:root` block in `src/styles.css` and the
+/// key set of each built-in theme; `tools/themeContract.test.ts` and
+/// [`super::store`]'s tests keep the three in step.
 pub const THEMEABLE_TOKENS: &[&str] = &[
     "--surface",
     "--surface-dim",
@@ -31,7 +32,6 @@ pub const THEMEABLE_TOKENS: &[&str] = &[
     "--primary-container",
     "--on-primary-container",
     "--inverse-primary",
-    "--track-title-color",
     "--secondary",
     "--on-secondary",
     "--secondary-container",
@@ -53,6 +53,34 @@ pub const THEMEABLE_TOKENS: &[&str] = &[
     "--fade-out-color",
     "--cue-out-color",
     "--next-start-color",
+];
+
+/// Role tokens: one job each, so a theme can retint it alone. Each is declared
+/// in `src/styles.css` as `var()` of a palette token and is never filled in from
+/// a built-in, so a theme that omits one gets its own palette colour.
+/// See docs/theming.md#role-tokens.
+pub const ROLE_TOKENS: &[&str] = &[
+    "--accent-fill",
+    "--on-accent-fill",
+    "--selection",
+    "--active-tab",
+    "--focus-ring",
+    "--emphasis-text",
+    "--track-title",
+    "--waveform-played",
+    "--progress-fill",
+    "--drop-indicator",
+    "--link",
+    "--cue-waveform-played",
+    "--playhead",
+    "--danger",
+    "--stop-row",
+    "--led",
+    "--badge",
+    "--toolbar-bg",
+    "--waveform-bg",
+    "--field-bg",
+    "--row-stripe",
 ];
 
 /// Whether a theme paints on light or dark. Names the built-in an incomplete
@@ -128,11 +156,12 @@ impl Theme {
         Ok(theme)
     }
 
-    /// Two rules: every token name is in the contract, and every value parses as
+    /// Two rules: every token name is in the palette or a role, and every value parses as
     /// a colour. Both are refusals — a theme is never partly applied.
     pub fn validate(&self) -> Result<(), ThemeError> {
         for (token, value) in &self.tokens {
-            if !THEMEABLE_TOKENS.contains(&token.as_str()) {
+            let name = token.as_str();
+            if !THEMEABLE_TOKENS.contains(&name) && !ROLE_TOKENS.contains(&name) {
                 return Err(ThemeError::UnknownToken(token.clone()));
             }
             if !is_colour(value) {
