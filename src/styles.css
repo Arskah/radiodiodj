@@ -40,6 +40,7 @@
   --primary-container: #2e5bff;
   --on-primary-container: #efefff;
   --inverse-primary: #124af0;
+  --track-title-color: #b8c3ff;
 
   /* Secondary (vibrant purple) — cue deck / creative */
   --secondary: #ddb7ff;
@@ -1651,6 +1652,7 @@ body {
 }
 
 .track-title {
+  color: var(--track-title-color);
   font-weight: 500;
 }
 

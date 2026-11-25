@@ -31,6 +31,7 @@ pub const THEMEABLE_TOKENS: &[&str] = &[
     "--primary-container",
     "--on-primary-container",
     "--inverse-primary",
+    "--track-title-color",
     "--secondary",
     "--on-secondary",
     "--secondary-container",

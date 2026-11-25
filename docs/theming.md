@@ -137,7 +137,7 @@ A theme may set these, and nothing else:
 | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | surfaces    | `--surface`, `--surface-dim`, `--surface-bright`, `--surface-container-lowest`, `--surface-container-low`, `--surface-container`, `--surface-container-high`, `--surface-container-highest`, `--surface-variant`, `--background` |
 | content     | `--on-surface`, `--on-surface-variant`, `--outline`, `--outline-variant`                                                                                                                                                         |
-| primary     | `--primary`, `--on-primary`, `--primary-container`, `--on-primary-container`, `--inverse-primary`                                                                                                                                |
+| primary     | `--primary`, `--on-primary`, `--primary-container`, `--on-primary-container`, `--inverse-primary`, `--track-title-color`                                                                                                         |
 | secondary   | `--secondary`, `--on-secondary`, `--secondary-container`, `--on-secondary-container`                                                                                                                                             |
 | tertiary    | `--tertiary`, `--tertiary-container`, `--on-warning-container`                                                                                                                                                                   |
 | error       | `--error`, `--on-error`, `--error-container`, `--on-error-container`                                                                                                                                                             |
@@ -149,6 +149,11 @@ A theme may set these, and nothing else:
 The same names are the `:root` block at the top of `src/styles.css`, the
 `THEMEABLE_TOKENS` list in `appearance/theme.rs`, and the key set of every
 built-in. A token missing from any of the three fails the contract guard.
+
+`--track-title-color` is the library's track titles. Each built-in sets it to its
+own `--primary`, and a theme that omits it gets **its own** `--primary` before
+the base's — so a theme that only retints the accent still gets accent titles,
+and one with a loud accent can quiet the titles without losing it elsewhere.
 
 **Colours only.** Spacing (`--sp-*`), radius (`--r*`) and the two font tokens
 are deliberately not themeable. No colour a validator accepts can break the

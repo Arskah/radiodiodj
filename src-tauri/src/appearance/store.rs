@@ -180,8 +180,13 @@ pub struct Resolved {
     pub label: Option<PathBuf>,
 }
 
+/// Tokens that, when a theme omits them, take another token of the same theme
+/// before falling back to the base: `(follower, leader)`.
+const FOLLOWS: &[(&str, &str)] = &[("--track-title-color", "--primary")];
+
 /// Resolve `id` into a complete token map, filling whatever it omits from the
-/// built-in its `base` names.
+/// built-in its `base` names — or, for a [`FOLLOWS`] token, from the token it
+/// follows when the theme sets that one.
 pub fn resolve(data_dir: &Path, id: &str) -> Result<Resolved, ThemeError> {
     let (theme, dir) = if is_builtin(id) {
         (builtin(id), None)
@@ -200,6 +205,10 @@ pub fn resolve(data_dir: &Path, id: &str) -> Result<Resolved, ThemeError> {
         let value = theme
             .tokens
             .get(*name)
+            .or_else(|| {
+                let (_, leader) = FOLLOWS.iter().find(|(follower, _)| follower == name)?;
+                theme.tokens.get(*leader)
+            })
             .or_else(|| fallback.tokens.get(*name))
             .cloned();
         if let Some(value) = value {
@@ -341,6 +350,37 @@ mod tests {
             builtin(DAYLIGHT).tokens["--background"],
             "the rest comes from the base, not from Midnight"
         );
+    }
+
+    #[test]
+    fn an_omitted_title_colour_follows_the_theme_primary() {
+        let tmp = tempdir().unwrap();
+        let follows = r##"{"name":"Red","base":"dark","tokens":{"--primary":"#ff5b5b"}}"##;
+        write_theme(tmp.path(), "red", follows);
+        let own = r##"{"name":"Quiet","base":"dark",
+            "tokens":{"--primary":"#ff5b5b","--track-title-color":"#eeeeee"}}"##;
+        write_theme(tmp.path(), "quiet", own);
+        let neither = r##"{"name":"Bare","base":"dark","tokens":{}}"##;
+        write_theme(tmp.path(), "bare", neither);
+
+        let title = |id| resolve(tmp.path(), id).unwrap().tokens["--track-title-color"].clone();
+        assert_eq!(title("red"), "#ff5b5b");
+        assert_eq!(title("quiet"), "#eeeeee");
+        assert_eq!(
+            title("bare"),
+            builtin(MIDNIGHT).tokens["--track-title-color"]
+        );
+    }
+
+    #[test]
+    fn built_in_title_colour_is_its_primary() {
+        for id in [MIDNIGHT, DAYLIGHT] {
+            let theme = builtin(id);
+            assert_eq!(
+                theme.tokens["--track-title-color"], theme.tokens["--primary"],
+                "{id}"
+            );
+        }
     }
 
     #[test]

@@ -27,6 +27,7 @@
     "--primary-container": "#2e5bff",
     "--on-primary-container": "#ffffff",
     "--inverse-primary": "#b8c3ff",
+    "--track-title-color": "#2e4bcc",
     "--secondary": "#7a29b8",
     "--on-secondary": "#ffffff",
     "--secondary-container": "#6f00be",
