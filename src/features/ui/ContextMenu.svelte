@@ -174,9 +174,9 @@
         onclose(true);
       }}
     >
-      <span class="material-symbols-outlined" aria-hidden="true"
-        >{item.icon}</span
-      >
+      <span class="material-symbols-outlined" aria-hidden="true">
+        {item.icon}
+      </span>
       {item.label}
     </button>
   {/each}

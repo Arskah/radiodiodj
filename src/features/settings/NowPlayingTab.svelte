@@ -92,9 +92,9 @@
       </div>
     </div>
     <div class="np-field">
-      <label class="np-field-label" for="np-webhook-secret"
-        >HMAC Secret (optional)</label
-      >
+      <label class="np-field-label" for="np-webhook-secret">
+        HMAC Secret (optional)
+      </label>
       <div class="np-input-wrap">
         <span class="material-symbols-outlined">key</span>
         <input
@@ -122,9 +122,9 @@
           aria-label={showSecret ? "Hide secret" : "Show secret"}
           onclick={() => (showSecret = !showSecret)}
         >
-          <span class="material-symbols-outlined"
-            >{showSecret ? "visibility_off" : "visibility"}</span
-          >
+          <span class="material-symbols-outlined">
+            {showSecret ? "visibility_off" : "visibility"}
+          </span>
         </button>
       </div>
     </div>
@@ -133,8 +133,9 @@
         class="btn-scan-now"
         onclick={runTestWebhook}
         disabled={testing || !nowPlaying.webhookUrl}
-        >{testing ? "Testing…" : "Test webhook"}</button
       >
+        {testing ? "Testing…" : "Test webhook"}
+      </button>
       {#if testResult}
         <span class="np-test-result">{testResult}</span>
       {/if}
@@ -157,9 +158,9 @@
       <label class="np-field-label" for="np-file-dir">Export Directory</label>
       <div class="np-input-wrap">
         <span class="material-symbols-outlined">folder_open</span>
-        <span id="np-file-dir" class="np-file-dir"
-          >{nowPlaying.fileDir ?? "(app data dir / now-playing)"}</span
-        >
+        <span id="np-file-dir" class="np-file-dir">
+          {nowPlaying.fileDir ?? "(app data dir / now-playing)"}
+        </span>
         <button class="np-browse" onclick={pickFileDir}>
           <span class="material-symbols-outlined">search</span>
           Browse

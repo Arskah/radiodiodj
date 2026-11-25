@@ -12,13 +12,15 @@
     class="missing-badge"
     title={`File missing since ${new Date(since).toLocaleString()}`}
     aria-label="File missing"
-    ><span class="material-symbols-outlined">link_off</span></span
   >
+    <span class="material-symbols-outlined">link_off</span>
+  </span>
 {:else if hiddenAt !== undefined}
   <span
     class="missing-badge"
     title={`Hidden from the library since ${new Date(hiddenAt).toLocaleString()}`}
     aria-label="Hidden from the library"
-    ><span class="material-symbols-outlined">visibility_off</span></span
   >
+    <span class="material-symbols-outlined">visibility_off</span>
+  </span>
 {/if}

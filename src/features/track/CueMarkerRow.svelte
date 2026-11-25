@@ -136,9 +136,9 @@
         onnudge(-nudgeStep(e));
       }}
     >
-      <span class="material-symbols-outlined" aria-hidden="true"
-        >chevron_left</span
-      >
+      <span class="material-symbols-outlined" aria-hidden="true">
+        chevron_left
+      </span>
     </button>
     <button
       class="btn-mini"
@@ -149,9 +149,9 @@
         onnudge(nudgeStep(e));
       }}
     >
-      <span class="material-symbols-outlined" aria-hidden="true"
-        >chevron_right</span
-      >
+      <span class="material-symbols-outlined" aria-hidden="true">
+        chevron_right
+      </span>
     </button>
     <button
       class="btn-mini"
@@ -160,9 +160,9 @@
       aria-label="Set {spec.label} to the playhead"
       onclick={onmark}
     >
-      <span class="material-symbols-outlined" aria-hidden="true"
-        >my_location</span
-      >
+      <span class="material-symbols-outlined" aria-hidden="true">
+        my_location
+      </span>
     </button>
     <button
       class="btn-mini"

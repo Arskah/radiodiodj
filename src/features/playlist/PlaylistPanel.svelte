@@ -233,16 +233,17 @@
 </script>
 
 {#snippet eta(i: number)}
-  <span class="pl-eta" title="Expected start">{formatEta(etas[i] ?? null)}</span
-  >
+  <span class="pl-eta" title="Expected start">
+    {formatEta(etas[i] ?? null)}
+  </span>
 {/snippet}
 
 <section id="playlist-panel" class="panel">
   <div class="panel-header">
     <span class="panel-title">
-      <span class="material-symbols-outlined" aria-hidden="true"
-        >queue_music</span
-      >
+      <span class="material-symbols-outlined" aria-hidden="true">
+        queue_music
+      </span>
       Active Playlist
     </span>
     <div id="playlist-actions">
@@ -251,31 +252,41 @@
           class="btn-filler"
           title="Add a jingle to the playlist"
           disabled={(app.stats?.tracksByType.jingle ?? 0) === 0}
-          onclick={() => app.addFiller("jingle")}>+ Jingle</button
+          onclick={() => app.addFiller("jingle")}
         >
+          + Jingle
+        </button>
         <button
           class="btn-filler"
           title="Add a commercial to the playlist"
           disabled={(app.stats?.tracksByType.commercial ?? 0) === 0}
-          onclick={() => app.addFiller("commercial")}>+ Comm</button
+          onclick={() => app.addFiller("commercial")}
         >
+          + Comm
+        </button>
         <button
           class="btn-filler btn-filler-stop"
           title="Stop automatic play when reached"
-          onclick={() => app.addStopMarker()}>+ Stop</button
+          onclick={() => app.addStopMarker()}
         >
+          + Stop
+        </button>
         <button
           id="btn-save-playlist"
           class="btn-filler"
           title="Keep the upcoming tracks as a saved playlist"
           disabled={!app.playlist.some(isTrackItem)}
-          onclick={() => (app.savedDialog = { kind: "saveAs" })}>Save as</button
+          onclick={() => (app.savedDialog = { kind: "saveAs" })}
         >
+          Save as
+        </button>
         <button
           id="btn-clear-playlist"
           title="Clear playlist"
-          onclick={() => app.clearPlaylist()}>Clear</button
+          onclick={() => app.clearPlaylist()}
         >
+          Clear
+        </button>
       {/if}
     </div>
   </div>
@@ -293,8 +304,10 @@
           class="pl-tab-total"
           title={stopped
             ? "Air time until the first stop marker"
-            : "Air time of the queue"}>· {formatSpan(app.upcomingAirTime)}</span
+            : "Air time of the queue"}
         >
+          · {formatSpan(app.upcomingAirTime)}
+        </span>
       {/if}
     </button>
     <button
@@ -310,9 +323,9 @@
 
   {#if app.autoSource || app.revertedFrom}
     <div id="auto-source" role="status">
-      <span class="material-symbols-outlined" aria-hidden="true"
-        >auto_awesome</span
-      >
+      <span class="material-symbols-outlined" aria-hidden="true">
+        auto_awesome
+      </span>
       {#if app.autoSource}
         <span class="auto-source-text">
           Auto Mode draws from <strong>{app.autoSource.name}</strong> · {sizeLabel(
@@ -320,8 +333,8 @@
             0,
           )}{#if app.sourceSwitchQueued && queuedTracks > 0}
             <span class="auto-source-queued">
-              · {queuedTracks} queued air first</span
-            >
+              · {queuedTracks} queued air first
+            </span>
           {/if}
         </span>
         {#if app.sourceSwitchQueued && queuedTracks > 0}
@@ -329,8 +342,10 @@
             id="btn-source-clear"
             class="btn-filler"
             title="Clear the playlist, so the source's tracks air next"
-            onclick={() => app.clearPlaylist()}>Clear</button
+            onclick={() => app.clearPlaylist()}
           >
+            Clear
+          </button>
         {/if}
         <button
           id="btn-source-off"
@@ -370,14 +385,14 @@
     >
       {#if rows.length === 0}
         <div class="empty">
-          <span class="empty-icon"
-            ><span class="material-symbols-outlined">queue_music</span></span
-          >
+          <span class="empty-icon">
+            <span class="material-symbols-outlined">queue_music</span>
+          </span>
           <span class="empty-title">No Tracks Queued</span>
-          <span class="empty-body"
-            >Add tracks from the library, or enable Auto Mode to fill the queue
-            automatically.</span
-          >
+          <span class="empty-body">
+            Add tracks from the library, or enable Auto Mode to fill the queue
+            automatically.
+          </span>
         </div>
       {:else}
         {#each rows as row, r (rowKeyOf(row))}
@@ -407,18 +422,18 @@
                 title={row.collapsed ? "Expand" : "Collapse"}
                 onclick={() => toggleCollapsed(row.group.id)}
               >
-                <span class="material-symbols-outlined"
-                  >{row.collapsed ? "chevron_right" : "expand_more"}</span
-                >
+                <span class="material-symbols-outlined">
+                  {row.collapsed ? "chevron_right" : "expand_more"}
+                </span>
               </button>
-              <span class="material-symbols-outlined group-icon"
-                >queue_music</span
-              >
+              <span class="material-symbols-outlined group-icon">
+                queue_music
+              </span>
               <div class="pl-body">
                 <span class="group-name">{row.group.name}</span>
-                <span class="group-size"
-                  >{sizeLabel(row.tracks + row.stops, 0, row.stops)}</span
-                >
+                <span class="group-size">
+                  {sizeLabel(row.tracks + row.stops, 0, row.stops)}
+                </span>
               </div>
               {#if row.onAir}
                 <span class="pl-status group-on-air">On air</span>
@@ -464,13 +479,12 @@
                 ondragend={onDragEnd}
                 role="listitem"
               >
-                <span class="pl-drag"
-                  ><span class="material-symbols-outlined">drag_indicator</span
-                  ></span
-                >
-                <span class="pl-num"
-                  ><span class="material-symbols-outlined">block</span></span
-                >
+                <span class="pl-drag">
+                  <span class="material-symbols-outlined">drag_indicator</span>
+                </span>
+                <span class="pl-num">
+                  <span class="material-symbols-outlined">block</span>
+                </span>
                 <div class="pl-body">
                   <span class="pl-stop-label">Stop</span>
                   <span class="pl-stop-sub">Auto play halts here</span>
@@ -515,11 +529,11 @@
                   onmouseenter={(e) => onEnter(aired, e)}
                   onmouseleave={() => app.clearHover()}
                 >
-                  <span class="pl-drag"
-                    ><span class="material-symbols-outlined"
-                      >drag_indicator</span
-                    ></span
-                  >
+                  <span class="pl-drag">
+                    <span class="material-symbols-outlined">
+                      drag_indicator
+                    </span>
+                  </span>
                   <span class="pl-num">{i + 1}</span>
                   <div class="pl-body">
                     <span class="pl-title">{item.track.title}</span>
@@ -542,15 +556,15 @@
                           app.setItemCuePoints(i, null);
                         }}
                       >
-                        <span class="material-symbols-outlined"
-                          >line_start_diamond</span
-                        >
+                        <span class="material-symbols-outlined">
+                          line_start_diamond
+                        </span>
                       </button>
                     {/if}
                     {@render eta(i)}
-                    <span class="pl-duration" class:trimmed={isTrimmed(aired)}
-                      >{formatTime(airDuration(aired))}</span
-                    >
+                    <span class="pl-duration" class:trimmed={isTrimmed(aired)}>
+                      {formatTime(airDuration(aired))}
+                    </span>
                   </div>
                 </div>
                 <button
@@ -585,9 +599,9 @@
     <div id="history">
       {#if app.historyDisplay.length === 0}
         <div class="empty">
-          <span class="empty-icon"
-            ><span class="material-symbols-outlined">history</span></span
-          >
+          <span class="empty-icon">
+            <span class="material-symbols-outlined">history</span>
+          </span>
           <span class="empty-title">No History Yet</span>
           <span class="empty-body">Tracks you play will appear here.</span>
         </div>
@@ -612,9 +626,9 @@
               </div>
               <div class="pl-right">
                 <MissingBadge trackId={track.id} />
-                <span class="pl-duration" class:trimmed={isTrimmed(track)}
-                  >{formatTime(airDuration(track))}</span
-                >
+                <span class="pl-duration" class:trimmed={isTrimmed(track)}>
+                  {formatTime(airDuration(track))}
+                </span>
               </div>
             </div>
           </div>

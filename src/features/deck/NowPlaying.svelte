@@ -63,9 +63,9 @@
   <div id="player-info">
     <div id="track-info">
       <div class="deck-head">
-        <span class="material-symbols-outlined" aria-hidden="true"
-          >cell_tower</span
-        >
+        <span class="material-symbols-outlined" aria-hidden="true">
+          cell_tower
+        </span>
         <span class="deck-label">Main Deck</span>
         {#if app.currentTrack}
           <MissingBadge trackId={app.currentTrack.id} />
@@ -76,45 +76,46 @@
             title={app.autoAdvance
               ? "On air until the queue runs out or reaches a stop marker"
               : "On air until this track ends — Manual does not advance"}
-            >−{formatSpan(app.airTimeRemaining)}</span
           >
+            −{formatSpan(app.airTimeRemaining)}
+          </span>
         {/if}
       </div>
       <div class="track-names">
         {#if held}
-          <span id="np-title" class="hold-heading" class:over={held.over}
-            ><span class="material-symbols-outlined" aria-hidden="true"
-              >block</span
-            >Stop</span
-          >
-          <span id="np-artist"
-            >{held.planned === null
+          <span id="np-title" class="hold-heading" class:over={held.over}>
+            <span class="material-symbols-outlined" aria-hidden="true">
+              block
+            </span>Stop
+          </span>
+          <span id="np-artist">
+            {held.planned === null
               ? "No planned length"
-              : `Planned ${formatTime(held.planned)}`}</span
-          >
+              : `Planned ${formatTime(held.planned)}`}
+          </span>
         {:else}
-          <span id="np-title"
-            >{app.currentTrack
-              ? app.currentTrack.title
-              : "No Track Loaded"}</span
-          >
+          <span id="np-title">
+            {app.currentTrack ? app.currentTrack.title : "No Track Loaded"}
+          </span>
           <span id="np-artist">{app.currentTrack?.artist ?? ""}</span>
         {/if}
         {#if app.onAirGroup}
           <span
             class="deck-group group-colour-{groupColour(app.onAirGroup.id)}"
             title="On air from this saved playlist"
-            ><span class="material-symbols-outlined" aria-hidden="true"
-              >queue_music</span
-            >{app.onAirGroup.name}</span
           >
+            <span class="material-symbols-outlined" aria-hidden="true">
+              queue_music
+            </span>{app.onAirGroup.name}
+          </span>
         {/if}
         {#if app.tailTrack}
           <span
             class="tail-line"
             title="Handed over — still playing out underneath, until its cue out"
-            >⤵ {app.tailTrack.title} · −{formatSpan(app.tailRemaining)}</span
           >
+            ⤵ {app.tailTrack.title} · −{formatSpan(app.tailRemaining)}
+          </span>
         {/if}
         {#if app.isBuffering}
           <!-- Shimmer on the progress bar is the visual cue; keep a
@@ -142,9 +143,9 @@
           aria-pressed={app.isPlaying}
           onclick={() => app.togglePlay()}
         >
-          <span class="material-symbols-outlined"
-            >{app.isPlaying ? "pause" : "play_arrow"}</span
-          >
+          <span class="material-symbols-outlined">
+            {app.isPlaying ? "pause" : "play_arrow"}
+          </span>
         </button>
         <button
           id="btn-stop"
@@ -181,9 +182,9 @@
           onclick={() => app.fadeOut()}
         >
           <span class="fade-fill" aria-hidden="true"></span>
-          <span class="material-symbols-outlined" aria-hidden="true"
-            >trending_down</span
-          >
+          <span class="material-symbols-outlined" aria-hidden="true">
+            trending_down
+          </span>
           <span class="fade-label">Fade out</span>
         </button>
         <button
@@ -198,9 +199,9 @@
           onclick={() => app.fadeToNext()}
         >
           <span class="fade-fill" aria-hidden="true"></span>
-          <span class="material-symbols-outlined" aria-hidden="true"
-            >multiple_stop</span
-          >
+          <span class="material-symbols-outlined" aria-hidden="true">
+            multiple_stop
+          </span>
           <span class="fade-label">Fade next</span>
         </button>
       </div>
@@ -214,15 +215,19 @@
           aria-pressed={app.autoAdvance}
           onclick={() => {
             if (!app.autoAdvance) app.toggleMode();
-          }}>Auto</button
+          }}
         >
+          Auto
+        </button>
         <button
           class:active={!app.autoAdvance}
           aria-pressed={!app.autoAdvance}
           onclick={() => {
             if (app.autoAdvance) app.toggleMode();
-          }}>Manual</button
+          }}
         >
+          Manual
+        </button>
       </div>
     </div>
   </div>
@@ -277,9 +282,9 @@
           id="main"
         />
         <div id="progress-fill" style:width="{app.progressPct}%"></div>
-        <span class="time-pill"
-          >{formatTime(app.currentTime)} / {formatTime(app.duration)}</span
-        >
+        <span class="time-pill">
+          {formatTime(app.currentTime)} / {formatTime(app.duration)}
+        </span>
       </div>
     {/if}
   </div>

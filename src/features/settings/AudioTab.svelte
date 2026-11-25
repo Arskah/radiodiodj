@@ -70,13 +70,13 @@
   </p>
   {#if app.audioDevices.length === 0}
     <div class="empty">
-      <span class="empty-icon"
-        ><span class="material-symbols-outlined">volume_off</span></span
-      >
+      <span class="empty-icon">
+        <span class="material-symbols-outlined">volume_off</span>
+      </span>
       <span class="empty-title">No Output Devices</span>
-      <span class="empty-body"
-        >No audio output devices were detected on this system.</span
-      >
+      <span class="empty-body">
+        No audio output devices were detected on this system.
+      </span>
     </div>
   {:else}
     <div class="device-row">

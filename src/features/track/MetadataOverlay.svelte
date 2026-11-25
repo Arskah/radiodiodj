@@ -240,11 +240,11 @@
       </div>
       <div class="editor-body">
         <label class="field">
-          <span
-            >Title{#if edited & EditedField.title}<em class="edited-mark"
-                >edited</em
-              >{/if}</span
-          >
+          <span>
+            Title{#if edited & EditedField.title}<em class="edited-mark">
+                edited
+              </em>{/if}
+          </span>
           <input
             id="metadata-title"
             type="text"
@@ -254,11 +254,11 @@
           />
         </label>
         <label class="field">
-          <span
-            >Artist{#if edited & EditedField.artist}<em class="edited-mark"
-                >edited</em
-              >{/if}</span
-          >
+          <span>
+            Artist{#if edited & EditedField.artist}<em class="edited-mark">
+                edited
+              </em>{/if}
+          </span>
           <input
             id="metadata-artist"
             type="text"
@@ -267,11 +267,11 @@
           />
         </label>
         <label class="field">
-          <span
-            >Album{#if edited & EditedField.album}<em class="edited-mark"
-                >edited</em
-              >{/if}</span
-          >
+          <span>
+            Album{#if edited & EditedField.album}<em class="edited-mark">
+                edited
+              </em>{/if}
+          </span>
           <input
             id="metadata-album"
             type="text"
@@ -280,11 +280,11 @@
           />
         </label>
         <label class="field">
-          <span
-            >Genre{#if edited & EditedField.genre}<em class="edited-mark"
-                >edited</em
-              >{/if}</span
-          >
+          <span>
+            Genre{#if edited & EditedField.genre}<em class="edited-mark">
+                edited
+              </em>{/if}
+          </span>
           <input
             id="metadata-genre"
             type="text"
@@ -294,11 +294,11 @@
           />
         </label>
         <label class="field">
-          <span
-            >Year{#if edited & EditedField.year}<em class="edited-mark"
-                >edited</em
-              >{/if}</span
-          >
+          <span>
+            Year{#if edited & EditedField.year}<em class="edited-mark">
+                edited
+              </em>{/if}
+          </span>
           <input
             id="metadata-year"
             type="number"
@@ -309,11 +309,13 @@
           />
         </label>
         <label class="field">
-          <span
-            >Album artist{#if edited & EditedField.album_artist}<em
-                class="edited-mark">edited</em
-              >{/if}</span
-          >
+          <span>
+            Album artist{#if edited & EditedField.album_artist}<em
+                class="edited-mark"
+              >
+                edited
+              </em>{/if}
+          </span>
           <input
             id="metadata-album-artist"
             type="text"
@@ -325,11 +327,13 @@
         <!-- Number and total on one row: they are two halves of one tag frame,
              and writing the number without the total would drop the "/12". -->
         <div class="field">
-          <span
-            >Track{#if edited & (EditedField.track_no | EditedField.track_total)}<em
-                class="edited-mark">edited</em
-              >{/if}</span
-          >
+          <span>
+            Track{#if edited & (EditedField.track_no | EditedField.track_total)}<em
+                class="edited-mark"
+              >
+                edited
+              </em>{/if}
+          </span>
           <div class="field-pair">
             <input
               id="metadata-track-no"
@@ -353,11 +357,13 @@
           </div>
         </div>
         <div class="field">
-          <span
-            >Disc{#if edited & (EditedField.disc_no | EditedField.disc_total)}<em
-                class="edited-mark">edited</em
-              >{/if}</span
-          >
+          <span>
+            Disc{#if edited & (EditedField.disc_no | EditedField.disc_total)}<em
+                class="edited-mark"
+              >
+                edited
+              </em>{/if}
+          </span>
           <div class="field-pair">
             <input
               id="metadata-disc-no"
@@ -381,11 +387,11 @@
           </div>
         </div>
         <label class="field">
-          <span
-            >Key{#if edited & EditedField.initial_key}<em class="edited-mark"
-                >edited</em
-              >{/if}</span
-          >
+          <span>
+            Key{#if edited & EditedField.initial_key}<em class="edited-mark">
+                edited
+              </em>{/if}
+          </span>
           <input
             id="metadata-key"
             type="text"
@@ -395,11 +401,11 @@
           />
         </label>
         <label class="field">
-          <span
-            >Comment{#if edited & EditedField.comment}<em class="edited-mark"
-                >edited</em
-              >{/if}</span
-          >
+          <span>
+            Comment{#if edited & EditedField.comment}<em class="edited-mark">
+                edited
+              </em>{/if}
+          </span>
           <textarea
             id="metadata-comment"
             rows="2"
@@ -412,20 +418,24 @@
       </div>
       <div class="editor-footer">
         {#if confirmingRevert}
-          <span class="editor-confirm"
-            >Discard the edits and use the file's tags?</span
-          >
+          <span class="editor-confirm">
+            Discard the edits and use the file's tags?
+          </span>
           <button
             id="btn-metadata-revert-confirm"
             class="btn"
             onclick={handleRevert}
-            disabled={saving}>Revert</button
+            disabled={saving}
           >
+            Revert
+          </button>
           <button
             class="btn"
             onclick={() => (confirmingRevert = false)}
-            disabled={saving}>Keep edits</button
+            disabled={saving}
           >
+            Keep edits
+          </button>
         {:else}
           {#if edited}
             <button
@@ -436,8 +446,9 @@
               title={app.isStudio
                 ? OWNER_ONLY
                 : "Discard the edited fields and read them from the file again"}
-              >Revert to file tags</button
             >
+              Revert to file tags
+            </button>
           {/if}
           <button
             id="btn-metadata-save"

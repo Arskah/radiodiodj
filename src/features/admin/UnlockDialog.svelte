@@ -89,8 +89,9 @@
             type="submit"
             class="btn btn-primary"
             disabled={checking || password === ""}
-            >{checking ? "Checking…" : "Unlock"}</button
           >
+            {checking ? "Checking…" : "Unlock"}
+          </button>
         </div>
       </form>
     </div>
