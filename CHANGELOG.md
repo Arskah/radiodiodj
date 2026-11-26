@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.36.0](https://github.com/Arskah/radiodiodj/compare/v0.35.0...v0.36.0) (2026-11-26)
+
+
+### Features
+
+* **theming:** split overloaded colour tokens into role tokens ([#772](https://github.com/Arskah/radiodiodj/issues/772)) ([9f23fde](https://github.com/Arskah/radiodiodj/commit/9f23fdec6702817db3b05e2dd66979ccb728b285))
+
+
+### Bug Fixes
+
+* **deps:** update tauri monorepo ([#759](https://github.com/Arskah/radiodiodj/issues/759)) ([fb62e32](https://github.com/Arskah/radiodiodj/commit/fb62e328d440dfc980d71d87ca3f134eebd6e87c))
+
 ## [0.35.0](https://github.com/Arskah/radiodiodj/compare/v0.34.0...v0.35.0) (2026-11-18)
 
 
