@@ -337,9 +337,9 @@
 <section id="library-panel" class="panel">
   <div class="panel-header">
     <span class="panel-title">
-      <span class="material-symbols-outlined" aria-hidden="true"
-        >library_music</span
-      >
+      <span class="material-symbols-outlined" aria-hidden="true">
+        library_music
+      </span>
       Library
     </span>
     <div id="search-wrap">
@@ -389,9 +389,9 @@
           onclick={() => app.toggleSort(col.column)}
         >
           {col.label}
-          <span class="material-symbols-outlined" aria-hidden="true"
-            >{sortIcon(col.column)}</span
-          >
+          <span class="material-symbols-outlined" aria-hidden="true">
+            {sortIcon(col.column)}
+          </span>
         </button>
       {/each}
       <span class="track-header track-duration">Time</span>
@@ -403,9 +403,9 @@
           disabled={app.tracks.length === 0}
           onclick={() => app.toggleSelectAll()}
         >
-          <span class="material-symbols-outlined" aria-hidden="true"
-            >{allListed ? "deselect" : "select_all"}</span
-          >
+          <span class="material-symbols-outlined" aria-hidden="true">
+            {allListed ? "deselect" : "select_all"}
+          </span>
         </button>
       </span>
     </div>
@@ -417,15 +417,14 @@
       <div id="track-list" class:selecting={selectedCount > 0}>
         {#if app.tracks.length === 0}
           <div class="empty">
-            <span class="empty-icon"
-              ><span class="material-symbols-outlined">library_music</span
-              ></span
-            >
+            <span class="empty-icon">
+              <span class="material-symbols-outlined">library_music</span>
+            </span>
             <span class="empty-title">Your Library is Empty</span>
-            <span class="empty-body"
-              >Add music, jingles, and commercials from Settings → Library, then
-              scan to build your station.</span
-            >
+            <span class="empty-body">
+              Add music, jingles, and commercials from Settings → Library, then
+              scan to build your station.
+            </span>
           </div>
         {:else}
           {#each app.tracks as track (track.id)}
@@ -452,17 +451,17 @@
             >
               <span class="track-no">
                 <span class="track-no-value">{track.track_no ?? ""}</span>
-                <span class="track-check" aria-hidden="true"
-                  >{ordinal ?? ""}</span
-                >
+                <span class="track-check" aria-hidden="true">
+                  {ordinal ?? ""}
+                </span>
               </span>
               <span class="track-title">{track.title}</span>
               <span class="track-artist">{track.artist}</span>
               <span class="track-album">{track.album}</span>
               <span class="track-plays">{track.play_count || 0}</span>
-              <span class="track-duration" class:trimmed={isTrimmed(track)}
-                >{formatTime(airDuration(track))}</span
-              >
+              <span class="track-duration" class:trimmed={isTrimmed(track)}>
+                {formatTime(airDuration(track))}
+              </span>
               {#if app.cueDevice !== null}
                 <button
                   class="btn-cue"
@@ -505,27 +504,33 @@
           class="btn-filler"
           id="btn-add-selection"
           onclick={() => app.addSelectionToPlaylist()}
-          >Add {selectedCount} to playlist</button
         >
+          Add {selectedCount} to playlist
+        </button>
         <button
           class="btn-filler"
           id="btn-add-selection-next"
           onclick={() => app.addSelectionToPlaylist(true)}
-          >Add {selectedCount} as next</button
         >
+          Add {selectedCount} as next
+        </button>
         <button
           class="btn-filler"
           id="btn-save-selection"
           title={app.isAdmin
             ? "Add the selection to a saved playlist, or make a new one of it"
             : "Make a new saved playlist of the selection"}
-          onclick={() => app.saveSelection()}>Save…</button
+          onclick={() => app.saveSelection()}
         >
+          Save…
+        </button>
         <button
           class="btn-selection"
           id="btn-clear-selection"
-          onclick={() => app.clearSelection()}>Clear</button
+          onclick={() => app.clearSelection()}
         >
+          Clear
+        </button>
       </div>
     {/if}
   </div>

@@ -145,9 +145,9 @@
   {#if passwordFormOpen || !app.admin.passwordSet}
     <form onsubmit={savePassword}>
       <div class="device-row">
-        <label for="admin-new-password"
-          >{app.admin.passwordSet ? "New password" : "Password"}</label
-        >
+        <label for="admin-new-password">
+          {app.admin.passwordSet ? "New password" : "Password"}
+        </label>
         <input
           id="admin-new-password"
           type="password"
@@ -170,14 +170,17 @@
           type="submit"
           class="btn-scan-now"
           disabled={passwordBusy}
-          >{app.admin.passwordSet ? "Change password" : "Set password"}</button
         >
+          {app.admin.passwordSet ? "Change password" : "Set password"}
+        </button>
         {#if passwordFormOpen}
           <button
             type="button"
             class="np-browse"
-            onclick={() => (passwordFormOpen = false)}>Cancel</button
+            onclick={() => (passwordFormOpen = false)}
           >
+            Cancel
+          </button>
         {/if}
       </div>
     </form>
@@ -189,22 +192,28 @@
           id="btn-admin-remove-confirm"
           class="btn-scan-now"
           disabled={passwordBusy}
-          onclick={removePassword}>Remove</button
+          onclick={removePassword}
         >
-        <button class="np-browse" onclick={() => (confirmingRemove = false)}
-          >Keep</button
-        >
+          Remove
+        </button>
+        <button class="np-browse" onclick={() => (confirmingRemove = false)}>
+          Keep
+        </button>
       {:else}
         <button
           id="btn-admin-change-password"
           class="btn-scan-now"
-          onclick={() => (passwordFormOpen = true)}>Change password</button
+          onclick={() => (passwordFormOpen = true)}
         >
+          Change password
+        </button>
         <button
           id="btn-admin-remove-password"
           class="np-browse"
-          onclick={() => (confirmingRemove = true)}>Remove password</button
+          onclick={() => (confirmingRemove = true)}
         >
+          Remove password
+        </button>
       {/if}
     </div>
   {/if}
@@ -241,9 +250,9 @@
   <h5 class="tuning-group-title">Automatic cue analysis</h5>
   <div class="np-group" class:disabled={!tuning.autoCue.apply}>
     <div class="np-group-header">
-      <span class="material-symbols-outlined" aria-hidden="true"
-        >content_cut</span
-      >
+      <span class="material-symbols-outlined" aria-hidden="true">
+        content_cut
+      </span>
       <span class="np-group-title">Apply automatic cue points</span>
       <label class="np-toggle" title="Apply automatic cue points">
         <input
@@ -332,8 +341,9 @@
         : scanning
           ? "A library scan is running; recalculate when it finishes"
           : "Apply these levels to tracks already analysed"}
-      >{recalculating ? "Recalculating…" : "Recalculate now"}</button
     >
+      {recalculating ? "Recalculating…" : "Recalculate now"}
+    </button>
     {#if recalcResult}
       <span class="np-test-result">{recalcResult}</span>
     {/if}

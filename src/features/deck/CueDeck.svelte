@@ -58,15 +58,15 @@
     <div class="cue-info">
       <div class="cue-info-left">
         <div class="deck-head">
-          <span class="material-symbols-outlined" aria-hidden="true"
-            >headphones</span
-          >
+          <span class="material-symbols-outlined" aria-hidden="true">
+            headphones
+          </span>
           <span class="deck-label">Cue Deck</span>
         </div>
         <div class="track-names">
-          <span class="cue-title"
-            >{app.cueTrack ? app.cueTrack.title : "No Track Loaded"}</span
-          >
+          <span class="cue-title">
+            {app.cueTrack ? app.cueTrack.title : "No Track Loaded"}
+          </span>
           <span class="cue-artist">{app.cueTrack?.artist ?? ""}</span>
         </div>
       </div>
@@ -79,9 +79,9 @@
             disabled={!app.cueTrack}
             onclick={() => app.cueTogglePlay()}
           >
-            <span class="material-symbols-outlined"
-              >{app.cueIsPlaying ? "pause" : "play_arrow"}</span
-            >
+            <span class="material-symbols-outlined">
+              {app.cueIsPlaying ? "pause" : "play_arrow"}
+            </span>
           </button>
           <button
             class="btn-cue-stop"
@@ -123,20 +123,24 @@
               class:active={app.cueMode === "absolute"}
               aria-pressed={app.cueMode === "absolute"}
               title="Audition the whole file"
-              onclick={() => app.setCueMode("absolute")}>Absolute</button
+              onclick={() => app.setCueMode("absolute")}
             >
+              Absolute
+            </button>
             <button
               class:active={app.cueMode === "preview"}
               aria-pressed={app.cueMode === "preview"}
               title="Play only what airs"
-              onclick={() => app.setCueMode("preview")}>Preview</button
+              onclick={() => app.setCueMode("preview")}
             >
+              Preview
+            </button>
           </div>
         {/if}
         <div class="cue-volume-wrap">
-          <span class="material-symbols-outlined" aria-hidden="true"
-            >volume_up</span
-          >
+          <span class="material-symbols-outlined" aria-hidden="true">
+            volume_up
+          </span>
           <input
             type="range"
             class="cue-volume"
@@ -200,11 +204,9 @@
           class="cue-progress-fill"
           style:width="{app.cueProgressPct}%"
         ></div>
-        <span class="time-pill"
-          >{formatTime(app.cueCurrentTime)} / {formatTime(
-            app.cueDuration,
-          )}</span
-        >
+        <span class="time-pill">
+          {formatTime(app.cueCurrentTime)} / {formatTime(app.cueDuration)}
+        </span>
       </div>
     </div>
     {#if app.cueError}

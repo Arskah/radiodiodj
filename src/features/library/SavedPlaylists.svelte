@@ -688,29 +688,31 @@
       draggable={open.entries.length > 0}
       ondragstart={(e) => onSavedDragStart(e, open)}
       ondragend={() => app.endDrag()}
-      role="presentation">{open.name}</span
+      role="presentation"
     >
-    <span id="saved-open-size"
-      >{sizeLabel(
-        open.entries.length,
-        openSummary?.missing ?? 0,
-        openStops,
-      )}</span
-    >
+      {open.name}
+    </span>
+    <span id="saved-open-size">
+      {sizeLabel(open.entries.length, openSummary?.missing ?? 0, openStops)}
+    </span>
     <button
       id="btn-saved-add"
       class="btn-filler"
       title="Add every track and Stop to the playlist, as written"
       disabled={open.entries.length === 0}
-      onclick={() => append(open.id, false)}>Add to playlist</button
+      onclick={() => append(open.id, false)}
     >
+      Add to playlist
+    </button>
     <button
       id="btn-saved-weave"
       class="btn-filler"
       title="Add to the playlist, with jingles and commercials woven in"
       disabled={open.entries.length === 0}
-      onclick={() => append(open.id, true)}>+ Jingles &amp; comm</button
+      onclick={() => append(open.id, true)}
     >
+      + Jingles &amp; comm
+    </button>
     <button
       id="btn-saved-source"
       class="btn-filler"
@@ -721,8 +723,9 @@
       aria-pressed={app.autoSource?.id === open.id}
       onclick={() =>
         void app.setAutoSource(app.autoSource?.id === open.id ? null : open.id)}
-      >Auto source</button
     >
+      Auto source
+    </button>
     <button
       id="btn-saved-export"
       class="btn-edit"
@@ -737,8 +740,10 @@
         id="btn-saved-add-stop"
         class="btn-filler"
         title="Add a Stop at the end, then drag it into place"
-        onclick={() => app.addSavedStop()}>+ Stop</button
+        onclick={() => app.addSavedStop()}
       >
+        + Stop
+      </button>
       <button
         class="btn-edit"
         title="Rename"
@@ -767,9 +772,9 @@
         onclick={() => toggleSort(col.column)}
       >
         {col.label}
-        <span class="material-symbols-outlined" aria-hidden="true"
-          >{sortIcon(col.column)}</span
-        >
+        <span class="material-symbols-outlined" aria-hidden="true">
+          {sortIcon(col.column)}
+        </span>
       </button>
     {/each}
     {#if app.cueDevice !== null}<span class="saved-action-space"></span>{/if}
@@ -783,9 +788,9 @@
         disabled={shownIds.length === 0}
         onclick={toggleSelectAll}
       >
-        <span class="material-symbols-outlined" aria-hidden="true"
-          >{allShown ? "deselect" : "select_all"}</span
-        >
+        <span class="material-symbols-outlined" aria-hidden="true">
+          {allShown ? "deselect" : "select_all"}
+        </span>
       </button>
     </span>
     {#if app.isAdmin}<span class="saved-action-space"></span>{/if}
@@ -800,19 +805,19 @@
   >
     {#if open.entries.length === 0}
       <div class="empty">
-        <span class="empty-icon"
-          ><span class="material-symbols-outlined">playlist_add</span></span
-        >
+        <span class="empty-icon">
+          <span class="material-symbols-outlined">playlist_add</span>
+        </span>
         <span class="empty-title">Nothing In This Playlist</span>
-        <span class="empty-body"
-          >Add tracks from a library row's menu, while admin mode is unlocked.</span
-        >
+        <span class="empty-body">
+          Add tracks from a library row's menu, while admin mode is unlocked.
+        </span>
       </div>
     {:else if listed.length === 0}
       <div class="empty">
-        <span class="empty-icon"
-          ><span class="material-symbols-outlined">search_off</span></span
-        >
+        <span class="empty-icon">
+          <span class="material-symbols-outlined">search_off</span>
+        </span>
         <span class="empty-title">No Match In This Playlist</span>
       </div>
     {:else}
@@ -855,8 +860,10 @@
             {#if entry.kind === "stop"}
               <span
                 class="material-symbols-outlined stop-icon"
-                aria-hidden="true">block</span
+                aria-hidden="true"
               >
+                block
+              </span>
             {:else if entry.track}
               <MissingBadge trackId={entry.track.id} />
             {:else}
@@ -864,8 +871,9 @@
                 class="missing-badge"
                 title="No track in this library matches this entry"
                 aria-label="Unmatched entry"
-                ><span class="material-symbols-outlined">link_off</span></span
               >
+                <span class="material-symbols-outlined">link_off</span>
+              </span>
             {/if}
             {title(entry)}
           </span>
@@ -885,8 +893,9 @@
             <span
               class="track-duration"
               class:trimmed={entry.track !== null && isTrimmed(entry.track)}
-              >{formatTime(duration(entry))}</span
             >
+              {formatTime(duration(entry))}
+            </span>
           {/if}
           {#if entry.track}
             {@const track = entry.track}
@@ -944,20 +953,22 @@
       id="btn-saved-import"
       class="btn-filler"
       title="Make a saved playlist from a file"
-      onclick={() => void app.importSavedPlaylist()}>Import</button
+      onclick={() => void app.importSavedPlaylist()}
     >
+      Import
+    </button>
   </div>
   <div id="saved-playlists" role="list">
     {#if app.savedPlaylists.length === 0}
       <div class="empty">
-        <span class="empty-icon"
-          ><span class="material-symbols-outlined">queue_music</span></span
-        >
+        <span class="empty-icon">
+          <span class="material-symbols-outlined">queue_music</span>
+        </span>
         <span class="empty-title">No Saved Playlists</span>
-        <span class="empty-body"
-          >Queue a show, then Save As in the playlist panel to keep it for
-          later, or import one from a file.</span
-        >
+        <span class="empty-body">
+          Queue a show, then Save As in the playlist panel to keep it for later,
+          or import one from a file.
+        </span>
       </div>
     {:else}
       {#each shown as saved (saved.id)}
@@ -975,22 +986,24 @@
           ondragstart={(e) => onSavedDragStart(e, saved)}
           ondragend={() => app.endDrag()}
         >
-          <span class="track-no" aria-hidden="true"
-            ><span class="material-symbols-outlined saved-row-icon"
-              >queue_music</span
-            ></span
-          >
+          <span class="track-no" aria-hidden="true">
+            <span class="material-symbols-outlined saved-row-icon">
+              queue_music
+            </span>
+          </span>
           <span class="track-title saved-row-name">{saved.name}</span>
           {#if app.autoSource?.id === saved.id}
             <span
               class="material-symbols-outlined saved-row-source"
               title="Auto Mode draws its music from this saved playlist"
-              aria-label="Auto-playlist source">auto_awesome</span
+              aria-label="Auto-playlist source"
             >
+              auto_awesome
+            </span>
           {/if}
-          <span class="saved-row-size" class:has-missing={saved.missing > 0}
-            >{sizeLabel(saved.entries, saved.missing, saved.stops)}</span
-          >
+          <span class="saved-row-size" class:has-missing={saved.missing > 0}>
+            {sizeLabel(saved.entries, saved.missing, saved.stops)}
+          </span>
           {#if app.isAdmin}
             <button
               class="btn-edit"
@@ -1034,24 +1047,34 @@
       class="btn-filler"
       id="btn-add-selection"
       disabled={pickedQueue.length === 0}
-      onclick={() => queuePicked()}>Add {pickedQueue.length} to playlist</button
+      onclick={() => queuePicked()}
     >
+      Add {pickedQueue.length} to playlist
+    </button>
     <button
       class="btn-filler"
       id="btn-add-selection-next"
       disabled={pickedQueue.length === 0}
-      onclick={() => queuePicked(true)}>Add {pickedQueue.length} as next</button
+      onclick={() => queuePicked(true)}
     >
+      Add {pickedQueue.length} as next
+    </button>
     {#if app.isAdmin}
       <button
         class="btn-filler btn-filler-stop"
         id="btn-remove-selection"
-        onclick={removePicked}>Remove {pickedCount}</button
+        onclick={removePicked}
       >
+        Remove {pickedCount}
+      </button>
     {/if}
-    <button class="btn-selection" id="btn-clear-selection" onclick={clearPicked}
-      >Clear</button
+    <button
+      class="btn-selection"
+      id="btn-clear-selection"
+      onclick={clearPicked}
     >
+      Clear
+    </button>
   </div>
 {/if}
 {#if menu}

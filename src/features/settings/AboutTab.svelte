@@ -73,16 +73,17 @@
   <h4>About</h4>
   <div class="about-identity">
     <span class="np-group-title">{APP_NAME}</span>
-    <span id="about-version" class="about-version"
-      >v{app.update.currentVersion}</span
-    >
+    <span id="about-version" class="about-version">
+      v{app.update.currentVersion}
+    </span>
     <button
       id="btn-update-check"
       class="btn-scan-now"
       disabled={working}
       onclick={() => app.checkForUpdate()}
-      >{phase.kind === "checking" ? "Checking…" : "Check for updates"}</button
     >
+      {phase.kind === "checking" ? "Checking…" : "Check for updates"}
+    </button>
   </div>
   <p
     id="about-update-status"
@@ -95,9 +96,9 @@
 
   <div class="np-group">
     <div class="np-group-header">
-      <span class="material-symbols-outlined" aria-hidden="true"
-        >system_update_alt</span
-      >
+      <span class="material-symbols-outlined" aria-hidden="true">
+        system_update_alt
+      </span>
       <span class="np-group-title">Updates</span>
     </div>
     <div class="np-subsetting">
@@ -151,9 +152,9 @@
               : "Download and restart"}
           </button>
           {#if confirming}
-            <button class="btn-scan-now" onclick={() => (confirming = false)}
-              >Cancel</button
-            >
+            <button class="btn-scan-now" onclick={() => (confirming = false)}>
+              Cancel
+            </button>
           {/if}
         {:else if offer}
           <button
@@ -169,20 +170,20 @@
   </div>
 
   <nav class="about-links" aria-label="Project links">
-    <button class="about-link" onclick={() => open("website")}
-      >radiodiodj.org</button
-    >
-    <button class="about-link" onclick={() => open("changelog")}
-      >Changelog</button
-    >
-    <button class="about-link" onclick={() => open("source")}
-      >Source code</button
-    >
-    <button class="about-link" onclick={() => open("licence")}
-      >Licence · GPL-3.0-or-later</button
-    >
-    <button class="about-link" onclick={() => open("notices")}
-      >Third-party notices</button
-    >
+    <button class="about-link" onclick={() => open("website")}>
+      radiodiodj.org
+    </button>
+    <button class="about-link" onclick={() => open("changelog")}>
+      Changelog
+    </button>
+    <button class="about-link" onclick={() => open("source")}>
+      Source code
+    </button>
+    <button class="about-link" onclick={() => open("licence")}>
+      Licence · GPL-3.0-or-later
+    </button>
+    <button class="about-link" onclick={() => open("notices")}>
+      Third-party notices
+    </button>
   </nav>
 </div>

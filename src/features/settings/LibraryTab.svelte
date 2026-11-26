@@ -79,12 +79,12 @@
         {:else}
           {#each app.libraryPaths[type] as p (p.id)}
             <div class="path-row" class:path-row--unlocated={p.path === null}>
-              <span class="material-symbols-outlined"
-                >{p.path === null ? "folder_off" : "folder"}</span
-              >
-              <span class="path-text"
-                >{p.path ?? "Not located on this computer"}</span
-              >
+              <span class="material-symbols-outlined">
+                {p.path === null ? "folder_off" : "folder"}
+              </span>
+              <span class="path-text">
+                {p.path ?? "Not located on this computer"}
+              </span>
               <button
                 class="btn-locate"
                 title="Choose where this directory is on this computer. Its tracks, cue points and play counts are kept."
@@ -114,8 +114,9 @@
     class:disabled={!tuning.library.scanOnChanges || app.isStudio}
   >
     <div class="np-group-header">
-      <span class="material-symbols-outlined" aria-hidden="true">autorenew</span
-      >
+      <span class="material-symbols-outlined" aria-hidden="true">
+        autorenew
+      </span>
       <span class="np-group-title">Scan when files change</span>
       <label
         class="np-toggle"
@@ -134,11 +135,11 @@
     <p class="settings-section-desc">
       With this on, the library check starts a scan itself once the same files
       have been seen twice running, so music copied onto your library paths from
-      another computer is picked up without anyone pressing <em
-        >Scan Library Now</em
-      >. It only ever adds and updates: tracks whose file is gone stay listed
-      under Library health until you scan yourself. It stays out of the way
-      while a library path is unreachable, while a report is dismissed, and
+      another computer is picked up without anyone pressing <em>
+        Scan Library Now
+      </em>. It only ever adds and updates: tracks whose file is gone stay
+      listed under Library health until you scan yourself. It stays out of the
+      way while a library path is unreachable, while a report is dismissed, and
       after a cancelled scan. Needs a check interval above 0.
     </p>
   </div>
@@ -173,9 +174,9 @@
   </div>
   <div class="np-group" class:disabled={!tuning.library.writeTags}>
     <div class="np-group-header">
-      <span class="material-symbols-outlined" aria-hidden="true"
-        >edit_document</span
-      >
+      <span class="material-symbols-outlined" aria-hidden="true">
+        edit_document
+      </span>
       <span class="np-group-title">Write edits to file tags</span>
       <label class="np-toggle" title="Write metadata edits to files">
         <input

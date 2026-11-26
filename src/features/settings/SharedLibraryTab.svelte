@@ -194,9 +194,9 @@
           aria-label={showUrl ? "Hide address" : "Show address"}
           onclick={() => (showUrl = !showUrl)}
         >
-          <span class="material-symbols-outlined"
-            >{showUrl ? "visibility_off" : "visibility"}</span
-          >
+          <span class="material-symbols-outlined">
+            {showUrl ? "visibility_off" : "visibility"}
+          </span>
         </button>
       </div>
       <div class="np-file-hint">
@@ -205,9 +205,9 @@
       </div>
     </div>
     <div class="np-field">
-      <label class="np-field-label" for="shared-name"
-        >Name of this computer</label
-      >
+      <label class="np-field-label" for="shared-name">
+        Name of this computer
+      </label>
       <div class="np-input-wrap">
         <span class="material-symbols-outlined">computer</span>
         <input
@@ -279,9 +279,9 @@
     </div>
     <div class="np-group" class:disabled={!allowUnencrypted}>
       <div class="np-group-header">
-        <span class="material-symbols-outlined" aria-hidden="true"
-          >lock_open</span
-        >
+        <span class="material-symbols-outlined" aria-hidden="true">
+          lock_open
+        </span>
         <span class="np-group-title">Allow an unencrypted connection</span>
         <label class="np-toggle" title="Allow an unencrypted connection">
           <input
@@ -314,13 +314,17 @@
         id="btn-shared-confirm"
         class="btn-purge-confirm"
         disabled={saving}
-        onclick={save}>Replace at next start</button
+        onclick={save}
       >
+        Replace at next start
+      </button>
       <button
         class="btn-purge-cancel"
         disabled={saving}
-        onclick={() => (confirming = false)}>Cancel</button
+        onclick={() => (confirming = false)}
       >
+        Cancel
+      </button>
     </div>
   {:else}
     <div class="np-action-row">
@@ -329,14 +333,16 @@
         class="btn-scan-now"
         disabled={!dirty || needsUrl || saving}
         title={needsUrl ? "A shared library needs a hub address" : undefined}
-        onclick={save}>{saving ? "Saving…" : "Save"}</button
+        onclick={save}
       >
+        {saving ? "Saving…" : "Save"}
+      </button>
       {#if error}
         <span class="np-test-result">{error}</span>
       {:else if restartPending}
-        <span class="np-test-result"
-          >Saved. Restart RadiodioDJ for it to take effect.</span
-        >
+        <span class="np-test-result">
+          Saved. Restart RadiodioDJ for it to take effect.
+        </span>
       {/if}
     </div>
   {/if}
@@ -365,16 +371,18 @@
   </p>
   {#if saved.joinAgain}
     <div class="np-action-row">
-      <span class="np-test-result"
-        >This computer joins again the next time RadiodioDJ starts. Restart it
-        off air.</span
-      >
+      <span class="np-test-result">
+        This computer joins again the next time RadiodioDJ starts. Restart it
+        off air.
+      </span>
       <button
         id="btn-shared-rejoin-cancel"
         class="btn-purge-cancel"
         disabled={rejoining}
-        onclick={() => joinAgain(false)}>Do not join again</button
+        onclick={() => joinAgain(false)}
       >
+        Do not join again
+      </button>
     </div>
   {:else if saved.status.remedy?.kind === "joinAgain" && !restartPending && !dirty}
     {#if confirmingRejoin}
@@ -391,21 +399,27 @@
           id="btn-shared-rejoin-confirm"
           class="btn-purge-confirm"
           disabled={rejoining}
-          onclick={() => joinAgain(true)}>Join again at next start</button
+          onclick={() => joinAgain(true)}
         >
+          Join again at next start
+        </button>
         <button
           class="btn-purge-cancel"
           disabled={rejoining}
-          onclick={() => (confirmingRejoin = false)}>Cancel</button
+          onclick={() => (confirmingRejoin = false)}
         >
+          Cancel
+        </button>
       </div>
     {:else}
       <div class="np-action-row">
         <button
           id="btn-shared-rejoin"
           class="btn-scan-now"
-          onclick={() => (confirmingRejoin = true)}>Join again</button
+          onclick={() => (confirmingRejoin = true)}
         >
+          Join again
+        </button>
       </div>
     {/if}
   {/if}
@@ -426,21 +440,27 @@
           id="btn-shared-takeover-confirm"
           class="btn-purge-confirm"
           disabled={takingOver}
-          onclick={takeOwnerRole}>Take the owner role</button
+          onclick={takeOwnerRole}
         >
+          Take the owner role
+        </button>
         <button
           class="btn-purge-cancel"
           disabled={takingOver}
-          onclick={() => (confirmingTakeOver = false)}>Cancel</button
+          onclick={() => (confirmingTakeOver = false)}
         >
+          Cancel
+        </button>
       </div>
     {:else}
       <div class="np-action-row">
         <button
           id="btn-shared-takeover"
           class="btn-scan-now"
-          onclick={() => (confirmingTakeOver = true)}>Take over</button
+          onclick={() => (confirmingTakeOver = true)}
         >
+          Take over
+        </button>
         <span class="np-test-result">{ownerLastSeen(takeOver)}</span>
       </div>
     {/if}

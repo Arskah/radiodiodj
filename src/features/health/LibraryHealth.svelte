@@ -112,8 +112,10 @@
       // Inside a <summary>, a click would also fold the group.
       e.preventDefault();
       dismissToggle(kind, dismissed, key);
-    }}>{dismissed ? "Undo dismiss" : "Dismiss"}</button
+    }}
   >
+    {dismissed ? "Undo dismiss" : "Dismiss"}
+  </button>
 {/snippet}
 
 {#snippet name(
@@ -122,10 +124,10 @@
 )}
   <span class="health-name">
     <span class="health-title">{t.title}</span>
-    <span class="health-sub"
-      >{t.artist}{#if t.album}
-        — {t.album}{/if}</span
-    >
+    <span class="health-sub">
+      {t.artist}{#if t.album}
+        — {t.album}{/if}
+    </span>
     <span class="health-path" title={path}>{path}</span>
   </span>
 {/snippet}
@@ -154,21 +156,23 @@
       onchange={() => toggle(t.id)}
     />
     {@render name(t, t.path)}
-    <span class="health-when" title={new Date(t.missingSince).toLocaleString()}
-      >{formatAgo(t.missingSince)}</span
-    >
+    <span class="health-when" title={new Date(t.missingSince).toLocaleString()}>
+      {formatAgo(t.missingSince)}
+    </span>
     <span class="health-icons">
       {#if t.hasCuePoints}
         <span
           class="material-symbols-outlined"
-          title="Has cue points a purge would delete">line_start_diamond</span
+          title="Has cue points a purge would delete"
         >
+          line_start_diamond
+        </span>
       {/if}
       <span class="health-plays" title="Play count">▶{t.playCount}</span>
       {#if queuedIds.has(t.id)}
-        <span class="material-symbols-outlined" title="In the playlist"
-          >queue_music</span
-        >
+        <span class="material-symbols-outlined" title="In the playlist">
+          queue_music
+        </span>
       {/if}
     </span>
   </label>
@@ -182,8 +186,9 @@
   >
     <summary>
       <span class="health-group-title">{groupTitle(g)}</span>
-      <span class="health-sub">{plural(g.tracks.length, "copy", "copies")}</span
-      >
+      <span class="health-sub">
+        {plural(g.tracks.length, "copy", "copies")}
+      </span>
       {#if g.dismissed}<span class="health-tag">Dismissed</span>{/if}
       {@render dismissButton(kind, g.dismissed, g.key)}
     </summary>
@@ -191,46 +196,48 @@
       <div class="health-row">
         {@render name(m.track, m.path)}
         <span class="health-type">{m.contentType}</span>
-        <span class="health-duration" class:trimmed={isTrimmed(m.track)}
-          >{formatTime(airDuration(m.track))}</span
-        >
+        <span class="health-duration" class:trimmed={isTrimmed(m.track)}>
+          {formatTime(airDuration(m.track))}
+        </span>
         <span class="health-icons">
           {#if hasCuePoints(m.track.cue_points)}
-            <span class="material-symbols-outlined" title="Has cue points"
-              >line_start_diamond</span
-            >
+            <span class="material-symbols-outlined" title="Has cue points">
+              line_start_diamond
+            </span>
           {/if}
-          <span class="health-plays" title="Play count"
-            >▶{m.track.play_count}</span
-          >
+          <span class="health-plays" title="Play count">
+            ▶{m.track.play_count}
+          </span>
         </span>
         <span class="health-actions">
           <button
             title="Show in folder"
             aria-label="Show in folder"
             onclick={() => app.revealTrack(m.track)}
-            ><span class="material-symbols-outlined">folder_open</span></button
           >
+            <span class="material-symbols-outlined">folder_open</span>
+          </button>
           <button
             title="Edit metadata…"
             aria-label="Edit metadata"
             onclick={() => (app.editingMetadata = m.track)}
-            ><span class="material-symbols-outlined">edit</span></button
           >
+            <span class="material-symbols-outlined">edit</span>
+          </button>
           <button
             title="Cue points…"
             aria-label="Cue points"
             onclick={() => (app.editingCuePoints = m.track)}
-            ><span class="material-symbols-outlined">line_start_diamond</span
-            ></button
           >
+            <span class="material-symbols-outlined">line_start_diamond</span>
+          </button>
           <button
             title="Hide from library"
             aria-label="Hide from library"
             onclick={() => app.hideTracks([m.track.id])}
-            ><span class="material-symbols-outlined">visibility_off</span
-            ></button
           >
+            <span class="material-symbols-outlined">visibility_off</span>
+          </button>
         </span>
       </div>
     {/each}
@@ -247,8 +254,9 @@
     </header>
     {#each check?.unreachable ?? [] as root (root)}
       <p class="health-warning" role="alert">
-        <span class="material-symbols-outlined" aria-hidden="true">warning</span
-        >
+        <span class="material-symbols-outlined" aria-hidden="true">
+          warning
+        </span>
         {root} is unreachable. Its tracks are kept as they are.
       </p>
     {/each}
@@ -296,8 +304,9 @@
         disabled={scanning || checking || app.isStudio}
         title={app.isStudio ? OWNER_ONLY : undefined}
         onclick={() => app.checkLibraryNow()}
-        >{checking ? "Checking…" : "Check now"}</button
       >
+        {checking ? "Checking…" : "Check now"}
+      </button>
     </div>
   </section>
 
@@ -320,14 +329,16 @@
               title="Try writing the tags again"
               aria-label="Retry"
               onclick={() => app.retryTagWrite(f.id)}
-              ><span class="material-symbols-outlined">refresh</span></button
             >
+              <span class="material-symbols-outlined">refresh</span>
+            </button>
             <button
               title="Stop listing this; the edit stays in the library"
               aria-label="Dismiss"
               onclick={() => app.dismissTagWrite(f.id)}
-              ><span class="material-symbols-outlined">close</span></button
             >
+              <span class="material-symbols-outlined">close</span>
+            </button>
           </span>
         </div>
       {/each}
@@ -354,9 +365,9 @@
               title="Show in folder"
               aria-label="Show in folder"
               onclick={() => app.revealTrack(u.track)}
-              ><span class="material-symbols-outlined">folder_open</span
-              ></button
             >
+              <span class="material-symbols-outlined">folder_open</span>
+            </button>
           </span>
         </div>
       {/each}
@@ -386,9 +397,9 @@
               title="Show in folder"
               aria-label="Show in folder"
               onclick={() => app.revealTrack(b.track)}
-              ><span class="material-symbols-outlined">folder_open</span
-              ></button
             >
+              <span class="material-symbols-outlined">folder_open</span>
+            </button>
           </span>
         </div>
       {/each}
@@ -424,9 +435,9 @@
               onclick={(e) => e.stopPropagation()}
               onchange={() => toggleAll(unrooted)}
             />
-            <span class="health-group-title"
-              >No longer under a library path ({unrooted.length})</span
-            >
+            <span class="health-group-title">
+              No longer under a library path ({unrooted.length})
+            </span>
           </summary>
           {#each unrooted as t (t.id)}
             {@render missingRow(t)}
@@ -448,13 +459,17 @@
             id="btn-purge-confirm"
             class="btn-purge-confirm"
             disabled={purging || scanning}
-            onclick={purge}>Delete</button
+            onclick={purge}
           >
+            Delete
+          </button>
           <button
             class="btn-purge-cancel"
             disabled={purging}
-            onclick={() => (confirming = null)}>Keep</button
+            onclick={() => (confirming = null)}
           >
+            Keep
+          </button>
         </div>
       {:else}
         <div class="health-buttons">
@@ -468,8 +483,9 @@
                 ? "Wait for the scan to finish"
                 : undefined}
             onclick={() => (confirming = [...selected])}
-            >Purge selected ({selected.size})…</button
           >
+            Purge selected ({selected.size})…
+          </button>
           <button
             id="btn-purge-missing"
             class="btn-purge"
@@ -480,8 +496,9 @@
                 ? "Wait for the scan to finish"
                 : undefined}
             onclick={() => (confirming = report.missing.map((t) => t.id))}
-            >Purge all…</button
           >
+            Purge all…
+          </button>
         </div>
       {/if}
     {/if}
@@ -491,9 +508,9 @@
     <section class="health-section" id="health-hidden">
       <details class="health-group">
         <summary>
-          <span class="health-group-title"
-            >Hidden tracks ({report.hidden.length})</span
-          >
+          <span class="health-group-title">
+            Hidden tracks ({report.hidden.length})
+          </span>
           <button
             id="btn-unhide-all"
             class="health-dismiss"
@@ -501,8 +518,10 @@
               // Inside a <summary>, a click would also fold the group.
               e.preventDefault();
               app.unhideTracks(report.hidden.map((t) => t.id));
-            }}>Restore all</button
+            }}
           >
+            Restore all
+          </button>
         </summary>
         <p class="health-note">
           Hidden by an admin: out of the library, search and the auto-playlist,
@@ -515,13 +534,14 @@
             <span
               class="health-when"
               title={new Date(t.hiddenAt).toLocaleString()}
-              >{formatAgo(t.hiddenAt)}</span
             >
+              {formatAgo(t.hiddenAt)}
+            </span>
             <span class="health-icons">
               {#if queuedIds.has(t.id)}
-                <span class="material-symbols-outlined" title="In the playlist"
-                  >queue_music</span
-                >
+                <span class="material-symbols-outlined" title="In the playlist">
+                  queue_music
+                </span>
               {/if}
             </span>
             <span class="health-actions">
@@ -529,9 +549,9 @@
                 title="Restore to library"
                 aria-label="Restore to library"
                 onclick={() => app.unhideTracks([t.id])}
-                ><span class="material-symbols-outlined">visibility</span
-                ></button
               >
+                <span class="material-symbols-outlined">visibility</span>
+              </button>
             </span>
           </div>
         {/each}

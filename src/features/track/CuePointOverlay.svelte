@@ -585,11 +585,9 @@
               onclick={playRaw}
               title="Play the whole file, ignoring the markers (Space)"
             >
-              <span class="material-symbols-outlined" aria-hidden="true"
-                >{mode === "raw" && app.cueIsPlaying
-                  ? "pause"
-                  : "play_arrow"}</span
-              >
+              <span class="material-symbols-outlined" aria-hidden="true">
+                {mode === "raw" && app.cueIsPlaying ? "pause" : "play_arrow"}
+              </span>
               {mode === "raw" && app.cueIsPlaying ? "Pause" : "Play"}
             </button>
             <button
@@ -599,11 +597,9 @@
               onclick={audition}
               title="Hear this edit — trims and fades applied (A)"
             >
-              <span class="material-symbols-outlined" aria-hidden="true"
-                >{auditionCurrent && app.cueIsPlaying
-                  ? "pause"
-                  : "headphones"}</span
-              >
+              <span class="material-symbols-outlined" aria-hidden="true">
+                {auditionCurrent && app.cueIsPlaying ? "pause" : "headphones"}
+              </span>
               {auditionCurrent && app.cueIsPlaying ? "Pause" : "Audition"}
             </button>
             <button
@@ -614,17 +610,17 @@
               title="Back to the start"
               aria-label="Stop"
             >
-              <span class="material-symbols-outlined" aria-hidden="true"
-                >stop</span
-              >
+              <span class="material-symbols-outlined" aria-hidden="true">
+                stop
+              </span>
             </button>
-            <span class="cue-clock" id="cue-points-clock"
-              >{playhead == null ? "—:—" : formatClock(playhead)}</span
-            >
+            <span class="cue-clock" id="cue-points-clock">
+              {playhead == null ? "—:—" : formatClock(playhead)}
+            </span>
           {:else}
-            <span class="cue-hint"
-              >Choose a cue output in Settings to listen while you edit.</span
-            >
+            <span class="cue-hint">
+              Choose a cue output in Settings to listen while you edit.
+            </span>
           {/if}
           <span class="cue-footer-gap"></span>
           <button
@@ -634,9 +630,9 @@
             disabled={!manualFrame}
             title="Fit the zoom to the region — the box also fits on a double-click"
           >
-            <span class="material-symbols-outlined" aria-hidden="true"
-              >fit_screen</span
-            >
+            <span class="material-symbols-outlined" aria-hidden="true">
+              fit_screen
+            </span>
             Fit
           </button>
           <span class="cue-summary">
@@ -647,17 +643,17 @@
 
         <p class="cue-notice">
           {#if dirty}
-            <span class="cue-dirty"
-              >Unsaved. These changes are discarded unless you save them to the
-              track or use them for one airing.</span
-            >
+            <span class="cue-dirty">
+              Unsaved. These changes are discarded unless you save them to the
+              track or use them for one airing.
+            </span>
           {:else}
             Saving applies these to every airing, from this track's next one.
           {/if}
-          <span class="cue-keys"
-            >Keys: Space play · A audition · I O F G N mark · ←/→ nudge · P
-            pre-roll</span
-          >
+          <span class="cue-keys">
+            Keys: Space play · A audition · I O F G N mark · ←/→ nudge · P
+            pre-roll
+          </span>
         </p>
 
         <div class="cue-rows">
@@ -683,18 +679,18 @@
       </div>
 
       <div class="cue-dialog-footer">
-        <button id="btn-cue-points-clear" class="btn" onclick={clearAll}
-          >Clear all</button
-        >
+        <button id="btn-cue-points-clear" class="btn" onclick={clearAll}>
+          Clear all
+        </button>
         <span class="cue-footer-gap"></span>
         {#if confirmingDiscard}
           <span class="cue-confirm">Discard these changes?</span>
-          <button id="btn-cue-points-discard" class="btn" onclick={leave}
-            >Discard</button
-          >
-          <button class="btn" onclick={() => (confirmingDiscard = false)}
-            >Keep editing</button
-          >
+          <button id="btn-cue-points-discard" class="btn" onclick={leave}>
+            Discard
+          </button>
+          <button class="btn" onclick={() => (confirmingDiscard = false)}>
+            Keep editing
+          </button>
         {:else}
           <button
             id="btn-cue-points-use-once"
@@ -702,14 +698,17 @@
             onclick={useOnce}
             disabled={saving}
             title="Queue this track next-up with these cue points, leaving the track itself untouched"
-            >Use once</button
           >
+            Use once
+          </button>
           <button
             id="btn-cue-points-cancel"
             class="btn"
             onclick={requestClose}
-            disabled={saving}>Cancel</button
+            disabled={saving}
           >
+            Cancel
+          </button>
           <button
             id="btn-cue-points-save"
             class="btn btn-primary"

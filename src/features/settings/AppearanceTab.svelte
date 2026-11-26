@@ -117,9 +117,9 @@
       class="np-browse"
       onclick={() => void api.revealThemesDir()}
     >
-      <span class="material-symbols-outlined" aria-hidden="true"
-        >folder_open</span
-      >
+      <span class="material-symbols-outlined" aria-hidden="true">
+        folder_open
+      </span>
       Show in folder
     </button>
   </div>
@@ -158,22 +158,26 @@
           {#if slot.src}
             <img src={slot.src} alt="" />
           {:else}
-            <span class="material-symbols-outlined" aria-hidden="true"
-              >image</span
-            >
+            <span class="material-symbols-outlined" aria-hidden="true">
+              image
+            </span>
           {/if}
         </span>
         <button
           id={`appearance-${slot.slot}-choose`}
           class="np-browse"
-          onclick={() => pickImage(slot.slot)}>Choose…</button
+          onclick={() => pickImage(slot.slot)}
         >
+          Choose…
+        </button>
         <button
           id={`appearance-${slot.slot}-clear`}
           class="np-browse"
           disabled={!slot.owned}
-          onclick={() => void app.clearStationImage(slot.slot)}>Clear</button
+          onclick={() => void app.clearStationImage(slot.slot)}
         >
+          Clear
+        </button>
       </div>
       <div class="hint">{slot.hint}</div>
     </div>

@@ -120,16 +120,15 @@
       <div class="find-body">
         <p class="find-desc">
           Pick the track this entry stands for
-          <span class="find-sought"
-            >{sought.artist} – {sought.title}
-            <span class="find-sought-time">{formatTime(sought.duration)}</span
-            ></span
-          >
+          <span class="find-sought">
+            {sought.artist} – {sought.title}
+            <span class="find-sought-time">{formatTime(sought.duration)}</span>
+          </span>
         </p>
         <div class="find-search">
-          <span class="material-symbols-outlined" aria-hidden="true"
-            >search</span
-          >
+          <span class="material-symbols-outlined" aria-hidden="true">
+            search
+          </span>
           <input
             id="find-search"
             type="text"
@@ -149,8 +148,10 @@
             class:active={type === t.type}
             role="tab"
             aria-selected={type === t.type}
-            onclick={() => (type = t.type)}>{t.label}</button
+            onclick={() => (type = t.type)}
           >
+            {t.label}
+          </button>
         {/each}
       </div>
       <div class="saved-headers">
@@ -166,9 +167,9 @@
           </div>
         {:else if results.length === 0}
           <div class="empty">
-            <span class="empty-icon"
-              ><span class="material-symbols-outlined">search_off</span></span
-            >
+            <span class="empty-icon">
+              <span class="material-symbols-outlined">search_off</span>
+            </span>
             <span class="empty-title">No Track Matches</span>
             <span class="empty-body">Try fewer words, or another type.</span>
           </div>
@@ -184,9 +185,9 @@
               <span class="track-title">{track.title}</span>
               <span class="track-artist">{track.artist}</span>
               <span class="track-album">{track.album}</span>
-              <span class="track-duration"
-                >{formatTime(airDuration(track))}</span
-              >
+              <span class="track-duration">
+                {formatTime(airDuration(track))}
+              </span>
             </button>
           {/each}
         {/if}

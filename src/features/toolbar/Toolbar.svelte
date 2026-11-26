@@ -124,9 +124,9 @@
         aria-pressed={app.isAdmin}
         onclick={toggleLock}
       >
-        <span class="material-symbols-outlined"
-          >{app.isAdmin ? "lock_open" : "lock"}</span
-        >
+        <span class="material-symbols-outlined">
+          {app.isAdmin ? "lock_open" : "lock"}
+        </span>
       </button>
     {/if}
     <button
@@ -143,18 +143,26 @@
     >
       <span class="material-symbols-outlined">settings</span>
       {#if app.healthAttention > 0}
-        <span class="attention-badge attention-badge--corner" aria-hidden="true"
-          >{app.healthAttention}</span
+        <span
+          class="attention-badge attention-badge--corner"
+          aria-hidden="true"
         >
+          {app.healthAttention}
+        </span>
       {:else if app.hubAttention}
-        <span class="attention-badge attention-badge--corner" aria-hidden="true"
-          >!</span
+        <span
+          class="attention-badge attention-badge--corner"
+          aria-hidden="true"
         >
+          !
+        </span>
       {:else if app.updateWaiting}
         <span
           class="attention-badge attention-badge--corner attention-badge--update"
-          aria-hidden="true">↑</span
+          aria-hidden="true"
         >
+          ↑
+        </span>
       {/if}
     </button>
   </div>

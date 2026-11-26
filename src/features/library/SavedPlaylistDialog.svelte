@@ -178,8 +178,9 @@
             class="btn btn-primary"
             class:btn-danger={dialog.kind === "delete"}
             disabled={busy || (dialog.kind !== "delete" && name.trim() === "")}
-            >{confirmLabel}</button
           >
+            {confirmLabel}
+          </button>
         </div>
       </form>
     </div>

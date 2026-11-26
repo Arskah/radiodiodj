@@ -48,9 +48,9 @@
   <div id="settings-modal">
     <div id="settings-modal-header">
       <span class="settings-modal-title">
-        <span class="material-symbols-outlined" aria-hidden="true"
-          >settings</span
-        >
+        <span class="material-symbols-outlined" aria-hidden="true">
+          settings
+        </span>
         Preferences
       </span>
       <button
@@ -88,8 +88,9 @@
             <span
               class="attention-badge"
               aria-label={`${app.healthAttention} need attention`}
-              >{app.healthAttention}</span
             >
+              {app.healthAttention}
+            </span>
           {/if}
         </button>
         <button
@@ -104,8 +105,10 @@
           {#if app.hubAttention}
             <span
               class="attention-badge"
-              aria-label="The shared library needs attention">!</span
+              aria-label="The shared library needs attention"
             >
+              !
+            </span>
           {/if}
         </button>
         <button
@@ -160,8 +163,10 @@
           {#if app.updateWaiting}
             <span
               class="attention-badge attention-badge--update"
-              aria-label="Update available">↑</span
+              aria-label="Update available"
             >
+              ↑
+            </span>
           {/if}
         </button>
       </div>
@@ -195,8 +200,10 @@
       <div id="settings-actions">
         <button
           id="btn-close-settings"
-          onclick={() => (app.settingsOpen = false)}>Close</button
+          onclick={() => (app.settingsOpen = false)}
         >
+          Close
+        </button>
       </div>
     </div>
   </div>

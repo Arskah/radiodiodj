@@ -159,8 +159,10 @@
           onlostpointercapture={drag.lost}
           onkeydown={(e) => {
             if (e.key === "Enter") onselect(m.id);
-          }}>{m.short}</button
+          }}
         >
+          {m.short}
+        </button>
       {/if}
     {/each}
   </div>
